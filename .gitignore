@@ -1,0 +1,53 @@
+.gradle/
+build/
+out/
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.partial
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+.env
+.env.*
+!.env.example
+
+# WSI and microscopy datasets
+*.vsi
+*.ets
+*.svs
+*.ndpi
+*.mrxs
+*.scn
+*.czi
+*.oir
+*.ome.tif
+*.ome.tiff
+*.btf
+*.tif
+*.tiff
+*.jp2
+
+# Generated slide products
+*.plslide
+*_files/
+*.dzi
+
+# Runtime and packaging
+runtime/
+dist/
+installers/
+*.dmg
+*.pkg
+*.msi
+*.exe
+*.app/
+*.zip
+
+# Local evidence that may contain sensitive names
+docs/evidence/local/

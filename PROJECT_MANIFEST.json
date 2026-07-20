@@ -1,0 +1,14 @@
+{
+  "name": "PathLab Forge",
+  "repository": "Enksodsoon/PathLab-Forge",
+  "purpose": "Local batch WSI preparation and resumable upload companion for PathLab Viewer",
+  "languageTarget": "Java 17-compatible shared core",
+  "defaultConcurrency": {
+    "conversion": 1,
+    "upload": 1
+  },
+  "serverRepository": "Enksodsoon/PathLab-Viewer",
+  "packageExtension": ".plslide",
+  "activeTask": "docs/plans/active/current.md",
+  "status": "DESIGN_COMPLETE_BOOTSTRAP_ONLY"
+}

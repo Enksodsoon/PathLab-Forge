@@ -1,0 +1,15 @@
+Open the PathLab-Forge repository.
+
+Read AGENTS.md and docs/plans/active/current.md. Work on Task 1 only: Java 17 build foundation and batch domain state machine.
+
+Do not add QuPath, Bio-Formats, OpenSlide, libvips, JavaFX, SQLite, server upload, WSI conversion, installers or later tasks yet.
+
+Use test-driven development exactly as specified:
+1. create the failing tests;
+2. run them and confirm the expected failure;
+3. implement the smallest complete solution;
+4. run focused and full checks;
+5. review scope and naming;
+6. commit Task 1;
+7. return the required TASK RESULT report;
+8. stop.
