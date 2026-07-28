@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  java:
+    name: Java 17 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+
+      - name: Test
+        if: runner.os != 'Windows'
+        run: ./gradlew --no-daemon test
+
+      - name: Test
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat --no-daemon test
+
+      - name: Build
+        if: runner.os != 'Windows'
+        run: ./gradlew --no-daemon build
+
+      - name: Build
+        if: runner.os == 'Windows'
+        run: .\gradlew.bat --no-daemon build
+
+      - name: Repository policy
+        if: runner.os != 'Windows'
+        run: bash scripts/verify-repo.sh
+
+      - name: Repository policy
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\scripts\verify-repo.ps1
