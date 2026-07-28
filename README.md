@@ -32,6 +32,21 @@ The latest Viewer is a folder-aware library rather than a flat upload list. Forg
 
 Forge does not replace any of those systems.
 
+## Run the local shell
+
+The current shell is an intentionally small, secured desktop foundation. It binds only to a
+random `127.0.0.1` port, opens a one-time launch URL, and establishes an HttpOnly,
+SameSite-Strict local session. State-changing requests additionally require the exact loopback
+origin and a session CSRF token.
+
+```powershell
+.\gradlew.bat run --args=--serve
+```
+
+The shell currently presents the PathLab library and conversion-queue surfaces. Dataset
+selection, persisted jobs, conversion, and Viewer sync are staged follow-up slices; the visible
+controls do not claim those operations are complete yet.
+
 ## Start with Codex
 
 1. Read `CODEX_START_HERE.md`.

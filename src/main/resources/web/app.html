@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PathLab Forge</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail" aria-label="Primary navigation">
+        <a class="brand" href="/app" aria-label="PathLab Forge">
+          <svg aria-hidden="true" viewBox="0 0 32 32">
+            <path d="M4.5 10.1 16 4.4l11.5 5.7L16 15.8 4.5 10.1Z" opacity=".34"/>
+            <path d="m4.5 15.9 11.5 5.7 11.5-5.7M4.5 21.7l11.5 5.7 11.5-5.7"/>
+          </svg>
+          <span>PathLab <b>Forge</b></span>
+        </a>
+        <nav>
+          <a class="active" href="#library">Library</a>
+          <a href="#queue">Conversion queue</a>
+          <a href="#sync">Viewer sync</a>
+        </nav>
+        <p class="local">Local workspace<br><span>Originals stay on this computer</span></p>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <p class="eyebrow">Local slide preparation</p>
+            <h1>Library</h1>
+            <p>Inspect, crop, convert, annotate, and prepare slides for PathLab Viewer.</p>
+          </div>
+          <div class="actions">
+            <button class="secondary">Connect Viewer</button>
+            <button>＋ Add datasets</button>
+          </div>
+        </header>
+        <section class="toolbar" aria-label="Library controls">
+          <label><span class="sr-only">Search</span><input type="search" placeholder="Search local slides"></label>
+          <button class="secondary">Filters</button>
+          <button class="secondary">Light · Dark · System</button>
+        </section>
+        <section class="empty" id="library">
+          <div class="tissue">◎</div>
+          <h2>Your local pathology workspace</h2>
+          <p>Add an OME-TIFF or a complete VSI/ETS dataset. Forge will inspect it before any conversion starts.</p>
+          <button>Choose datasets</button>
+          <small>Supported in this shell: OME-TIFF and complete VSI/ETS sets</small>
+        </section>
+        <section class="queue" id="queue">
+          <div><p class="eyebrow">Batch activity</p><h2>Conversion queue</h2></div>
+          <span class="status">0 active</span>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
