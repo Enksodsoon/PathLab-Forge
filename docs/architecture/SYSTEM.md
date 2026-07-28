@@ -2,9 +2,23 @@
 
 ## Goal
 
-Convert supported WSI datasets locally into standardized RGB OME-TIFF and DZI assets, process them in batch, and upload prepared packages to PathLab Viewer without server-side WSI conversion.
+Convert supported WSI datasets locally into standardized RGB OME-TIFF and PathLab Viewer-compatible DZI assets, process slides in a persistent batch queue, and upload a prepared package without asking the server to decode or convert a WSI.
 
-## Pipeline
+## Current PathLab Viewer boundary
+
+PathLab Viewer is no longer a flat slide uploader. The current server has:
+
+- nested folders, collections, saved views and restorable Trash;
+- bounded metadata-only library queries and status polling;
+- persisted storage reservations and derivative measurements;
+- cached private thumbnails;
+- a serial worker with heartbeat, stale recovery and capacity monitoring;
+- privacy-reviewed publication grants, hardlinked delivery aliases and multi-slide sharing;
+- a private administrator annotation workspace.
+
+Forge therefore produces one derivative that can enter this existing lifecycle. It does not create a second library, share system, publication path or worker service.
+
+## End-to-end pipeline
 
 ```text
 files/folders
@@ -14,40 +28,83 @@ files/folders
  -> series selection
  -> full slide or crop
  -> downsample
- -> standardized RGB OME-TIFF
+ -> standardized RGB OME-TIFF kept locally
  -> validate OME-TIFF
- -> generate DZI
- -> validate local DZI preview
- -> build .plslide
- -> resumable upload
- -> poll server import
+ -> generate Viewer-compatible DZI + thumbnail
+ -> validate local OpenSeadragon preview
+ -> build .plslide package
+ -> negotiate Viewer capabilities
+ -> reserve an Unfiled/folder-aware library slide
+ -> resumable tus upload
+ -> poll existing Viewer states
  -> ready_private
+ -> open existing browser preview
 ```
 
-## Architectural boundaries
+## Prepared package v1
+
+Package version 1 contains only files needed by PathLab Viewer:
+
+```text
+manifest.json
+derivative/slide.dzi
+derivative/slide_files/<level>/<column>_<row>.jpg
+derivative/thumbnail.jpg
+```
+
+The standardized OME-TIFF remains local and is not included in package v1.
+
+The output must match the current Viewer derivative contract:
+
+```text
+DZI tile size: 512
+DZI overlap: 1
+DZI JPEG quality: 85
+Thumbnail: thumbnail.jpg
+Thumbnail longest edge: 640
+Thumbnail JPEG quality: 82
+```
+
+Generate the DZI and thumbnail from the newly written OME-TIFF so the crop, dimensions, downsample and RGB rendering are identical.
+
+## Architectural interfaces
 
 Use focused interfaces:
 
 ```text
 SourceDiscovery
+DatasetGrouper
 SlideReader
 SeriesInspector
 RegionRenderer
 OmeWriter
 DziGenerator
+DerivativeValidator
 PreparedPackageBuilder
-PackageValidator
 JobRepository
 BatchScheduler
-ViewerClient
+ViewerCapabilitiesClient
+ViewerUploadClient
 CredentialStore
 ```
 
-Core batch/domain code must not store QuPath or vendor-specific objects.
+Core batch/domain code must not store QuPath, Bio-Formats, OpenSlide, libvips, JavaFX or HTTP client objects.
 
 ## Batch model
 
-One `Batch` contains ordered `SlideJob` records. Each job owns source identity, chosen series, crop, downsample, render profile, output paths, package hash, upload identity, state, retry metadata and timestamps.
+One `Batch` contains ordered `SlideJob` records. Each job owns:
+
+- source dataset identity and companion-file inventory;
+- selected series;
+- crop and downsample;
+- render profile;
+- local OME, derivative and package paths;
+- measured derivative bytes/file count/tile count;
+- package hash;
+- target Viewer URL and optional folder ID;
+- server slide ID;
+- tus resume identity;
+- state, retry metadata and timestamps.
 
 Default concurrency:
 
@@ -65,10 +122,12 @@ upload slide A while converting slide B
 Low-resource mode:
 
 ```text
-convert A -> upload A -> clean A -> convert B
+convert A -> package A -> upload A -> confirm import -> clean A -> convert B
 ```
 
-## Job states
+## Local job states
+
+Forge states describe the user workflow and do not need to mirror Viewer database states one-to-one:
 
 ```text
 PENDING
@@ -82,7 +141,7 @@ VALIDATING_DZI
 PACKAGING
 READY_TO_UPLOAD
 UPLOADING
-SERVER_IMPORTING
+SERVER_PROCESSING
 READY_PRIVATE
 PUBLISHED
 PAUSED
@@ -93,6 +152,8 @@ FAILED_PERMANENT
 SKIPPED
 ```
 
+`SERVER_PROCESSING` may represent Viewer `queued`, `validating` or `converting`. The job stores the latest server state separately for diagnostics.
+
 State transitions must be explicit and tested.
 
 ## Reader strategy
@@ -102,26 +163,41 @@ Reader-specific code lives behind adapters. Intended order:
 1. fastest compatible pathology reader;
 2. Bio-Formats fallback for formats such as VSI;
 3. native TIFF/OME handling where appropriate;
-4. structured unsupported/incomplete result.
+4. structured unsupported or incomplete result.
 
-A VSI dataset may require `.ets` companions. Missing companions must block conversion with a clear error.
+A VSI dataset may require `.ets` companions. Missing companions must block conversion with a clear error and must not stop unrelated jobs in the batch.
 
 ## Rendering contract
 
 Default profile: `PATHOLOGY_STANDARD`.
 
 - interleaved 8-bit RGB;
-- ICC to sRGB when present;
-- no subjective brightness/contrast change;
+- ICC transformed to sRGB when present;
+- source values treated as sRGB when no profile exists;
 - deterministic 16-to-8-bit conversion when required;
 - white alpha background;
+- no subjective brightness/contrast adjustment;
 - physical scale preserved when known;
 - no invented scale.
 
-DZI is generated from the newly created OME-TIFF so both outputs represent exactly the same crop, downsample and rendering.
+A display-adjusted profile remains clearly labelled as unsuitable for quantitative pixel analysis.
+
+## Viewer library integration
+
+Forge may request an optional target folder during reservation. Without one, the slide enters Unfiled.
+
+Forge does not:
+
+- create or edit collections during upload;
+- publish a slide automatically;
+- activate folder/collection shares;
+- upload annotations;
+- mark privacy review as passed.
+
+After `ready_private`, the current Viewer UI manages metadata, collections, sharing, annotations, Trash and publication.
 
 ## Platform strategy
 
-Shared core targets Java 17-compatible language/bytecode. Modern and legacy builds may use different reader/native adapters but must produce the same `.plslide` contract.
+Shared core targets Java 17-compatible language and bytecode. Modern and legacy builds may use different reader/native adapters but must produce the same package contract.
 
-Do not spread QuPath-version-specific classes through the core.
+Do not spread QuPath-version-specific classes through the core. A platform is supported only after a packaged artifact passes the documented compatibility matrix on that actual operating system.
