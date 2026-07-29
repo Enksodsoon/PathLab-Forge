@@ -31,6 +31,7 @@ import { SlideViewer } from './SlideViewer'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
 const ACTIVE_STATUSES = new Set(['INSPECTING', 'CONVERTING', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
+const CONVERSION_STATUSES = new Set(['CONVERTING', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
@@ -570,6 +571,7 @@ function ViewerStage({
   const showingConvertedResult = Boolean(
     dataset && revision && ['READY', 'APPROVED'].includes(revision.status),
   )
+  const converting = Boolean(dataset && CONVERSION_STATUSES.has(dataset.status))
   const tileSource = showingConvertedResult && dataset && revision
     ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi?revision=${encodeURIComponent(revision.id)}`
     : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
@@ -580,11 +582,13 @@ function ViewerStage({
       <header className="forge-viewer-header">
         <div>
           <strong>{dataset?.displayName || 'PathLab Forge viewer'}</strong>
-          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : 'Direct source viewer'}` : 'Choose a local slide from the panel'}</span>
+          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Direct source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
         <button type="button" aria-label="Toggle inspector" onClick={onInspector}><SidebarSimple /></button>
       </header>
-      {tileSource ? (
+      {converting && dataset ? (
+        <ConversionProgress dataset={dataset} />
+      ) : tileSource ? (
         <SlideViewer
           tileSource={tileSource}
           activeTool={activeTool}
@@ -605,12 +609,37 @@ function ViewerStage({
         </div>
       )}
       <div className="forge-viewer-tools" aria-label="Viewer controls">
-        <button type="button" aria-label="Zoom out" onClick={() => viewer?.viewport.zoomBy(.67)}><MagnifyingGlassMinus /></button>
-        <button type="button" aria-label="Home" onClick={() => viewer?.viewport.goHome()}><House /></button>
-        <button type="button" aria-label="Zoom in" onClick={() => viewer?.viewport.zoomBy(1.5)}><MagnifyingGlassPlus /></button>
-        <button type="button" aria-label="Full screen" onClick={() => viewer?.setFullScreen(!viewer.isFullPage())}><ArrowsOut /></button>
+        <button type="button" aria-label="Zoom out" disabled={!viewer} onClick={() => viewer?.viewport.zoomBy(.67)}><MagnifyingGlassMinus /></button>
+        <button type="button" aria-label="Home" disabled={!viewer} onClick={() => viewer?.viewport.goHome()}><House /></button>
+        <button type="button" aria-label="Zoom in" disabled={!viewer} onClick={() => viewer?.viewport.zoomBy(1.5)}><MagnifyingGlassPlus /></button>
+        <button type="button" aria-label="Full screen" disabled={!viewer} onClick={() => viewer?.setFullScreen(!viewer.isFullPage())}><ArrowsOut /></button>
       </div>
     </section>
+  )
+}
+
+function ConversionProgress({ dataset }: { dataset: Dataset }) {
+  const phase = conversionPhase(dataset.status)
+  return (
+    <div className="forge-conversion-progress" aria-live="polite">
+      <span className="forge-conversion-kicker">Preparing converted result</span>
+      <strong>{phase.label}</strong>
+      <p>{dataset.detail}</p>
+      <progress aria-label="Conversion progress" max="100" value={phase.percent} />
+      <div className="forge-conversion-progress-copy">
+        <span>Step {phase.step} of 4</span>
+        <span>{phase.percent}%</span>
+      </div>
+      <ol aria-label="Conversion stages">
+        {['Rendered RGB', 'Validate OME-TIFF', 'Viewer tiles', 'Package'].map((label, index) => (
+          <li className={index + 1 < phase.step ? 'complete' : index + 1 === phase.step ? 'active' : ''} key={label}>
+            <i />
+            <span>{label}</span>
+          </li>
+        ))}
+      </ol>
+      <small>The converted result will open automatically after validation.</small>
+    </div>
   )
 }
 
@@ -922,14 +951,33 @@ function QueueDock({
   onClearError: () => void
 }) {
   const active = datasets.filter((dataset) => ACTIVE_STATUSES.has(dataset.status))
+  const converting = active.find((dataset) => CONVERSION_STATUSES.has(dataset.status))
+  const phase = converting ? conversionPhase(converting.status) : undefined
   return (
     <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
       <span className="forge-queue-mark" />
       <strong>{active.length ? `${active.length} active` : 'Queue ready'}</strong>
       <span>{notice}</span>
+      {converting && phase ? (
+        <label className="forge-queue-progress">
+          <span>{phase.label}</span>
+          <progress aria-label={`${converting.displayName} conversion progress`} max="100" value={phase.percent} />
+          <strong>{phase.percent}%</strong>
+        </label>
+      ) : null}
       {isError ? <button type="button" onClick={onClearError}>Dismiss</button> : null}
     </div>
   )
+}
+
+function conversionPhase(status: string) {
+  return ({
+    CONVERTING: { step: 1, percent: 20, label: 'Exporting rendered RGB' },
+    VALIDATING: { step: 2, percent: 55, label: 'Validating OME-TIFF' },
+    GENERATING_DZI: { step: 3, percent: 75, label: 'Generating viewer tiles' },
+    DZI_READY: { step: 4, percent: 92, label: 'Building the upload package' },
+  } as Record<string, { step: number; percent: number; label: string }>)[status]
+    || { step: 1, percent: 0, label: 'Preparing conversion' }
 }
 
 function statusLabel(status: string) {

@@ -311,3 +311,66 @@ test('switches image series immediately and reloads the revision-qualified previ
     expect.stringContaining('revision=series-revision-1'),
   ))
 })
+
+test('shows conversion progress and keeps viewer controls locked until validation completes', async () => {
+  const converting: api.Dataset = {
+    id: 'converting-slide',
+    displayName: 'Converting slide.vsi',
+    sourceBytes: 3_000_000_000,
+    format: 'VSI',
+    status: 'CONVERTING',
+    detail: 'Exporting QuPath-style rendered RGB with JPEG compression',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: 2,
+    width: 49_941,
+    height: 62_174,
+    downsample: 1.5,
+    estimatedOutputBytes: 900_000_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 49_941,
+    cropHeight: 62_174,
+    sourceFingerprint: 'converting-source',
+    configurationRevision: 'conversion-configuration',
+    currentArtifactRevision: 'artifact-1',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[converting], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([converting])
+  vi.mocked(api.annotations).mockResolvedValue([])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'artifact-1',
+    approvedRevision: '',
+    revisions: [{
+      id: 'artifact-1',
+      status: 'CONVERTING',
+      createdAt: Date.now(),
+      outputWidth: 33_294,
+      outputHeight: 41_449,
+      omePath: '',
+      packagePath: '',
+      omeSha256: '',
+      packageSha256: '',
+      failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  expect((await screen.findAllByText('Exporting rendered RGB'))[0]).toBeVisible()
+  expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(20)
+  expect(screen.getByText('Step 1 of 4')).toBeVisible()
+  expect(screen.getByText('The converted result will open automatically after validation.')).toBeVisible()
+  expect(screen.queryByTestId('forge-osd')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
+  expect(screen.getByRole('progressbar', {
+    name: 'Converting slide.vsi conversion progress',
+  })).toHaveValue(20)
+})
