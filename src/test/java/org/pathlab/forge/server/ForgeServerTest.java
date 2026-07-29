@@ -41,7 +41,16 @@ final class ForgeServerTest {
             assertTrue(app.body().contains("PathLab"));
             assertTrue(app.body().contains("Forge"));
             assertTrue(app.body().contains("Conversion queue"));
+            assertTrue(app.body().contains("data-action=\"add-datasets\""));
+            assertTrue(app.body().contains("<script src=\"/assets/app.js\" defer></script>"));
             assertTrue(app.headers().firstValue("content-security-policy").isPresent());
+
+            var script = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/assets/app.js")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, script.statusCode());
+            assertTrue(script.body().contains("showOpenFilePicker"));
+            assertTrue(script.body().contains("/api/batches"));
         }
     }
 

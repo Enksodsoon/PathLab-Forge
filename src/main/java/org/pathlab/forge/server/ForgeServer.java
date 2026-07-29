@@ -69,6 +69,9 @@ public final class ForgeServer implements AutoCloseable {
                 authenticatedResource(exchange, "/web/app.html", "text/html; charset=utf-8");
             } else if ("/assets/app.css".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 authenticatedResource(exchange, "/web/app.css", "text/css; charset=utf-8");
+            } else if ("/assets/app.js".equals(path) && "GET".equals(exchange.getRequestMethod())) {
+                authenticatedResource(
+                        exchange, "/web/app.js", "text/javascript; charset=utf-8");
             } else if ("/api/session".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 session(exchange);
             } else if ("/api/batches".equals(path) && "POST".equals(exchange.getRequestMethod())) {
