@@ -13,20 +13,32 @@ public final class SwingDatasetPicker implements DatasetPicker {
         if (java.awt.GraphicsEnvironment.isHeadless()) {
             throw new IOException("Native file selection is unavailable in headless mode.");
         }
-        var dialog = new FileDialog((Frame) null, "Add pathology datasets", FileDialog.LOAD);
-        dialog.setMultipleMode(true);
-        dialog.setFilenameFilter((directory, name) -> {
-            var lower = name.toLowerCase(java.util.Locale.ROOT);
-            return lower.endsWith(".vsi")
-                    || lower.endsWith(".ome.tif")
-                    || lower.endsWith(".ome.tiff");
-        });
-        dialog.setVisible(true);
-        var paths = new ArrayList<Path>();
-        for (var file : dialog.getFiles()) {
-            paths.add(file.toPath());
+        var owner = new Frame();
+        owner.setUndecorated(true);
+        owner.setAlwaysOnTop(true);
+        var dialog = new FileDialog(owner, "Add pathology datasets", FileDialog.LOAD);
+        try {
+            dialog.setAlwaysOnTop(true);
+            dialog.setMultipleMode(true);
+            dialog.setFilenameFilter((directory, name) -> {
+                var lower = name.toLowerCase(java.util.Locale.ROOT);
+                return lower.endsWith(".vsi")
+                        || lower.endsWith(".ome.tif")
+                        || lower.endsWith(".ome.tiff");
+            });
+            java.awt.EventQueue.invokeLater(() -> {
+                dialog.toFront();
+                dialog.requestFocus();
+            });
+            dialog.setVisible(true);
+            var paths = new ArrayList<Path>();
+            for (var file : dialog.getFiles()) {
+                paths.add(file.toPath());
+            }
+            return List.copyOf(paths);
+        } finally {
+            dialog.dispose();
+            owner.dispose();
         }
-        dialog.dispose();
-        return List.copyOf(paths);
     }
 }

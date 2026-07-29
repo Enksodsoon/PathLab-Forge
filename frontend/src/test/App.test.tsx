@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
+import * as api from '../api'
 import { App } from '../App'
 
 vi.mock('../SlideViewer', () => ({
@@ -65,4 +66,86 @@ test('shows the short-lived Viewer verification code', async () => {
     'href',
     'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
   )
+})
+
+test('keeps crop edits local until the user applies a valid configuration', async () => {
+  const dataset: api.Dataset = {
+    id: 'dataset-1',
+    displayName: 'Main slide.vsi',
+    sourceBytes: 2_000_000_000,
+    format: 'VSI',
+    status: 'READY_TO_CONVERT',
+    detail: 'Ready',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: 2,
+    width: 165845,
+    height: 90735,
+    downsample: 2,
+    estimatedOutputBytes: 15_000_000_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 165845,
+    cropHeight: 90735,
+    sourceFingerprint: 'abc123',
+    configurationRevision: 'configuration-1',
+    currentArtifactRevision: '',
+    approvedArtifactRevision: '',
+  }
+  const mainSeries: api.SeriesInfo = {
+    index: 2,
+    name: 'Main series',
+    width: 165845,
+    height: 90735,
+    channels: 3,
+    sizeZ: 1,
+    sizeT: 1,
+    pixelType: 'uint8',
+    physicalSizeX: 0.27,
+    physicalSizeY: 0.27,
+    physicalUnit: 'µm',
+    resolutionCount: 8,
+    rgbPlane: true,
+  }
+  const capabilities = {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[dataset], capabilities])
+  vi.mocked(api.datasets).mockResolvedValue([dataset])
+  vi.mocked(api.series).mockResolvedValue([mainSeries])
+  vi.mocked(api.configure).mockResolvedValue({
+    ...dataset,
+    cropX: 69790,
+    cropY: 23372,
+    cropWidth: 11336,
+    cropHeight: 11040,
+    downsample: 1.5,
+  })
+
+  render(<App />)
+
+  const x = await screen.findByRole('spinbutton', { name: 'X' })
+  fireEvent.change(x, { target: { value: '69790' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Y' }), { target: { value: '23372' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Width' }), { target: { value: '11336' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Height' }), { target: { value: '11040' } })
+  fireEvent.change(screen.getByRole('combobox', { name: 'Downsample' }), { target: { value: '1.5' } })
+
+  expect(api.configure).not.toHaveBeenCalled()
+  expect(screen.getByText('7,557 × 7,360')).toBeVisible()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
+
+  await waitFor(() => expect(api.configure).toHaveBeenCalledWith('dataset-1', {
+    series: 2,
+    downsample: 1.5,
+    x: 69790,
+    y: 23372,
+    width: 11336,
+    height: 11040,
+  }))
 })
