@@ -198,8 +198,8 @@ export function SlideViewer({
       {loading ? (
         <div className="forge-preview-loading" role="status">
           <span />
-          <strong>Building 100% preview</strong>
-          <small>The first native-resolution view can take several minutes.</small>
+          <strong>Building efficient high-detail preview</strong>
+          <small>Using the scanner pyramid reduces disk, memory, and processing time.</small>
         </div>
       ) : null}
       {loadError ? <div className="forge-preview-error" role="alert">{loadError}</div> : null}

@@ -26,7 +26,8 @@ import org.pathlab.forge.packageformat.PreparedPackageBuilder;
 import org.pathlab.forge.packageformat.PackageMetadata;
 
 public final class ConversionService implements AutoCloseable {
-    private static final String PREVIEW_CACHE_VERSION = "native-rgb-v3";
+    private static final int PREVIEW_DOWNSAMPLE = 2;
+    private static final String PREVIEW_CACHE_VERSION = "efficient-rgb-2x-v4";
     private final DatasetRepository repository;
     private final ConversionEngine engine;
     private final DerivativeEngine derivativeEngine;
@@ -34,6 +35,8 @@ public final class ConversionService implements AutoCloseable {
     private final ArtifactRevisionRepository artifactRepository;
     private final Map<String, List<SeriesInfo>> inspectedSeries = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> activeConversions = new ConcurrentHashMap<>();
+    private final java.util.Set<Path> cleanedPreviewRoots =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> cancelled =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final ExecutorService conversionExecutor = Executors.newSingleThreadExecutor(runnable -> {
@@ -126,6 +129,7 @@ public final class ConversionService implements AutoCloseable {
         var descriptor = previewRoot.resolve("slide.dzi");
         if (Files.isRegularFile(descriptor)) {
             var dimensions = readPreviewDimensions(previewRoot, series);
+            cleanupObsoletePreviews(id, previewRoot);
             return new LocalPreview(
                     previewRoot,
                     dimensions[0],
@@ -134,8 +138,10 @@ public final class ConversionService implements AutoCloseable {
                     series.height());
         }
         Files.createDirectories(previewRoot);
+        var targetWidth = Math.max(1, divideRoundUp(series.width(), PREVIEW_DOWNSAMPLE));
+        var targetHeight = Math.max(1, divideRoundUp(series.height(), PREVIEW_DOWNSAMPLE));
         var estimatedPyramidBytes =
-                OutputSizeEstimator.rgbPyramidUpperBound(series.width(), series.height(), 1);
+                OutputSizeEstimator.rgbPyramidUpperBound(targetWidth, targetHeight, 1);
         var estimatedPeakBytes = Math.multiplyExact(estimatedPyramidBytes, 2);
         DiskPreflight.requireCapacity(
                 Files.getFileStore(previewRoot).getUsableSpace(), estimatedPeakBytes);
@@ -150,7 +156,7 @@ public final class ConversionService implements AutoCloseable {
                     Path.of(dataset.sourcePath()),
                     dataset.selectedSeries(),
                     temporaryOme,
-                    Math.max(series.width(), series.height()));
+                    Math.max(targetWidth, targetHeight));
         }
         try {
             derivativeEngine.generateDzi(
@@ -163,12 +169,55 @@ public final class ConversionService implements AutoCloseable {
         Files.writeString(
                 previewRoot.resolve("preview-dimensions.txt"),
                 source.width() + "," + source.height());
+        cleanupObsoletePreviews(id, previewRoot);
         return new LocalPreview(
                 previewRoot,
                 source.width(),
                 source.height(),
                 series.width(),
                 series.height());
+    }
+
+    private void cleanupObsoletePreviews(String id, Path currentPreview) {
+        var previewBase = managedRoot.resolve(id).resolve("previews").normalize();
+        if (cleanedPreviewRoots.contains(currentPreview)
+                || !currentPreview.startsWith(previewBase)
+                || !Files.isDirectory(previewBase)) {
+            return;
+        }
+        try {
+            try (var versions = Files.list(previewBase)) {
+                for (var version : versions.filter(Files::isDirectory).toList()) {
+                    if (!currentPreview.startsWith(version)) {
+                        deleteTree(version);
+                        continue;
+                    }
+                    try (var revisions = Files.list(version)) {
+                        for (var revision : revisions.filter(Files::isDirectory).toList()) {
+                            if (!revision.equals(currentPreview)) {
+                                deleteTree(revision);
+                            }
+                        }
+                    }
+                }
+            }
+            cleanedPreviewRoots.add(currentPreview);
+        } catch (IOException ignored) {
+            // A cancelled converter may still hold a Windows file handle briefly.
+            // Cache-hit requests retry cleanup after that process exits.
+        }
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        try (var paths = Files.walk(root)) {
+            for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
+
+    private static int divideRoundUp(int value, int divisor) {
+        return (value + divisor - 1) / divisor;
     }
 
     private static int[] readPreviewDimensions(Path root, SeriesInfo fallback)
