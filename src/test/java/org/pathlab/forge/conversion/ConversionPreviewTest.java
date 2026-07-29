@@ -134,6 +134,22 @@ final class ConversionPreviewTest {
             public void convert(Path ignored, int seriesIndex, Path output) {
                 throw new UnsupportedOperationException();
             }
+
+            @Override
+            public boolean supportsDirectTiles() {
+                return true;
+            }
+
+            @Override
+            public DirectTileSource directTileSource(Path ignored, int seriesIndex) {
+                return new DirectTileSource(18_032, 9_148, 512);
+            }
+
+            @Override
+            public byte[] readDirectTile(
+                    Path ignored, int seriesIndex, int level, int tileX, int tileY) {
+                return new byte[] {(byte) 0xff, (byte) 0xd8, (byte) 0xff, (byte) 0xd9};
+            }
         };
         try (var restartedService = new ConversionService(
                 repository, restartEngine, derivatives, tempDirectory.resolve("managed"))) {
@@ -142,6 +158,10 @@ final class ConversionPreviewTest {
             assertEquals(9_016, cached.width());
             assertEquals(4_574, cached.height());
             assertEquals(0, restartInspections.get());
+            assertEquals(18_032, restartedService.directPreview(dataset.id()).width());
+            assertEquals(
+                    4,
+                    restartedService.directPreviewTile(dataset.id(), 15, 0, 0).length);
         }
     }
 }

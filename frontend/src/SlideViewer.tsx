@@ -40,12 +40,10 @@ export function SlideViewer({
   const elementRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
-  const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     if (!elementRef.current) return
-    setLoading(true)
     setLoadError('')
     const viewer = OpenSeadragon({
       element: elementRef.current,
@@ -64,11 +62,9 @@ export function SlideViewer({
     })
     viewerRef.current = viewer
     viewer.addOnceHandler('open', () => {
-      setLoading(false)
       onReady?.(viewer)
     })
     viewer.addOnceHandler('open-failed', () => {
-      setLoading(false)
       setLoadError('Native-resolution preview could not be opened')
     })
     return () => {
@@ -195,13 +191,6 @@ export function SlideViewer({
   return (
     <div className="forge-osd-shell">
       <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
-      {loading ? (
-        <div className="forge-preview-loading" role="status">
-          <span />
-          <strong>Building efficient high-detail preview</strong>
-          <small>Using the scanner pyramid reduces disk, memory, and processing time.</small>
-        </div>
-      ) : null}
       {loadError ? <div className="forge-preview-error" role="alert">{loadError}</div> : null}
     </div>
   )

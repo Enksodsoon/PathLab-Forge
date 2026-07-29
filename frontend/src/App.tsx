@@ -580,7 +580,7 @@ function ViewerStage({
       <header className="forge-viewer-header">
         <div>
           <strong>{dataset?.displayName || 'PathLab Forge viewer'}</strong>
-          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : 'Efficient 2× preview'}` : 'Choose a local slide from the panel'}</span>
+          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : 'Direct source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
         <button type="button" aria-label="Toggle inspector" onClick={onInspector}><SidebarSimple /></button>
       </header>

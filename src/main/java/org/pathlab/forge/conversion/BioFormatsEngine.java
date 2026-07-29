@@ -1,8 +1,12 @@
 package org.pathlab.forge.conversion;
 
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,6 +17,9 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
 
 public final class BioFormatsEngine implements ConversionEngine {
     private static final int MAX_METADATA_BYTES = 32 * 1024 * 1024;
@@ -21,6 +28,7 @@ public final class BioFormatsEngine implements ConversionEngine {
     private final Path runtimeRoot;
     private final java.util.Map<Path, java.util.Map<Integer, FlatSeries>> flattenedSeries =
             new ConcurrentHashMap<>();
+    private final java.util.Map<Path, DirectReader> directReaders = new ConcurrentHashMap<>();
 
     private BioFormatsEngine(Path runtimeRoot) {
         this.runtimeRoot = runtimeRoot;
@@ -100,6 +108,8 @@ public final class BioFormatsEngine implements ConversionEngine {
                             List.copyOf(resolutions)));
         }
         flattenedSeries.put(source.toAbsolutePath().normalize(), Map.copyOf(mapping));
+        directReaders.computeIfAbsent(
+                source.toAbsolutePath().normalize(), this::openDirectReaderUnchecked);
         return topLevel.stream()
                 .map(item -> item.withResolutionCount(
                         mapping.get(item.index()).resolutions().size()))
@@ -205,6 +215,63 @@ public final class BioFormatsEngine implements ConversionEngine {
         return new PreviewSource(output, resolution.width(), resolution.height());
     }
 
+    @Override
+    public boolean supportsDirectTiles() {
+        return available();
+    }
+
+    @Override
+    public DirectTileSource directTileSource(Path source, int seriesIndex) throws IOException {
+        var selected = directReader(source).series(seriesIndex);
+        return new DirectTileSource(selected.width(), selected.height(), 512);
+    }
+
+    @Override
+    public byte[] readDirectTile(
+            Path source, int seriesIndex, int level, int tileX, int tileY)
+            throws IOException {
+        if (tileX < 0 || tileY < 0 || level < 0) {
+            throw new IllegalArgumentException("Direct tile coordinates are invalid");
+        }
+        var reader = directReader(source);
+        var selected = reader.series(seriesIndex);
+        var tileSource = new DirectTileSource(selected.width(), selected.height(), 512);
+        if (level > tileSource.maximumLevel()) {
+            throw new IllegalArgumentException("Direct tile level is invalid");
+        }
+        var scale = Math.scalb(1.0, tileSource.maximumLevel() - level);
+        var levelWidth = Math.max(1, (int) Math.ceil(selected.width() / scale));
+        var levelHeight = Math.max(1, (int) Math.ceil(selected.height() / scale));
+        var outputX = Math.multiplyExact(tileX, tileSource.tileSize());
+        var outputY = Math.multiplyExact(tileY, tileSource.tileSize());
+        if (outputX >= levelWidth || outputY >= levelHeight) {
+            throw new IllegalArgumentException("Direct tile is outside the image");
+        }
+        var outputWidth = Math.min(tileSource.tileSize(), levelWidth - outputX);
+        var outputHeight = Math.min(tileSource.tileSize(), levelHeight - outputY);
+        var resolution = selectDirectResolution(selected, scale);
+        var sourceX = (int) Math.floor((double) outputX * resolution.width() / levelWidth);
+        var sourceY = (int) Math.floor((double) outputY * resolution.height() / levelHeight);
+        var sourceRight = (int) Math.ceil(
+                (double) (outputX + outputWidth) * resolution.width() / levelWidth);
+        var sourceBottom = (int) Math.ceil(
+                (double) (outputY + outputHeight) * resolution.height() / levelHeight);
+        var sourceWidth = Math.max(1, Math.min(resolution.width() - sourceX, sourceRight - sourceX));
+        var sourceHeight =
+                Math.max(1, Math.min(resolution.height() - sourceY, sourceBottom - sourceY));
+        var image = reader.read(
+                seriesIndex,
+                resolution.readerIndex(),
+                sourceX,
+                sourceY,
+                sourceWidth,
+                sourceHeight);
+        if (image.getWidth() != outputWidth || image.getHeight() != outputHeight) {
+            image = resize(image, outputWidth, outputHeight);
+        }
+        return encodeJpeg(image, 0.92f);
+    }
+
     private FlatSeries requireSeries(Path source, int seriesIndex) throws IOException {
         var sourceKey = source.toAbsolutePath().normalize();
         var selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
@@ -230,6 +297,19 @@ public final class BioFormatsEngine implements ConversionEngine {
                                 resolution -> (long) resolution.width() * resolution.height())))
                 .orElseThrow(() -> new IOException("Series has no readable resolutions"));
         return selected;
+    }
+
+    private static Resolution selectDirectResolution(FlatSeries series, double downsample)
+            throws IOException {
+        return series.resolutions().stream()
+                .filter(resolution ->
+                        (double) series.width() / resolution.width() <= downsample + 0.05)
+                .max(java.util.Comparator.comparingDouble(
+                        resolution -> (double) series.width() / resolution.width()))
+                .or(() -> series.resolutions().stream().max(
+                        java.util.Comparator.comparingLong(
+                                resolution -> (long) resolution.width() * resolution.height())))
+                .orElseThrow(() -> new IOException("Series has no readable resolutions"));
     }
 
     private static ScaledCrop scaleCrop(
@@ -308,6 +388,65 @@ public final class BioFormatsEngine implements ConversionEngine {
             throw new IllegalStateException(
                     "Install Bio-Formats 8.5 locally or set PATHLAB_FORGE_BFTOOLS");
         }
+    }
+
+    private DirectReader directReader(Path source) throws IOException {
+        var key = source.toAbsolutePath().normalize();
+        var existing = directReaders.get(key);
+        if (existing != null) {
+            return existing;
+        }
+        try {
+            var opened = new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key);
+            var raced = directReaders.putIfAbsent(key, opened);
+            return raced == null ? opened : raced;
+        } catch (ReflectiveOperationException error) {
+            throw new IOException("Bio-Formats direct viewer could not open the slide", error);
+        }
+    }
+
+    private DirectReader openDirectReaderUnchecked(Path source) {
+        try {
+            return new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), source);
+        } catch (ReflectiveOperationException | IOException error) {
+            throw new IllegalStateException("Bio-Formats direct viewer initialization failed", error);
+        }
+    }
+
+    private static BufferedImage resize(BufferedImage source, int width, int height) {
+        var resized = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        var graphics = resized.createGraphics();
+        try {
+            graphics.setRenderingHint(
+                    RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.setRenderingHint(
+                    RenderingHints.KEY_RENDERING,
+                    RenderingHints.VALUE_RENDER_QUALITY);
+            graphics.drawImage(source, 0, 0, width, height, null);
+        } finally {
+            graphics.dispose();
+        }
+        return resized;
+    }
+
+    private static byte[] encodeJpeg(BufferedImage image, float quality) throws IOException {
+        var output = new ByteArrayOutputStream();
+        var writers = ImageIO.getImageWritersByFormatName("jpeg");
+        if (!writers.hasNext()) {
+            throw new IOException("JPEG writer is unavailable");
+        }
+        var writer = writers.next();
+        try (var stream = ImageIO.createImageOutputStream(output)) {
+            writer.setOutput(stream);
+            var parameters = writer.getDefaultWriteParam();
+            parameters.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            parameters.setCompressionQuality(quality);
+            writer.write(null, new IIOImage(image, null, null), parameters);
+        } finally {
+            writer.dispose();
+        }
+        return output.toByteArray();
     }
 
     private static Path findRuntime(Path candidate) {
@@ -401,4 +540,101 @@ public final class BioFormatsEngine implements ConversionEngine {
 
     private record ScaledCrop(
             int x, int y, int width, int height, boolean fullResolution) {}
+
+    private static final class DirectReader {
+        private final URLClassLoader loader;
+        private final Object reader;
+        private final Class<?> readerClass;
+
+        private DirectReader(Path jar, Path source)
+                throws ReflectiveOperationException, IOException {
+            loader = new URLClassLoader(
+                    new java.net.URL[] {jar.toUri().toURL()},
+                    ClassLoader.getPlatformClassLoader());
+            readerClass = Class.forName("loci.formats.ImageReader", true, loader);
+            reader = readerClass.getConstructor().newInstance();
+            invoke("setFlattenedResolutions", new Class<?>[] {boolean.class}, false);
+            invoke("setId", new Class<?>[] {String.class}, source.toString());
+        }
+
+        private synchronized FlatSeries series(int series) throws IOException {
+            try {
+                invoke("setSeries", new Class<?>[] {int.class}, series);
+                var width = (int) invoke("getSizeX", new Class<?>[0]);
+                var height = (int) invoke("getSizeY", new Class<?>[0]);
+                var count = (int) invoke("getResolutionCount", new Class<?>[0]);
+                var resolutions = new ArrayList<Resolution>();
+                for (var resolution = 0; resolution < count; resolution++) {
+                    invoke("setResolution", new Class<?>[] {int.class}, resolution);
+                    resolutions.add(new Resolution(
+                            resolution,
+                            (int) invoke("getSizeX", new Class<?>[0]),
+                            (int) invoke("getSizeY", new Class<?>[0])));
+                }
+                invoke("setResolution", new Class<?>[] {int.class}, 0);
+                return new FlatSeries(width, height, List.copyOf(resolutions));
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not inspect the selected series", error);
+            }
+        }
+
+        private synchronized BufferedImage read(
+                int series,
+                int resolution,
+                int x,
+                int y,
+                int width,
+                int height)
+                throws IOException {
+            try {
+                invoke("setSeries", new Class<?>[] {int.class}, series);
+                invoke("setResolution", new Class<?>[] {int.class}, resolution);
+                var bits = (int) invoke("getBitsPerPixel", new Class<?>[0]);
+                var channels = (int) invoke("getRGBChannelCount", new Class<?>[0]);
+                var interleaved = (boolean) invoke("isInterleaved", new Class<?>[0]);
+                if (bits > 8 || channels < 3) {
+                    throw new IOException("Direct viewer requires an 8-bit RGB series");
+                }
+                var bytes = (byte[]) invoke(
+                        "openBytes",
+                        new Class<?>[] {
+                            int.class, int.class, int.class, int.class, int.class
+                        },
+                        0,
+                        x,
+                        y,
+                        width,
+                        height);
+                var pixels = Math.multiplyExact(width, height);
+                if (bytes.length < Math.multiplyExact(pixels, 3)) {
+                    throw new IOException("Bio-Formats returned an incomplete RGB tile");
+                }
+                var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+                var rgb = new int[pixels];
+                for (var index = 0; index < pixels; index++) {
+                    var red = bytes[interleaved ? index * channels : index] & 0xff;
+                    var green = bytes[interleaved ? index * channels + 1 : pixels + index] & 0xff;
+                    var blue = bytes[interleaved ? index * channels + 2 : pixels * 2 + index] & 0xff;
+                    rgb[index] = (red << 16) | (green << 8) | blue;
+                }
+                image.setRGB(0, 0, width, height, rgb, 0, width);
+                return image;
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not read the requested tile", error);
+            }
+        }
+
+        private Object invoke(String name, Class<?>[] parameters, Object... arguments)
+                throws ReflectiveOperationException {
+            try {
+                return readerClass.getMethod(name, parameters).invoke(reader, arguments);
+            } catch (InvocationTargetException error) {
+                var cause = error.getCause();
+                if (cause instanceof Exception exception) {
+                    throw new ReflectiveOperationException(exception);
+                }
+                throw error;
+            }
+        }
+    }
 }
