@@ -110,5 +110,38 @@ final class ConversionPreviewTest {
             assertTrue(Files.notExists(preview.root().resolve("source-preview.ome.tif")));
             assertTrue(Files.notExists(obsoletePreview));
         }
+
+        var restartInspections = new AtomicInteger();
+        ConversionEngine restartEngine = new ConversionEngine() {
+            @Override
+            public boolean available() {
+                return true;
+            }
+
+            @Override
+            public String runtimeDescription() {
+                return "cached preview test";
+            }
+
+            @Override
+            public List<SeriesInfo> inspect(Path ignored) {
+                restartInspections.incrementAndGet();
+                return List.of(new SeriesInfo(
+                        0, "Tissue", 18_032, 9_148, 3, 1, 1, "uint8", 0.27, 0.27, "µm"));
+            }
+
+            @Override
+            public void convert(Path ignored, int seriesIndex, Path output) {
+                throw new UnsupportedOperationException();
+            }
+        };
+        try (var restartedService = new ConversionService(
+                repository, restartEngine, derivatives, tempDirectory.resolve("managed"))) {
+            var cached = restartedService.preview(dataset.id());
+
+            assertEquals(9_016, cached.width());
+            assertEquals(4_574, cached.height());
+            assertEquals(0, restartInspections.get());
+        }
     }
 }

@@ -120,7 +120,7 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
   }
   vi.mocked(api.bootstrap).mockResolvedValue([[dataset], capabilities])
   vi.mocked(api.datasets).mockResolvedValue([dataset])
-  vi.mocked(api.series).mockResolvedValue([mainSeries])
+  vi.mocked(api.inspectDataset).mockResolvedValue([mainSeries])
   vi.mocked(api.configure).mockResolvedValue({
     ...dataset,
     cropX: 69790,
@@ -132,6 +132,9 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
 
   render(<App />)
 
+  expect(await screen.findByTestId('forge-osd')).toBeVisible()
+  expect(api.series).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect image series' }))
   const x = await screen.findByRole('spinbutton', { name: 'X' })
   await screen.findByText('82,922 × 45,367')
   fireEvent.change(x, { target: { value: '69790' } })
@@ -273,7 +276,7 @@ test('switches image series immediately and reloads the revision-qualified previ
     downsamples: [1, 1.5, 2, 4, 8],
   }])
   vi.mocked(api.datasets).mockResolvedValue([dataset])
-  vi.mocked(api.series).mockResolvedValue([first, second])
+  vi.mocked(api.inspectDataset).mockResolvedValue([first, second])
   vi.mocked(api.configure).mockResolvedValue({
     ...dataset,
     selectedSeries: 1,
@@ -286,6 +289,8 @@ test('switches image series immediately and reloads the revision-qualified previ
 
   render(<App />)
 
+  expect(await screen.findByTestId('forge-osd')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect image series' }))
   const seriesSelect = await screen.findByRole('combobox', { name: 'Image series' })
   expect(screen.getByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',

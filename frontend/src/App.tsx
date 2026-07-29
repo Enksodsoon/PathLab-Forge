@@ -70,11 +70,6 @@ export function App() {
         void api.annotations(dataset.id).then((items) => {
           setAnnotationsByDataset((current) => ({ ...current, [dataset.id]: items }))
         })
-        if (dataset.selectedSeries >= 0) {
-          void api.series(dataset.id).then((items) => {
-            if (items.length) setSeriesByDataset((current) => ({ ...current, [dataset.id]: items }))
-          })
-        }
         if (dataset.currentArtifactRevision) {
           void api.artifacts(dataset.id).then((result) => {
             setArtifactByDataset((current) => ({ ...current, [dataset.id]: result.revisions }))
