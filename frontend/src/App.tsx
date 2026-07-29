@@ -571,10 +571,11 @@ function ViewerStage({
   onCreateAnnotation: (geometry: string) => void
   onInspector: () => void
 }) {
+  const previewIdentity = dataset?.configurationRevision || String(dataset?.selectedSeries ?? '')
   const tileSource = dataset && revision && ['READY', 'APPROVED'].includes(revision.status)
-    ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi`
+    ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi?revision=${encodeURIComponent(revision.id)}`
     : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
-      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi`
+      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
       : ''
   return (
     <section className="forge-stage" aria-label="Whole-slide viewer">
@@ -641,7 +642,7 @@ function Inspector({
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
   onTool: (tool: string) => void
   onInspect: () => void
-  onConfigure: (values: Parameters<typeof api.configure>[1]) => void
+  onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
   onConvert: () => void
   onCancel: () => void
   onApprove: () => void
@@ -736,7 +737,7 @@ function ExportInspector({
   current?: ArtifactRevision
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
   onInspect: () => void
-  onConfigure: (values: Parameters<typeof api.configure>[1]) => void
+  onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
   onConvert: () => void
   onCancel: () => void
   onApprove: () => void
@@ -753,6 +754,7 @@ function ExportInspector({
     height: String(dataset.cropHeight),
   })
   const [draft, setDraft] = useState(configurationDraft)
+  const [seriesLoading, setSeriesLoading] = useState(false)
 
   useEffect(() => {
     setDraft(configurationDraft())
@@ -790,19 +792,34 @@ function ExportInspector({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (draftValid) onConfigure(parsed)
+    if (draftValid) void onConfigure(parsed)
   }
 
-  const updateSeries = (value: string) => {
+  const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
-    setDraft((current) => ({
-      ...current,
+    if (!next) return
+    const nextConfiguration = {
+      series: next.index,
+      downsample: parsed.downsample > 0 ? parsed.downsample : 1,
+      x: 0,
+      y: 0,
+      width: next.width,
+      height: next.height,
+    }
+    setDraft({
       series: value,
+      downsample: String(nextConfiguration.downsample),
       x: '0',
       y: '0',
-      width: String(next?.width || 0),
-      height: String(next?.height || 0),
-    }))
+      width: String(next.width),
+      height: String(next.height),
+    })
+    setSeriesLoading(true)
+    try {
+      await onConfigure(nextConfiguration)
+    } finally {
+      setSeriesLoading(false)
+    }
   }
 
   return (
@@ -817,11 +834,17 @@ function ExportInspector({
       ) : (
         <form className="forge-export-form" onSubmit={submit}>
           <label>Image series
-            <select name="series" value={draft.series} onChange={(event) => updateSeries(event.target.value)}>
+            <select
+              name="series"
+              value={draft.series}
+              disabled={seriesLoading}
+              onChange={(event) => void updateSeries(event.target.value)}
+            >
               {series.filter((item) => item.rgbPlane).map((item) => (
                 <option key={item.index} value={item.index}>{item.name || `Series ${item.index}`} · {item.width} × {item.height}</option>
               ))}
             </select>
+            {seriesLoading ? <small role="status">Loading selected series preview…</small> : null}
           </label>
           <div className="forge-crop-grid">
             {[
