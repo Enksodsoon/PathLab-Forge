@@ -12,6 +12,7 @@ import {
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
   SidebarSimple,
+  Trash,
 } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
@@ -46,6 +47,7 @@ export function App() {
   const [error, setError] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [importPath, setImportPath] = useState('')
+  const [removeTarget, setRemoveTarget] = useState<Dataset>()
   const [pairingOpen, setPairingOpen] = useState(false)
   const [viewerUrl, setViewerUrl] = useState('http://127.0.0.1:8000')
   const [pairing, setPairing] = useState<ViewerPairing>()
@@ -126,6 +128,21 @@ export function App() {
     try {
       const next = await api.importDataset(importPath.trim())
       finishImport(next)
+    } catch (nextError) {
+      setError(message(nextError))
+    }
+  }
+
+  const removeDataset = async () => {
+    if (!removeTarget) return
+    try {
+      const removedId = removeTarget.id
+      await api.deleteDataset(removedId)
+      const remaining = await api.datasets()
+      setDatasets(remaining)
+      setSelectedId((current) => current === removedId ? remaining[0]?.id || '' : current)
+      setRemoveTarget(undefined)
+      setNotice('Slide removed from the Forge library; original files and completed exports were preserved')
     } catch (nextError) {
       setError(message(nextError))
     }
@@ -330,6 +347,7 @@ export function App() {
           onApprove={approveCurrent}
           onConnect={connect}
           onUpload={uploadApproved}
+          onRemove={() => selected && setRemoveTarget(selected)}
           onDeleteAnnotation={deleteLocalAnnotation}
         />
       )}
@@ -351,6 +369,13 @@ export function App() {
           onClose={() => setImportOpen(false)}
         />
       ) : null}
+      {removeTarget ? (
+        <RemoveDatasetDialog
+          dataset={removeTarget}
+          onRemove={() => void removeDataset()}
+          onClose={() => setRemoveTarget(undefined)}
+        />
+      ) : null}
       {pairingOpen ? (
         <ViewerPairingDialog
           viewerUrl={viewerUrl}
@@ -362,6 +387,29 @@ export function App() {
         />
       ) : null}
     </>
+  )
+}
+
+function RemoveDatasetDialog({
+  dataset,
+  onRemove,
+  onClose,
+}: {
+  dataset: Dataset
+  onRemove: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="forge-dialog-backdrop">
+      <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-remove-title">
+        <span>Local slide library</span>
+        <h2 id="forge-remove-title">Remove slide?</h2>
+        <p><strong>{dataset.displayName}</strong> will disappear from this Forge library.</p>
+        <p>The original VSI or OME-TIFF and any completed exports remain on disk.</p>
+        <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove from Forge</button>
+        <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
+      </section>
+    </div>
   )
 }
 
@@ -582,6 +630,7 @@ function Inspector({
   onApprove,
   onConnect,
   onUpload,
+  onRemove,
   onDeleteAnnotation,
 }: {
   dataset?: Dataset
@@ -598,6 +647,7 @@ function Inspector({
   onApprove: () => void
   onConnect: () => void
   onUpload: () => void
+  onRemove: () => void
   onDeleteAnnotation: (annotationId: string) => void
 }) {
   const [section, setSection] = useState<'export' | 'annotations' | 'history'>('export')
@@ -626,6 +676,7 @@ function Inspector({
           onApprove={onApprove}
           onConnect={onConnect}
           onUpload={onUpload}
+          onRemove={onRemove}
         />
       ) : null}
       {section === 'annotations' ? (
@@ -678,6 +729,7 @@ function ExportInspector({
   onApprove,
   onConnect,
   onUpload,
+  onRemove,
 }: {
   dataset: Dataset
   series: SeriesInfo[]
@@ -690,6 +742,7 @@ function ExportInspector({
   onApprove: () => void
   onConnect: () => void
   onUpload: () => void
+  onRemove: () => void
 }) {
   const configurationDraft = () => ({
     series: String(dataset.selectedSeries),
@@ -827,6 +880,9 @@ function ExportInspector({
           : null}
         {current?.status === 'READY'
           ? <a className="forge-download" href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}>Export .plslide package</a>
+          : null}
+        {!ACTIVE_STATUSES.has(dataset.status)
+          ? <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove from library</button>
           : null}
       </div>
     </section>
