@@ -169,6 +169,18 @@ final class ForgeLibraryApiTest {
                             + "/series?series=0&downsample=1.5&x=10&y=20&width=600&height=300",
                     "POST");
             assertEquals(200, configured.statusCode());
+            var estimate = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve(
+                                    "/api/datasets/" + dataset.id()
+                                            + "/estimate?downsample=2&width=600&height=300"))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, estimate.statusCode());
+            assertTrue(estimate.body().contains("\"outputWidth\":300"));
+            assertTrue(estimate.body().contains("\"outputHeight\":150"));
+            assertTrue(estimate.body().contains("\"fileBytes\":"));
+            assertTrue(estimate.body().contains("\"workspaceBytes\":"));
             var reinspected =
                     write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
             assertEquals(200, reinspected.statusCode());

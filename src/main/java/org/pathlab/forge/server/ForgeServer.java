@@ -222,6 +222,12 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/series".length()));
+            } else if (path.matches("/api/datasets/[^/]+/estimate")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                estimateDataset(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(), path.length() - "/estimate".length()));
             } else if (path.matches("/api/datasets/[^/]+/series")
                     && "POST".equals(exchange.getRequestMethod())) {
                 selectSeries(
@@ -637,6 +643,45 @@ public final class ForgeServer implements AutoCloseable {
                     422,
                     "application/json",
                     "{\"error\":\"invalid_series\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void estimateDataset(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            var dataset = repository.find(id).orElseThrow(
+                    () -> new IllegalArgumentException("Dataset was not found"));
+            var downsample = optionalDoubleQuery(exchange, "downsample", dataset.downsample());
+            var width = optionalIntegerQuery(exchange, "width", dataset.cropWidth());
+            var height = optionalIntegerQuery(exchange, "height", dataset.cropHeight());
+            var estimate = org.pathlab.forge.conversion.OutputSizeEstimator.compressedOmeTiff(
+                    width,
+                    height,
+                    downsample,
+                    dataset.sourceBytes(),
+                    dataset.format() == org.pathlab.forge.library.DatasetFormat.OME_TIFF);
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    "{\"outputWidth\":" + Math.max(1, (long) Math.floor(width / downsample))
+                            + ",\"outputHeight\":"
+                            + Math.max(1, (long) Math.floor(height / downsample))
+                            + ",\"fileBytes\":" + estimate.expectedBytes()
+                            + ",\"fileLowerBytes\":" + estimate.lowerBytes()
+                            + ",\"fileUpperBytes\":" + estimate.upperBytes()
+                            + ",\"workspaceBytes\":"
+                            + org.pathlab.forge.conversion.OutputSizeEstimator
+                                    .rgbPyramidUpperBound(width, height, downsample)
+                            + "}");
+        } catch (IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"invalid_estimate\",\"detail\":" + json(error.getMessage()) + "}");
         }
     }
 

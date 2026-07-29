@@ -586,9 +586,7 @@ function ViewerStage({
         </div>
         <button type="button" aria-label="Toggle inspector" onClick={onInspector}><SidebarSimple /></button>
       </header>
-      {converting && dataset ? (
-        <ConversionProgress dataset={dataset} revision={revision} />
-      ) : tileSource ? (
+      {tileSource ? (
         <SlideViewer
           tileSource={tileSource}
           activeTool={activeTool}
@@ -601,6 +599,8 @@ function ViewerStage({
           onCreate={onCreateAnnotation}
           onReady={onViewer}
         />
+      ) : converting && dataset ? (
+        <ConversionProgress dataset={dataset} revision={revision} />
       ) : (
         <div className="forge-stage-empty">
           <span className="forge-tissue-mark"><Crosshair /></span>
@@ -783,6 +783,7 @@ function ExportInspector({
   })
   const [draft, setDraft] = useState(configurationDraft)
   const [seriesLoading, setSeriesLoading] = useState(false)
+  const [draftEstimate, setDraftEstimate] = useState<api.OutputEstimate | null>(null)
 
   useEffect(() => {
     setDraft(configurationDraft())
@@ -817,6 +818,52 @@ function ExportInspector({
   )
   const projectedWidth = draftValid ? Math.floor(parsed.width / parsed.downsample) : 0
   const projectedHeight = draftValid ? Math.floor(parsed.height / parsed.downsample) : 0
+  const draftMatchesSaved = parsed.series === dataset.selectedSeries
+    && parsed.downsample === dataset.downsample
+    && parsed.x === dataset.cropX
+    && parsed.y === dataset.cropY
+    && parsed.width === dataset.cropWidth
+    && parsed.height === dataset.cropHeight
+  const savedEstimate: api.OutputEstimate = {
+    outputWidth: Math.max(1, Math.floor(dataset.cropWidth / dataset.downsample)),
+    outputHeight: Math.max(1, Math.floor(dataset.cropHeight / dataset.downsample)),
+    fileBytes: dataset.projectedFileBytes,
+    fileLowerBytes: dataset.projectedFileLowerBytes,
+    fileUpperBytes: dataset.projectedFileUpperBytes,
+    workspaceBytes: dataset.estimatedOutputBytes,
+  }
+  const displayedEstimate = draftMatchesSaved ? savedEstimate : draftEstimate
+
+  useEffect(() => {
+    if (!draftValid || draftMatchesSaved) {
+      setDraftEstimate(null)
+      return
+    }
+    setDraftEstimate(null)
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void api.estimate(dataset.id, {
+        downsample: parsed.downsample,
+        width: parsed.width,
+        height: parsed.height,
+      }, controller.signal).then(setDraftEstimate).catch((reason: unknown) => {
+        if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+          setDraftEstimate(null)
+        }
+      })
+    }, 120)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [
+    dataset.id,
+    draftMatchesSaved,
+    draftValid,
+    parsed.downsample,
+    parsed.height,
+    parsed.width,
+  ])
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -908,19 +955,25 @@ function ExportInspector({
           <div className="forge-output-summary">
             <span>Projected output</span>
             <strong>{projectedWidth.toLocaleString()} × {projectedHeight.toLocaleString()}</strong>
-            {current && ['READY', 'APPROVED'].includes(current.status) && current.omeBytes > 0 ? (
+            {draftMatchesSaved && current && ['READY', 'APPROVED'].includes(current.status) && current.omeBytes > 0 ? (
               <b>OME-TIFF file {formatBytes(current.omeBytes)} · measured</b>
-            ) : (
+            ) : displayedEstimate ? (
               <>
-                <b>Estimated OME-TIFF ≈ {formatBytes(dataset.projectedFileBytes)}</b>
+                <b>Estimated OME-TIFF ≈ {formatBytes(displayedEstimate.fileBytes)}</b>
                 <small>
-                  Expected range {formatBytes(dataset.projectedFileLowerBytes)}
+                  Expected range {formatBytes(displayedEstimate.fileLowerBytes)}
                   {' – '}
-                  {formatBytes(dataset.projectedFileUpperBytes)}
+                  {formatBytes(displayedEstimate.fileUpperBytes)}
                 </small>
               </>
+            ) : (
+              <b role="status">Calculating OME-TIFF estimate…</b>
             )}
-            <small>Peak conversion workspace ≤ {formatBytes(dataset.estimatedOutputBytes)}</small>
+            <small>
+              Peak conversion workspace ≤ {displayedEstimate
+                ? formatBytes(displayedEstimate.workspaceBytes)
+                : 'calculating…'}
+            </small>
           </div>
           {!draftValid ? <p className="forge-field-error">Crop must stay inside the selected image series.</p> : null}
           <button className="forge-primary" type="submit" disabled={!draftValid}>Apply settings</button>
@@ -935,7 +988,9 @@ function ExportInspector({
         {ACTIVE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>Convert current revision</button>}
-        {current?.status === 'READY' && dataset.approvedArtifactRevision !== current.id
+        {current?.status === 'READY'
+          && dataset.status === 'PACKAGE_READY'
+          && dataset.approvedArtifactRevision !== current.id
           ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve exact result</button>
           : null}
         {dataset.approvedArtifactRevision
@@ -989,7 +1044,7 @@ function conversionPhase(status: string) {
     OPTIMIZING_OME: { step: 2, percent: 42, label: 'Compressing OME-TIFF pyramid' },
     VALIDATING: { step: 3, percent: 60, label: 'Validating OME-TIFF' },
     GENERATING_DZI: { step: 4, percent: 78, label: 'Generating viewer tiles' },
-    DZI_READY: { step: 5, percent: 93, label: 'Building the upload package' },
+    DZI_READY: { step: 5, percent: 93, label: 'Result viewable · building upload package' },
   } as Record<string, { step: number; percent: number; label: string }>)[status]
     || { step: 1, percent: 0, label: 'Preparing conversion' }
 }
