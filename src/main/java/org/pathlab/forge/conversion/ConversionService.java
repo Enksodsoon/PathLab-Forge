@@ -366,10 +366,21 @@ public final class ConversionService implements AutoCloseable {
     public LocalDataset cancel(String id) throws IOException {
         var dataset = requireDataset(id);
         cancelled.add(id);
-        var future = activeConversions.remove(id);
+        var future = activeConversions.get(id);
         if (future != null) {
             future.cancel(true);
+            for (var attempt = 0;
+                    attempt < 500 && activeConversions.get(id) == future;
+                    attempt++) {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
         }
+        cleanupCancelledRevision(dataset);
         var cancelledDataset = dataset.withPreparation(
                 DatasetStatus.CANCELLED,
                 "Conversion cancelled; completed outputs were preserved",
@@ -377,6 +388,20 @@ public final class ConversionService implements AutoCloseable {
                 dataset.sha256());
         repository.save(cancelledDataset);
         return cancelledDataset;
+    }
+
+    private void cleanupCancelledRevision(LocalDataset dataset) throws IOException {
+        var revision = artifactRepository
+                .find(dataset.id(), dataset.currentArtifactRevision())
+                .orElse(null);
+        if (revision == null || revision.omePath().isBlank()) {
+            return;
+        }
+        var output = Path.of(revision.omePath());
+        var outputDirectory = output.getParent();
+        Files.deleteIfExists(output.resolveSibling("export.partial.ome.tif"));
+        Files.deleteIfExists(output.resolveSibling("render.partial.ome.tif"));
+        deleteTree(outputDirectory, outputDirectory.resolve("derivative.partial"));
     }
 
     private void convert(LocalDataset dataset) {
