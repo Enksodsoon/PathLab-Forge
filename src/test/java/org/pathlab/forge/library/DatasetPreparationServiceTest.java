@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,5 +36,30 @@ final class DatasetPreparationServiceTest {
         assertArrayEquals(bytes, Files.readAllBytes(output));
         assertEquals(64, prepared.sha256().length());
         assertEquals(prepared, repository.find(dataset.id()).orElseThrow());
+    }
+
+    @Test
+    void rejectsTamperedDatasetIdentifierThatEscapesManagedRoot() throws Exception {
+        var source = temporaryDirectory.resolve("tampered.ome.tiff");
+        Files.write(source, new byte[] {'I', 'I', 42, 0});
+        var repository = new PropertiesDatasetRepository(
+                temporaryDirectory.resolve("tampered-library.properties"));
+        var dataset = new LocalDataset(
+                "..",
+                source.getFileName().toString(),
+                source.toString(),
+                Files.size(source),
+                DatasetFormat.OME_TIFF,
+                DatasetStatus.READY,
+                "ready",
+                "",
+                "");
+        repository.save(dataset);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DatasetPreparationService(
+                                repository, temporaryDirectory.resolve("managed"))
+                        .prepare(dataset.id()));
     }
 }

@@ -29,7 +29,7 @@
           <div>
             <p class="eyebrow">Local slide preparation</p>
             <h1>Library</h1>
-            <p>Inspect local datasets and create verified, managed OME-TIFF copies.</p>
+            <p>Inspect local datasets and export verified RGB OME-TIFF locally.</p>
           </div>
           <div class="actions">
             <button class="secondary" data-action="refresh">Refresh</button>
@@ -40,6 +40,10 @@
           <label><span class="sr-only">Search</span><input id="library-search" type="search" placeholder="Search local slides"></label>
           <button class="secondary" data-action="filters" aria-pressed="false">Filters</button>
           <button class="secondary" data-action="theme">Theme: System</button>
+        </section>
+        <section class="runtime" data-runtime>
+          <span class="runtime-dot" aria-hidden="true"></span>
+          <span>Checking local conversion runtime…</span>
         </section>
         <section class="filter-panel" hidden aria-label="Dataset filters">
           <span>Showing supported datasets:</span>
@@ -52,7 +56,7 @@
           <h2>Your local pathology workspace</h2>
           <p>Add an OME-TIFF or a complete VSI/ETS dataset. Forge will inspect it before any conversion starts.</p>
           <button data-action="add-datasets">Choose datasets</button>
-          <small>OME-TIFF preparation works now. VSI inspection works; conversion needs the approved reader runtime.</small>
+          <small>Originals stay untouched. Conversion runs one slide at a time with bounded tiled I/O.</small>
         </section>
         <section class="dataset-grid" data-dataset-grid hidden aria-label="Local datasets"></section>
         <section class="queue" id="queue">
@@ -60,7 +64,7 @@
           <span class="status" data-queue-status>0 staged</span>
         </section>
         <section id="sync" class="sync-note">
-          <strong>Viewer sync:</strong> not available in this build. Private credential pairing must be implemented before this control can be enabled.
+          <strong>Viewer sync:</strong> staged, not connected. Secure account pairing and the reviewed prepared-slide API are required before upload can be enabled.
         </section>
       </main>
     </div>

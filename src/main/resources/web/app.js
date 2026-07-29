@@ -3,6 +3,8 @@ const state = {
   filter: 'all',
   query: '',
   theme: localStorage.getItem('pathlab-forge-theme') || 'system',
+  series: {},
+  capabilities: {},
 }
 
 const emptyState = document.querySelector('[data-empty-state]')
@@ -10,6 +12,7 @@ const grid = document.querySelector('[data-dataset-grid]')
 const queueStatus = document.querySelector('[data-queue-status]')
 const toast = document.querySelector('[data-toast]')
 const filterPanel = document.querySelector('.filter-panel')
+const runtime = document.querySelector('[data-runtime]')
 
 function notify(message) {
   toast.textContent = message
@@ -35,6 +38,11 @@ function statusLabel(status) {
     READY: 'Ready to prepare',
     NEEDS_COMPANIONS: 'Companions missing',
     READER_REQUIRED: 'VSI reader required',
+    INSPECTING: 'Inspecting metadata',
+    READY_TO_CONVERT: 'Ready to export',
+    CONVERTING: 'Converting locally',
+    VALIDATING: 'Validating output',
+    CONVERSION_READY: 'OME-TIFF ready',
     LOCAL_COPY_READY: 'Managed copy ready',
     FAILED: 'Preparation failed',
   }[status] || status.toLowerCase().replaceAll('_', ' ')
@@ -68,14 +76,48 @@ function datasetCard(dataset) {
   badge.textContent = statusLabel(dataset.status)
   const actions = document.createElement('div')
   actions.className = 'card-actions'
+  const series = state.series[dataset.id] || []
+  if (series.length) {
+    const control = document.createElement('div')
+    control.className = 'series-control'
+    const label = document.createElement('label')
+    label.textContent = 'Image series'
+    const select = document.createElement('select')
+    select.dataset.action = 'select-series'
+    select.dataset.id = dataset.id
+    series.forEach((item) => {
+      const option = document.createElement('option')
+      option.value = item.index
+      option.selected = item.index === dataset.selectedSeries
+      option.disabled = !item.rgbPlane
+      option.textContent = `${item.name || `Series ${item.index}`} · ${item.width} × ${item.height}${item.rgbPlane ? '' : ' · not 2D RGB'}`
+      select.append(option)
+    })
+    control.append(label, select)
+    card.append(heading, details, badge, control)
+  } else {
+    card.append(heading, details, badge)
+  }
+  if (dataset.estimatedOutputBytes > 0) {
+    const estimate = document.createElement('p')
+    estimate.className = 'estimate'
+    estimate.textContent = `${dataset.width.toLocaleString()} × ${dataset.height.toLocaleString()} · storage upper bound ${formatBytes(dataset.estimatedOutputBytes)}`
+    card.append(estimate)
+  }
   if (dataset.status === 'READY' && dataset.format === 'OME_TIFF') {
     actions.append(actionButton('Create managed copy', 'prepare', dataset))
   }
-  if (dataset.status === 'LOCAL_COPY_READY' && dataset.outputPath) {
+  if (dataset.format === 'VSI' && !['CONVERTING', 'VALIDATING'].includes(dataset.status)) {
+    actions.append(actionButton(series.length ? 'Re-inspect series' : 'Inspect series', 'inspect', dataset))
+  }
+  if (dataset.status === 'READY_TO_CONVERT') {
+    actions.append(actionButton('Export RGB OME-TIFF', 'convert', dataset))
+  }
+  if (['LOCAL_COPY_READY', 'CONVERSION_READY'].includes(dataset.status) && dataset.outputPath) {
     actions.append(actionButton('Copy output path', 'copy-path', dataset))
   }
   actions.append(actionButton('Remove from library', 'remove', dataset, true))
-  card.append(heading, details, badge, actions)
+  card.append(actions)
   return card
 }
 
@@ -88,7 +130,9 @@ function render() {
   emptyState.hidden = state.datasets.length > 0
   grid.hidden = state.datasets.length === 0
   grid.replaceChildren(...visible.map(datasetCard))
-  const ready = state.datasets.filter((item) => item.status === 'LOCAL_COPY_READY').length
+  const ready = state.datasets.filter(
+    (item) => item.status === 'LOCAL_COPY_READY' || item.status === 'CONVERSION_READY',
+  ).length
   const blocked = state.datasets.filter(
     (item) => item.status === 'READER_REQUIRED' || item.status === 'NEEDS_COMPANIONS',
   ).length
@@ -118,10 +162,28 @@ async function loadDatasets(message) {
   try {
     const body = await request('/api/datasets')
     state.datasets = body.datasets
+    await Promise.all(body.datasets
+      .filter((dataset) => dataset.selectedSeries >= 0 && !state.series[dataset.id])
+      .map(async (dataset) => {
+        const result = await request(`/api/datasets/${encodeURIComponent(dataset.id)}/series`)
+        if (result.series.length) state.series[dataset.id] = result.series
+      }))
     render()
     if (message) notify(message)
   } catch (error) {
     notify(error.message)
+  }
+}
+
+async function loadCapabilities() {
+  try {
+    state.capabilities = await request('/api/capabilities')
+    runtime.classList.toggle('ready', state.capabilities.vsiConversion)
+    runtime.lastElementChild.textContent = state.capabilities.vsiConversion
+      ? `${state.capabilities.conversionRuntime} · one local conversion at a time`
+      : `${state.capabilities.conversionRuntime} · OME-TIFF managed copies remain available`
+  } catch (error) {
+    runtime.lastElementChild.textContent = error.message
   }
 }
 
@@ -146,6 +208,13 @@ grid.addEventListener('click', async (event) => {
     if (button.dataset.action === 'prepare') {
       await request(`/api/datasets/${encodeURIComponent(dataset.id)}/prepare`, 'POST')
       await loadDatasets('Managed OME-TIFF copy created and verified.')
+    } else if (button.dataset.action === 'inspect') {
+      const body = await request(`/api/datasets/${encodeURIComponent(dataset.id)}/inspect`, 'POST')
+      state.series[dataset.id] = body.series
+      await loadDatasets('Image series inspected. Choose a 2D RGB series to export.')
+    } else if (button.dataset.action === 'convert') {
+      await request(`/api/datasets/${encodeURIComponent(dataset.id)}/convert`, 'POST')
+      await loadDatasets('Conversion started in the local single-slide queue.')
     } else if (button.dataset.action === 'remove') {
       await request(`/api/datasets/${encodeURIComponent(dataset.id)}`, 'DELETE')
       await loadDatasets('Removed from the Forge library. The source file was not deleted.')
@@ -156,6 +225,22 @@ grid.addEventListener('click', async (event) => {
     }
   } catch (error) {
     button.disabled = false
+    notify(error.message)
+  }
+})
+
+grid.addEventListener('change', async (event) => {
+  const select = event.target.closest('select[data-action="select-series"]')
+  if (!select) return
+  select.disabled = true
+  try {
+    await request(
+      `/api/datasets/${encodeURIComponent(select.dataset.id)}/series?series=${encodeURIComponent(select.value)}&downsample=1`,
+      'POST',
+    )
+    await loadDatasets('Series selected and storage estimate updated.')
+  } catch (error) {
+    select.disabled = false
     notify(error.message)
   }
 })
@@ -198,4 +283,10 @@ function applyTheme() {
 }
 
 applyTheme()
+loadCapabilities()
 loadDatasets()
+setInterval(() => {
+  if (state.datasets.some((item) => ['CONVERTING', 'VALIDATING', 'INSPECTING'].includes(item.status))) {
+    loadDatasets()
+  }
+}, 2000)

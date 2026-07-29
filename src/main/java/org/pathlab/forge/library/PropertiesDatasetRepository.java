@@ -82,7 +82,12 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     DatasetStatus.valueOf(properties.getProperty(key + "status")),
                     properties.getProperty(key + "detail", ""),
                     properties.getProperty(key + "outputPath", ""),
-                    properties.getProperty(key + "sha256", "")));
+                    properties.getProperty(key + "sha256", ""),
+                    Integer.parseInt(properties.getProperty(key + "selectedSeries", "-1")),
+                    Integer.parseInt(properties.getProperty(key + "width", "0")),
+                    Integer.parseInt(properties.getProperty(key + "height", "0")),
+                    Integer.parseInt(properties.getProperty(key + "downsample", "1")),
+                    Long.parseLong(properties.getProperty(key + "estimatedOutputBytes", "0"))));
         }
     }
 
@@ -99,6 +104,13 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
             properties.setProperty(key + "detail", dataset.detail());
             properties.setProperty(key + "outputPath", dataset.outputPath());
             properties.setProperty(key + "sha256", dataset.sha256());
+            properties.setProperty(key + "selectedSeries", Integer.toString(dataset.selectedSeries()));
+            properties.setProperty(key + "width", Integer.toString(dataset.width()));
+            properties.setProperty(key + "height", Integer.toString(dataset.height()));
+            properties.setProperty(key + "downsample", Integer.toString(dataset.downsample()));
+            properties.setProperty(
+                    key + "estimatedOutputBytes",
+                    Long.toString(dataset.estimatedOutputBytes()));
         }
         var partial = storePath.resolveSibling(storePath.getFileName() + ".partial");
         try (OutputStream output = Files.newOutputStream(partial)) {

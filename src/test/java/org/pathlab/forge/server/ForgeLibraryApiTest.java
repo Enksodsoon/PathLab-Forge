@@ -12,6 +12,8 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import org.pathlab.forge.conversion.ConversionEngine;
+import org.pathlab.forge.conversion.SeriesInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pathlab.forge.library.PropertiesDatasetRepository;
@@ -59,6 +61,78 @@ final class ForgeLibraryApiTest {
             assertEquals(204, removed.statusCode());
             assertTrue(repository.list().isEmpty());
             assertFalse(Files.notExists(source));
+        }
+    }
+
+    @Test
+    void inspectsSelectsAndConvertsVsiInBackground() throws Exception {
+        var source = tempDirectory.resolve("case.vsi");
+        Files.write(source, new byte[] {1, 2, 3});
+        var companion = Files.createDirectories(tempDirectory.resolve("case")).resolve("frame.ets");
+        Files.write(companion, new byte[] {4, 5, 6});
+        var repository = new PropertiesDatasetRepository(
+                tempDirectory.resolve("conversion-library.properties"));
+        var managed = tempDirectory.resolve("managed-conversion");
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        ConversionEngine fakeEngine = new ConversionEngine() {
+            @Override
+            public boolean available() {
+                return true;
+            }
+
+            @Override
+            public String runtimeDescription() {
+                return "test engine";
+            }
+
+            @Override
+            public List<SeriesInfo> inspect(Path ignored) {
+                return List.of(new SeriesInfo(
+                        0, "Tissue", 1000, 500, 3, 1, 1, "uint8", 0.25, 0.25, "µm"));
+            }
+
+            @Override
+            public void convert(Path ignored, int seriesIndex, Path output) throws java.io.IOException {
+                Files.write(output, new byte[] {'I', 'I', 43, 0, 8, 0, 0, 0});
+            }
+        };
+
+        try (var server = ForgeServer.start(
+                repository, () -> List.of(source), managed, fakeEngine)) {
+            client.send(
+                    HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var csrf = session.headers().firstValue("x-forge-csrf").orElseThrow();
+            write(client, server, csrf, "/api/datasets/select", "POST");
+            var dataset = repository.list().get(0);
+
+            var inspected =
+                    write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
+            assertEquals(200, inspected.statusCode());
+            assertTrue(inspected.body().contains("\"name\":\"Tissue\""));
+            assertEquals(
+                    org.pathlab.forge.library.DatasetStatus.READY_TO_CONVERT,
+                    repository.find(dataset.id()).orElseThrow().status());
+
+            var started =
+                    write(client, server, csrf, "/api/datasets/" + dataset.id() + "/convert", "POST");
+            assertEquals(202, started.statusCode());
+            for (var attempt = 0; attempt < 50; attempt++) {
+                if (repository.find(dataset.id()).orElseThrow().status()
+                        == org.pathlab.forge.library.DatasetStatus.CONVERSION_READY) {
+                    break;
+                }
+                Thread.sleep(20);
+            }
+            var converted = repository.find(dataset.id()).orElseThrow();
+            assertEquals(
+                    org.pathlab.forge.library.DatasetStatus.CONVERSION_READY, converted.status());
+            assertTrue(Files.isRegularFile(Path.of(converted.outputPath())));
+            assertEquals(64, converted.sha256().length());
         }
     }
 

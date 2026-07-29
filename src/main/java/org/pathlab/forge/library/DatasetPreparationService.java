@@ -25,7 +25,10 @@ public final class DatasetPreparationService {
         if (dataset.format() != DatasetFormat.OME_TIFF) {
             throw new IllegalStateException("VSI conversion reader is not installed");
         }
-        var outputDirectory = managedRoot.resolve(dataset.id());
+        var outputDirectory = managedRoot.resolve(dataset.id()).normalize();
+        if (!outputDirectory.startsWith(managedRoot)) {
+            throw new IllegalArgumentException("Dataset identifier escapes the managed root");
+        }
         Files.createDirectories(outputDirectory);
         var output = outputDirectory.resolve("source.ome.tif");
         var partial = output.resolveSibling(output.getFileName() + ".partial");

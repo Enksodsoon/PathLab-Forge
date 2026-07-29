@@ -49,11 +49,19 @@ The app currently provides:
 - bounded OME-TIFF signature and VSI companion inspection;
 - a persistent local library under the user's application-data directory;
 - verified managed copies of existing OME-TIFF files, written via a partial file and SHA-256;
+- local Bio-Formats 8.5 discovery through the application-data runtime folder,
+  `PATHLAB_FORGE_BFTOOLS`, or `-Dpathlab.forge.bftools=...`;
+- real VSI/ETS top-level series inspection with dimensions and calibration metadata;
+- explicit 2D RGB series selection and an overflow-safe storage upper-bound estimate;
+- one background VSI conversion at a time to tiled, LZW-compressed, pyramidal OME-BigTIFF;
+- flattened-reader mapping that avoids the Bio-Formats 8.5 non-pyramidal `-noflat` writer defect;
+- partial-file cleanup, TIFF signature validation, SHA-256, and atomic finalization;
 - search, format filters, theme persistence, refresh, and safe library removal.
 
-VSI conversion is intentionally blocked with a clear `reader required` state until an approved
-Bio-Formats runtime and redistribution decision are available. Viewer sync, crop, annotation,
-DZI packaging, and upload are not enabled in this build.
+Bio-Formats is not committed or redistributed by this repository. A local runtime remains an
+operator-supplied dependency until redistribution review is complete. This slice exports at 1x
+only. Crop, 2x/4x/8x downsample, the full viewer/annotation workspace, DZI packaging, account
+pairing, and Viewer upload remain staged and are not presented as working controls.
 
 ## Start with Codex
 
