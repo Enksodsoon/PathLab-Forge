@@ -117,6 +117,10 @@ export async function importDataset(path: string) {
   )
 }
 
+export async function deleteDataset(id: string) {
+  return request<void>(`/api/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 export async function inspectDataset(id: string) {
   const body = await request<{ series: SeriesInfo[] }>(
     `/api/datasets/${encodeURIComponent(id)}/inspect`,
