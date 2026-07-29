@@ -9,6 +9,10 @@ public enum DatasetStatus {
     CONVERTING,
     VALIDATING,
     CONVERSION_READY,
+    GENERATING_DZI,
+    DZI_READY,
+    PACKAGE_READY,
+    CANCELLED,
     PREPARING,
     LOCAL_COPY_READY,
     FAILED

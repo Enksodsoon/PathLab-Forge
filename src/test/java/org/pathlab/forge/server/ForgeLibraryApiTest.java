@@ -14,6 +14,8 @@ import java.nio.file.Path;
 import java.util.List;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.SeriesInfo;
+import org.pathlab.forge.derivative.DerivativeEngine;
+import org.pathlab.forge.derivative.DerivativeInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pathlab.forge.library.PropertiesDatasetRepository;
@@ -97,9 +99,32 @@ final class ForgeLibraryApiTest {
                 Files.write(output, new byte[] {'I', 'I', 43, 0, 8, 0, 0, 0});
             }
         };
+        DerivativeEngine fakeDerivative = new DerivativeEngine() {
+            @Override
+            public boolean available() {
+                return false;
+            }
+
+            @Override
+            public String description() {
+                return "test derivative";
+            }
+
+            @Override
+            public void optimizeOme(Path renderedOme, Path pyramidalOme)
+                    throws java.io.IOException {
+                Files.copy(renderedOme, pyramidalOme);
+            }
+
+            @Override
+            public DerivativeInfo generateDzi(
+                    Path omeTiff, Path outputRoot, int width, int height) {
+                throw new UnsupportedOperationException();
+            }
+        };
 
         try (var server = ForgeServer.start(
-                repository, () -> List.of(source), managed, fakeEngine)) {
+                repository, () -> List.of(source), managed, fakeEngine, fakeDerivative)) {
             client.send(
                     HttpRequest.newBuilder(server.launchUri()).GET().build(),
                     HttpResponse.BodyHandlers.discarding());
