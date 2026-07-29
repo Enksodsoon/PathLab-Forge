@@ -44,6 +44,8 @@ export function App() {
   const [viewer, setViewer] = useState<OpenSeadragon.Viewer | null>(null)
   const [notice, setNotice] = useState('Loading local workspace…')
   const [error, setError] = useState('')
+  const [importOpen, setImportOpen] = useState(false)
+  const [importPath, setImportPath] = useState('')
   const [pairingOpen, setPairingOpen] = useState(false)
   const [viewerUrl, setViewerUrl] = useState('http://127.0.0.1:8000')
   const [pairing, setPairing] = useState<ViewerPairing>()
@@ -102,12 +104,28 @@ export function App() {
     return () => window.clearInterval(timer)
   }, [datasets, refresh])
 
-  const handleImport = async () => {
+  const finishImport = (next: { datasets: Dataset[] }) => {
+    setDatasets(next.datasets)
+    setSelectedId(next.datasets.at(-1)?.id || '')
+    setImportOpen(false)
+    setImportPath('')
+    setNotice('Dataset inventory created')
+  }
+
+  const handleNativeImport = async () => {
     try {
       const next = await api.chooseDatasets()
-      setDatasets(next.datasets)
-      setSelectedId(next.datasets.at(-1)?.id || '')
-      setNotice('Dataset inventory created')
+      finishImport(next)
+    } catch (nextError) {
+      setError(message(nextError))
+    }
+  }
+
+  const handlePathImport = async () => {
+    if (!importPath.trim()) return
+    try {
+      const next = await api.importDataset(importPath.trim())
+      finishImport(next)
     } catch (nextError) {
       setError(message(nextError))
     }
@@ -259,7 +277,7 @@ export function App() {
       storage={storage}
       onToggleExpanded={() => setRailExpanded((current) => !current)}
       onNavigator={() => setNavigatorOpen((current) => !current)}
-      onUpload={selected?.approvedArtifactRevision ? uploadApproved : handleImport}
+      onUpload={selected?.approvedArtifactRevision ? uploadApproved : () => setImportOpen(true)}
       onSecurity={connect}
       onSignOut={connect}
       uploadLabel={selected?.approvedArtifactRevision ? 'Upload' : 'Import'}
@@ -280,7 +298,7 @@ export function App() {
           datasets={datasets}
           selectedId={selected?.id || ''}
           onSelect={setSelectedId}
-          onImport={handleImport}
+          onImport={() => setImportOpen(true)}
           onConnect={connect}
         />
       )}
@@ -324,6 +342,15 @@ export function App() {
         />
       )}
       />
+      {importOpen ? (
+        <ImportDialog
+          path={importPath}
+          onPath={setImportPath}
+          onChoose={() => void handleNativeImport()}
+          onImport={() => void handlePathImport()}
+          onClose={() => setImportOpen(false)}
+        />
+      ) : null}
       {pairingOpen ? (
         <ViewerPairingDialog
           viewerUrl={viewerUrl}
@@ -335,6 +362,43 @@ export function App() {
         />
       ) : null}
     </>
+  )
+}
+
+function ImportDialog({
+  path,
+  onPath,
+  onChoose,
+  onImport,
+  onClose,
+}: {
+  path: string
+  onPath: (value: string) => void
+  onChoose: () => void
+  onImport: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="forge-dialog-backdrop">
+      <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-import-title">
+        <span>Local pathology dataset</span>
+        <h2 id="forge-import-title">Import slide</h2>
+        <p>Select one OME-TIFF or VSI file. Forge finds the matching ETS companion tree automatically.</p>
+        <button className="forge-primary" type="button" onClick={onChoose}>Choose file…</button>
+        <div className="forge-dialog-divider"><span>or enter its full local path</span></div>
+        <label>
+          Local slide path
+          <input
+            type="text"
+            value={path}
+            onChange={(event) => onPath(event.target.value)}
+            placeholder="C:\path\slide.vsi"
+          />
+        </label>
+        <button type="button" disabled={!path.trim()} onClick={onImport}>Import this path</button>
+        <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
+      </section>
+    </div>
   )
 }
 

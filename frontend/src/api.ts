@@ -110,6 +110,13 @@ export async function chooseDatasets() {
   return request<{ datasets: Dataset[] }>('/api/datasets/select', { method: 'POST' })
 }
 
+export async function importDataset(path: string) {
+  return request<{ datasets: Dataset[] }>(
+    `/api/datasets/import?path=${encodeURIComponent(path)}`,
+    { method: 'POST' },
+  )
+}
+
 export async function inspectDataset(id: string) {
   const body = await request<{ series: SeriesInfo[] }>(
     `/api/datasets/${encodeURIComponent(id)}/inspect`,

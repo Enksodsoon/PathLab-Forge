@@ -204,6 +204,9 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/datasets/select".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 selectDatasets(exchange);
+            } else if ("/api/datasets/import".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                importDataset(exchange);
             } else if (path.matches("/api/datasets/[^/]+/prepare")
                     && "POST".equals(exchange.getRequestMethod())) {
                 prepareDataset(exchange, path.substring("/api/datasets/".length(), path.length() - "/prepare".length()));
@@ -511,6 +514,34 @@ public final class ForgeServer implements AutoCloseable {
             }
         }
         respond(exchange, 200, "application/json", datasetsJson(repository.list()));
+    }
+
+    private void importDataset(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var rawPath = queryValue(exchange, "path", "").trim();
+        if (rawPath.isEmpty()) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"path_required\",\"detail\":\"Enter a local OME-TIFF or VSI path\"}");
+            return;
+        }
+        try {
+            var selected = java.nio.file.Path.of(rawPath).toAbsolutePath().normalize();
+            if (repository.findBySourcePath(selected.toString()).isEmpty()) {
+                repository.save(inspector.inspect(selected));
+            }
+            respond(exchange, 200, "application/json", datasetsJson(repository.list()));
+        } catch (DatasetInspectionException | IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"import_failed\",\"detail\":" + json(error.getMessage()) + "}");
+        }
     }
 
     private void prepareDataset(HttpExchange exchange, String id) throws IOException {
