@@ -907,7 +907,19 @@ function ExportInspector({
           <div className="forge-output-summary">
             <span>Projected output</span>
             <strong>{projectedWidth.toLocaleString()} × {projectedHeight.toLocaleString()}</strong>
-            <small>Workspace upper bound {formatBytes(dataset.estimatedOutputBytes)}</small>
+            {current && ['READY', 'APPROVED'].includes(current.status) && current.omeBytes > 0 ? (
+              <b>OME-TIFF file {formatBytes(current.omeBytes)} · measured</b>
+            ) : (
+              <>
+                <b>Estimated OME-TIFF ≈ {formatBytes(dataset.projectedFileBytes)}</b>
+                <small>
+                  Expected range {formatBytes(dataset.projectedFileLowerBytes)}
+                  {' – '}
+                  {formatBytes(dataset.projectedFileUpperBytes)}
+                </small>
+              </>
+            )}
+            <small>Peak conversion workspace ≤ {formatBytes(dataset.estimatedOutputBytes)}</small>
           </div>
           {!draftValid ? <p className="forge-field-error">Crop must stay inside the selected image series.</p> : null}
           <button className="forge-primary" type="submit" disabled={!draftValid}>Apply settings</button>

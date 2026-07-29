@@ -87,6 +87,9 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
     height: 90735,
     downsample: 2,
     estimatedOutputBytes: 15_000_000_000,
+    projectedFileBytes: 900_000_000,
+    projectedFileLowerBytes: 300_000_000,
+    projectedFileUpperBytes: 2_000_000_000,
     cropX: 0,
     cropY: 0,
     cropWidth: 165845,
@@ -137,6 +140,9 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
   fireEvent.click(screen.getByRole('button', { name: 'Inspect image series' }))
   const x = await screen.findByRole('spinbutton', { name: 'X' })
   await screen.findByText('82,922 × 45,367')
+  expect(screen.getByText(/Estimated OME-TIFF ≈/)).toBeVisible()
+  expect(screen.getByText(/Expected range/)).toBeVisible()
+  expect(screen.getByText(/Peak conversion workspace ≤/)).toBeVisible()
   fireEvent.change(x, { target: { value: '69790' } })
   fireEvent.change(screen.getByRole('spinbutton', { name: 'Y' }), { target: { value: '23372' } })
   fireEvent.change(screen.getByRole('spinbutton', { name: 'Width' }), { target: { value: '11336' } })
@@ -188,6 +194,9 @@ test('removes a slide from the library only after an explicit preservation warni
     height: 0,
     downsample: 1.5,
     estimatedOutputBytes: 0,
+    projectedFileBytes: 0,
+    projectedFileLowerBytes: 0,
+    projectedFileUpperBytes: 0,
     cropX: 0,
     cropY: 0,
     cropWidth: 0,
@@ -236,6 +245,9 @@ test('switches image series immediately and reloads the revision-qualified previ
     height: 6_000,
     downsample: 1.5,
     estimatedOutputBytes: 300_000_000,
+    projectedFileBytes: 48_000_000,
+    projectedFileLowerBytes: 16_000_000,
+    projectedFileUpperBytes: 120_000_000,
     cropX: 0,
     cropY: 0,
     cropWidth: 8_000,
@@ -327,6 +339,9 @@ test('shows conversion progress and keeps viewer controls locked until validatio
     height: 62_174,
     downsample: 1.5,
     estimatedOutputBytes: 900_000_000,
+    projectedFileBytes: 310_000_000,
+    projectedFileLowerBytes: 45_000_000,
+    projectedFileUpperBytes: 650_000_000,
     cropX: 0,
     cropY: 0,
     cropWidth: 49_941,
@@ -357,6 +372,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
       omePath: '',
       packagePath: '',
       omeSha256: '',
+      omeBytes: 0,
       packageSha256: '',
       failure: '',
     }],
@@ -373,4 +389,80 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect(screen.getByRole('progressbar', {
     name: 'Converting slide.vsi conversion progress',
   })).toHaveValue(20)
+})
+
+test('replaces the estimate with the measured OME-TIFF size after conversion', async () => {
+  const ready: api.Dataset = {
+    id: 'measured-slide',
+    displayName: 'Measured slide.vsi',
+    sourceBytes: 1_116_691_456,
+    format: 'VSI',
+    status: 'READY',
+    detail: 'Conversion validated',
+    outputPath: 'C:\\exports\\export.ome.tif',
+    sha256: 'ome-hash',
+    selectedSeries: 0,
+    width: 8_021,
+    height: 9_366,
+    downsample: 8,
+    estimatedOutputBytes: 4_687_992,
+    projectedFileBytes: 856_000,
+    projectedFileLowerBytes: 390_000,
+    projectedFileUpperBytes: 1_875_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 8_021,
+    cropHeight: 9_366,
+    sourceFingerprint: 'measured-source',
+    configurationRevision: 'measured-configuration',
+    currentArtifactRevision: 'measured-artifact',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[ready], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([ready])
+  vi.mocked(api.inspectDataset).mockResolvedValue([{
+    index: 0,
+    name: 'Label',
+    width: 8_021,
+    height: 9_366,
+    channels: 3,
+    sizeZ: 1,
+    sizeT: 1,
+    pixelType: 'uint8',
+    physicalSizeX: 1,
+    physicalSizeY: 1,
+    physicalUnit: 'px',
+    resolutionCount: 1,
+    rgbPlane: true,
+  }])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'measured-artifact',
+    approvedRevision: '',
+    revisions: [{
+      id: 'measured-artifact',
+      status: 'READY',
+      createdAt: Date.now(),
+      outputWidth: 1_002,
+      outputHeight: 1_170,
+      omePath: 'C:\\exports\\export.ome.tif',
+      packagePath: 'C:\\exports\\prepared.plslide',
+      omeSha256: 'ome-hash',
+      omeBytes: 874_756,
+      packageSha256: 'package-hash',
+      failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Inspect image series' }))
+  expect(await screen.findByText('OME-TIFF file 854.3 KB · measured')).toBeVisible()
+  expect(screen.queryByText(/Estimated OME-TIFF ≈/)).not.toBeInTheDocument()
+  expect(screen.getByText('Peak conversion workspace ≤ 4.5 MB')).toBeVisible()
 })
