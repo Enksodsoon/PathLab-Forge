@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.pathlab.forge.conversion.ConversionEngine;
+import org.pathlab.forge.conversion.DirectTileSource;
 import org.pathlab.forge.conversion.SeriesInfo;
 import org.pathlab.forge.derivative.DerivativeEngine;
 import org.pathlab.forge.derivative.DerivativeInfo;
@@ -95,6 +96,22 @@ final class ForgeLibraryApiTest {
             }
 
             @Override
+            public boolean supportsDirectTiles() {
+                return true;
+            }
+
+            @Override
+            public DirectTileSource directTileSource(Path ignored, int seriesIndex) {
+                return new DirectTileSource(1000, 500, 512);
+            }
+
+            @Override
+            public byte[] readDirectTile(
+                    Path ignored, int seriesIndex, int level, int tileX, int tileY) {
+                return new byte[] {(byte) 0xff, (byte) 0xd8, 1, 2, (byte) 0xff, (byte) 0xd9};
+            }
+
+            @Override
             public void convert(Path ignored, int seriesIndex, Path output) throws java.io.IOException {
                 Files.write(output, new byte[] {'I', 'I', 43, 0, 8, 0, 0, 0});
             }
@@ -161,6 +178,27 @@ final class ForgeLibraryApiTest {
             assertEquals(20, persistedConfiguration.cropY());
             assertEquals(600, persistedConfiguration.cropWidth());
             assertEquals(300, persistedConfiguration.cropHeight());
+            var descriptor = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve(
+                                    "/api/datasets/" + dataset.id() + "/preview/slide.dzi"))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, descriptor.statusCode());
+            assertTrue(descriptor.body().contains("Width=\"1000\" Height=\"500\""));
+            assertEquals(
+                    "1000x500",
+                    descriptor.headers().firstValue("x-pathlab-preview-geometry").orElseThrow());
+            var tile = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve(
+                                    "/api/datasets/" + dataset.id()
+                                            + "/preview/slide_files/10/0_0.jpg"))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, tile.statusCode());
+            assertEquals("image/jpeg", tile.headers().firstValue("content-type").orElseThrow());
+            assertEquals(6, tile.body().length);
             assertEquals(
                     200,
                     write(

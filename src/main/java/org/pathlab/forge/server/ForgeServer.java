@@ -788,6 +788,10 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
+            if (conversionService.supportsDirectPreview()) {
+                serveDirectPreview(exchange, id, relative);
+                return;
+            }
             var preview = conversionService.preview(id);
             var root = preview.root().toAbsolutePath().normalize();
             var file = root.resolve(relative.replace('/', java.io.File.separatorChar)).normalize();
@@ -813,6 +817,38 @@ public final class ForgeServer implements AutoCloseable {
                     "application/json",
                     "{\"error\":\"preview_not_ready\",\"detail\":" + json(error.getMessage()) + "}");
         }
+    }
+
+    private void serveDirectPreview(HttpExchange exchange, String id, String relative)
+            throws IOException {
+        var source = conversionService.directPreview(id);
+        exchange.getResponseHeaders().set(
+                "X-PathLab-Source-Geometry", source.width() + "x" + source.height());
+        exchange.getResponseHeaders().set(
+                "X-PathLab-Preview-Geometry", source.width() + "x" + source.height());
+        exchange.getResponseHeaders().set("Cache-Control", "private, max-age=3600");
+        if (relative.equals("slide.dzi")) {
+            var descriptor = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<Image xmlns=\"http://schemas.microsoft.com/deepzoom/2008\""
+                    + " Format=\"jpg\" Overlap=\"0\" TileSize=\"" + source.tileSize() + "\">"
+                    + "<Size Width=\"" + source.width() + "\" Height=\"" + source.height()
+                    + "\"/></Image>";
+            respond(exchange, 200, "application/xml; charset=utf-8", descriptor);
+            return;
+        }
+        var matcher = java.util.regex.Pattern
+                .compile("slide_files/(\\d+)/(\\d+)_(\\d+)\\.jpg")
+                .matcher(relative);
+        if (!matcher.matches()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+            return;
+        }
+        var tile = conversionService.directPreviewTile(
+                id,
+                Integer.parseInt(matcher.group(1)),
+                Integer.parseInt(matcher.group(2)),
+                Integer.parseInt(matcher.group(3)));
+        respond(exchange, 200, "image/jpeg", tile);
     }
 
     private void packageResource(HttpExchange exchange, String id) throws IOException {

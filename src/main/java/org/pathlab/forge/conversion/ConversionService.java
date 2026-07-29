@@ -116,12 +116,7 @@ public final class ConversionService implements AutoCloseable {
         if (dataset.selectedSeries() < 0) {
             throw new IllegalStateException("Inspect and select an image series before preview");
         }
-        var previewRoot = managedRoot
-                .resolve(id)
-                .resolve("previews")
-                .resolve(PREVIEW_CACHE_VERSION)
-                .resolve(dataset.configurationRevision())
-                .normalize();
+        var previewRoot = previewRoot(id, dataset);
         if (!previewRoot.startsWith(managedRoot.resolve(id).normalize())) {
             throw new IllegalStateException("Preview path escapes managed storage");
         }
@@ -182,6 +177,62 @@ public final class ConversionService implements AutoCloseable {
                 source.height(),
                 series.width(),
                 series.height());
+    }
+
+    public synchronized java.util.Optional<LocalPreview> cachedPreview(String id)
+            throws IOException {
+        var dataset = requireDataset(id);
+        if (dataset.selectedSeries() < 0) {
+            return java.util.Optional.empty();
+        }
+        var root = previewRoot(id, dataset);
+        if (!Files.isRegularFile(root.resolve("slide.dzi"))) {
+            return java.util.Optional.empty();
+        }
+        var dimensions = readPreviewDimensions(root, dataset.width(), dataset.height());
+        scheduleObsoletePreviewCleanup(id, root);
+        return java.util.Optional.of(new LocalPreview(
+                root,
+                dimensions[0],
+                dimensions[1],
+                dataset.width(),
+                dataset.height()));
+    }
+
+    public boolean supportsDirectPreview() {
+        return engine.supportsDirectTiles();
+    }
+
+    public DirectTileSource directPreview(String id) throws IOException {
+        var dataset = requireDataset(id);
+        if (dataset.selectedSeries() < 0) {
+            throw new IllegalStateException("Inspect and select an image series before preview");
+        }
+        return engine.directTileSource(
+                Path.of(dataset.sourcePath()), dataset.selectedSeries());
+    }
+
+    public byte[] directPreviewTile(
+            String id, int level, int tileX, int tileY) throws IOException {
+        var dataset = requireDataset(id);
+        if (dataset.selectedSeries() < 0) {
+            throw new IllegalStateException("Inspect and select an image series before preview");
+        }
+        return engine.readDirectTile(
+                Path.of(dataset.sourcePath()), dataset.selectedSeries(), level, tileX, tileY);
+    }
+
+    private Path previewRoot(String id, LocalDataset dataset) {
+        var root = managedRoot
+                .resolve(id)
+                .resolve("previews")
+                .resolve(PREVIEW_CACHE_VERSION)
+                .resolve(dataset.configurationRevision())
+                .normalize();
+        if (!root.startsWith(managedRoot.resolve(id).normalize())) {
+            throw new IllegalStateException("Preview path escapes managed storage");
+        }
+        return root;
     }
 
     private void cleanupObsoletePreviews(String id, Path currentPreview) {
