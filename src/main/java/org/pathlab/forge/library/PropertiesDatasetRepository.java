@@ -101,6 +101,7 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     properties.getProperty(key + "approvedArtifactRevision", ""));
             if (loaded.status() == DatasetStatus.INSPECTING
                     || loaded.status() == DatasetStatus.CONVERTING
+                    || loaded.status() == DatasetStatus.OPTIMIZING_OME
                     || loaded.status() == DatasetStatus.VALIDATING) {
                 loaded = loaded.withPreparation(
                         DatasetStatus.FAILED,

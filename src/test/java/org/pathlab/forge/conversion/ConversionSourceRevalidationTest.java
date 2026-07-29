@@ -126,6 +126,94 @@ final class ConversionSourceRevalidationTest {
         }
     }
 
+    @Test
+    void reportsOmeOptimizationInsteadOfAppearingStuckAfterRenderedRgb() throws Exception {
+        var source = temporaryDirectory.resolve("progress.ome.tif");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+        var dataset = new DatasetInspector()
+                .inspect(source)
+                .withExportConfiguration(
+                        DatasetStatus.READY_TO_CONVERT,
+                        "configured",
+                        0,
+                        1000,
+                        500,
+                        1.0,
+                        1,
+                        0,
+                        0,
+                        1000,
+                        500);
+        var repository = new PropertiesDatasetRepository(
+                temporaryDirectory.resolve("progress-library.properties"));
+        repository.save(dataset);
+        var optimizing = new CountDownLatch(1);
+        try (var service = new ConversionService(
+                repository,
+                new ConversionEngine() {
+                    @Override
+                    public boolean available() {
+                        return true;
+                    }
+
+                    @Override
+                    public String runtimeDescription() {
+                        return "test";
+                    }
+
+                    @Override
+                    public List<SeriesInfo> inspect(Path ignored) {
+                        return List.of();
+                    }
+
+                    @Override
+                    public void convert(Path ignored, int series, Path output)
+                            throws IOException {
+                        Files.write(output, new byte[] {'I', 'I', 42, 0, 1});
+                    }
+                },
+                new DerivativeEngine() {
+                    @Override
+                    public boolean available() {
+                        return true;
+                    }
+
+                    @Override
+                    public String description() {
+                        return "test derivative";
+                    }
+
+                    @Override
+                    public void optimizeOme(
+                            Path rendered, Path output, int width, int height)
+                            throws IOException {
+                        optimizing.countDown();
+                        try {
+                            Thread.sleep(TimeUnit.MINUTES.toMillis(5));
+                        } catch (InterruptedException error) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("cancelled", error);
+                        }
+                    }
+
+                    @Override
+                    public DerivativeInfo generateDzi(
+                            Path source, Path output, int width, int height) {
+                        throw new AssertionError("DZI generation must not start");
+                    }
+                },
+                temporaryDirectory.resolve("progress-managed"))) {
+            service.start(dataset.id());
+            assertTrue(optimizing.await(5, TimeUnit.SECONDS));
+
+            var inProgress = repository.find(dataset.id()).orElseThrow();
+            assertEquals(DatasetStatus.OPTIMIZING_OME, inProgress.status());
+            assertTrue(inProgress.detail().contains("compressing"));
+
+            service.cancel(dataset.id());
+        }
+    }
+
     private Fixture fixture() throws Exception {
         var source = temporaryDirectory.resolve("case.vsi");
         Files.write(source, new byte[] {1, 2, 3});

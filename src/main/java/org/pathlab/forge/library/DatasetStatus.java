@@ -7,6 +7,7 @@ public enum DatasetStatus {
     INSPECTING,
     READY_TO_CONVERT,
     CONVERTING,
+    OPTIMIZING_OME,
     VALIDATING,
     CONVERSION_READY,
     GENERATING_DZI,

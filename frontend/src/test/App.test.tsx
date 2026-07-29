@@ -381,14 +381,15 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   render(<App />)
 
   expect((await screen.findAllByText('Exporting rendered RGB'))[0]).toBeVisible()
-  expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(20)
-  expect(screen.getByText('Step 1 of 4')).toBeVisible()
-  expect(screen.getByText('The converted result will open automatically after validation.')).toBeVisible()
+  expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(15)
+  expect(screen.getByText('Step 1 of 5')).toBeVisible()
+  expect(screen.getByText(/Large whole-slide exports can take several minutes/)).toBeVisible()
+  expect(screen.getByText(/Elapsed/)).toBeVisible()
   expect(screen.queryByTestId('forge-osd')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
   expect(screen.getByRole('progressbar', {
     name: 'Converting slide.vsi conversion progress',
-  })).toHaveValue(20)
+  })).toHaveValue(15)
 })
 
 test('replaces the estimate with the measured OME-TIFF size after conversion', async () => {
