@@ -37,6 +37,8 @@ public final class ConversionService implements AutoCloseable {
     private final Map<String, Future<?>> activeConversions = new ConcurrentHashMap<>();
     private final java.util.Set<Path> cleanedPreviewRoots =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.Set<Path> scheduledPreviewCleanups =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> cancelled =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final ExecutorService conversionExecutor = Executors.newSingleThreadExecutor(runnable -> {
@@ -111,12 +113,9 @@ public final class ConversionService implements AutoCloseable {
 
     public synchronized LocalPreview preview(String id) throws IOException {
         var dataset = requireDataset(id);
-        var availableSeries = restoreSeries(id, dataset);
-        var series = availableSeries.stream()
-                .filter(item -> item.index() == dataset.selectedSeries())
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
-                        "Inspect and select an image series before preview"));
+        if (dataset.selectedSeries() < 0) {
+            throw new IllegalStateException("Inspect and select an image series before preview");
+        }
         var previewRoot = managedRoot
                 .resolve(id)
                 .resolve("previews")
@@ -128,15 +127,22 @@ public final class ConversionService implements AutoCloseable {
         }
         var descriptor = previewRoot.resolve("slide.dzi");
         if (Files.isRegularFile(descriptor)) {
-            var dimensions = readPreviewDimensions(previewRoot, series);
-            cleanupObsoletePreviews(id, previewRoot);
+            var dimensions =
+                    readPreviewDimensions(previewRoot, dataset.width(), dataset.height());
+            scheduleObsoletePreviewCleanup(id, previewRoot);
             return new LocalPreview(
                     previewRoot,
                     dimensions[0],
                     dimensions[1],
-                    series.width(),
-                    series.height());
+                    dataset.width(),
+                    dataset.height());
         }
+        var availableSeries = restoreSeries(id, dataset);
+        var series = availableSeries.stream()
+                .filter(item -> item.index() == dataset.selectedSeries())
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "Selected image series is no longer available"));
         Files.createDirectories(previewRoot);
         var targetWidth = Math.max(1, divideRoundUp(series.width(), PREVIEW_DOWNSAMPLE));
         var targetHeight = Math.max(1, divideRoundUp(series.height(), PREVIEW_DOWNSAMPLE));
@@ -208,6 +214,20 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    private void scheduleObsoletePreviewCleanup(String id, Path currentPreview) {
+        if (cleanedPreviewRoots.contains(currentPreview)
+                || !scheduledPreviewCleanups.add(currentPreview)) {
+            return;
+        }
+        conversionExecutor.execute(() -> {
+            try {
+                cleanupObsoletePreviews(id, currentPreview);
+            } finally {
+                scheduledPreviewCleanups.remove(currentPreview);
+            }
+        });
+    }
+
     private static void deleteTree(Path root) throws IOException {
         try (var paths = Files.walk(root)) {
             for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -220,11 +240,11 @@ public final class ConversionService implements AutoCloseable {
         return (value + divisor - 1) / divisor;
     }
 
-    private static int[] readPreviewDimensions(Path root, SeriesInfo fallback)
+    private static int[] readPreviewDimensions(Path root, int fallbackWidth, int fallbackHeight)
             throws IOException {
         var file = root.resolve("preview-dimensions.txt");
         if (!Files.isRegularFile(file)) {
-            return new int[] {fallback.width(), fallback.height()};
+            return new int[] {fallbackWidth, fallbackHeight};
         }
         var parts = Files.readString(file).strip().split(",", 2);
         return new int[] {Integer.parseInt(parts[0]), Integer.parseInt(parts[1])};
