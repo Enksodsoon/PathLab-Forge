@@ -26,6 +26,14 @@ vi.mock('../api', () => ({
   inspectDataset: vi.fn(),
   series: vi.fn(async () => []),
   configure: vi.fn(),
+  estimate: vi.fn(async (_id: string, values: { downsample: number; width: number; height: number }) => ({
+    outputWidth: Math.max(1, Math.floor(values.width / values.downsample)),
+    outputHeight: Math.max(1, Math.floor(values.height / values.downsample)),
+    fileBytes: Math.round(100_000_000 / values.downsample),
+    fileLowerBytes: Math.round(50_000_000 / values.downsample),
+    fileUpperBytes: Math.round(200_000_000 / values.downsample),
+    workspaceBytes: Math.round(400_000_000 / (values.downsample ** 2)),
+  })),
   convert: vi.fn(),
   cancel: vi.fn(),
   artifacts: vi.fn(),
@@ -392,6 +400,69 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   })).toHaveValue(15)
 })
 
+test('opens the converted viewer while the upload package is still building', async () => {
+  const packaging: api.Dataset = {
+    id: 'packaging-slide',
+    displayName: 'Packaging slide.vsi',
+    sourceBytes: 3_000_000_000,
+    format: 'VSI',
+    status: 'DZI_READY',
+    detail: 'Validated DZI tiles; result is viewable while the upload package builds',
+    outputPath: 'C:\\exports\\export.ome.tif',
+    sha256: 'ome-hash',
+    selectedSeries: 3,
+    width: 72_792,
+    height: 66_004,
+    downsample: 1,
+    estimatedOutputBytes: 20_000_000_000,
+    projectedFileBytes: 480_000_000,
+    projectedFileLowerBytes: 200_000_000,
+    projectedFileUpperBytes: 1_000_000_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 72_792,
+    cropHeight: 66_004,
+    sourceFingerprint: 'packaging-source',
+    configurationRevision: 'packaging-configuration',
+    currentArtifactRevision: 'packaging-artifact',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[packaging], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([packaging])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'packaging-artifact',
+    approvedRevision: '',
+    revisions: [{
+      id: 'packaging-artifact',
+      status: 'READY',
+      createdAt: Date.now(),
+      outputWidth: 72_792,
+      outputHeight: 66_004,
+      omePath: 'C:\\exports\\export.ome.tif',
+      packagePath: 'C:\\exports\\slide.plslide',
+      omeSha256: 'ome-hash',
+      omeBytes: 480_000_000,
+      packageSha256: '',
+      failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  expect(await screen.findByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    expect.stringContaining('/derivative/slide.dzi?revision=packaging-artifact'),
+  )
+  expect(screen.getByText('Result viewable · building upload package')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Approve exact result' })).not.toBeInTheDocument()
+})
+
 test('replaces the estimate with the measured OME-TIFF size after conversion', async () => {
   const ready: api.Dataset = {
     id: 'measured-slide',
@@ -466,4 +537,16 @@ test('replaces the estimate with the measured OME-TIFF size after conversion', a
   expect(await screen.findByText('OME-TIFF file 854.3 KB · measured')).toBeVisible()
   expect(screen.queryByText(/Estimated OME-TIFF ≈/)).not.toBeInTheDocument()
   expect(screen.getByText('Peak conversion workspace ≤ 4.5 MB')).toBeVisible()
+
+  fireEvent.change(screen.getByRole('combobox', { name: 'Downsample' }), {
+    target: { value: '4' },
+  })
+
+  expect(await screen.findByText('Estimated OME-TIFF ≈ 23.8 MB')).toBeVisible()
+  expect(screen.queryByText(/· measured/)).not.toBeInTheDocument()
+  expect(api.estimate).toHaveBeenCalledWith(
+    'measured-slide',
+    { downsample: 4, width: 8_021, height: 9_366 },
+    expect.any(AbortSignal),
+  )
 })

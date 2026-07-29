@@ -633,9 +633,11 @@ public final class ConversionService implements AutoCloseable {
                     request.outputWidth(),
                     request.outputHeight());
             installDirectory(outputDirectory, derivativePartial, derivative);
+            artifactRepository.save(revision.ready(digest, ""));
             repository.save(dataset.withConversion(
                     DatasetStatus.DZI_READY,
-                    derivativeInfo.tileCount() + " validated DZI tiles; building upload package",
+                    derivativeInfo.tileCount()
+                            + " validated DZI tiles; result is viewable while the upload package builds",
                     output.toString(),
                     digest,
                     dataset.selectedSeries(),

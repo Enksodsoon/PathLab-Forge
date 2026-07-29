@@ -55,6 +55,15 @@ export interface ArtifactRevision {
   failure: string
 }
 
+export interface OutputEstimate {
+  outputWidth: number
+  outputHeight: number
+  fileBytes: number
+  fileLowerBytes: number
+  fileUpperBytes: number
+  workspaceBytes: number
+}
+
 export interface ViewerConnection {
   connected: boolean
   viewerUrl: string
@@ -155,6 +164,18 @@ export async function configure(
   return request<Dataset>(
     `/api/datasets/${encodeURIComponent(id)}/series?${query}`,
     { method: 'POST' },
+  )
+}
+
+export async function estimate(
+  id: string,
+  values: { downsample: number; width: number; height: number },
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)]))
+  return request<OutputEstimate>(
+    `/api/datasets/${encodeURIComponent(id)}/estimate?${query}`,
+    { signal },
   )
 }
 
