@@ -20,7 +20,7 @@ final class ConversionPreviewTest {
     Path tempDirectory;
 
     @Test
-    void requestsNativeVsiPreviewAndRemovesTheTemporaryOme() throws Exception {
+    void requestsResourceBoundedVsiPreviewAndRemovesTheTemporaryOme() throws Exception {
         var source = tempDirectory.resolve("case.vsi");
         Files.write(source, new byte[] {1, 2, 3});
         Files.write(
@@ -30,6 +30,13 @@ final class ConversionPreviewTest {
                 new PropertiesDatasetRepository(tempDirectory.resolve("library.properties"));
         var dataset = new DatasetInspector().inspect(source);
         repository.save(dataset);
+        var obsoletePreview = Files.createDirectories(tempDirectory
+                .resolve("managed")
+                .resolve(dataset.id())
+                .resolve("previews")
+                .resolve("native-rgb-v3")
+                .resolve("old-revision"));
+        Files.writeString(obsoletePreview.resolve("slide.dzi"), "<Image />");
         var requestedMaxDimension = new AtomicInteger();
         var derivativeReadTemporaryOme = new AtomicBoolean();
         ConversionEngine engine = new ConversionEngine() {
@@ -60,7 +67,7 @@ final class ConversionPreviewTest {
                     throws java.io.IOException {
                 requestedMaxDimension.set(maxDimension);
                 Files.write(output, new byte[] {'I', 'I', 43, 0});
-                return new PreviewSource(output, 18_032, 9_148);
+                return new PreviewSource(output, 9_016, 4_574);
             }
         };
         DerivativeEngine derivatives = new DerivativeEngine() {
@@ -95,12 +102,13 @@ final class ConversionPreviewTest {
             service.inspect(dataset.id());
             var preview = service.preview(dataset.id());
 
-            assertEquals(18_032, requestedMaxDimension.get());
-            assertEquals(18_032, preview.width());
-            assertEquals(9_148, preview.height());
+            assertEquals(9_016, requestedMaxDimension.get());
+            assertEquals(9_016, preview.width());
+            assertEquals(4_574, preview.height());
             assertTrue(derivativeReadTemporaryOme.get());
-            assertTrue(preview.root().toString().contains("native-rgb-v3"));
+            assertTrue(preview.root().toString().contains("efficient-rgb-2x-v4"));
             assertTrue(Files.notExists(preview.root().resolve("source-preview.ome.tif")));
+            assertTrue(Files.notExists(obsoletePreview));
         }
     }
 }

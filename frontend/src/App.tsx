@@ -572,7 +572,10 @@ function ViewerStage({
   onInspector: () => void
 }) {
   const previewIdentity = dataset?.configurationRevision || String(dataset?.selectedSeries ?? '')
-  const tileSource = dataset && revision && ['READY', 'APPROVED'].includes(revision.status)
+  const showingConvertedResult = Boolean(
+    dataset && revision && ['READY', 'APPROVED'].includes(revision.status),
+  )
+  const tileSource = showingConvertedResult && dataset && revision
     ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi?revision=${encodeURIComponent(revision.id)}`
     : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
       ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
@@ -582,7 +585,7 @@ function ViewerStage({
       <header className="forge-viewer-header">
         <div>
           <strong>{dataset?.displayName || 'PathLab Forge viewer'}</strong>
-          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)}` : 'Choose a local slide from the panel'}</span>
+          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : 'Efficient 2× preview'}` : 'Choose a local slide from the panel'}</span>
         </div>
         <button type="button" aria-label="Toggle inspector" onClick={onInspector}><SidebarSimple /></button>
       </header>
