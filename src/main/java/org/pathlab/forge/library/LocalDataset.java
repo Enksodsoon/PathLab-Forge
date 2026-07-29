@@ -16,7 +16,11 @@ public record LocalDataset(
         int width,
         int height,
         int downsample,
-        long estimatedOutputBytes) {
+        long estimatedOutputBytes,
+        int cropX,
+        int cropY,
+        int cropWidth,
+        int cropHeight) {
     public LocalDataset {
         id = requireText(id, "id");
         displayName = requireText(displayName, "displayName");
@@ -30,7 +34,10 @@ public record LocalDataset(
         outputPath = Objects.requireNonNull(outputPath, "outputPath");
         sha256 = Objects.requireNonNull(sha256, "sha256");
         if (selectedSeries < -1 || width < 0 || height < 0 || downsample <= 0
-                || estimatedOutputBytes < 0) {
+                || estimatedOutputBytes < 0 || cropX < 0 || cropY < 0
+                || cropWidth < 0 || cropHeight < 0
+                || (width > 0 && (long) cropX + cropWidth > width)
+                || (height > 0 && (long) cropY + cropHeight > height)) {
             throw new IllegalArgumentException("Conversion metadata is invalid");
         }
     }
@@ -59,6 +66,10 @@ public record LocalDataset(
                 0,
                 0,
                 1,
+                0,
+                0,
+                0,
+                0,
                 0);
     }
 
@@ -78,7 +89,11 @@ public record LocalDataset(
                 width,
                 height,
                 downsample,
-                estimatedOutputBytes);
+                estimatedOutputBytes,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight);
     }
 
     public LocalDataset withConversion(
@@ -105,7 +120,44 @@ public record LocalDataset(
                 nextWidth,
                 nextHeight,
                 nextDownsample,
-                nextEstimatedBytes);
+                nextEstimatedBytes,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight);
+    }
+
+    public LocalDataset withExportConfiguration(
+            DatasetStatus nextStatus,
+            String nextDetail,
+            int nextSeries,
+            int nextWidth,
+            int nextHeight,
+            int nextDownsample,
+            long nextEstimatedBytes,
+            int nextCropX,
+            int nextCropY,
+            int nextCropWidth,
+            int nextCropHeight) {
+        return new LocalDataset(
+                id,
+                displayName,
+                sourcePath,
+                sourceBytes,
+                format,
+                nextStatus,
+                nextDetail,
+                outputPath,
+                sha256,
+                nextSeries,
+                nextWidth,
+                nextHeight,
+                nextDownsample,
+                nextEstimatedBytes,
+                nextCropX,
+                nextCropY,
+                nextCropWidth,
+                nextCropHeight);
     }
 
     private static String requireText(String value, String name) {

@@ -73,7 +73,7 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
         }
         for (var id : ids) {
             var key = PREFIX + id + ".";
-            datasets.put(id, new LocalDataset(
+            var loaded = new LocalDataset(
                     id,
                     properties.getProperty(key + "displayName"),
                     properties.getProperty(key + "sourcePath"),
@@ -87,7 +87,23 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     Integer.parseInt(properties.getProperty(key + "width", "0")),
                     Integer.parseInt(properties.getProperty(key + "height", "0")),
                     Integer.parseInt(properties.getProperty(key + "downsample", "1")),
-                    Long.parseLong(properties.getProperty(key + "estimatedOutputBytes", "0"))));
+                    Long.parseLong(properties.getProperty(key + "estimatedOutputBytes", "0")),
+                    Integer.parseInt(properties.getProperty(key + "cropX", "0")),
+                    Integer.parseInt(properties.getProperty(key + "cropY", "0")),
+                    Integer.parseInt(properties.getProperty(
+                            key + "cropWidth", properties.getProperty(key + "width", "0"))),
+                    Integer.parseInt(properties.getProperty(
+                            key + "cropHeight", properties.getProperty(key + "height", "0"))));
+            if (loaded.status() == DatasetStatus.INSPECTING
+                    || loaded.status() == DatasetStatus.CONVERTING
+                    || loaded.status() == DatasetStatus.VALIDATING) {
+                loaded = loaded.withPreparation(
+                        DatasetStatus.FAILED,
+                        "Interrupted by application restart; retry is safe",
+                        loaded.outputPath(),
+                        loaded.sha256());
+            }
+            datasets.put(id, loaded);
         }
     }
 
@@ -111,6 +127,10 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
             properties.setProperty(
                     key + "estimatedOutputBytes",
                     Long.toString(dataset.estimatedOutputBytes()));
+            properties.setProperty(key + "cropX", Integer.toString(dataset.cropX()));
+            properties.setProperty(key + "cropY", Integer.toString(dataset.cropY()));
+            properties.setProperty(key + "cropWidth", Integer.toString(dataset.cropWidth()));
+            properties.setProperty(key + "cropHeight", Integer.toString(dataset.cropHeight()));
         }
         var partial = storePath.resolveSibling(storePath.getFileName() + ".partial");
         try (OutputStream output = Files.newOutputStream(partial)) {

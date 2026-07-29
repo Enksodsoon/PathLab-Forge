@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -15,11 +16,16 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.List;
+import org.pathlab.forge.annotation.AnnotationRecord;
+import org.pathlab.forge.annotation.AnnotationRepository;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.ConversionService;
 import org.pathlab.forge.conversion.SeriesInfo;
+import org.pathlab.forge.derivative.DerivativeEngine;
+import org.pathlab.forge.derivative.VipsRuntime;
 import org.pathlab.forge.library.DatasetInspectionException;
 import org.pathlab.forge.library.DatasetInspector;
 import org.pathlab.forge.library.DatasetPicker;
@@ -45,6 +51,7 @@ public final class ForgeServer implements AutoCloseable {
     private final DatasetInspector inspector = new DatasetInspector();
     private final DatasetPreparationService preparationService;
     private final ConversionService conversionService;
+    private final AnnotationRepository annotationRepository;
     private volatile boolean launchTokenAvailable = true;
 
     private ForgeServer(
@@ -53,7 +60,8 @@ public final class ForgeServer implements AutoCloseable {
             DatasetRepository repository,
             DatasetPicker picker,
             Path managedRoot,
-            ConversionEngine conversionEngine) {
+            ConversionEngine conversionEngine,
+            DerivativeEngine derivativeEngine) {
         this.server = server;
         this.executor = executor;
         launchToken = randomToken();
@@ -63,7 +71,9 @@ public final class ForgeServer implements AutoCloseable {
         this.repository = repository;
         this.picker = picker;
         preparationService = new DatasetPreparationService(repository, managedRoot);
-        conversionService = new ConversionService(repository, conversionEngine, managedRoot);
+        conversionService =
+                new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
+        annotationRepository = new AnnotationRepository(managedRoot);
     }
 
     public static ForgeServer start() throws IOException {
@@ -72,7 +82,8 @@ public final class ForgeServer implements AutoCloseable {
                 new PropertiesDatasetRepository(paths.repositoryFile()),
                 new SwingDatasetPicker(),
                 paths.managedRoot(),
-                BioFormatsEngine.discover(paths.dataRoot()));
+                BioFormatsEngine.discover(paths.dataRoot()),
+                VipsRuntime.discover(paths.dataRoot()));
     }
 
     public static ForgeServer start(
@@ -82,7 +93,8 @@ public final class ForgeServer implements AutoCloseable {
                 repository,
                 picker,
                 managedRoot,
-                BioFormatsEngine.discover(managedRoot.toAbsolutePath().normalize().getParent()));
+                BioFormatsEngine.discover(managedRoot.toAbsolutePath().normalize().getParent()),
+                VipsRuntime.discover(managedRoot.toAbsolutePath().normalize().getParent()));
     }
 
     public static ForgeServer start(
@@ -90,6 +102,21 @@ public final class ForgeServer implements AutoCloseable {
             DatasetPicker picker,
             Path managedRoot,
             ConversionEngine conversionEngine)
+            throws IOException {
+        return start(
+                repository,
+                picker,
+                managedRoot,
+                conversionEngine,
+                VipsRuntime.discover(managedRoot.toAbsolutePath().normalize().getParent()));
+    }
+
+    public static ForgeServer start(
+            DatasetRepository repository,
+            DatasetPicker picker,
+            Path managedRoot,
+            ConversionEngine conversionEngine,
+            DerivativeEngine derivativeEngine)
             throws IOException {
         var configuredPort = Integer.getInteger("pathlab.forge.port", 0);
         var address = new InetSocketAddress(InetAddress.getLoopbackAddress(), configuredPort);
@@ -100,7 +127,14 @@ public final class ForgeServer implements AutoCloseable {
             return thread;
         });
         var forgeServer =
-                new ForgeServer(httpServer, executor, repository, picker, managedRoot, conversionEngine);
+                new ForgeServer(
+                        httpServer,
+                        executor,
+                        repository,
+                        picker,
+                        managedRoot,
+                        conversionEngine,
+                        derivativeEngine);
         httpServer.createContext("/", forgeServer::handle);
         httpServer.setExecutor(executor);
         httpServer.start();
@@ -128,6 +162,12 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/assets/app.js".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 authenticatedResource(
                         exchange, "/web/app.js", "text/javascript; charset=utf-8");
+            } else if ("/assets/openseadragon.min.js".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                authenticatedResource(
+                        exchange,
+                        "/web/openseadragon.min.js",
+                        "text/javascript; charset=utf-8");
             } else if ("/api/session".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 session(exchange);
             } else if ("/api/capabilities".equals(path) && "GET".equals(exchange.getRequestMethod())) {
@@ -164,6 +204,44 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/convert".length()));
+            } else if (path.matches("/api/datasets/[^/]+/cancel")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                cancelConversion(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(), path.length() - "/cancel".length()));
+            } else if (path.matches("/api/datasets/[^/]+/artifacts")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                datasetArtifacts(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(), path.length() - "/artifacts".length()));
+            } else if (path.matches("/api/datasets/[^/]+/derivative/.+")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                derivativeResource(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/package")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                packageResource(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(), path.length() - "/package".length()));
+            } else if (path.matches("/api/datasets/[^/]+/annotations")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                listAnnotations(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(),
+                                path.length() - "/annotations".length()));
+            } else if (path.matches("/api/datasets/[^/]+/annotations")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                createAnnotation(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(),
+                                path.length() - "/annotations".length()));
+            } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
+                    && "DELETE".equals(exchange.getRequestMethod())) {
+                deleteAnnotation(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteDataset(exchange, path.substring("/api/datasets/".length()));
@@ -237,7 +315,11 @@ public final class ForgeServer implements AutoCloseable {
                         + conversionService.engine().available()
                         + ",\"conversionRuntime\":"
                         + json(conversionService.engine().runtimeDescription())
-                        + ",\"activeConversions\":1,\"downsamples\":[1]}");
+                        + ",\"dziGeneration\":"
+                        + conversionService.derivativeEngine().available()
+                        + ",\"derivativeRuntime\":"
+                        + json(conversionService.derivativeEngine().description())
+                        + ",\"activeConversions\":1,\"downsamples\":[1,2,4,8]}");
     }
 
     private void listDatasets(HttpExchange exchange) throws IOException {
@@ -336,11 +418,27 @@ public final class ForgeServer implements AutoCloseable {
         try {
             var series = integerQuery(exchange, "series");
             var downsample = optionalIntegerQuery(exchange, "downsample", 1);
+            var info = conversionService.series(id).stream()
+                    .filter(item -> item.index() == series)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Inspect this dataset before selecting a series"));
+            var cropX = optionalIntegerQuery(exchange, "x", 0);
+            var cropY = optionalIntegerQuery(exchange, "y", 0);
+            var cropWidth = optionalIntegerQuery(exchange, "width", info.width());
+            var cropHeight = optionalIntegerQuery(exchange, "height", info.height());
             respond(
                     exchange,
                     200,
                     "application/json",
-                    datasetJson(conversionService.selectSeries(id, series, downsample)));
+                    datasetJson(conversionService.selectSeries(
+                            id,
+                            series,
+                            downsample,
+                            cropX,
+                            cropY,
+                            cropWidth,
+                            cropHeight)));
         } catch (IllegalArgumentException error) {
             respond(
                     exchange,
@@ -369,6 +467,155 @@ public final class ForgeServer implements AutoCloseable {
                     "application/json",
                     "{\"error\":\"not_ready\",\"detail\":" + json(error.getMessage()) + "}");
         }
+    }
+
+    private void cancelConversion(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    datasetJson(conversionService.cancel(id)));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+        }
+    }
+
+    private void datasetArtifacts(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            var artifacts = conversionService.artifacts(id);
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    "{\"omeTiffPath\":" + json(artifacts.omeTiff().toString())
+                            + ",\"derivativePath\":" + json(artifacts.derivativeRoot().toString())
+                            + ",\"packagePath\":" + json(artifacts.packagePath().toString())
+                            + ",\"dziReady\":" + Files.isRegularFile(artifacts.dzi())
+                            + ",\"packageReady\":" + Files.isRegularFile(artifacts.packagePath())
+                            + "}");
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+        }
+    }
+
+    private void derivativeResource(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var remainder = path.substring("/api/datasets/".length());
+        var separator = remainder.indexOf("/derivative/");
+        if (separator <= 0) {
+            respond(exchange, 404, "application/json", "{\"error\":\"not_found\"}");
+            return;
+        }
+        var id = remainder.substring(0, separator);
+        try {
+            var root = conversionService.artifacts(id).derivativeRoot().toAbsolutePath().normalize();
+            var relative = remainder.substring(separator + "/derivative/".length());
+            if (!relative.matches("slide\\.dzi|thumbnail\\.jpg|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
+                respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+                return;
+            }
+            var file = root.resolve(relative.replace('/', java.io.File.separatorChar))
+                    .normalize();
+            if (!file.startsWith(root)
+                    || !Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(file)) {
+                respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+                return;
+            }
+            var type = relative.endsWith(".dzi")
+                    ? "application/xml; charset=utf-8"
+                    : "image/jpeg";
+            respondFile(exchange, type, file);
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+        }
+    }
+
+    private void packageResource(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            var file = conversionService.artifacts(id).packagePath();
+            if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(file)) {
+                respond(exchange, 404, "application/json", "{\"error\":\"package_not_found\"}");
+                return;
+            }
+            exchange.getResponseHeaders().set(
+                    "Content-Disposition", "attachment; filename=\"slide.plslide\"");
+            respondFile(exchange, "application/x-tar", file);
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+        }
+    }
+
+    private void listAnnotations(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        if (repository.find(id).isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        respond(
+                exchange,
+                200,
+                "application/json",
+                annotationsJson(annotationRepository.list(id)));
+    }
+
+    private void createAnnotation(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        if (repository.find(id).isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        try {
+            var annotation = annotationRepository.create(
+                    id,
+                    queryValue(exchange, "type", ""),
+                    queryValue(exchange, "geometry", ""),
+                    queryValue(exchange, "label", ""),
+                    queryValue(exchange, "color", "#f3b33d"));
+            respond(exchange, 201, "application/json", annotationJson(annotation));
+        } catch (IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"invalid_annotation\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void deleteAnnotation(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var remainder = path.substring("/api/datasets/".length());
+        var separator = remainder.indexOf("/annotations/");
+        var datasetId = remainder.substring(0, separator);
+        var annotationId = remainder.substring(separator + "/annotations/".length());
+        if (repository.find(datasetId).isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        if (!annotationRepository.delete(datasetId, annotationId)) {
+            respond(exchange, 404, "application/json", "{\"error\":\"annotation_not_found\"}");
+            return;
+        }
+        exchange.sendResponseHeaders(204, -1);
     }
 
     private void deleteDataset(HttpExchange exchange, String id) throws IOException {
@@ -440,7 +687,11 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"width\":" + dataset.width()
                 + ",\"height\":" + dataset.height()
                 + ",\"downsample\":" + dataset.downsample()
-                + ",\"estimatedOutputBytes\":" + dataset.estimatedOutputBytes() + "}";
+                + ",\"estimatedOutputBytes\":" + dataset.estimatedOutputBytes()
+                + ",\"cropX\":" + dataset.cropX()
+                + ",\"cropY\":" + dataset.cropY()
+                + ",\"cropWidth\":" + dataset.cropWidth()
+                + ",\"cropHeight\":" + dataset.cropHeight() + "}";
     }
 
     private static String seriesJson(List<SeriesInfo> series) {
@@ -462,25 +713,51 @@ public final class ForgeServer implements AutoCloseable {
                 + "]}";
     }
 
+    private static String annotationsJson(List<AnnotationRecord> annotations) {
+        return "{\"annotations\":["
+                + annotations.stream()
+                        .map(ForgeServer::annotationJson)
+                        .collect(java.util.stream.Collectors.joining(","))
+                + "]}";
+    }
+
+    private static String annotationJson(AnnotationRecord annotation) {
+        return "{\"id\":" + json(annotation.id())
+                + ",\"type\":" + json(annotation.type())
+                + ",\"geometry\":" + json(annotation.geometry())
+                + ",\"label\":" + json(annotation.label())
+                + ",\"color\":" + json(annotation.color())
+                + ",\"createdAt\":" + annotation.createdAt() + "}";
+    }
+
     private static int integerQuery(HttpExchange exchange, String name) {
         return optionalIntegerQuery(exchange, name, Integer.MIN_VALUE);
     }
 
     private static int optionalIntegerQuery(
             HttpExchange exchange, String name, int fallback) {
-        var query = exchange.getRequestURI().getRawQuery();
-        if (query != null) {
-            for (var pair : query.split("&")) {
-                var parts = pair.split("=", 2);
-                if (parts.length == 2 && parts[0].equals(name)) {
-                    return Integer.parseInt(parts[1]);
-                }
-            }
+        var value = queryValue(exchange, name, null);
+        if (value != null) {
+            return Integer.parseInt(value);
         }
         if (fallback != Integer.MIN_VALUE) {
             return fallback;
         }
         throw new IllegalArgumentException("Missing query parameter: " + name);
+    }
+
+    private static String queryValue(HttpExchange exchange, String name, String fallback) {
+        var query = exchange.getRequestURI().getRawQuery();
+        if (query != null) {
+            for (var pair : query.split("&")) {
+                var parts = pair.split("=", 2);
+                if (parts.length == 2
+                        && URLDecoder.decode(parts[0], StandardCharsets.UTF_8).equals(name)) {
+                    return URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
+                }
+            }
+        }
+        return fallback;
     }
 
     private static String json(String value) {
@@ -544,6 +821,15 @@ public final class ForgeServer implements AutoCloseable {
         exchange.getResponseHeaders().set("Content-Type", type);
         exchange.sendResponseHeaders(status, body.length);
         exchange.getResponseBody().write(body);
+    }
+
+    private static void respondFile(HttpExchange exchange, String type, Path file)
+            throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", type);
+        exchange.sendResponseHeaders(200, Files.size(file));
+        try (InputStream input = Files.newInputStream(file)) {
+            input.transferTo(exchange.getResponseBody());
+        }
     }
 
     private static boolean constantTimeEquals(String expected, String actual) {

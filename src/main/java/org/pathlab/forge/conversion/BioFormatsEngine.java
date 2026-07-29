@@ -61,9 +61,9 @@ public final class BioFormatsEngine implements ConversionEngine {
         requireAvailable();
         var topLevel = inspectMetadata(source, true);
         var flattened = inspectMetadata(source, false);
-        var mapping = new java.util.HashMap<Integer, FlatSeries>();
+        var matched = new ArrayList<MatchedTop>();
         for (var top : topLevel) {
-            var match = flattened.stream()
+            var full = flattened.stream()
                     .filter(item -> item.width() == top.width() && item.height() == top.height())
                     .filter(item -> item.name().equals(top.name()))
                     .findFirst()
@@ -73,9 +73,31 @@ public final class BioFormatsEngine implements ConversionEngine {
                             .findFirst())
                     .orElseThrow(() -> new IOException(
                             "Could not map Bio-Formats series " + top.index()));
+            matched.add(new MatchedTop(top, full.index()));
+        }
+        matched.sort(java.util.Comparator.comparingInt(MatchedTop::readerIndex));
+        var mapping = new java.util.HashMap<Integer, FlatSeries>();
+        for (var index = 0; index < matched.size(); index++) {
+            var item = matched.get(index);
+            var end = index + 1 < matched.size()
+                    ? matched.get(index + 1).readerIndex()
+                    : flattened.size();
+            var resolutions = new ArrayList<Resolution>();
+            for (var readerIndex = item.readerIndex(); readerIndex < end; readerIndex++) {
+                var candidate = flattened.get(readerIndex);
+                if (candidate.width() <= item.series().width()
+                        && candidate.height() <= item.series().height()
+                        && similarAspect(candidate, item.series())) {
+                    resolutions.add(new Resolution(
+                            candidate.index(), candidate.width(), candidate.height()));
+                }
+            }
             mapping.put(
-                    top.index(),
-                    new FlatSeries(match.index(), pyramidLevels(top.width(), top.height())));
+                    item.series().index(),
+                    new FlatSeries(
+                            item.series().width(),
+                            item.series().height(),
+                            List.copyOf(resolutions)));
         }
         flattenedSeries.put(source.toAbsolutePath().normalize(), Map.copyOf(mapping));
         return topLevel;
@@ -83,44 +105,47 @@ public final class BioFormatsEngine implements ConversionEngine {
 
     @Override
     public void convert(Path source, int seriesIndex, Path output) throws IOException {
+        var selected = requireSeries(source, seriesIndex);
+        convert(
+                new ConversionRequest(
+                        source,
+                        seriesIndex,
+                        0,
+                        0,
+                        selected.width(),
+                        selected.height(),
+                        selected.width(),
+                        selected.height(),
+                        1),
+                output);
+    }
+
+    @Override
+    public void convert(ConversionRequest request, Path output) throws IOException {
         requireAvailable();
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
-        var sourceKey = source.toAbsolutePath().normalize();
-        var selected = flattenedSeries
-                .getOrDefault(sourceKey, Map.of())
-                .get(seriesIndex);
-        if (selected == null) {
-            inspect(source);
-            selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
-        }
-        if (selected == null) {
-            throw new IOException("Selected image series is no longer available");
-        }
+        var selected = requireSeries(request.source(), request.seriesIndex());
+        var resolution = selectResolution(selected, request.downsample());
+        var crop = scaleCrop(request, resolution);
         var arguments = new ArrayList<>(List.of(
                 "-no-upgrade",
                 "-series",
-                Integer.toString(selected.readerIndex()),
+                Integer.toString(resolution.readerIndex()),
                 "-merge",
                 "-expand",
                 "-bigtiff",
                 "-compression",
                 "LZW",
-                "-no-sas",
-                "-tilex",
-                "512",
-                "-tiley",
-                "512"));
-        if (selected.pyramidLevels() > 1) {
-            arguments.add("-pyramid-scale");
-            arguments.add("2");
-            arguments.add("-pyramid-resolutions");
-            arguments.add(Integer.toString(selected.pyramidLevels()));
+                "-no-sas"));
+        if (!crop.fullResolution()) {
+            arguments.add("-crop");
+            arguments.add(crop.x() + "," + crop.y() + "," + crop.width() + "," + crop.height());
         }
         arguments.addAll(List.of(
                 "-option",
                 "cellsens.fail_on_missing_ets",
                 "true",
-                source.toString(),
+                request.source().toString(),
                 output.toString()));
         var result = run(
                 command(
@@ -131,6 +156,68 @@ public final class BioFormatsEngine implements ConversionEngine {
         if (result.exitCode() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
             throw new IOException("Bio-Formats conversion failed: " + tail(result.output()));
         }
+    }
+
+    private FlatSeries requireSeries(Path source, int seriesIndex) throws IOException {
+        var sourceKey = source.toAbsolutePath().normalize();
+        var selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
+        if (selected == null) {
+            inspect(source);
+            selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
+        }
+        if (selected == null) {
+            throw new IOException("Selected image series is no longer available");
+        }
+        return selected;
+    }
+
+    private static Resolution selectResolution(FlatSeries series, int downsample)
+            throws IOException {
+        var selected = series.resolutions().stream()
+                .min(java.util.Comparator.comparingDouble(resolution -> {
+                    var scaleX = (double) series.width() / resolution.width();
+                    var scaleY = (double) series.height() / resolution.height();
+                    return Math.abs(Math.log(scaleX / downsample))
+                            + Math.abs(Math.log(scaleY / downsample));
+                }))
+                .orElseThrow(() -> new IOException("Series has no readable resolutions"));
+        var actualScale = (double) series.width() / selected.width();
+        if (downsample > 1 && Math.abs(Math.log(actualScale / downsample)) > 0.36) {
+            throw new IOException(
+                    downsample + "x is not available in this dataset's native pyramid");
+        }
+        return selected;
+    }
+
+    private static ScaledCrop scaleCrop(
+            ConversionRequest request, Resolution resolution) {
+        var scaleX = (double) resolution.width() / request.seriesWidth();
+        var scaleY = (double) resolution.height() / request.seriesHeight();
+        var width = Math.min(resolution.width(), request.outputWidth());
+        var height = Math.min(resolution.height(), request.outputHeight());
+        var x = Math.min(
+                resolution.width() - width,
+                (int) Math.floor(request.cropX() * scaleX));
+        var y = Math.min(
+                resolution.height() - height,
+                (int) Math.floor(request.cropY() * scaleY));
+        var right = x + width;
+        var bottom = y + height;
+        return new ScaledCrop(
+                x,
+                y,
+                width,
+                height,
+                x == 0
+                        && y == 0
+                        && right == resolution.width()
+                        && bottom == resolution.height());
+    }
+
+    private static boolean similarAspect(SeriesInfo candidate, SeriesInfo top) {
+        var candidateAspect = (double) candidate.width() / candidate.height();
+        var topAspect = (double) top.width() / top.height();
+        return Math.abs(candidateAspect / topAspect - 1) < 0.03;
     }
 
     private List<String> command(String mainClass, List<String> arguments) {
@@ -166,16 +253,6 @@ public final class BioFormatsEngine implements ConversionEngine {
         } catch (RuntimeException error) {
             throw new IOException("Bio-Formats metadata could not be parsed", error);
         }
-    }
-
-    private static int pyramidLevels(int width, int height) {
-        var largest = Math.max(width, height);
-        var levels = 1;
-        while (largest > 512 && levels < 12) {
-            largest = (largest + 1) / 2;
-            levels++;
-        }
-        return levels;
     }
 
     private void requireAvailable() {
@@ -268,5 +345,12 @@ public final class BioFormatsEngine implements ConversionEngine {
 
     private record ProcessResult(int exitCode, String output) {}
 
-    private record FlatSeries(int readerIndex, int pyramidLevels) {}
+    private record MatchedTop(SeriesInfo series, int readerIndex) {}
+
+    private record Resolution(int readerIndex, int width, int height) {}
+
+    private record FlatSeries(int width, int height, List<Resolution> resolutions) {}
+
+    private record ScaledCrop(
+            int x, int y, int width, int height, boolean fullResolution) {}
 }

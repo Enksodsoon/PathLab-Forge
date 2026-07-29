@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PathLab Forge</title>
     <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/openseadragon.min.js" defer></script>
     <script src="/assets/app.js" defer></script>
   </head>
   <body>
@@ -68,6 +69,50 @@
         </section>
       </main>
     </div>
+    <dialog class="viewer-dialog" data-viewer-dialog aria-label="Whole-slide viewer">
+      <header class="viewer-header">
+        <div>
+          <p class="eyebrow">Local whole-slide workspace</p>
+          <h2 data-viewer-title>Slide viewer</h2>
+        </div>
+        <div class="viewer-actions">
+          <button class="secondary" data-viewer-action="home" title="Fit slide">Fit</button>
+          <button class="secondary" data-viewer-action="zoom-out" aria-label="Zoom out">−</button>
+          <button class="secondary" data-viewer-action="zoom-in" aria-label="Zoom in">＋</button>
+          <button class="secondary" data-viewer-action="fullscreen">Full screen</button>
+          <button data-viewer-action="close">Close</button>
+        </div>
+      </header>
+      <div class="viewer-workspace">
+        <aside class="annotation-panel">
+          <h3>Annotations</h3>
+          <p>Draw directly on the slide. Coordinates are stored locally in image pixels.</p>
+          <div class="tool-grid" role="toolbar" aria-label="Annotation tools">
+            <button class="secondary active" data-tool="pan">Pan</button>
+            <button class="secondary" data-tool="point">Point</button>
+            <button class="secondary" data-tool="rectangle">Rectangle</button>
+            <button class="secondary" data-tool="ellipse">Ellipse</button>
+            <button class="secondary" data-tool="line">Line</button>
+            <button class="secondary" data-tool="measure">Measure</button>
+            <button class="secondary" data-tool="polygon">Polygon</button>
+            <button class="secondary" data-tool="freehand">Freehand</button>
+            <button class="secondary" data-tool="text">Text</button>
+          </div>
+          <label class="annotation-field">Label
+            <input data-annotation-label maxlength="240" placeholder="Optional label">
+          </label>
+          <label class="annotation-color">Colour
+            <input type="color" data-annotation-color value="#f3b33d">
+          </label>
+          <p class="tool-hint" data-tool-hint>Pan and zoom the slide.</p>
+          <div class="annotation-list" data-annotation-list></div>
+        </aside>
+        <section class="slide-stage" aria-label="Slide canvas">
+          <div class="slide-viewer" data-slide-viewer></div>
+          <svg class="annotation-overlay" data-annotation-overlay aria-label="Annotation overlay"></svg>
+        </section>
+      </div>
+    </dialog>
     <div class="toast" data-toast role="status" aria-live="polite" hidden></div>
   </body>
 </html>
