@@ -35,7 +35,7 @@ export function SlideViewer({
   cropY?: number
   downsample?: number
   onCreate?: (geometry: string) => void
-  onReady?: (viewer: OpenSeadragon.Viewer) => void
+  onReady?: (viewer: OpenSeadragon.Viewer | null) => void
 }) {
   const elementRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
@@ -70,6 +70,7 @@ export function SlideViewer({
     return () => {
       viewerRef.current = null
       viewer.destroy()
+      onReady?.(null)
     }
   }, [onReady, tileSource])
 
