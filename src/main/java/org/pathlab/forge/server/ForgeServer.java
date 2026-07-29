@@ -986,6 +986,14 @@ public final class ForgeServer implements AutoCloseable {
     }
 
     private static String datasetJson(LocalDataset dataset) {
+        var estimate = dataset.cropWidth() > 0 && dataset.cropHeight() > 0
+                ? org.pathlab.forge.conversion.OutputSizeEstimator.compressedOmeTiff(
+                        dataset.cropWidth(),
+                        dataset.cropHeight(),
+                        dataset.downsample(),
+                        dataset.sourceBytes(),
+                        dataset.format() == org.pathlab.forge.library.DatasetFormat.OME_TIFF)
+                : null;
         return "{\"id\":" + json(dataset.id())
                 + ",\"displayName\":" + json(dataset.displayName())
                 + ",\"sourceBytes\":" + dataset.sourceBytes()
@@ -999,6 +1007,12 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"height\":" + dataset.height()
                 + ",\"downsample\":" + dataset.downsample()
                 + ",\"estimatedOutputBytes\":" + dataset.estimatedOutputBytes()
+                + ",\"projectedFileBytes\":"
+                + (estimate == null ? 0 : estimate.expectedBytes())
+                + ",\"projectedFileLowerBytes\":"
+                + (estimate == null ? 0 : estimate.lowerBytes())
+                + ",\"projectedFileUpperBytes\":"
+                + (estimate == null ? 0 : estimate.upperBytes())
                 + ",\"cropX\":" + dataset.cropX()
                 + ",\"cropY\":" + dataset.cropY()
                 + ",\"cropWidth\":" + dataset.cropWidth()
@@ -1079,11 +1093,27 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"derivativePath\":" + json(revision.derivativePath())
                 + ",\"packagePath\":" + json(revision.packagePath())
                 + ",\"omeSha256\":" + json(revision.omeSha256())
+                + ",\"omeBytes\":" + regularFileSize(revision.omePath())
                 + ",\"packageSha256\":" + json(revision.packageSha256())
                 + ",\"outputWidth\":" + revision.outputWidth()
                 + ",\"outputHeight\":" + revision.outputHeight()
                 + ",\"approvedAt\":" + revision.approvedAt()
                 + ",\"failure\":" + json(revision.failure()) + "}";
+    }
+
+    private static long regularFileSize(String value) {
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        try {
+            var path = Path.of(value);
+            return Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                            && !Files.isSymbolicLink(path)
+                    ? Files.size(path)
+                    : 0;
+        } catch (IOException | RuntimeException ignored) {
+            return 0;
+        }
     }
 
     private static int integerQuery(HttpExchange exchange, String name) {

@@ -12,6 +12,9 @@ export interface Dataset {
   height: number
   downsample: number
   estimatedOutputBytes: number
+  projectedFileBytes: number
+  projectedFileLowerBytes: number
+  projectedFileUpperBytes: number
   cropX: number
   cropY: number
   cropWidth: number
@@ -47,6 +50,7 @@ export interface ArtifactRevision {
   omePath: string
   packagePath: string
   omeSha256: string
+  omeBytes: number
   packageSha256: string
   failure: string
 }
