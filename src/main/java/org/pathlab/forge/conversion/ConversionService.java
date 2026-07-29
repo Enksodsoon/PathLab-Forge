@@ -26,8 +26,7 @@ import org.pathlab.forge.packageformat.PreparedPackageBuilder;
 import org.pathlab.forge.packageformat.PackageMetadata;
 
 public final class ConversionService implements AutoCloseable {
-    private static final int SOURCE_PREVIEW_MAX_DIMENSION = 12_288;
-    private static final String PREVIEW_CACHE_VERSION = "rgb-12288-v2";
+    private static final String PREVIEW_CACHE_VERSION = "native-rgb-v3";
     private final DatasetRepository repository;
     private final ConversionEngine engine;
     private final DerivativeEngine derivativeEngine;
@@ -135,19 +134,32 @@ public final class ConversionService implements AutoCloseable {
                     series.height());
         }
         Files.createDirectories(previewRoot);
+        var estimatedPyramidBytes =
+                OutputSizeEstimator.rgbPyramidUpperBound(series.width(), series.height(), 1);
+        var estimatedPeakBytes = Math.multiplyExact(estimatedPyramidBytes, 2);
+        DiskPreflight.requireCapacity(
+                Files.getFileStore(previewRoot).getUsableSpace(), estimatedPeakBytes);
         PreviewSource source;
+        Path temporaryOme = null;
         if (dataset.format() == DatasetFormat.OME_TIFF) {
             source = new PreviewSource(
                     Path.of(dataset.sourcePath()), series.width(), series.height());
         } else {
+            temporaryOme = previewRoot.resolve("source-preview.ome.tif");
             source = engine.renderPreview(
                     Path.of(dataset.sourcePath()),
                     dataset.selectedSeries(),
-                    previewRoot.resolve("source-preview.ome.tif"),
-                    SOURCE_PREVIEW_MAX_DIMENSION);
+                    temporaryOme,
+                    Math.max(series.width(), series.height()));
         }
-        derivativeEngine.generateDzi(
-                source.path(), previewRoot, source.width(), source.height());
+        try {
+            derivativeEngine.generateDzi(
+                    source.path(), previewRoot, source.width(), source.height());
+        } finally {
+            if (temporaryOme != null) {
+                Files.deleteIfExists(temporaryOme);
+            }
+        }
         Files.writeString(
                 previewRoot.resolve("preview-dimensions.txt"),
                 source.width() + "," + source.height());

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -19,7 +20,7 @@ final class ConversionPreviewTest {
     Path tempDirectory;
 
     @Test
-    void requestsAHighDetailBoundedVsiPreview() throws Exception {
+    void requestsNativeVsiPreviewAndRemovesTheTemporaryOme() throws Exception {
         var source = tempDirectory.resolve("case.vsi");
         Files.write(source, new byte[] {1, 2, 3});
         Files.write(
@@ -30,6 +31,7 @@ final class ConversionPreviewTest {
         var dataset = new DatasetInspector().inspect(source);
         repository.save(dataset);
         var requestedMaxDimension = new AtomicInteger();
+        var derivativeReadTemporaryOme = new AtomicBoolean();
         ConversionEngine engine = new ConversionEngine() {
             @Override
             public boolean available() {
@@ -44,7 +46,7 @@ final class ConversionPreviewTest {
             @Override
             public List<SeriesInfo> inspect(Path ignored) {
                 return List.of(new SeriesInfo(
-                        0, "Tissue", 72_792, 66_004, 3, 1, 1, "uint8", 0.27, 0.27, "µm"));
+                        0, "Tissue", 18_032, 9_148, 3, 1, 1, "uint8", 0.27, 0.27, "µm"));
             }
 
             @Override
@@ -58,7 +60,7 @@ final class ConversionPreviewTest {
                     throws java.io.IOException {
                 requestedMaxDimension.set(maxDimension);
                 Files.write(output, new byte[] {'I', 'I', 43, 0});
-                return new PreviewSource(output, maxDimension, 11_140);
+                return new PreviewSource(output, 18_032, 9_148);
             }
         };
         DerivativeEngine derivatives = new DerivativeEngine() {
@@ -81,6 +83,7 @@ final class ConversionPreviewTest {
             public DerivativeInfo generateDzi(
                     Path input, Path outputRoot, int width, int height)
                     throws java.io.IOException {
+                derivativeReadTemporaryOme.set(Files.isRegularFile(input));
                 Files.createDirectories(outputRoot);
                 Files.writeString(outputRoot.resolve("slide.dzi"), "<Image />");
                 return new DerivativeInfo(outputRoot, 9, 1, 0, "preview");
@@ -92,9 +95,12 @@ final class ConversionPreviewTest {
             service.inspect(dataset.id());
             var preview = service.preview(dataset.id());
 
-            assertEquals(12_288, requestedMaxDimension.get());
-            assertEquals(12_288, preview.width());
-            assertTrue(preview.root().toString().contains("rgb-12288-v2"));
+            assertEquals(18_032, requestedMaxDimension.get());
+            assertEquals(18_032, preview.width());
+            assertEquals(9_148, preview.height());
+            assertTrue(derivativeReadTemporaryOme.get());
+            assertTrue(preview.root().toString().contains("native-rgb-v3"));
+            assertTrue(Files.notExists(preview.root().resolve("source-preview.ome.tif")));
         }
     }
 }
