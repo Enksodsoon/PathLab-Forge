@@ -14,7 +14,19 @@ import java.util.UUID;
 
 public final class AnnotationRepository {
     private static final Set<String> TYPES = Set.of(
-            "point", "rectangle", "ellipse", "line", "polygon", "freehand", "text", "measure");
+            "point",
+            "ruler",
+            "polyline",
+            "angle",
+            "rectangle",
+            "ellipse",
+            "polygon",
+            "freehand",
+            "brush_add",
+            "brush_subtract",
+            "text",
+            "line",
+            "measure");
     private final Path managedRoot;
 
     public AnnotationRepository(Path managedRoot) {

@@ -1,0 +1,245 @@
+export interface Dataset {
+  id: string
+  displayName: string
+  sourceBytes: number
+  format: 'OME_TIFF' | 'VSI'
+  status: string
+  detail: string
+  outputPath: string
+  sha256: string
+  selectedSeries: number
+  width: number
+  height: number
+  downsample: number
+  estimatedOutputBytes: number
+  cropX: number
+  cropY: number
+  cropWidth: number
+  cropHeight: number
+  sourceFingerprint: string
+  configurationRevision: string
+  currentArtifactRevision: string
+  approvedArtifactRevision: string
+}
+
+export interface SeriesInfo {
+  index: number
+  name: string
+  width: number
+  height: number
+  channels: number
+  sizeZ: number
+  sizeT: number
+  pixelType: string
+  physicalSizeX: number
+  physicalSizeY: number
+  physicalUnit: string
+  resolutionCount: number
+  rgbPlane: boolean
+}
+
+export interface ArtifactRevision {
+  id: string
+  status: 'CONVERTING' | 'READY' | 'APPROVED' | 'FAILED'
+  createdAt: number
+  outputWidth: number
+  outputHeight: number
+  omePath: string
+  packagePath: string
+  omeSha256: string
+  packageSha256: string
+  failure: string
+}
+
+export interface ViewerConnection {
+  connected: boolean
+  viewerUrl: string
+  deviceName: string
+  scopes: string[]
+}
+
+export interface ViewerPairing {
+  userCode: string
+  verificationUrl: string
+  expiresAt: string
+}
+
+export interface ViewerUpload {
+  state: 'IDLE' | 'UPLOADING' | 'READY_PRIVATE' | 'FAILED'
+  artifactRevisionId: string
+  uploadedBytes: number
+  totalBytes: number
+  viewerSlideId: string
+  detail: string
+}
+
+export interface AnnotationRecord {
+  id: string
+  type: string
+  geometry: string
+  label: string
+  color: string
+  createdAt: number
+}
+
+let csrf = ''
+
+export async function bootstrap() {
+  const response = await fetch('/api/session', { credentials: 'same-origin' })
+  if (!response.ok) throw new Error('Forge session is unavailable')
+  csrf = response.headers.get('X-Forge-CSRF') || ''
+  return Promise.all([datasets(), capabilities()])
+}
+
+export async function datasets(): Promise<Dataset[]> {
+  const body = await request<{ datasets: Dataset[] }>('/api/datasets')
+  return body.datasets
+}
+
+export async function capabilities() {
+  return request<{
+    conversionRuntime: string
+    derivativeRuntime: string
+    vsiConversion: boolean
+    dziGeneration: boolean
+    downsamples: number[]
+  }>('/api/capabilities')
+}
+
+export async function chooseDatasets() {
+  return request<{ datasets: Dataset[] }>('/api/datasets/select', { method: 'POST' })
+}
+
+export async function inspectDataset(id: string) {
+  const body = await request<{ series: SeriesInfo[] }>(
+    `/api/datasets/${encodeURIComponent(id)}/inspect`,
+    { method: 'POST' },
+  )
+  return body.series
+}
+
+export async function series(id: string) {
+  const body = await request<{ series: SeriesInfo[] }>(
+    `/api/datasets/${encodeURIComponent(id)}/series`,
+  )
+  return body.series
+}
+
+export async function configure(
+  id: string,
+  values: {
+    series: number
+    downsample: number
+    x: number
+    y: number
+    width: number
+    height: number
+  },
+) {
+  const query = new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)]))
+  return request<Dataset>(
+    `/api/datasets/${encodeURIComponent(id)}/series?${query}`,
+    { method: 'POST' },
+  )
+}
+
+export async function convert(id: string) {
+  return request<Dataset>(`/api/datasets/${encodeURIComponent(id)}/convert`, { method: 'POST' })
+}
+
+export async function cancel(id: string) {
+  return request<Dataset>(`/api/datasets/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+}
+
+export async function artifacts(id: string) {
+  return request<{
+    currentRevision: string
+    approvedRevision: string
+    revisions: ArtifactRevision[]
+  }>(`/api/datasets/${encodeURIComponent(id)}/artifacts`)
+}
+
+export async function approve(id: string, revision: string) {
+  return request<Dataset>(
+    `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/approve`,
+    { method: 'POST' },
+  )
+}
+
+export async function getViewerConnection() {
+  return request<ViewerConnection>('/api/viewer/connection')
+}
+
+export async function startViewerPairing(viewerUrl: string) {
+  return request<ViewerPairing>(
+    `/api/viewer/pairing/start?viewerUrl=${encodeURIComponent(viewerUrl)}`,
+    { method: 'POST' },
+  )
+}
+
+export async function exchangeViewerPairing() {
+  return request<ViewerConnection>('/api/viewer/pairing/exchange', { method: 'POST' })
+}
+
+export async function uploadApprovedArtifact(id: string) {
+  return request<ViewerUpload>(
+    `/api/datasets/${encodeURIComponent(id)}/upload`,
+    { method: 'POST' },
+  )
+}
+
+export async function getViewerUpload() {
+  return request<ViewerUpload>('/api/viewer/upload')
+}
+
+export async function revokeViewerConnection() {
+  return request<void>('/api/viewer/connection/revoke', { method: 'POST' })
+}
+
+export async function annotations(id: string) {
+  const body = await request<{ annotations: AnnotationRecord[] }>(
+    `/api/datasets/${encodeURIComponent(id)}/annotations`,
+  )
+  return body.annotations
+}
+
+export async function createAnnotation(
+  id: string,
+  values: { type: string; geometry: string; label?: string; color?: string },
+) {
+  const query = new URLSearchParams({
+    type: values.type.replaceAll('-', '_'),
+    geometry: values.geometry,
+    label: values.label || '',
+    color: values.color || '#f3b33d',
+  })
+  return request<AnnotationRecord>(
+    `/api/datasets/${encodeURIComponent(id)}/annotations?${query}`,
+    { method: 'POST' },
+  )
+}
+
+export async function deleteAnnotation(id: string, annotationId: string) {
+  return request<void>(
+    `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers)
+  if (init.method && init.method !== 'GET') {
+    headers.set('X-Forge-CSRF', csrf)
+    headers.set('Origin', window.location.origin)
+  }
+  const response = await fetch(path, {
+    ...init,
+    headers,
+    credentials: 'same-origin',
+  })
+  const body = response.status === 204 ? undefined : await response.json()
+  if (!response.ok) {
+    throw new Error(body?.detail || body?.error || `Request failed (${response.status})`)
+  }
+  return body as T
+}

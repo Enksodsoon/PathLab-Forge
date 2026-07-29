@@ -111,7 +111,8 @@ final class ForgeLibraryApiTest {
             }
 
             @Override
-            public void optimizeOme(Path renderedOme, Path pyramidalOme)
+            public void optimizeOme(
+                    Path renderedOme, Path pyramidalOme, int width, int height)
                     throws java.io.IOException {
                 Files.copy(renderedOme, pyramidalOme);
             }
@@ -142,6 +143,34 @@ final class ForgeLibraryApiTest {
             assertEquals(
                     org.pathlab.forge.library.DatasetStatus.READY_TO_CONVERT,
                     repository.find(dataset.id()).orElseThrow().status());
+
+            var configured = write(
+                    client,
+                    server,
+                    csrf,
+                    "/api/datasets/" + dataset.id()
+                            + "/series?series=0&downsample=1.5&x=10&y=20&width=600&height=300",
+                    "POST");
+            assertEquals(200, configured.statusCode());
+            var reinspected =
+                    write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
+            assertEquals(200, reinspected.statusCode());
+            var persistedConfiguration = repository.find(dataset.id()).orElseThrow();
+            assertEquals(1.5, persistedConfiguration.downsample());
+            assertEquals(10, persistedConfiguration.cropX());
+            assertEquals(20, persistedConfiguration.cropY());
+            assertEquals(600, persistedConfiguration.cropWidth());
+            assertEquals(300, persistedConfiguration.cropHeight());
+            assertEquals(
+                    200,
+                    write(
+                                    client,
+                                    server,
+                                    csrf,
+                                    "/api/datasets/" + dataset.id()
+                                            + "/series?series=0&downsample=1&x=0&y=0&width=1000&height=500",
+                                    "POST")
+                            .statusCode());
 
             var started =
                     write(client, server, csrf, "/api/datasets/" + dataset.id() + "/convert", "POST");

@@ -20,6 +20,7 @@ java {
 }
 
 dependencies {
+    implementation("net.java.dev.jna:jna:5.18.1")
     testImplementation(platform("org.junit:junit-bom:5.14.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -27,6 +28,46 @@ dependencies {
 
 application {
     mainClass = "org.pathlab.forge.ForgeApp"
+}
+
+val pnpmCommand = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "pnpm.cmd" else "pnpm"
+val codexNodeBin = file(
+    "${System.getProperty("user.home")}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin")
+val frontendPath = if (codexNodeBin.isDirectory) {
+    codexNodeBin.absolutePath + File.pathSeparator + System.getenv("PATH")
+} else {
+    System.getenv("PATH")
+}
+
+val frontendInstall = tasks.register<Exec>("frontendInstall") {
+    workingDir = file("frontend")
+    commandLine(pnpmCommand, "install", "--frozen-lockfile")
+    environment("PATH", frontendPath)
+    inputs.files("frontend/package.json", "frontend/pnpm-lock.yaml")
+    doNotTrackState("pnpm's Windows junction-based node_modules tree is not snapshot-safe")
+}
+
+val frontendBuild = tasks.register<Exec>("frontendBuild") {
+    dependsOn(frontendInstall)
+    workingDir = file("frontend")
+    commandLine(pnpmCommand, "run", "build")
+    environment("PATH", frontendPath)
+    inputs.dir("frontend/src")
+    inputs.files(
+        "frontend/index.html",
+        "frontend/package.json",
+        "frontend/pnpm-lock.yaml",
+        "frontend/tsconfig.json",
+        "frontend/vite.config.ts")
+    outputs.dir(layout.buildDirectory.dir("frontend/web"))
+}
+
+tasks.processResources {
+    dependsOn(frontendBuild)
+    exclude("web/app.html", "web/app.css", "web/app.js")
+    from(layout.buildDirectory.dir("frontend/web")) {
+        into("web")
+    }
 }
 
 tasks.withType<JavaCompile>().configureEach {

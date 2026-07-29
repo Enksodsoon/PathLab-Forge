@@ -32,9 +32,9 @@ The latest Viewer is a folder-aware library rather than a flat upload list. Forg
 
 Forge does not replace any of those systems.
 
-## Run the local shell
+## Run the viewer-first shell
 
-The current app is an intentionally small, secured desktop foundation. It binds only to a
+The desktop shell binds only to a
 random `127.0.0.1` port, opens a one-time launch URL, and establishes an HttpOnly,
 SameSite-Strict local session. State-changing requests additionally require the exact loopback
 origin and a session CSRF token.
@@ -43,25 +43,40 @@ origin and a session CSRF token.
 .\gradlew.bat run --args=--serve
 ```
 
-The app currently provides:
+The React/Vite interface consumes Viewer-owned `@pathlab/viewer-ui`
+`0.1.0-rc.373ca749.2`, pinned to Viewer design baseline
+`373ca7497ffe24d2c8e064f080861554df0b5cb9`. Its lockfile records the immutable
+release integrity. The shell opens with the slide navigator, centered
+OpenSeadragon canvas, Viewer menu order, responsive rail, theme semantics, and
+right-side crop/annotation/history inspector.
+
+The app provides:
 
 - a native operating-system file picker for OME-TIFF and VSI datasets;
 - bounded OME-TIFF signature and VSI companion inspection;
 - a persistent local library under the user's application-data directory;
-- verified managed copies of existing OME-TIFF files, written via a partial file and SHA-256;
+- bounded source and converted-result DZI previews for OME-TIFF and VSI/ETS;
+- one atomic VSI dataset inventory with relative paths, sizes, modification identities,
+  SHA-256 fingerprints, and strict companion revalidation;
 - local Bio-Formats 8.5 discovery through the application-data runtime folder,
   `PATHLAB_FORGE_BFTOOLS`, or `-Dpathlab.forge.bftools=...`;
 - real VSI/ETS top-level series inspection with dimensions and calibration metadata;
 - explicit 2D RGB series selection and an overflow-safe storage upper-bound estimate;
-- one background VSI conversion at a time to tiled, LZW-compressed, pyramidal OME-BigTIFF;
+- one background conversion at a time for OME-TIFF and VSI to tiled,
+  LZW-compressed, pyramidal OME-BigTIFF;
 - flattened-reader mapping that avoids the Bio-Formats 8.5 non-pyramidal `-noflat` writer defect;
-- partial-file cleanup, TIFF signature validation, SHA-256, and atomic finalization;
-- search, format filters, theme persistence, refresh, and safe library removal.
+- source-coordinate crop and annotations with 1x, 1.5x, 2x, 4x, and 8x presets;
+- immutable artifact revisions, approval invalidation, cancellation checkpoints,
+  disk preflight, DZI/tile validation, and deterministic package manifests;
+- source/output quality review before exact-revision approval;
+- short-lived browser pairing to a local Viewer, Windows Credential Manager storage,
+  resumable prepared-ingest upload, private preview, and revision-aware annotation sync;
+- partial-file cleanup, TIFF/DZI validation, SHA-256, and atomic finalization;
+- search, format filters, theme persistence, workspace restore, and safe library removal.
 
 Bio-Formats is not committed or redistributed by this repository. A local runtime remains an
-operator-supplied dependency until redistribution review is complete. This slice exports at 1x
-only. Crop, 2x/4x/8x downsample, the full viewer/annotation workspace, DZI packaging, account
-pairing, and Viewer upload remain staged and are not presented as working controls.
+operator-supplied dependency until redistribution review is complete. The same is true of the
+local libvips runtime used for streaming derivatives.
 
 ## Start with Codex
 

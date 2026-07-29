@@ -13,8 +13,8 @@ public record ConversionRequest(
         int cropHeight,
         int seriesWidth,
         int seriesHeight,
-        int downsample) {
-    private static final Set<Integer> SUPPORTED_DOWNSAMPLES = Set.of(1, 2, 4, 8);
+        double downsample) {
+    private static final Set<Double> SUPPORTED_DOWNSAMPLES = Set.of(1.0, 1.5, 2.0, 4.0, 8.0);
 
     public ConversionRequest {
         source = Objects.requireNonNull(source, "source").toAbsolutePath().normalize();
@@ -33,16 +33,16 @@ public record ConversionRequest(
             throw new IllegalArgumentException("Crop must be inside the selected image series");
         }
         if (!SUPPORTED_DOWNSAMPLES.contains(downsample)) {
-            throw new IllegalArgumentException("Downsample must be 1x, 2x, 4x, or 8x");
+            throw new IllegalArgumentException("Downsample must be 1x, 1.5x, 2x, 4x, or 8x");
         }
     }
 
     public int outputWidth() {
-        return Math.max(1, (cropWidth + downsample - 1) / downsample);
+        return Math.max(1, (int) Math.floor(cropWidth / downsample));
     }
 
     public int outputHeight() {
-        return Math.max(1, (cropHeight + downsample - 1) / downsample);
+        return Math.max(1, (int) Math.floor(cropHeight / downsample));
     }
 
     public long estimatedRgbPyramidBytes() {

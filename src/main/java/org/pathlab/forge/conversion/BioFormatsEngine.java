@@ -100,7 +100,10 @@ public final class BioFormatsEngine implements ConversionEngine {
                             List.copyOf(resolutions)));
         }
         flattenedSeries.put(source.toAbsolutePath().normalize(), Map.copyOf(mapping));
-        return topLevel;
+        return topLevel.stream()
+                .map(item -> item.withResolutionCount(
+                        mapping.get(item.index()).resolutions().size()))
+                .toList();
     }
 
     @Override
@@ -135,7 +138,9 @@ public final class BioFormatsEngine implements ConversionEngine {
                 "-expand",
                 "-bigtiff",
                 "-compression",
-                "LZW",
+                "JPEG",
+                "-quality",
+                "0.95",
                 "-no-sas"));
         if (!crop.fullResolution()) {
             arguments.add("-crop");
@@ -158,6 +163,48 @@ public final class BioFormatsEngine implements ConversionEngine {
         }
     }
 
+    @Override
+    public PreviewSource renderPreview(
+            Path source, int seriesIndex, Path output, int maxDimension) throws IOException {
+        requireAvailable();
+        if (maxDimension < 512) {
+            throw new IllegalArgumentException("Preview bound is too small");
+        }
+        Files.createDirectories(output.toAbsolutePath().normalize().getParent());
+        var selected = requireSeries(source, seriesIndex);
+        var resolution = selected.resolutions().stream()
+                .filter(item -> item.width() <= maxDimension && item.height() <= maxDimension)
+                .max(java.util.Comparator.comparingLong(
+                        item -> (long) item.width() * item.height()))
+                .orElseGet(() -> selected.resolutions().stream()
+                        .min(java.util.Comparator.comparingLong(
+                                item -> (long) item.width() * item.height()))
+                        .orElseThrow());
+        var arguments = new ArrayList<>(List.of(
+                "-no-upgrade",
+                "-series",
+                Integer.toString(resolution.readerIndex()),
+                "-merge",
+                "-expand",
+                "-bigtiff",
+                "-compression",
+                "LZW",
+                "-no-sas",
+                "-option",
+                "cellsens.fail_on_missing_ets",
+                "true",
+                source.toString(),
+                output.toString()));
+        var result = run(
+                command("loci.formats.tools.ImageConverter", arguments),
+                CONVERSION_TIMEOUT,
+                4 * 1024 * 1024);
+        if (result.exitCode() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
+            throw new IOException("Bio-Formats preview failed: " + tail(result.output()));
+        }
+        return new PreviewSource(output, resolution.width(), resolution.height());
+    }
+
     private FlatSeries requireSeries(Path source, int seriesIndex) throws IOException {
         var sourceKey = source.toAbsolutePath().normalize();
         var selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
@@ -171,21 +218,17 @@ public final class BioFormatsEngine implements ConversionEngine {
         return selected;
     }
 
-    private static Resolution selectResolution(FlatSeries series, int downsample)
+    private static Resolution selectResolution(FlatSeries series, double downsample)
             throws IOException {
         var selected = series.resolutions().stream()
-                .min(java.util.Comparator.comparingDouble(resolution -> {
-                    var scaleX = (double) series.width() / resolution.width();
-                    var scaleY = (double) series.height() / resolution.height();
-                    return Math.abs(Math.log(scaleX / downsample))
-                            + Math.abs(Math.log(scaleY / downsample));
-                }))
+                .filter(resolution ->
+                        (double) series.width() / resolution.width() <= downsample + 0.01)
+                .max(java.util.Comparator.comparingDouble(
+                        resolution -> (double) series.width() / resolution.width()))
+                .or(() -> series.resolutions().stream().max(
+                        java.util.Comparator.comparingLong(
+                                resolution -> (long) resolution.width() * resolution.height())))
                 .orElseThrow(() -> new IOException("Series has no readable resolutions"));
-        var actualScale = (double) series.width() / selected.width();
-        if (downsample > 1 && Math.abs(Math.log(actualScale / downsample)) > 0.36) {
-            throw new IOException(
-                    downsample + "x is not available in this dataset's native pyramid");
-        }
         return selected;
     }
 
@@ -193,8 +236,10 @@ public final class BioFormatsEngine implements ConversionEngine {
             ConversionRequest request, Resolution resolution) {
         var scaleX = (double) resolution.width() / request.seriesWidth();
         var scaleY = (double) resolution.height() / request.seriesHeight();
-        var width = Math.min(resolution.width(), request.outputWidth());
-        var height = Math.min(resolution.height(), request.outputHeight());
+        var width = Math.min(
+                resolution.width(), Math.max(1, (int) Math.round(request.cropWidth() * scaleX)));
+        var height = Math.min(
+                resolution.height(), Math.max(1, (int) Math.round(request.cropHeight() * scaleY)));
         var x = Math.min(
                 resolution.width() - width,
                 (int) Math.floor(request.cropX() * scaleX));
@@ -227,6 +272,9 @@ public final class BioFormatsEngine implements ConversionEngine {
                         "bin",
                         isWindows() ? "java.exe" : "java")
                 .toString());
+        command.add("-Dfile.encoding=UTF-8");
+        command.add("-Dsun.stdout.encoding=UTF-8");
+        command.add("-Dsun.stderr.encoding=UTF-8");
         command.add("-cp");
         command.add(runtimeRoot.resolve("bioformats_package.jar").toString());
         command.add(mainClass);

@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
+import org.pathlab.forge.conversion.ConversionRequest;
 
 public final class VipsRuntime implements DerivativeEngine {
     private static final Duration OPERATION_TIMEOUT = Duration.ofHours(24);
@@ -57,25 +58,59 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     @Override
-    public void optimizeOme(Path renderedOme, Path pyramidalOme) throws IOException {
+    public boolean supportsOmeRendering() {
+        return available();
+    }
+
+    @Override
+    public void renderOme(ConversionRequest request, Path output) throws IOException {
         requireAvailable();
+        var cropped = output.resolveSibling("crop.partial.v");
+        Files.deleteIfExists(cropped);
+        try {
+            run(List.of(
+                    "crop",
+                    request.source().toString(),
+                    cropped.toString(),
+                    Integer.toString(request.cropX()),
+                    Integer.toString(request.cropY()),
+                    Integer.toString(request.cropWidth()),
+                    Integer.toString(request.cropHeight())));
+            run(List.of(
+                    "thumbnail",
+                    cropped.toString(),
+                    output.toString(),
+                    Integer.toString(request.outputWidth()),
+                    "--height",
+                    Integer.toString(request.outputHeight()),
+                    "--size",
+                    "force"));
+            requireNonempty(output, "rendered OME-TIFF");
+        } finally {
+            Files.deleteIfExists(cropped);
+        }
+    }
+
+    @Override
+    public void optimizeOme(Path renderedOme, Path pyramidalOme, int width, int height)
+            throws IOException {
+        requireAvailable();
+        var jpegQuality = omeJpegQuality(width, height);
         run(List.of(
-                "tiffsave",
+                "thumbnail",
                 renderedOme.toString(),
-                pyramidalOme.toString(),
-                "--pyramid",
-                "--tile",
-                "--tile-width",
-                "512",
-                "--tile-height",
-                "512",
-                "--compression",
-                "lzw",
-                "--bigtiff",
-                "--subifd",
-                "--keep",
-                "all"));
+                pyramidalOme + "[pyramid,tile,tile-width=512,tile-height=512,"
+                        + "compression=jpeg,Q=" + jpegQuality + ",bigtiff,subifd]",
+                Integer.toString(width),
+                "--height",
+                Integer.toString(height),
+                "--size",
+                "force"));
         requireNonempty(pyramidalOme, "pyramidal OME-TIFF");
+    }
+
+    static int omeJpegQuality(int width, int height) {
+        return (long) width * height >= 1_000_000_000L ? 75 : 93;
     }
 
     @Override
@@ -94,15 +129,13 @@ public final class VipsRuntime implements DerivativeEngine {
                 "--overlap",
                 "1",
                 "--suffix",
-                ".jpg[Q=85,strip,optimize_coding]",
+                ".jpg[Q=95,strip,optimize_coding]",
                 "--depth",
                 "onepixel",
                 "--region-shrink",
                 "mean",
                 "--skip-blanks",
-                "-1",
-                "--keep",
-                "none"));
+                "-1"));
         run(List.of(
                 "thumbnail",
                 omeTiff.toString(),

@@ -13,8 +13,13 @@ public interface ConversionEngine {
 
     void convert(Path source, int seriesIndex, Path output) throws IOException;
 
+    default PreviewSource renderPreview(
+            Path source, int seriesIndex, Path output, int maxDimension) throws IOException {
+        throw new IOException("This conversion engine does not support bounded previews");
+    }
+
     default void convert(ConversionRequest request, Path output) throws IOException {
-        if (!request.isFullSeries() || request.downsample() != 1) {
+        if (!request.isFullSeries() || request.downsample() != 1.0) {
             throw new IOException("This conversion engine does not support crop or downsample");
         }
         convert(request.source(), request.seriesIndex(), output);

@@ -6,11 +6,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.stream.Stream;
 
 public final class DatasetInspector {
-    private static final long MAX_COMPANION_ENTRIES = 10_000;
-
     public LocalDataset inspect(Path input) throws IOException, DatasetInspectionException {
         var source = input.toAbsolutePath().normalize();
         if (!Files.isRegularFile(source)) {
@@ -19,41 +16,64 @@ public final class DatasetInspector {
         var lowerName = source.getFileName().toString().toLowerCase(Locale.ROOT);
         if (lowerName.endsWith(".ome.tif") || lowerName.endsWith(".ome.tiff")) {
             verifyTiffSignature(source);
+            var inventory = DatasetSourceInventory.singleFile(source);
             return dataset(
                     source,
                     DatasetFormat.OME_TIFF,
                     DatasetStatus.READY,
-                    "OME-TIFF signature verified; ready for managed local copy");
+                    "OME-TIFF signature verified; ready for managed local copy",
+                    inventory);
         }
         if (lowerName.endsWith(".vsi")) {
-            if (!hasEtsCompanion(source.getParent())) {
+            var inventory = DatasetSourceInventory.forVsi(source);
+            if (inventory.fingerprint().isEmpty()) {
                 return dataset(
                         source,
                         DatasetFormat.VSI,
                         DatasetStatus.NEEDS_COMPANIONS,
-                        "No .ets companion found within the bounded dataset search");
+                        "No matching CellSens .ets companion set was found",
+                        inventory);
             }
             return dataset(
                     source,
                     DatasetFormat.VSI,
                     DatasetStatus.READER_REQUIRED,
-                    "Complete VSI/ETS set found; Bio-Formats reader license/runtime required");
+                    "Complete VSI/ETS set found; Bio-Formats reader license/runtime required",
+                    inventory);
         }
         throw new DatasetInspectionException(
                 "UNSUPPORTED_FORMAT", "Only OME-TIFF and VSI datasets are supported");
     }
 
     private static LocalDataset dataset(
-            Path source, DatasetFormat format, DatasetStatus status, String detail)
+            Path source,
+            DatasetFormat format,
+            DatasetStatus status,
+            String detail,
+            DatasetSourceInventory inventory)
             throws IOException {
         return new LocalDataset(
                 UUID.randomUUID().toString(),
                 source.getFileName().toString(),
                 source.toString(),
-                Files.size(source),
+                inventory.totalBytes(),
                 format,
                 status,
                 detail,
+                "",
+                "",
+                -1,
+                0,
+                0,
+                1.0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                inventory.fingerprint(),
+                inventory.serialized(),
+                "",
                 "",
                 "");
     }
@@ -89,14 +109,4 @@ public final class DatasetInspector {
         }
     }
 
-    private static boolean hasEtsCompanion(Path root) throws IOException {
-        try (Stream<Path> paths =
-                Files.find(root, 3, (path, attributes) -> attributes.isRegularFile())) {
-            return paths.limit(MAX_COMPANION_ENTRIES)
-                    .anyMatch(path -> path.getFileName()
-                            .toString()
-                            .toLowerCase(Locale.ROOT)
-                            .endsWith(".ets"));
-        }
-    }
 }

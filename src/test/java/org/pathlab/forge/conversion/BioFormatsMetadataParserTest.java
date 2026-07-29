@@ -46,4 +46,15 @@ final class BioFormatsMetadataParserTest {
         assertEquals(0, series.get(0).index());
         assertEquals(1, series.get(1).index());
     }
+
+    @Test
+    void repairsLegacyWindowsMicrometreReplacementCharacter() {
+        var xml = """
+                <OME><Image ID="main"><Pixels SizeX="10" SizeY="20" SizeC="3"
+                  SizeZ="1" SizeT="1" Type="uint8"
+                  PhysicalSizeX="0.25" PhysicalSizeXUnit="�m"/></Image></OME>
+                """;
+
+        assertEquals("µm", BioFormatsMetadataParser.parse(xml).get(0).physicalUnit());
+    }
 }
