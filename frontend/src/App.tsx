@@ -14,6 +14,7 @@ import {
   SidebarSimple,
 } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import type OpenSeadragon from 'openseadragon'
 
 import * as api from './api'
@@ -626,18 +627,67 @@ function ExportInspector({
   onConnect: () => void
   onUpload: () => void
 }) {
-  const selected = series.find((item) => item.index === dataset.selectedSeries)
-  const submit = (form: HTMLFormElement) => {
-    const values = new FormData(form)
-    onConfigure({
-      series: Number(values.get('series')),
-      downsample: Number(values.get('downsample')),
-      x: Number(values.get('x')),
-      y: Number(values.get('y')),
-      width: Number(values.get('width')),
-      height: Number(values.get('height')),
-    })
+  const configurationDraft = () => ({
+    series: String(dataset.selectedSeries),
+    downsample: String(dataset.downsample),
+    x: String(dataset.cropX),
+    y: String(dataset.cropY),
+    width: String(dataset.cropWidth),
+    height: String(dataset.cropHeight),
+  })
+  const [draft, setDraft] = useState(configurationDraft)
+
+  useEffect(() => {
+    setDraft(configurationDraft())
+  }, [
+    dataset.id,
+    dataset.selectedSeries,
+    dataset.downsample,
+    dataset.cropX,
+    dataset.cropY,
+    dataset.cropWidth,
+    dataset.cropHeight,
+  ])
+
+  const selected = series.find((item) => item.index === Number(draft.series))
+  const parsed = {
+    series: Number(draft.series),
+    downsample: Number(draft.downsample),
+    x: Number(draft.x),
+    y: Number(draft.y),
+    width: Number(draft.width),
+    height: Number(draft.height),
   }
+  const draftValid = Boolean(
+    selected
+    && parsed.downsample > 0
+    && parsed.x >= 0
+    && parsed.y >= 0
+    && parsed.width > 0
+    && parsed.height > 0
+    && parsed.x + parsed.width <= selected.width
+    && parsed.y + parsed.height <= selected.height,
+  )
+  const projectedWidth = draftValid ? Math.floor(parsed.width / parsed.downsample) : 0
+  const projectedHeight = draftValid ? Math.floor(parsed.height / parsed.downsample) : 0
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (draftValid) onConfigure(parsed)
+  }
+
+  const updateSeries = (value: string) => {
+    const next = series.find((item) => item.index === Number(value))
+    setDraft((current) => ({
+      ...current,
+      series: value,
+      x: '0',
+      y: '0',
+      width: String(next?.width || 0),
+      height: String(next?.height || 0),
+    }))
+  }
+
   return (
     <section className="forge-inspector-section">
       <div className="forge-source-summary">
@@ -648,9 +698,9 @@ function ExportInspector({
       {!series.length ? (
         <button className="forge-primary" type="button" onClick={onInspect}>Inspect image series</button>
       ) : (
-        <form className="forge-export-form" onChange={(event) => submit(event.currentTarget)}>
+        <form className="forge-export-form" onSubmit={submit}>
           <label>Image series
-            <select name="series" value={dataset.selectedSeries} onChange={() => undefined}>
+            <select name="series" value={draft.series} onChange={(event) => updateSeries(event.target.value)}>
               {series.filter((item) => item.rgbPlane).map((item) => (
                 <option key={item.index} value={item.index}>{item.name || `Series ${item.index}`} · {item.width} × {item.height}</option>
               ))}
@@ -662,29 +712,38 @@ function ExportInspector({
               ['y', 'Y', dataset.cropY],
               ['width', 'Width', dataset.cropWidth || selected?.width || 1],
               ['height', 'Height', dataset.cropHeight || selected?.height || 1],
-            ].map(([name, label, value]) => (
+            ].map(([name, label]) => (
               <label key={name}>
                 {label}
                 <input
                   name={String(name)}
                   type="number"
                   min="0"
-                  value={Number(value)}
-                  onChange={() => undefined}
+                  value={draft[String(name) as 'x' | 'y' | 'width' | 'height']}
+                  onChange={(event) => setDraft((current) => ({
+                    ...current,
+                    [String(name)]: event.target.value,
+                  }))}
                 />
               </label>
             ))}
           </div>
           <label>Downsample
-            <select name="downsample" value={dataset.downsample} onChange={() => undefined}>
+            <select
+              name="downsample"
+              value={draft.downsample}
+              onChange={(event) => setDraft((current) => ({ ...current, downsample: event.target.value }))}
+            >
               {(capabilities?.downsamples || [1, 1.5, 2, 4, 8]).map((value) => <option value={value} key={value}>{value}×</option>)}
             </select>
           </label>
           <div className="forge-output-summary">
             <span>Projected output</span>
-            <strong>{Math.round(dataset.cropWidth / dataset.downsample).toLocaleString()} × {Math.round(dataset.cropHeight / dataset.downsample).toLocaleString()}</strong>
+            <strong>{projectedWidth.toLocaleString()} × {projectedHeight.toLocaleString()}</strong>
             <small>Workspace upper bound {formatBytes(dataset.estimatedOutputBytes)}</small>
           </div>
+          {!draftValid ? <p className="forge-field-error">Crop must stay inside the selected image series.</p> : null}
+          <button className="forge-primary" type="submit" disabled={!draftValid}>Apply settings</button>
         </form>
       )}
       <p className="forge-help">
