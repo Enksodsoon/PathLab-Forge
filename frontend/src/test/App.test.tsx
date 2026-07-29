@@ -5,7 +5,9 @@ import * as api from '../api'
 import { App } from '../App'
 
 vi.mock('../SlideViewer', () => ({
-  SlideViewer: () => <div data-testid="forge-osd" />,
+  SlideViewer: ({ tileSource }: { tileSource: string }) => (
+    <div data-testid="forge-osd" data-tile-source={tileSource} />
+  ),
 }))
 
 vi.mock('../api', () => ({
@@ -214,4 +216,93 @@ test('removes a slide from the library only after an explicit preservation warni
 
   await waitFor(() => expect(api.deleteDataset).toHaveBeenCalledWith('removable-slide'))
   await waitFor(() => expect(screen.queryByText('Case 24.ome.tif')).not.toBeInTheDocument())
+})
+
+test('switches image series immediately and reloads the revision-qualified preview', async () => {
+  const dataset: api.Dataset = {
+    id: 'series-switch-slide',
+    displayName: 'Multi-image.vsi',
+    sourceBytes: 1_000_000_000,
+    format: 'VSI',
+    status: 'READY_TO_CONVERT',
+    detail: 'Two image series',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: 0,
+    width: 8_000,
+    height: 6_000,
+    downsample: 1.5,
+    estimatedOutputBytes: 300_000_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 8_000,
+    cropHeight: 6_000,
+    sourceFingerprint: 'multi-image-source',
+    configurationRevision: 'series-revision-0',
+    currentArtifactRevision: '',
+    approvedArtifactRevision: '',
+  }
+  const first: api.SeriesInfo = {
+    index: 0,
+    name: 'Overview',
+    width: 8_000,
+    height: 6_000,
+    channels: 3,
+    sizeZ: 1,
+    sizeT: 1,
+    pixelType: 'uint8',
+    physicalSizeX: 0.5,
+    physicalSizeY: 0.5,
+    physicalUnit: 'µm',
+    resolutionCount: 4,
+    rgbPlane: true,
+  }
+  const second: api.SeriesInfo = {
+    ...first,
+    index: 1,
+    name: 'Tissue',
+    width: 24_000,
+    height: 18_000,
+    resolutionCount: 6,
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[dataset], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([dataset])
+  vi.mocked(api.series).mockResolvedValue([first, second])
+  vi.mocked(api.configure).mockResolvedValue({
+    ...dataset,
+    selectedSeries: 1,
+    width: second.width,
+    height: second.height,
+    cropWidth: second.width,
+    cropHeight: second.height,
+    configurationRevision: 'series-revision-1',
+  })
+
+  render(<App />)
+
+  const seriesSelect = await screen.findByRole('combobox', { name: 'Image series' })
+  expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    expect.stringContaining('revision=series-revision-0'),
+  )
+  fireEvent.change(seriesSelect, { target: { value: '1' } })
+
+  await waitFor(() => expect(api.configure).toHaveBeenCalledWith('series-switch-slide', {
+    series: 1,
+    downsample: 1.5,
+    x: 0,
+    y: 0,
+    width: 24_000,
+    height: 18_000,
+  }))
+  await waitFor(() => expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    expect.stringContaining('revision=series-revision-1'),
+  ))
 })

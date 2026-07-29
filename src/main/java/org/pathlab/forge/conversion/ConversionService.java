@@ -26,6 +26,8 @@ import org.pathlab.forge.packageformat.PreparedPackageBuilder;
 import org.pathlab.forge.packageformat.PackageMetadata;
 
 public final class ConversionService implements AutoCloseable {
+    private static final int SOURCE_PREVIEW_MAX_DIMENSION = 12_288;
+    private static final String PREVIEW_CACHE_VERSION = "rgb-12288-v2";
     private final DatasetRepository repository;
     private final ConversionEngine engine;
     private final DerivativeEngine derivativeEngine;
@@ -116,6 +118,7 @@ public final class ConversionService implements AutoCloseable {
         var previewRoot = managedRoot
                 .resolve(id)
                 .resolve("previews")
+                .resolve(PREVIEW_CACHE_VERSION)
                 .resolve(dataset.configurationRevision())
                 .normalize();
         if (!previewRoot.startsWith(managedRoot.resolve(id).normalize())) {
@@ -141,7 +144,7 @@ public final class ConversionService implements AutoCloseable {
                     Path.of(dataset.sourcePath()),
                     dataset.selectedSeries(),
                     previewRoot.resolve("source-preview.ome.tif"),
-                    4096);
+                    SOURCE_PREVIEW_MAX_DIMENSION);
         }
         derivativeEngine.generateDzi(
                 source.path(), previewRoot, source.width(), source.height());
