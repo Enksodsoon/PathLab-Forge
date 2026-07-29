@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import * as api from '../api'
@@ -19,6 +19,7 @@ vi.mock('../api', () => ({
   datasets: vi.fn(async () => []),
   capabilities: vi.fn(),
   chooseDatasets: vi.fn(),
+  importDataset: vi.fn(),
   inspectDataset: vi.fn(),
   series: vi.fn(async () => []),
   configure: vi.fn(),
@@ -129,6 +130,7 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
   render(<App />)
 
   const x = await screen.findByRole('spinbutton', { name: 'X' })
+  await screen.findByText('82,922 × 45,367')
   fireEvent.change(x, { target: { value: '69790' } })
   fireEvent.change(screen.getByRole('spinbutton', { name: 'Y' }), { target: { value: '23372' } })
   fireEvent.change(screen.getByRole('spinbutton', { name: 'Width' }), { target: { value: '11336' } })
@@ -148,4 +150,19 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
     width: 11336,
     height: 11040,
   }))
+})
+
+test('offers a reliable local-path import when the native picker is unavailable', async () => {
+  vi.mocked(api.importDataset).mockResolvedValue({ datasets: [] })
+  render(<App />)
+
+  const libraryHeader = (await screen.findByText('Local workspace')).closest('header')
+  expect(libraryHeader).not.toBeNull()
+  fireEvent.click(within(libraryHeader!).getByRole('button', { name: 'Import' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Local slide path' }), {
+    target: { value: 'C:\\slides\\case.ome.tif' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Import this path' }))
+
+  await waitFor(() => expect(api.importDataset).toHaveBeenCalledWith('C:\\slides\\case.ome.tif'))
 })
