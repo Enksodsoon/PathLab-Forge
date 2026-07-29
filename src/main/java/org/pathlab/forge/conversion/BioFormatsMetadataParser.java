@@ -38,7 +38,8 @@ public final class BioFormatsMetadataParser {
                     pixelAttributes.value("Type", ""),
                     pixelAttributes.decimal("PhysicalSizeX"),
                     pixelAttributes.decimal("PhysicalSizeY"),
-                    decode(pixelAttributes.value("PhysicalSizeXUnit", ""))));
+                    normalizePhysicalUnit(
+                            decode(pixelAttributes.value("PhysicalSizeXUnit", "")))));
         }
         if (result.isEmpty()) {
             throw new IllegalArgumentException("Bio-Formats returned no readable image series");
@@ -63,6 +64,17 @@ public final class BioFormatsMetadataParser {
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
                 .replace("&amp;", "&");
+    }
+
+    private static String normalizePhysicalUnit(String value) {
+        var normalized = value.strip();
+        if (normalized.equalsIgnoreCase("um")
+                || normalized.equalsIgnoreCase("micrometer")
+                || normalized.equalsIgnoreCase("micrometre")
+                || normalized.equals("\uFFFDm")) {
+            return "µm";
+        }
+        return normalized;
     }
 
     private record Attributes(java.util.Map<String, String> values) {

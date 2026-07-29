@@ -1,6 +1,7 @@
 package org.pathlab.forge.library;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -45,10 +46,42 @@ final class DatasetInspectorTest {
         var missing = new DatasetInspector().inspect(source);
         assertEquals(DatasetStatus.NEEDS_COMPANIONS, missing.status());
 
-        var companionDirectory = Files.createDirectories(temporaryDirectory.resolve("case"));
+        var companionDirectory = Files.createDirectories(temporaryDirectory.resolve("_case_"));
         Files.write(companionDirectory.resolve("frame.ets"), new byte[] {4, 5, 6});
         var complete = new DatasetInspector().inspect(source);
         assertEquals(DatasetStatus.READER_REQUIRED, complete.status());
         assertTrue(complete.detail().contains("Bio-Formats"));
+        assertEquals(6, complete.sourceBytes());
+        assertEquals(64, complete.sourceFingerprint().length());
+        assertTrue(complete.sourceInventory().contains("_case_/frame.ets"));
+    }
+
+    @Test
+    void rejectsUnrelatedEtsFilesNearTheSelectedVsi() throws Exception {
+        var source = temporaryDirectory.resolve("case.vsi");
+        Files.write(source, new byte[] {1, 2, 3});
+        var unrelated = Files.createDirectories(temporaryDirectory.resolve("_different-slide_"));
+        Files.write(unrelated.resolve("frame.ets"), new byte[] {4, 5, 6});
+
+        var inspected = new DatasetInspector().inspect(source);
+
+        assertEquals(DatasetStatus.NEEDS_COMPANIONS, inspected.status());
+        assertTrue(inspected.sourceFingerprint().isEmpty());
+        assertTrue(inspected.sourceInventory().isEmpty());
+    }
+
+    @Test
+    void sourceFingerprintChangesWhenACompanionChanges() throws Exception {
+        var source = temporaryDirectory.resolve("case.vsi");
+        Files.write(source, new byte[] {1, 2, 3});
+        var companionDirectory = Files.createDirectories(temporaryDirectory.resolve("_case_"));
+        var companion = companionDirectory.resolve("frame.ets");
+        Files.write(companion, new byte[] {4, 5, 6});
+
+        var first = new DatasetInspector().inspect(source);
+        Files.write(companion, new byte[] {4, 5, 7});
+        var second = new DatasetInspector().inspect(source);
+
+        assertNotEquals(first.sourceFingerprint(), second.sourceFingerprint());
     }
 }

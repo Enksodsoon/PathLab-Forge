@@ -1,5 +1,9 @@
 package org.pathlab.forge.library;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Objects;
 
 public record LocalDataset(
@@ -15,12 +19,17 @@ public record LocalDataset(
         int selectedSeries,
         int width,
         int height,
-        int downsample,
+        double downsample,
         long estimatedOutputBytes,
         int cropX,
         int cropY,
         int cropWidth,
-        int cropHeight) {
+        int cropHeight,
+        String sourceFingerprint,
+        String sourceInventory,
+        String configurationRevision,
+        String currentArtifactRevision,
+        String approvedArtifactRevision) {
     public LocalDataset {
         id = requireText(id, "id");
         displayName = requireText(displayName, "displayName");
@@ -33,6 +42,14 @@ public record LocalDataset(
         detail = Objects.requireNonNull(detail, "detail");
         outputPath = Objects.requireNonNull(outputPath, "outputPath");
         sha256 = Objects.requireNonNull(sha256, "sha256");
+        sourceFingerprint = Objects.requireNonNull(sourceFingerprint, "sourceFingerprint");
+        sourceInventory = Objects.requireNonNull(sourceInventory, "sourceInventory");
+        configurationRevision =
+                Objects.requireNonNull(configurationRevision, "configurationRevision");
+        currentArtifactRevision =
+                Objects.requireNonNull(currentArtifactRevision, "currentArtifactRevision");
+        approvedArtifactRevision =
+                Objects.requireNonNull(approvedArtifactRevision, "approvedArtifactRevision");
         if (selectedSeries < -1 || width < 0 || height < 0 || downsample <= 0
                 || estimatedOutputBytes < 0 || cropX < 0 || cropY < 0
                 || cropWidth < 0 || cropHeight < 0
@@ -65,12 +82,17 @@ public record LocalDataset(
                 -1,
                 0,
                 0,
-                1,
+                1.0,
                 0,
                 0,
                 0,
                 0,
-                0);
+                0,
+                "",
+                "",
+                "",
+                "",
+                "");
     }
 
     public LocalDataset withPreparation(
@@ -93,7 +115,12 @@ public record LocalDataset(
                 cropX,
                 cropY,
                 cropWidth,
-                cropHeight);
+                cropHeight,
+                sourceFingerprint,
+                sourceInventory,
+                configurationRevision,
+                currentArtifactRevision,
+                approvedArtifactRevision);
     }
 
     public LocalDataset withConversion(
@@ -104,7 +131,7 @@ public record LocalDataset(
             int nextSeries,
             int nextWidth,
             int nextHeight,
-            int nextDownsample,
+            double nextDownsample,
             long nextEstimatedBytes) {
         return new LocalDataset(
                 id,
@@ -124,7 +151,12 @@ public record LocalDataset(
                 cropX,
                 cropY,
                 cropWidth,
-                cropHeight);
+                cropHeight,
+                sourceFingerprint,
+                sourceInventory,
+                configurationRevision,
+                currentArtifactRevision,
+                approvedArtifactRevision);
     }
 
     public LocalDataset withExportConfiguration(
@@ -133,12 +165,23 @@ public record LocalDataset(
             int nextSeries,
             int nextWidth,
             int nextHeight,
-            int nextDownsample,
+            double nextDownsample,
             long nextEstimatedBytes,
             int nextCropX,
             int nextCropY,
             int nextCropWidth,
             int nextCropHeight) {
+        var nextConfigurationRevision = configurationRevision(
+                sourceFingerprint,
+                sourcePath,
+                sourceBytes,
+                nextSeries,
+                nextCropX,
+                nextCropY,
+                nextCropWidth,
+                nextCropHeight,
+                nextDownsample);
+        var unchanged = nextConfigurationRevision.equals(configurationRevision);
         return new LocalDataset(
                 id,
                 displayName,
@@ -147,8 +190,8 @@ public record LocalDataset(
                 format,
                 nextStatus,
                 nextDetail,
-                outputPath,
-                sha256,
+                unchanged ? outputPath : "",
+                unchanged ? sha256 : "",
                 nextSeries,
                 nextWidth,
                 nextHeight,
@@ -157,7 +200,74 @@ public record LocalDataset(
                 nextCropX,
                 nextCropY,
                 nextCropWidth,
-                nextCropHeight);
+                nextCropHeight,
+                sourceFingerprint,
+                sourceInventory,
+                nextConfigurationRevision,
+                unchanged ? currentArtifactRevision : "",
+                unchanged ? approvedArtifactRevision : "");
+    }
+
+    public LocalDataset withArtifactRevision(
+            DatasetStatus nextStatus,
+            String nextDetail,
+            String nextOutputPath,
+            String nextSha256,
+            String nextArtifactRevision) {
+        return new LocalDataset(
+                id,
+                displayName,
+                sourcePath,
+                sourceBytes,
+                format,
+                nextStatus,
+                nextDetail,
+                nextOutputPath,
+                nextSha256,
+                selectedSeries,
+                width,
+                height,
+                downsample,
+                estimatedOutputBytes,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight,
+                sourceFingerprint,
+                sourceInventory,
+                configurationRevision,
+                nextArtifactRevision,
+                "");
+    }
+
+    public LocalDataset withApprovedArtifact(String revisionId) {
+        if (!revisionId.equals(currentArtifactRevision)) {
+            throw new IllegalArgumentException("Only the current artifact can be approved");
+        }
+        return new LocalDataset(
+                id,
+                displayName,
+                sourcePath,
+                sourceBytes,
+                format,
+                status,
+                detail,
+                outputPath,
+                sha256,
+                selectedSeries,
+                width,
+                height,
+                downsample,
+                estimatedOutputBytes,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight,
+                sourceFingerprint,
+                sourceInventory,
+                configurationRevision,
+                currentArtifactRevision,
+                revisionId);
     }
 
     private static String requireText(String value, String name) {
@@ -166,5 +276,33 @@ public record LocalDataset(
             throw new IllegalArgumentException(name + " must not be blank");
         }
         return normalized;
+    }
+
+    private static String configurationRevision(
+            String sourceFingerprint,
+            String sourcePath,
+            long sourceBytes,
+            int series,
+            int cropX,
+            int cropY,
+            int cropWidth,
+            int cropHeight,
+            double downsample) {
+        var identity = (sourceFingerprint.isBlank()
+                        ? sourcePath + "|" + sourceBytes
+                        : sourceFingerprint)
+                + "|" + series
+                + "|" + cropX
+                + "|" + cropY
+                + "|" + cropWidth
+                + "|" + cropHeight
+                + "|" + Double.toString(downsample);
+        try {
+            var digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(
+                    digest.digest(identity.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException error) {
+            throw new IllegalStateException("SHA-256 is unavailable", error);
+        }
     }
 }

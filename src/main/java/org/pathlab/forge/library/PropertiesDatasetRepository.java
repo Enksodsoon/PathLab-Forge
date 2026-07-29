@@ -86,14 +86,19 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     Integer.parseInt(properties.getProperty(key + "selectedSeries", "-1")),
                     Integer.parseInt(properties.getProperty(key + "width", "0")),
                     Integer.parseInt(properties.getProperty(key + "height", "0")),
-                    Integer.parseInt(properties.getProperty(key + "downsample", "1")),
+                    Double.parseDouble(properties.getProperty(key + "downsample", "1")),
                     Long.parseLong(properties.getProperty(key + "estimatedOutputBytes", "0")),
                     Integer.parseInt(properties.getProperty(key + "cropX", "0")),
                     Integer.parseInt(properties.getProperty(key + "cropY", "0")),
                     Integer.parseInt(properties.getProperty(
                             key + "cropWidth", properties.getProperty(key + "width", "0"))),
                     Integer.parseInt(properties.getProperty(
-                            key + "cropHeight", properties.getProperty(key + "height", "0"))));
+                            key + "cropHeight", properties.getProperty(key + "height", "0"))),
+                    properties.getProperty(key + "sourceFingerprint", ""),
+                    properties.getProperty(key + "sourceInventory", ""),
+                    properties.getProperty(key + "configurationRevision", ""),
+                    properties.getProperty(key + "currentArtifactRevision", ""),
+                    properties.getProperty(key + "approvedArtifactRevision", ""));
             if (loaded.status() == DatasetStatus.INSPECTING
                     || loaded.status() == DatasetStatus.CONVERTING
                     || loaded.status() == DatasetStatus.VALIDATING) {
@@ -123,7 +128,7 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
             properties.setProperty(key + "selectedSeries", Integer.toString(dataset.selectedSeries()));
             properties.setProperty(key + "width", Integer.toString(dataset.width()));
             properties.setProperty(key + "height", Integer.toString(dataset.height()));
-            properties.setProperty(key + "downsample", Integer.toString(dataset.downsample()));
+            properties.setProperty(key + "downsample", Double.toString(dataset.downsample()));
             properties.setProperty(
                     key + "estimatedOutputBytes",
                     Long.toString(dataset.estimatedOutputBytes()));
@@ -131,6 +136,14 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
             properties.setProperty(key + "cropY", Integer.toString(dataset.cropY()));
             properties.setProperty(key + "cropWidth", Integer.toString(dataset.cropWidth()));
             properties.setProperty(key + "cropHeight", Integer.toString(dataset.cropHeight()));
+            properties.setProperty(key + "sourceFingerprint", dataset.sourceFingerprint());
+            properties.setProperty(key + "sourceInventory", dataset.sourceInventory());
+            properties.setProperty(
+                    key + "configurationRevision", dataset.configurationRevision());
+            properties.setProperty(
+                    key + "currentArtifactRevision", dataset.currentArtifactRevision());
+            properties.setProperty(
+                    key + "approvedArtifactRevision", dataset.approvedArtifactRevision());
         }
         var partial = storePath.resolveSibling(storePath.getFileName() + ".partial");
         try (OutputStream output = Files.newOutputStream(partial)) {

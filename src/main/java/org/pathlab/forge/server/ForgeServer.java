@@ -36,6 +36,10 @@ import org.pathlab.forge.library.LocalDataset;
 import org.pathlab.forge.library.PropertiesDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
 import org.pathlab.forge.model.BatchId;
+import org.pathlab.forge.viewer.ViewerConnection;
+import org.pathlab.forge.viewer.ViewerPairingService;
+import org.pathlab.forge.viewer.ViewerUploadStatus;
+import org.pathlab.forge.viewer.WindowsCredentialStore;
 
 public final class ForgeServer implements AutoCloseable {
     private static final int MAX_WRITE_BYTES = 65_536;
@@ -52,6 +56,7 @@ public final class ForgeServer implements AutoCloseable {
     private final DatasetPreparationService preparationService;
     private final ConversionService conversionService;
     private final AnnotationRepository annotationRepository;
+    private final ViewerPairingService viewerPairingService;
     private volatile boolean launchTokenAvailable = true;
 
     private ForgeServer(
@@ -74,6 +79,7 @@ public final class ForgeServer implements AutoCloseable {
         conversionService =
                 new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
         annotationRepository = new AnnotationRepository(managedRoot);
+        viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
     }
 
     public static ForgeServer start() throws IOException {
@@ -156,12 +162,18 @@ public final class ForgeServer implements AutoCloseable {
             if ("/".equals(path)) {
                 bootstrap(exchange);
             } else if ("/app".equals(path) && "GET".equals(exchange.getRequestMethod())) {
-                authenticatedResource(exchange, "/web/app.html", "text/html; charset=utf-8");
+                authenticatedResource(exchange, "/web/index.html", "text/html; charset=utf-8");
             } else if ("/assets/app.css".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 authenticatedResource(exchange, "/web/app.css", "text/css; charset=utf-8");
             } else if ("/assets/app.js".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 authenticatedResource(
                         exchange, "/web/app.js", "text/javascript; charset=utf-8");
+            } else if (path.matches("/assets/chunk-[A-Za-z0-9._-]+\\.js")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                authenticatedResource(
+                        exchange,
+                        "/web/" + path.substring("/assets/".length()),
+                        "text/javascript; charset=utf-8");
             } else if ("/assets/openseadragon.min.js".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 authenticatedResource(
@@ -172,6 +184,21 @@ public final class ForgeServer implements AutoCloseable {
                 session(exchange);
             } else if ("/api/capabilities".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 capabilities(exchange);
+            } else if ("/api/viewer/connection".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                viewerConnection(exchange);
+            } else if ("/api/viewer/pairing/start".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                startViewerPairing(exchange);
+            } else if ("/api/viewer/pairing/exchange".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                exchangeViewerPairing(exchange);
+            } else if ("/api/viewer/connection/revoke".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                revokeViewerConnection(exchange);
+            } else if ("/api/viewer/upload".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                viewerUploadStatus(exchange);
             } else if ("/api/datasets".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 listDatasets(exchange);
             } else if ("/api/datasets/select".equals(path)
@@ -216,15 +243,27 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/artifacts".length()));
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/approve")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                approveArtifact(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/derivative/.+")
                     && "GET".equals(exchange.getRequestMethod())) {
                 derivativeResource(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/preview/.+")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                previewResource(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/package")
                     && "GET".equals(exchange.getRequestMethod())) {
                 packageResource(
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/package".length()));
+            } else if (path.matches("/api/datasets/[^/]+/upload")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                uploadApprovedArtifact(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(), path.length() - "/upload".length()));
             } else if (path.matches("/api/datasets/[^/]+/annotations")
                     && "GET".equals(exchange.getRequestMethod())) {
                 listAnnotations(
@@ -278,6 +317,128 @@ public final class ForgeServer implements AutoCloseable {
         exchange.sendResponseHeaders(303, -1);
     }
 
+    private void viewerConnection(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    viewerConnectionJson(viewerPairingService.status()));
+        } catch (IOException | RuntimeException error) {
+            respond(
+                    exchange,
+                    503,
+                    "application/json",
+                    "{\"error\":\"viewer_unavailable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void startViewerPairing(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            var pairing = viewerPairingService.start(queryValue(exchange, "viewerUrl", ""));
+            respond(
+                    exchange,
+                    201,
+                    "application/json",
+                    "{\"userCode\":" + json(pairing.userCode())
+                            + ",\"verificationUrl\":" + json(pairing.verificationUrl())
+                            + ",\"expiresAt\":" + json(pairing.expiresAt()) + "}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"pairing_failed\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void exchangeViewerPairing(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    viewerConnectionJson(viewerPairingService.exchange()));
+        } catch (IOException | IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"pairing_pending\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void revokeViewerConnection(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            viewerPairingService.revoke();
+            exchange.sendResponseHeaders(204, -1);
+        } catch (IOException error) {
+            respond(
+                    exchange,
+                    503,
+                    "application/json",
+                    "{\"error\":\"viewer_revoke_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void viewerUploadStatus(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        respond(
+                exchange,
+                200,
+                "application/json",
+                viewerUploadJson(viewerPairingService.uploadStatus()));
+    }
+
+    private void uploadApprovedArtifact(HttpExchange exchange, String id)
+            throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            var dataset = repository.find(id)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Dataset was not found"));
+            var revision = conversionService.approvedRevision(id);
+            respond(
+                    exchange,
+                    202,
+                    "application/json",
+                    viewerUploadJson(viewerPairingService.startUpload(
+                            dataset.displayName(),
+                            revision,
+                            annotationRepository.list(id),
+                            dataset.cropX(),
+                            dataset.cropY(),
+                            dataset.cropWidth(),
+                            dataset.cropHeight(),
+                            dataset.downsample())));
+        } catch (IOException | IllegalStateException | IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"viewer_upload_rejected\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
     private void authenticatedResource(HttpExchange exchange, String resource, String type)
             throws IOException {
         if (!authenticated(exchange)) {
@@ -319,7 +480,7 @@ public final class ForgeServer implements AutoCloseable {
                         + conversionService.derivativeEngine().available()
                         + ",\"derivativeRuntime\":"
                         + json(conversionService.derivativeEngine().description())
-                        + ",\"activeConversions\":1,\"downsamples\":[1,2,4,8]}");
+                        + ",\"activeConversions\":1,\"downsamples\":[1,1.5,2,4,8]}");
     }
 
     private void listDatasets(HttpExchange exchange) throws IOException {
@@ -417,7 +578,7 @@ public final class ForgeServer implements AutoCloseable {
         }
         try {
             var series = integerQuery(exchange, "series");
-            var downsample = optionalIntegerQuery(exchange, "downsample", 1);
+            var downsample = optionalDoubleQuery(exchange, "downsample", 1.0);
             var info = conversionService.series(id).stream()
                     .filter(item -> item.index() == series)
                     .findFirst()
@@ -466,6 +627,13 @@ public final class ForgeServer implements AutoCloseable {
                     409,
                     "application/json",
                     "{\"error\":\"not_ready\",\"detail\":" + json(error.getMessage()) + "}");
+        } catch (IOException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"conversion_preflight_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
         }
     }
 
@@ -489,19 +657,51 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
-            var artifacts = conversionService.artifacts(id);
+            var dataset = repository.find(id).orElseThrow(
+                    () -> new IllegalArgumentException("Dataset was not found"));
+            var revisions = conversionService.revisions(id);
             respond(
                     exchange,
                     200,
                     "application/json",
-                    "{\"omeTiffPath\":" + json(artifacts.omeTiff().toString())
-                            + ",\"derivativePath\":" + json(artifacts.derivativeRoot().toString())
-                            + ",\"packagePath\":" + json(artifacts.packagePath().toString())
-                            + ",\"dziReady\":" + Files.isRegularFile(artifacts.dzi())
-                            + ",\"packageReady\":" + Files.isRegularFile(artifacts.packagePath())
-                            + "}");
+                    "{\"currentRevision\":" + json(dataset.currentArtifactRevision())
+                            + ",\"approvedRevision\":"
+                            + json(dataset.approvedArtifactRevision())
+                            + ",\"revisions\":["
+                            + revisions.stream()
+                                    .map(ForgeServer::artifactRevisionJson)
+                                    .collect(java.util.stream.Collectors.joining(","))
+                            + "]}");
         } catch (IllegalArgumentException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+        }
+    }
+
+    private void approveArtifact(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var remainder = path.substring("/api/datasets/".length());
+        var separator = remainder.indexOf("/artifacts/");
+        var datasetId = remainder.substring(0, separator);
+        var revisionId = remainder.substring(
+                separator + "/artifacts/".length(),
+                remainder.length() - "/approve".length());
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    datasetJson(conversionService.approve(datasetId, revisionId)));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"artifact_not_found\"}");
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"artifact_not_approvable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
         }
     }
 
@@ -535,8 +735,52 @@ public final class ForgeServer implements AutoCloseable {
                     ? "application/xml; charset=utf-8"
                     : "image/jpeg";
             respondFile(exchange, type, file);
-        } catch (IllegalArgumentException error) {
+        } catch (IllegalArgumentException | IllegalStateException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+        }
+    }
+
+    private void previewResource(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var remainder = path.substring("/api/datasets/".length());
+        var separator = remainder.indexOf("/preview/");
+        if (separator <= 0) {
+            respond(exchange, 404, "application/json", "{\"error\":\"not_found\"}");
+            return;
+        }
+        var id = remainder.substring(0, separator);
+        var relative = remainder.substring(separator + "/preview/".length());
+        if (!relative.matches("slide\\.dzi|thumbnail\\.jpg|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
+            respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+            return;
+        }
+        try {
+            var preview = conversionService.preview(id);
+            var root = preview.root().toAbsolutePath().normalize();
+            var file = root.resolve(relative.replace('/', java.io.File.separatorChar)).normalize();
+            if (!file.startsWith(root)
+                    || !Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(file)) {
+                respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+                return;
+            }
+            exchange.getResponseHeaders().set(
+                    "X-PathLab-Source-Geometry",
+                    preview.sourceWidth() + "x" + preview.sourceHeight());
+            exchange.getResponseHeaders().set(
+                    "X-PathLab-Preview-Geometry", preview.width() + "x" + preview.height());
+            respondFile(
+                    exchange,
+                    relative.endsWith(".dzi") ? "application/xml; charset=utf-8" : "image/jpeg",
+                    file);
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"preview_not_ready\",\"detail\":" + json(error.getMessage()) + "}");
         }
     }
 
@@ -554,7 +798,7 @@ public final class ForgeServer implements AutoCloseable {
             exchange.getResponseHeaders().set(
                     "Content-Disposition", "attachment; filename=\"slide.plslide\"");
             respondFile(exchange, "application/x-tar", file);
-        } catch (IllegalArgumentException error) {
+        } catch (IllegalArgumentException | IllegalStateException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
         }
     }
@@ -691,7 +935,13 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"cropX\":" + dataset.cropX()
                 + ",\"cropY\":" + dataset.cropY()
                 + ",\"cropWidth\":" + dataset.cropWidth()
-                + ",\"cropHeight\":" + dataset.cropHeight() + "}";
+                + ",\"cropHeight\":" + dataset.cropHeight()
+                + ",\"sourceFingerprint\":" + json(dataset.sourceFingerprint())
+                + ",\"sourceInventory\":" + json(dataset.sourceInventory())
+                + ",\"configurationRevision\":" + json(dataset.configurationRevision())
+                + ",\"currentArtifactRevision\":" + json(dataset.currentArtifactRevision())
+                + ",\"approvedArtifactRevision\":" + json(dataset.approvedArtifactRevision())
+                + "}";
     }
 
     private static String seriesJson(List<SeriesInfo> series) {
@@ -708,6 +958,7 @@ public final class ForgeServer implements AutoCloseable {
                                 + ",\"physicalSizeX\":" + item.physicalSizeX()
                                 + ",\"physicalSizeY\":" + item.physicalSizeY()
                                 + ",\"physicalUnit\":" + json(item.physicalUnit())
+                                + ",\"resolutionCount\":" + item.resolutionCount()
                                 + ",\"rgbPlane\":" + item.isRgbPlane() + "}")
                         .collect(java.util.stream.Collectors.joining(","))
                 + "]}";
@@ -721,6 +972,26 @@ public final class ForgeServer implements AutoCloseable {
                 + "]}";
     }
 
+    private static String viewerConnectionJson(ViewerConnection connection) {
+        return "{\"connected\":" + connection.connected()
+                + ",\"viewerUrl\":" + json(connection.viewerUrl())
+                + ",\"deviceName\":" + json(connection.deviceName())
+                + ",\"scopes\":["
+                + connection.scopes().stream()
+                        .map(ForgeServer::json)
+                        .collect(java.util.stream.Collectors.joining(","))
+                + "]}";
+    }
+
+    private static String viewerUploadJson(ViewerUploadStatus upload) {
+        return "{\"state\":" + json(upload.state())
+                + ",\"artifactRevisionId\":" + json(upload.artifactRevisionId())
+                + ",\"uploadedBytes\":" + upload.uploadedBytes()
+                + ",\"totalBytes\":" + upload.totalBytes()
+                + ",\"viewerSlideId\":" + json(upload.viewerSlideId())
+                + ",\"detail\":" + json(upload.detail()) + "}";
+    }
+
     private static String annotationJson(AnnotationRecord annotation) {
         return "{\"id\":" + json(annotation.id())
                 + ",\"type\":" + json(annotation.type())
@@ -728,6 +999,24 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"label\":" + json(annotation.label())
                 + ",\"color\":" + json(annotation.color())
                 + ",\"createdAt\":" + annotation.createdAt() + "}";
+    }
+
+    private static String artifactRevisionJson(
+            org.pathlab.forge.conversion.ArtifactRevision revision) {
+        return "{\"id\":" + json(revision.id())
+                + ",\"configurationRevision\":" + json(revision.configurationRevision())
+                + ",\"sourceFingerprint\":" + json(revision.sourceFingerprint())
+                + ",\"createdAt\":" + revision.createdAt()
+                + ",\"status\":" + json(revision.status().name())
+                + ",\"omePath\":" + json(revision.omePath())
+                + ",\"derivativePath\":" + json(revision.derivativePath())
+                + ",\"packagePath\":" + json(revision.packagePath())
+                + ",\"omeSha256\":" + json(revision.omeSha256())
+                + ",\"packageSha256\":" + json(revision.packageSha256())
+                + ",\"outputWidth\":" + revision.outputWidth()
+                + ",\"outputHeight\":" + revision.outputHeight()
+                + ",\"approvedAt\":" + revision.approvedAt()
+                + ",\"failure\":" + json(revision.failure()) + "}";
     }
 
     private static int integerQuery(HttpExchange exchange, String name) {
@@ -744,6 +1033,12 @@ public final class ForgeServer implements AutoCloseable {
             return fallback;
         }
         throw new IllegalArgumentException("Missing query parameter: " + name);
+    }
+
+    private static double optionalDoubleQuery(
+            HttpExchange exchange, String name, double fallback) {
+        var value = queryValue(exchange, name, null);
+        return value == null ? fallback : Double.parseDouble(value);
     }
 
     private static String queryValue(HttpExchange exchange, String name, String fallback) {
@@ -851,6 +1146,7 @@ public final class ForgeServer implements AutoCloseable {
     public void close() {
         server.stop(0);
         conversionService.close();
+        viewerPairingService.close();
         executor.shutdownNow();
     }
 }

@@ -21,7 +21,12 @@ public final class PreparedPackageBuilder {
     private PreparedPackageBuilder() {}
 
     public static PackageInfo build(
-            Path derivativeRoot, int width, int height, Path output) throws IOException {
+            Path derivativeRoot,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            Path output)
+            throws IOException {
         var root = derivativeRoot.toAbsolutePath().normalize();
         var payloads = new ArrayList<Payload>();
         try (var paths = Files.walk(root)) {
@@ -46,12 +51,20 @@ public final class PreparedPackageBuilder {
         if (payloads.size() < 3) {
             throw new IOException("Derivative is incomplete");
         }
-        var manifest = manifest(width, height, payloads).getBytes(StandardCharsets.UTF_8);
+        var manifest = manifest(width, height, metadata, payloads)
+                .getBytes(StandardCharsets.UTF_8);
+        var manifestHash = HexFormat.of().formatHex(sha256Digest().digest(manifest))
+                .getBytes(StandardCharsets.US_ASCII);
         var partial = output.resolveSibling(output.getFileName() + ".partial");
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
         try {
             try (OutputStream stream = Files.newOutputStream(partial)) {
                 writeEntry(stream, "manifest.json", manifest.length, new java.io.ByteArrayInputStream(manifest));
+                writeEntry(
+                        stream,
+                        "manifest.sha256",
+                        manifestHash.length,
+                        new java.io.ByteArrayInputStream(manifestHash));
                 for (var payload : payloads) {
                     try (InputStream input = Files.newInputStream(payload.path())) {
                         writeEntry(stream, payload.name(), payload.bytes(), input);
@@ -74,16 +87,39 @@ public final class PreparedPackageBuilder {
                 payloads.size());
     }
 
-    private static String manifest(int width, int height, List<Payload> payloads) {
+    private static String manifest(
+            int width, int height, PackageMetadata metadata, List<Payload> payloads) {
         var files = payloads.stream()
                 .map(payload -> "{\"path\":\"" + payload.name()
                         + "\",\"size\":" + payload.bytes()
                         + ",\"sha256\":\"" + payload.sha256() + "\"}")
                 .collect(java.util.stream.Collectors.joining(","));
-        return "{\"schema\":\"pathlab-prepared-slide/v1\",\"slide\":{"
+        return "{\"schema\":\"pathlab-prepared-slide/v2\",\"producer\":{"
+                + "\"name\":\"PathLab Forge\",\"version\":\""
+                + escape(metadata.producerVersion()) + "\"},\"provenance\":{"
+                + "\"artifactRevisionId\":\"" + escape(metadata.artifactRevisionId()) + "\","
+                + "\"configurationRevision\":\"" + escape(metadata.configurationRevision()) + "\","
+                + "\"sourceFingerprint\":\"" + escape(metadata.sourceFingerprint()) + "\","
+                + "\"series\":" + metadata.series() + ",\"crop\":{"
+                + "\"x\":" + metadata.cropX() + ",\"y\":" + metadata.cropY()
+                + ",\"width\":" + metadata.cropWidth()
+                + ",\"height\":" + metadata.cropHeight() + "},"
+                + "\"downsample\":" + metadata.downsample() + ","
+                + "\"coordinateTransform\":{\"translateX\":" + -metadata.cropX()
+                + ",\"translateY\":" + -metadata.cropY()
+                + ",\"scale\":" + (1.0 / metadata.downsample()) + "},"
+                + "\"calibration\":{\"pixelSizeX\":" + metadata.physicalSizeX()
+                        * metadata.downsample()
+                + ",\"pixelSizeY\":" + metadata.physicalSizeY()
+                        * metadata.downsample()
+                + ",\"unit\":\"" + escape(metadata.physicalUnit()) + "\"}},\"slide\":{"
                 + "\"width\":" + width + ",\"height\":" + height
                 + ",\"tileSize\":512,\"overlap\":1,\"format\":\"jpg\"},"
                 + "\"files\":[" + files + "]}";
+    }
+
+    private static String escape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static void writeEntry(

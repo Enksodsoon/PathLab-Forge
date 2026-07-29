@@ -58,14 +58,16 @@ public final class DziValidator {
                 for (var column = 0; column < columns; column++) {
                     var tile = directory.resolve(column + "_" + row + ".jpg");
                     requireJpeg(tile);
-                    var image = ImageIO.read(tile.toFile());
-                    if (image == null
-                            || image.getWidth()
-                                    != expectedTileDimension(levelWidth, column, columns)
-                            || image.getHeight()
-                                    != expectedTileDimension(levelHeight, row, rows)) {
-                        throw new IOException("DZI tile has invalid dimensions: "
-                                + level + "/" + column + "_" + row);
+                    if (sampleTile(column, row, columns, rows)) {
+                        var image = ImageIO.read(tile.toFile());
+                        if (image == null
+                                || image.getWidth()
+                                        != expectedTileDimension(levelWidth, column, columns)
+                                || image.getHeight()
+                                        != expectedTileDimension(levelHeight, row, rows)) {
+                            throw new IOException("DZI tile has invalid dimensions: "
+                                    + level + "/" + column + "_" + row);
+                        }
                     }
                     tileCount++;
                     if (tileCount > MAX_FILES) {
@@ -106,12 +108,22 @@ public final class DziValidator {
         if (fileCount != tileCount + 2) {
             throw new IOException("Derivative has missing or duplicate files");
         }
+        verifyPreviewContent(thumbnail, width, height);
         return new DerivativeInfo(
                 normalized,
                 bytes,
                 Math.toIntExact(fileCount),
                 Math.toIntExact(tileCount),
                 HexFormat.of().formatHex(digest.digest()));
+    }
+
+    private static boolean sampleTile(
+            int column, int row, int columns, int rows) {
+        return (column == 0 && row == 0)
+                || (column == columns - 1 && row == 0)
+                || (column == 0 && row == rows - 1)
+                || (column == columns - 1 && row == rows - 1)
+                || (column == columns / 2 && row == rows / 2);
     }
 
     private static int expectedTileDimension(long levelSize, int index, int count) {
@@ -161,6 +173,40 @@ public final class DziValidator {
             if ((tail.get() & 0xff) != 0xff || (tail.get() & 0xff) != 0xd9) {
                 throw new IOException("JPEG end marker is missing");
             }
+        }
+    }
+
+    private static void verifyPreviewContent(Path thumbnail, int width, int height)
+            throws IOException {
+        if ((long) width * height < (long) TILE_SIZE * TILE_SIZE) {
+            return;
+        }
+        var image = ImageIO.read(thumbnail.toFile());
+        if (image == null) {
+            throw new IOException("Derivative thumbnail could not be decoded");
+        }
+        var minimum = 255;
+        var maximum = 0;
+        double sum = 0;
+        double squared = 0;
+        var pixels = (long) image.getWidth() * image.getHeight();
+        for (var y = 0; y < image.getHeight(); y++) {
+            for (var x = 0; x < image.getWidth(); x++) {
+                var rgb = image.getRGB(x, y);
+                var luminance = (int) Math.round(
+                        0.2126 * ((rgb >>> 16) & 0xff)
+                                + 0.7152 * ((rgb >>> 8) & 0xff)
+                                + 0.0722 * (rgb & 0xff));
+                minimum = Math.min(minimum, luminance);
+                maximum = Math.max(maximum, luminance);
+                sum += luminance;
+                squared += (double) luminance * luminance;
+            }
+        }
+        var mean = sum / pixels;
+        var variance = Math.max(0, squared / pixels - mean * mean);
+        if (maximum - minimum < 12 && variance < 4) {
+            throw new IOException("Derivative preview is blank or near-blank");
         }
     }
 
