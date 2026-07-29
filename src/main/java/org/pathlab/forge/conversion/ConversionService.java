@@ -468,6 +468,7 @@ public final class ConversionService implements AutoCloseable {
     public LocalDataset start(String id) throws IOException {
         var dataset = requireDataset(id);
         if (dataset.status() == DatasetStatus.CONVERTING
+                || dataset.status() == DatasetStatus.OPTIMIZING_OME
                 || dataset.status() == DatasetStatus.VALIDATING) {
             return dataset;
         }
@@ -567,6 +568,16 @@ public final class ConversionService implements AutoCloseable {
                 engine.convert(request, rendered);
             }
             if (derivativeEngine.available()) {
+                repository.save(dataset.withConversion(
+                        DatasetStatus.OPTIMIZING_OME,
+                        "Rendered RGB complete; compressing the tiled OME-BigTIFF pyramid",
+                        dataset.outputPath(),
+                        dataset.sha256(),
+                        dataset.selectedSeries(),
+                        dataset.width(),
+                        dataset.height(),
+                        dataset.downsample(),
+                        dataset.estimatedOutputBytes()));
                 derivativeEngine.optimizeOme(
                         rendered, partial, request.outputWidth(), request.outputHeight());
                 Files.deleteIfExists(rendered);

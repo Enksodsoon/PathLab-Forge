@@ -30,8 +30,8 @@ import type {
 import { SlideViewer } from './SlideViewer'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
-const ACTIVE_STATUSES = new Set(['INSPECTING', 'CONVERTING', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
-const CONVERSION_STATUSES = new Set(['CONVERTING', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
+const ACTIVE_STATUSES = new Set(['INSPECTING', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
+const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
@@ -587,7 +587,7 @@ function ViewerStage({
         <button type="button" aria-label="Toggle inspector" onClick={onInspector}><SidebarSimple /></button>
       </header>
       {converting && dataset ? (
-        <ConversionProgress dataset={dataset} />
+        <ConversionProgress dataset={dataset} revision={revision} />
       ) : tileSource ? (
         <SlideViewer
           tileSource={tileSource}
@@ -618,8 +618,9 @@ function ViewerStage({
   )
 }
 
-function ConversionProgress({ dataset }: { dataset: Dataset }) {
+function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?: ArtifactRevision }) {
   const phase = conversionPhase(dataset.status)
+  const elapsed = useElapsed(revision?.createdAt)
   return (
     <div className="forge-conversion-progress" aria-live="polite">
       <span className="forge-conversion-kicker">Preparing converted result</span>
@@ -627,18 +628,18 @@ function ConversionProgress({ dataset }: { dataset: Dataset }) {
       <p>{dataset.detail}</p>
       <progress aria-label="Conversion progress" max="100" value={phase.percent} />
       <div className="forge-conversion-progress-copy">
-        <span>Step {phase.step} of 4</span>
+        <span>Step {phase.step} of 5</span>
         <span>{phase.percent}%</span>
       </div>
       <ol aria-label="Conversion stages">
-        {['Rendered RGB', 'Validate OME-TIFF', 'Viewer tiles', 'Package'].map((label, index) => (
+        {['Rendered RGB', 'Compress OME-TIFF', 'Validate OME-TIFF', 'Viewer tiles', 'Package'].map((label, index) => (
           <li className={index + 1 < phase.step ? 'complete' : index + 1 === phase.step ? 'active' : ''} key={label}>
             <i />
             <span>{label}</span>
           </li>
         ))}
       </ol>
-      <small>The converted result will open automatically after validation.</small>
+      <small>Elapsed {elapsed} · Large whole-slide exports can take several minutes. The result opens automatically after validation.</small>
     </div>
   )
 }
@@ -984,10 +985,11 @@ function QueueDock({
 
 function conversionPhase(status: string) {
   return ({
-    CONVERTING: { step: 1, percent: 20, label: 'Exporting rendered RGB' },
-    VALIDATING: { step: 2, percent: 55, label: 'Validating OME-TIFF' },
-    GENERATING_DZI: { step: 3, percent: 75, label: 'Generating viewer tiles' },
-    DZI_READY: { step: 4, percent: 92, label: 'Building the upload package' },
+    CONVERTING: { step: 1, percent: 15, label: 'Exporting rendered RGB' },
+    OPTIMIZING_OME: { step: 2, percent: 42, label: 'Compressing OME-TIFF pyramid' },
+    VALIDATING: { step: 3, percent: 60, label: 'Validating OME-TIFF' },
+    GENERATING_DZI: { step: 4, percent: 78, label: 'Generating viewer tiles' },
+    DZI_READY: { step: 5, percent: 93, label: 'Building the upload package' },
   } as Record<string, { step: number; percent: number; label: string }>)[status]
     || { step: 1, percent: 0, label: 'Preparing conversion' }
 }
@@ -1000,6 +1002,7 @@ function statusLabel(status: string) {
     INSPECTING: 'Inspecting',
     READY_TO_CONVERT: 'Ready to convert',
     CONVERTING: 'Converting locally',
+    OPTIMIZING_OME: 'Compressing OME-TIFF',
     VALIDATING: 'Validating OME-TIFF',
     GENERATING_DZI: 'Generating viewer tiles',
     DZI_READY: 'Packaging',
@@ -1009,6 +1012,20 @@ function statusLabel(status: string) {
     LOCAL_COPY_READY: 'Managed copy ready',
     FAILED: 'Failed',
   } as Record<string, string>)[status] || status.toLowerCase().replaceAll('_', ' ')
+}
+
+function useElapsed(startedAt?: number) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!startedAt) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  if (!startedAt) return 'less than a minute'
+  const elapsedSeconds = Math.max(0, Math.floor((now - startedAt) / 1_000))
+  const minutes = Math.floor(elapsedSeconds / 60)
+  const seconds = elapsedSeconds % 60
+  return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`
 }
 
 function formatBytes(bytes: number) {
