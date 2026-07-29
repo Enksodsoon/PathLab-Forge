@@ -1,7 +1,8 @@
 import OpenSeadragon from 'openseadragon'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { AnnotationRecord } from './api'
+import { MAX_ZOOM_PIXEL_RATIO } from './viewerConfig'
 
 interface ViewerPointerEvent {
   position: OpenSeadragon.Point
@@ -39,9 +40,13 @@ export function SlideViewer({
   const elementRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     if (!elementRef.current) return
+    setLoading(true)
+    setLoadError('')
     const viewer = OpenSeadragon({
       element: elementRef.current,
       tileSources: tileSource,
@@ -49,7 +54,7 @@ export function SlideViewer({
       navigatorPosition: 'BOTTOM_RIGHT',
       animationTime: 0.35,
       blendTime: 0.1,
-      maxZoomPixelRatio: 4,
+      maxZoomPixelRatio: MAX_ZOOM_PIXEL_RATIO,
       zoomPerClick: 1.8,
       zoomPerScroll: 1.35,
       visibilityRatio: 0.1,
@@ -58,7 +63,14 @@ export function SlideViewer({
       showNavigationControl: false,
     })
     viewerRef.current = viewer
-    viewer.addOnceHandler('open', () => onReady?.(viewer))
+    viewer.addOnceHandler('open', () => {
+      setLoading(false)
+      onReady?.(viewer)
+    })
+    viewer.addOnceHandler('open-failed', () => {
+      setLoading(false)
+      setLoadError('Native-resolution preview could not be opened')
+    })
     return () => {
       viewerRef.current = null
       viewer.destroy()
@@ -180,7 +192,19 @@ export function SlideViewer({
     tileSource,
   ])
 
-  return <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
+  return (
+    <div className="forge-osd-shell">
+      <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
+      {loading ? (
+        <div className="forge-preview-loading" role="status">
+          <span />
+          <strong>Building 100% preview</strong>
+          <small>The first native-resolution view can take several minutes.</small>
+        </div>
+      ) : null}
+      {loadError ? <div className="forge-preview-error" role="alert">{loadError}</div> : null}
+    </div>
+  )
 }
 
 function pointText(point: OpenSeadragon.Point) {
