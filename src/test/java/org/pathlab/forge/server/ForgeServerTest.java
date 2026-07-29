@@ -32,7 +32,13 @@ final class ForgeServerTest {
             var reused = client.send(
                     HttpRequest.newBuilder(server.launchUri()).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
-            assertEquals(401, reused.statusCode());
+            assertEquals(303, reused.statusCode());
+
+            var unauthenticatedClient = HttpClient.newHttpClient();
+            var stolenReuse = unauthenticatedClient.send(
+                    HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, stolenReuse.statusCode());
 
             var app = client.send(
                     HttpRequest.newBuilder(server.baseUri().resolve("/app")).GET().build(),
@@ -49,8 +55,8 @@ final class ForgeServerTest {
                     HttpRequest.newBuilder(server.baseUri().resolve("/assets/app.js")).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(200, script.statusCode());
-            assertTrue(script.body().contains("showOpenFilePicker"));
-            assertTrue(script.body().contains("/api/batches"));
+            assertTrue(script.body().contains("/api/datasets/select"));
+            assertTrue(script.body().contains("/api/datasets"));
         }
     }
 

@@ -34,7 +34,7 @@ Forge does not replace any of those systems.
 
 ## Run the local shell
 
-The current shell is an intentionally small, secured desktop foundation. It binds only to a
+The current app is an intentionally small, secured desktop foundation. It binds only to a
 random `127.0.0.1` port, opens a one-time launch URL, and establishes an HttpOnly,
 SameSite-Strict local session. State-changing requests additionally require the exact loopback
 origin and a session CSRF token.
@@ -43,9 +43,17 @@ origin and a session CSRF token.
 .\gradlew.bat run --args=--serve
 ```
 
-The shell currently presents the PathLab library and conversion-queue surfaces. Dataset
-selection, persisted jobs, conversion, and Viewer sync are staged follow-up slices; the visible
-controls do not claim those operations are complete yet.
+The app currently provides:
+
+- a native operating-system file picker for OME-TIFF and VSI datasets;
+- bounded OME-TIFF signature and VSI companion inspection;
+- a persistent local library under the user's application-data directory;
+- verified managed copies of existing OME-TIFF files, written via a partial file and SHA-256;
+- search, format filters, theme persistence, refresh, and safe library removal.
+
+VSI conversion is intentionally blocked with a clear `reader required` state until an approved
+Bio-Formats runtime and redistribution decision are available. Viewer sync, crop, annotation,
+DZI packaging, and upload are not enabled in this build.
 
 ## Start with Codex
 

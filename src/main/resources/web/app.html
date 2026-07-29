@@ -29,10 +29,10 @@
           <div>
             <p class="eyebrow">Local slide preparation</p>
             <h1>Library</h1>
-            <p>Inspect, crop, convert, annotate, and prepare slides for PathLab Viewer.</p>
+            <p>Inspect local datasets and create verified, managed OME-TIFF copies.</p>
           </div>
           <div class="actions">
-            <button class="secondary" data-action="connect-viewer">Connect Viewer</button>
+            <button class="secondary" data-action="refresh">Refresh</button>
             <button data-action="add-datasets">＋ Add datasets</button>
           </div>
         </header>
@@ -52,7 +52,7 @@
           <h2>Your local pathology workspace</h2>
           <p>Add an OME-TIFF or a complete VSI/ETS dataset. Forge will inspect it before any conversion starts.</p>
           <button data-action="add-datasets">Choose datasets</button>
-          <small>Supported in this shell: OME-TIFF and complete VSI/ETS sets</small>
+          <small>OME-TIFF preparation works now. VSI inspection works; conversion needs the approved reader runtime.</small>
         </section>
         <section class="dataset-grid" data-dataset-grid hidden aria-label="Local datasets"></section>
         <section class="queue" id="queue">
@@ -60,23 +60,10 @@
           <span class="status" data-queue-status>0 staged</span>
         </section>
         <section id="sync" class="sync-note">
-          Viewer sync will become available after private desktop credential pairing is implemented.
+          <strong>Viewer sync:</strong> not available in this build. Private credential pairing must be implemented before this control can be enabled.
         </section>
       </main>
     </div>
-    <input id="dataset-picker" type="file" multiple hidden accept=".ome.tif,.ome.tiff,.vsi,.ets">
-    <dialog id="viewer-dialog">
-      <form method="dialog">
-        <p class="eyebrow">Viewer connection</p>
-        <h2>Connect PathLab Viewer</h2>
-        <p>Enter the private Viewer address. Credential pairing will be added in the next sync slice.</p>
-        <label>Viewer URL<input id="viewer-url" type="url" value="https://" required></label>
-        <div class="dialog-actions">
-          <button value="cancel" class="secondary">Cancel</button>
-          <button value="save">Save address</button>
-        </div>
-      </form>
-    </dialog>
     <div class="toast" data-toast role="status" aria-live="polite" hidden></div>
   </body>
 </html>
