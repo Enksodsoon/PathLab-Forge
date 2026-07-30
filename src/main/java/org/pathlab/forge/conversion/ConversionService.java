@@ -464,7 +464,6 @@ public final class ConversionService implements AutoCloseable {
     public List<SeriesInfo> inspect(String id) throws IOException {
         var dataset = requireDataset(id);
         verifySourceFingerprint(dataset);
-        org.pathlab.forge.runtime.ResourceGovernor.system().requireConversionStart();
         var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
         if (cached.isPresent()) {
             inspectedSeries.put(id, cached.get());
@@ -509,7 +508,6 @@ public final class ConversionService implements AutoCloseable {
                 || !dataset.sourceFingerprint().isBlank()) {
             return inspect(id);
         }
-        org.pathlab.forge.runtime.ResourceGovernor.system().requireConversionStart();
         var series = engine.inspect(Path.of(dataset.sourcePath()));
         inspectedSeries.put(id, series);
         return series;

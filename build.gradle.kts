@@ -87,6 +87,7 @@ tasks.withType<Test>().configureEach {
     systemProperty("user.language", "en")
     systemProperty("user.country", "US")
     systemProperty("user.timezone", "UTC")
+    systemProperty("pathlab.forge.resourceGovernor.enabled", "false")
     reports.junitXml.mergeReruns = false
 }
 
