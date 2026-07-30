@@ -2,7 +2,9 @@ package org.pathlab.forge.conversion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,6 +15,25 @@ import org.pathlab.forge.library.LocalDataset;
 final class ArtifactRevisionRepositoryTest {
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void removesOnlyNewUnapprovedSupersededPayloadsAndKeepsAuditMetadata() throws Exception {
+        var managed = temporaryDirectory.resolve("managed-cleanup");
+        var repository = new ArtifactRevisionRepository(managed);
+        var dataset = configured(0, 1);
+        var superseded = repository.create(dataset, 100, 50);
+        Files.write(Path.of(superseded.omePath()), new byte[] {1});
+        Files.write(Path.of(superseded.packagePath()), new byte[] {2});
+        var current = repository.create(dataset, 100, 50);
+        Files.write(Path.of(current.omePath()), new byte[] {3});
+
+        var report = repository.cleanupSupersededUnapproved(dataset.id(), current.id());
+
+        assertEquals(2, report.deletedFiles());
+        assertTrue(Files.isRegularFile(Path.of(current.omePath())));
+        assertTrue(repository.find(dataset.id(), superseded.id()).isPresent());
+        assertTrue(Files.notExists(Path.of(superseded.omePath())));
+    }
 
     @Test
     void retainsHistoricalRevisionWhenConfigurationChanges() throws Exception {

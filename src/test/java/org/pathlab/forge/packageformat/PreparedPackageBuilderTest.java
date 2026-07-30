@@ -56,6 +56,18 @@ final class PreparedPackageBuilderTest {
         assertTrue(listing.contains("\"sourceFingerprint\":\"source-fingerprint\""));
         assertTrue(listing.contains("\"scale\":0.6666666666666666"));
         assertEquals(64, tarEntry(first, "manifest.sha256").length());
+        var indexedTile = firstInfo.entryIndex().require(
+                "derivative/slide_files/0/0_0.jpg");
+        try (var channel = java.nio.channels.FileChannel.open(first)) {
+            var bytes = java.nio.ByteBuffer.allocate(Math.toIntExact(indexedTile.size()));
+            channel.position(indexedTile.offset());
+            while (bytes.hasRemaining()) {
+                channel.read(bytes);
+            }
+            assertArrayEquals(
+                    Files.readAllBytes(level.resolve("0_0.jpg")),
+                    bytes.array());
+        }
     }
 
     private static String tarEntry(Path archive, String expected) throws Exception {

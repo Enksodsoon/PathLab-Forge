@@ -23,6 +23,15 @@ export interface Dataset {
   configurationRevision: string
   currentArtifactRevision: string
   approvedArtifactRevision: string
+  workspaceRevision?: number
+  verificationState?: 'PENDING' | 'VERIFIED' | 'CHANGED' | 'FAILED'
+  stage?: string
+  completedUnits?: number
+  totalUnits?: number
+  elapsedMs?: number
+  peakWorkingSetBytes?: number
+  resourceProfile?: string
+  cacheHitReason?: string
 }
 
 export interface SeriesInfo {
@@ -96,6 +105,8 @@ export interface AnnotationRecord {
 }
 
 let csrf = ''
+let datasetEtag = ''
+let datasetCache: Dataset[] | undefined
 
 export async function bootstrap() {
   const response = await fetch('/api/session', { credentials: 'same-origin' })
@@ -105,7 +116,19 @@ export async function bootstrap() {
 }
 
 export async function datasets(): Promise<Dataset[]> {
-  const body = await request<{ datasets: Dataset[] }>('/api/datasets')
+  const headers = new Headers()
+  if (datasetEtag) headers.set('If-None-Match', datasetEtag)
+  const response = await fetch('/api/datasets', {
+    headers,
+    credentials: 'same-origin',
+  })
+  if (response.status === 304 && datasetCache) return datasetCache
+  const body = await response.json() as { datasets?: Dataset[]; detail?: string; error?: string }
+  if (!response.ok || !body.datasets) {
+    throw new Error(body.detail || body.error || `Request failed (${response.status})`)
+  }
+  datasetEtag = response.headers.get('ETag') || ''
+  datasetCache = body.datasets
   return body.datasets
 }
 

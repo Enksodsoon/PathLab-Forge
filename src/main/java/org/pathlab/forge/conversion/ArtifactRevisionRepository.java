@@ -28,6 +28,9 @@ public final class ArtifactRevisionRepository {
         var id = UUID.randomUUID().toString();
         var root = revisionRoot(dataset.id(), id);
         Files.createDirectories(root);
+        Files.writeString(
+                root.resolve(".ultrafast-owned"),
+                "PathLab Forge managed payload\n");
         var revision = new ArtifactRevision(
                 id,
                 dataset.id(),
@@ -121,6 +124,51 @@ public final class ArtifactRevisionRepository {
                     StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException ignored) {
             Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    public CleanupReport cleanupSupersededUnapproved(String datasetId, String currentRevisionId)
+            throws IOException {
+        long deletedFiles = 0;
+        long deletedBytes = 0;
+        for (var revision : list(datasetId)) {
+            if (revision.id().equals(currentRevisionId)
+                    || revision.status() == ArtifactRevisionStatus.APPROVED) {
+                continue;
+            }
+            var root = revisionRoot(datasetId, revision.id());
+            if (!Files.isRegularFile(root.resolve(".ultrafast-owned"))) {
+                continue;
+            }
+            try (var paths = Files.walk(root)) {
+                for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                    if (path.equals(root)
+                            || path.equals(root.resolve("revision.properties"))
+                            || path.equals(root.resolve(".ultrafast-owned"))) {
+                        continue;
+                    }
+                    if (Files.isRegularFile(path)) {
+                        deletedBytes = Math.addExact(deletedBytes, Files.size(path));
+                        deletedFiles++;
+                        Files.delete(path);
+                    } else if (Files.isDirectory(path)) {
+                        try (var children = Files.list(path)) {
+                            if (children.findAny().isEmpty()) {
+                                Files.delete(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return new CleanupReport(deletedFiles, deletedBytes);
+    }
+
+    public record CleanupReport(long deletedFiles, long deletedBytes) {
+        public CleanupReport {
+            if (deletedFiles < 0 || deletedBytes < 0) {
+                throw new IllegalArgumentException("Cleanup counts must not be negative");
+            }
         }
     }
 

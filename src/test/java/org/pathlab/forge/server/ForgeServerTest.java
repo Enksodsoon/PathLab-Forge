@@ -103,6 +103,31 @@ final class ForgeServerTest {
     }
 
     @Test
+    void returnsNotModifiedForUnchangedDatasetWorkspace() throws Exception {
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        try (var server = startEphemeral()) {
+            client.send(
+                    HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var first = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/datasets")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var etag = first.headers().firstValue("etag").orElseThrow();
+            var unchanged = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/datasets"))
+                            .header("If-None-Match", etag)
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, first.statusCode());
+            assertEquals(304, unchanged.statusCode());
+            assertEquals("", unchanged.body());
+        }
+    }
+
+    @Test
     void fixedAddressAndAuthorizedBrowserSurviveServerRestart() throws Exception {
         var sessionFile = temp.resolve("browser-session.token");
         var sessionToken = LocalBrowserSession.loadOrCreate(sessionFile);

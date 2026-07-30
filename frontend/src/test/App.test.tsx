@@ -592,6 +592,66 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   })).toHaveValue(15)
 })
 
+test('refreshes annotations and artifacts only for the selected active slide', async () => {
+  const base: api.Dataset = {
+    id: 'active-one',
+    displayName: 'Active one.vsi',
+    sourceBytes: 1_000,
+    format: 'VSI',
+    status: 'CONVERTING',
+    detail: 'Converting',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: 0,
+    width: 1000,
+    height: 500,
+    downsample: 1,
+    estimatedOutputBytes: 1_000,
+    projectedFileBytes: 500,
+    projectedFileLowerBytes: 250,
+    projectedFileUpperBytes: 1_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 1000,
+    cropHeight: 500,
+    sourceFingerprint: 'source-one',
+    configurationRevision: 'config-one',
+    currentArtifactRevision: 'artifact-one',
+    approvedArtifactRevision: '',
+  }
+  const second = {
+    ...base,
+    id: 'active-two',
+    displayName: 'Active two.vsi',
+    sourceFingerprint: 'source-two',
+    configurationRevision: 'config-two',
+    currentArtifactRevision: 'artifact-two',
+  }
+  vi.mocked(api.annotations).mockClear()
+  vi.mocked(api.artifacts).mockClear()
+  vi.mocked(api.bootstrap).mockResolvedValue([[base, second], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([base, second])
+  vi.mocked(api.annotations).mockResolvedValue([])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'artifact-one',
+    approvedRevision: '',
+    revisions: [],
+  })
+
+  render(<App />)
+
+  await waitFor(() => expect(api.annotations).toHaveBeenCalledWith('active-one'))
+  expect(api.annotations).not.toHaveBeenCalledWith('active-two')
+  expect(api.artifacts).toHaveBeenCalledWith('active-one')
+  expect(api.artifacts).not.toHaveBeenCalledWith('active-two')
+})
+
 test('opens the converted viewer while the upload package is still building', async () => {
   const packaging: api.Dataset = {
     id: 'packaging-slide',

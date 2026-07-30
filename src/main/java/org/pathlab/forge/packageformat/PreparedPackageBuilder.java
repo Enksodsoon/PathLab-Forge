@@ -11,9 +11,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.DigestOutputStream;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import org.pathlab.forge.derivative.DerivativeInfo;
 
 public final class PreparedPackageBuilder {
     private static final int BLOCK = 512;
@@ -48,6 +51,39 @@ public final class PreparedPackageBuilder {
                         sha256(path)));
             }
         }
+        return build(root, payloads, width, height, metadata, output);
+    }
+
+    public static PackageInfo build(
+            DerivativeInfo derivative,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            Path output)
+            throws IOException {
+        if (derivative.ledger().isEmpty()) {
+            throw new IOException("Validated derivative ledger is missing");
+        }
+        var root = derivative.root().toAbsolutePath().normalize();
+        var payloads = derivative.ledger().stream()
+                .map(entry -> new Payload(
+                        "derivative/" + entry.path(),
+                        root.resolve(entry.path().replace('/', java.io.File.separatorChar))
+                                .normalize(),
+                        entry.size(),
+                        entry.sha256()))
+                .toList();
+        return build(root, payloads, width, height, metadata, output);
+    }
+
+    private static PackageInfo build(
+            Path root,
+            List<Payload> payloads,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            Path output)
+            throws IOException {
         if (payloads.size() < 3) {
             throw new IOException("Derivative is incomplete");
         }
@@ -57,17 +93,42 @@ public final class PreparedPackageBuilder {
                 .getBytes(StandardCharsets.US_ASCII);
         var partial = output.resolveSibling(output.getFileName() + ".partial");
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
+        var tarDigest = sha256Digest();
+        var entries = new LinkedHashMap<String, PackageEntryIndex.Entry>();
         try {
-            try (OutputStream stream = Files.newOutputStream(partial)) {
-                writeEntry(stream, "manifest.json", manifest.length, new java.io.ByteArrayInputStream(manifest));
+            try (var file = Files.newOutputStream(partial);
+                    var digest = new DigestOutputStream(file, tarDigest);
+                    var stream = new CountingOutputStream(digest)) {
+                index(entries, stream, "manifest.json", manifest.length);
+                writeEntry(
+                        stream,
+                        "manifest.json",
+                        manifest.length,
+                        new java.io.ByteArrayInputStream(manifest));
+                index(entries, stream, "manifest.sha256", manifestHash.length);
                 writeEntry(
                         stream,
                         "manifest.sha256",
                         manifestHash.length,
                         new java.io.ByteArrayInputStream(manifestHash));
                 for (var payload : payloads) {
-                    try (InputStream input = Files.newInputStream(payload.path())) {
+                    if (!payload.path().startsWith(root)
+                            || !Files.isRegularFile(
+                                    payload.path(), LinkOption.NOFOLLOW_LINKS)
+                            || Files.isSymbolicLink(payload.path())
+                            || Files.size(payload.path()) != payload.bytes()) {
+                        throw new IOException("Ledger payload identity changed: " + payload.name());
+                    }
+                    index(entries, stream, payload.name(), payload.bytes());
+                    var payloadDigest = sha256Digest();
+                    try (InputStream raw = Files.newInputStream(payload.path());
+                            InputStream input = new java.security.DigestInputStream(
+                                    raw, payloadDigest)) {
                         writeEntry(stream, payload.name(), payload.bytes(), input);
+                    }
+                    if (!payload.sha256().equals(
+                            HexFormat.of().formatHex(payloadDigest.digest()))) {
+                        throw new IOException("Ledger payload hash changed: " + payload.name());
                     }
                 }
                 stream.write(new byte[BLOCK * 2]);
@@ -79,12 +140,23 @@ public final class PreparedPackageBuilder {
         var derivativeBytes = payloads.stream()
                 .mapToLong(Payload::bytes)
                 .reduce(0, Math::addExact);
+        var entryIndex = new PackageEntryIndex(entries);
+        entryIndex.write(output.resolveSibling(output.getFileName() + ".index"));
         return new PackageInfo(
                 output.toAbsolutePath().normalize(),
                 Files.size(output),
-                sha256(output),
+                HexFormat.of().formatHex(tarDigest.digest()),
                 derivativeBytes,
-                payloads.size());
+                payloads.size(),
+                entryIndex);
+    }
+
+    private static void index(
+            java.util.Map<String, PackageEntryIndex.Entry> entries,
+            CountingOutputStream stream,
+            String name,
+            long size) {
+        entries.put(name, new PackageEntryIndex.Entry(stream.count() + BLOCK, size));
     }
 
     private static String manifest(
@@ -149,7 +221,9 @@ public final class PreparedPackageBuilder {
         header[154] = 0;
         header[155] = ' ';
         output.write(header);
-        input.transferTo(new BoundedOutputStream(output, size));
+        var bounded = new BoundedOutputStream(output, size);
+        input.transferTo(bounded);
+        bounded.requireComplete();
         var padding = (int) ((BLOCK - size % BLOCK) % BLOCK);
         if (padding > 0) {
             output.write(new byte[padding]);
@@ -219,6 +293,42 @@ public final class PreparedPackageBuilder {
             }
             delegate.write(bytes, offset, length);
             remaining -= length;
+        }
+
+        private void requireComplete() throws IOException {
+            if (remaining != 0) {
+                throw new IOException("Payload is shorter than declared size");
+            }
+        }
+    }
+
+    private static final class CountingOutputStream extends OutputStream {
+        private final OutputStream delegate;
+        private long count;
+
+        private CountingOutputStream(OutputStream delegate) {
+            this.delegate = delegate;
+        }
+
+        private long count() {
+            return count;
+        }
+
+        @Override
+        public void write(int value) throws IOException {
+            delegate.write(value);
+            count++;
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            delegate.write(bytes, offset, length);
+            count = Math.addExact(count, length);
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
         }
     }
 }
