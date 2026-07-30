@@ -40,10 +40,12 @@ export function SlideViewer({
   const elementRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
+  const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
 
   useEffect(() => {
     if (!elementRef.current) return
+    setLoading(true)
     setLoadError('')
     const viewer = OpenSeadragon({
       element: elementRef.current,
@@ -64,7 +66,11 @@ export function SlideViewer({
     viewer.addOnceHandler('open', () => {
       onReady?.(viewer)
     })
+    viewer.addOnceHandler('tile-loaded', () => {
+      setLoading(false)
+    })
     viewer.addOnceHandler('open-failed', () => {
+      setLoading(false)
       setLoadError('Native-resolution preview could not be opened')
     })
     return () => {
@@ -192,6 +198,13 @@ export function SlideViewer({
   return (
     <div className="forge-osd-shell">
       <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
+      {loading && !loadError ? (
+        <div className="forge-preview-loading" role="status" aria-live="polite">
+          <span aria-hidden="true" />
+          <strong>Loading first image</strong>
+          <small>Opening a quick overview; full-resolution tiles follow as you zoom.</small>
+        </div>
+      ) : null}
       {loadError ? <div className="forge-preview-error" role="alert">{loadError}</div> : null}
     </div>
   )
