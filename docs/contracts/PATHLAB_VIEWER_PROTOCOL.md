@@ -131,7 +131,7 @@ Required output contract:
 ```text
 DZI tile size: 512
 DZI overlap: 1
-DZI JPEG quality: adaptively selected Q85, Q90 or Q95
+DZI JPEG quality: adaptively selected Q85, Q90, Q95 or Q100
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
 Thumbnail filename: thumbnail.jpg

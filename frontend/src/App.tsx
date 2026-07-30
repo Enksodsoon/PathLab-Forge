@@ -1318,6 +1318,7 @@ function conversionPhase(dataset: Dataset) {
     REGIONS_RENDERING: { base: 5, span: 30, label: 'Rendering RGB regions' },
     REGIONS_VERIFIED: { base: 35, span: 0, label: 'RGB regions verified · assembling OME-TIFF' },
     ASSEMBLING_OME: { base: 35, span: 0, label: 'Assembling exact slide geometry' },
+    DIRECT_OME: { base: 5, span: 50, label: 'Writing fast OME-TIFF pyramid' },
     OPTIMIZING_OME: { base: 45, span: 0, label: 'Compressing OME-TIFF pyramid' },
     VALIDATING_OME: { base: 58, span: 7, label: 'Validating OME-TIFF' },
     OME_VERIFIED: { base: 65, span: 0, label: 'OME-TIFF verified' },

@@ -61,7 +61,7 @@ The output must match the current Viewer derivative contract:
 ```text
 DZI tile size: 512
 DZI overlap: 1
-DZI JPEG quality: adaptive Q85/Q90/Q95 under the strict visual gate
+DZI JPEG quality: adaptive Q85/Q90/Q95/Q100 under the strict visual gate
 Thumbnail: thumbnail.jpg
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
@@ -70,7 +70,7 @@ Thumbnail JPEG quality: 82
 Generate the DZI and thumbnail from the newly written OME-TIFF so the crop,
 dimensions, downsample and RGB rendering are identical. The selector evaluates
 at least 32 deterministic tissue/background/edge/seam regions with the same
-libvips JPEG settings used by `dzsave`; it fails closed if Q95 does not pass.
+libvips JPEG settings used by `dzsave`; it fails closed if Q100 does not pass.
 
 Source verification continues asynchronously after metadata and thumbnail become
 available. Conversion remains blocked until the complete companion inventory is

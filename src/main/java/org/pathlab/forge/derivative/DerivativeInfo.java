@@ -29,7 +29,7 @@ public record DerivativeInfo(
 
     public DerivativeInfo {
         ledger = java.util.List.copyOf(ledger);
-        if (!java.util.List.of(85, 90, 95).contains(jpegQuality)
+        if (!java.util.List.of(85, 90, 95, 100).contains(jpegQuality)
                 || !Double.isFinite(minimumWindowedSsim)
                 || minimumWindowedSsim < 0
                 || minimumWindowedSsim > 1
