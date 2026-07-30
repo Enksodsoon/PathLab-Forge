@@ -62,6 +62,10 @@ The output must match the current Viewer derivative contract:
 DZI tile size: 512
 DZI overlap: 1
 DZI JPEG quality: adaptive Q85/Q90/Q95/Q100 under the strict visual gate
+
+Exact 1x and 1.5x export settings are honored without automatic downsampling.
+The optional seconds-budget profile must be explicitly enabled and is intended
+for time-bounded preview workflows, not diagnostic-resolution exports.
 Thumbnail: thumbnail.jpg
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
