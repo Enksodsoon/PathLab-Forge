@@ -795,7 +795,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
           </li>
         ))}
       </ol>
-      <small>Elapsed {elapsed} · Large whole-slide exports can take several minutes. The result opens automatically after validation.</small>
+      <small>Elapsed {elapsed} · Full-slide exports run at the fastest verified source-reader profile. The result opens automatically after validation.</small>
     </div>
   )
 }

@@ -56,6 +56,41 @@ conversion with `SECONDS_BUDGET_EXCEEDED` and an instruction to increase
 downsample or reduce the crop. Downsample choices 16x and 32x are exposed so a
 full slide can remain inside the seconds contract.
 
+## Full 1.5x frontend acceptance
+
+Computer Use exercised the complete visible frontend workflow for
+`SP-68-7795-A_U129 HER-2 #2`, using the full `49941x62174` source series at
+1.5x downsample (`33294x41449`, 1,380,003,006 output pixels).
+
+The initial bounded direct-writer run completed successfully but exposed the
+OME pyramid as the dominant stage:
+
+- artifact creation to package commit: 104,174 ms
+- OME completion: approximately 77 seconds
+- OME bytes: 206,739,863
+- process-tree working set observed during OME: approximately 3.8 GB
+- DZI: 7,208 tiles, 7,210 files, 500,196,832 bytes
+- package: 506,710,016 bytes
+
+The calibrated production path now uses QuPath's four-level full-slide pyramid
+spacing, five-way libvips concurrency, a 1 GB libvips cache, 192 cached files,
+and 128 cached operations:
+
+- artifact creation to package commit: 80,783 ms
+- OME completion: approximately 55–57 seconds
+- OME bytes: 122,882,284
+- DZI: 7,208 tiles, 7,210 files, 500,196,832 bytes
+- package: 506,710,016 bytes
+- end-to-end improvement: 22.4%
+- decoded base-image comparison against the original eight-level direct
+  export: minimum SSIM 1.0 and maximum mean Delta E00 0.0
+
+Increasing the reader pool from six to twelve and the heap from 4 GB to 8 GB
+made this VSI slower (83,206 ms for OME alone), as did increasing OME tiles
+from 512 to 2,048 pixels (87,965 ms). The source reader is contention-bound,
+so those profiles are rejected rather than consuming more RAM without a speed
+benefit.
+
 ## Experimental fallback evidence
 
 Cold package-ready benchmark:

@@ -394,12 +394,13 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     static List<String> commandLine(Path executable, List<String> arguments) {
+        var profile = org.pathlab.forge.runtime.RuntimeProfile.target();
         var command = new ArrayList<String>();
         command.add(executable.toString());
-        command.add("--vips-concurrency=4");
-        command.add("--vips-cache-max-memory=805306368");
-        command.add("--vips-cache-max-files=128");
-        command.add("--vips-cache-max=100");
+        command.add("--vips-concurrency=" + profile.vipsConcurrency());
+        command.add("--vips-cache-max-memory=" + profile.vipsCacheBytes());
+        command.add("--vips-cache-max-files=" + profile.vipsCacheFiles());
+        command.add("--vips-cache-max=" + profile.vipsCacheOperations());
         command.addAll(arguments);
         return List.copyOf(command);
     }
