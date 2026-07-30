@@ -30,6 +30,10 @@ public final class ResourceGovernor {
     }
 
     public void requireConversionStart() {
+        if (!Boolean.parseBoolean(
+                System.getProperty("pathlab.forge.resourceGovernor.enabled", "true"))) {
+            return;
+        }
         var available = availableBytes.getAsLong();
         if (decide(available) != Decision.RUN) {
             throw new IllegalStateException(
