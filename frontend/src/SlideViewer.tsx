@@ -1,7 +1,16 @@
 import OpenSeadragon from 'openseadragon'
 import { useEffect, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import type { AnnotationRecord } from './api'
+import {
+  cropFromPoints,
+  isFullSlideCrop,
+  moveCrop,
+  resizeCrop,
+  type CropBox,
+  type CropHandle,
+} from './crop'
 import { MAX_ZOOM_PIXEL_RATIO } from './viewerConfig'
 
 interface ViewerPointerEvent {
@@ -14,9 +23,26 @@ type GestureViewer = OpenSeadragon.Viewer & {
   gestureSettingsTouch: { dragToPan: boolean }
 }
 
+interface CropScreenBox {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+interface CropPointerGesture {
+  kind: 'move' | 'resize'
+  handle?: CropHandle
+  start: OpenSeadragon.Point
+  initial: CropBox
+}
+
 export function SlideViewer({
   tileSource,
   activeTool = 'pan',
+  cropBox,
+  cropEditing = false,
+  onCropChange,
   annotations = [],
   sourceWidth = 1,
   sourceHeight = 1,
@@ -28,6 +54,9 @@ export function SlideViewer({
 }: {
   tileSource: string
   activeTool?: string
+  cropBox?: CropBox
+  cropEditing?: boolean
+  onCropChange?: (box: CropBox) => void
   annotations?: AnnotationRecord[]
   sourceWidth?: number
   sourceHeight?: number
@@ -40,8 +69,36 @@ export function SlideViewer({
   const elementRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
+  const cropGestureRef = useRef<CropPointerGesture | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [cropScreen, setCropScreen] = useState<CropScreenBox>()
+
+  const sourcePointFromPixel = (position: OpenSeadragon.Point) => {
+    const viewer = viewerRef.current
+    if (!viewer) return new OpenSeadragon.Point(0, 0)
+    const viewportPoint = viewer.viewport.pointFromPixel(position)
+    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint)
+    if (downsample > 0) {
+      return new OpenSeadragon.Point(
+        imagePoint.x * downsample + cropX,
+        imagePoint.y * downsample + cropY,
+      )
+    }
+    const content = viewer.world.getItemAt(0)?.getContentSize()
+    return new OpenSeadragon.Point(
+      imagePoint.x * sourceWidth / Math.max(1, content?.x || sourceWidth),
+      imagePoint.y * sourceHeight / Math.max(1, content?.y || sourceHeight),
+    )
+  }
+
+  const sourcePointFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
+    const bounds = elementRef.current?.getBoundingClientRect()
+    return sourcePointFromPixel(new OpenSeadragon.Point(
+      event.clientX - (bounds?.left || 0),
+      event.clientY - (bounds?.top || 0),
+    ))
+  }
 
   useEffect(() => {
     if (!elementRef.current) return
@@ -83,37 +140,37 @@ export function SlideViewer({
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer) return
-    const drawing = !['pan', 'select', 'marquee'].includes(activeTool)
+    const annotationDrawing = !['pan', 'select', 'marquee'].includes(activeTool)
+    const drawing = annotationDrawing || cropEditing
     const gestureViewer = viewer as GestureViewer
     gestureViewer.gestureSettingsMouse.dragToPan = !drawing
     gestureViewer.gestureSettingsTouch.dragToPan = !drawing
 
-    const sourcePoint = (position: OpenSeadragon.Point) => {
-      const viewportPoint = viewer.viewport.pointFromPixel(position)
-      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint)
-      if (downsample > 0) {
-        return new OpenSeadragon.Point(
-          imagePoint.x * downsample + cropX,
-          imagePoint.y * downsample + cropY,
-        )
-      }
-      const content = viewer.world.getItemAt(0)?.getContentSize()
-      return new OpenSeadragon.Point(
-        imagePoint.x * sourceWidth / Math.max(1, content?.x || sourceWidth),
-        imagePoint.y * sourceHeight / Math.max(1, content?.y || sourceHeight),
-      )
-    }
     const press = (event: ViewerPointerEvent) => {
       if (!drawing) return
       event.preventDefaultAction = true
-      dragStartRef.current = sourcePoint(event.position)
+      dragStartRef.current = sourcePointFromPixel(event.position)
+    }
+    const drag = (event: ViewerPointerEvent) => {
+      if (!cropEditing || !dragStartRef.current) return
+      event.preventDefaultAction = true
+      onCropChange?.(cropFromPoints(
+        dragStartRef.current,
+        sourcePointFromPixel(event.position),
+        sourceWidth,
+        sourceHeight,
+      ))
     }
     const release = (event: ViewerPointerEvent) => {
       if (!drawing || !dragStartRef.current) return
       event.preventDefaultAction = true
       const start = dragStartRef.current
-      const end = sourcePoint(event.position)
+      const end = sourcePointFromPixel(event.position)
       dragStartRef.current = null
+      if (cropEditing) {
+        onCropChange?.(cropFromPoints(start, end, sourceWidth, sourceHeight))
+        return
+      }
       if (activeTool === 'point' || activeTool === 'text') {
         onCreate?.(pointText(end))
         return
@@ -125,19 +182,80 @@ export function SlideViewer({
       onCreate?.(`${pointText(start)};${pointText(end)}`)
     }
     viewer.addHandler('canvas-press', press)
+    viewer.addHandler('canvas-drag', drag)
     viewer.addHandler('canvas-release', release)
     return () => {
       viewer.removeHandler('canvas-press', press)
+      viewer.removeHandler('canvas-drag', drag)
       viewer.removeHandler('canvas-release', release)
     }
   }, [
     activeTool,
+    cropEditing,
     cropX,
     cropY,
     downsample,
+    onCropChange,
     onCreate,
     sourceHeight,
     sourceWidth,
+  ])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !cropBox) {
+      setCropScreen(undefined)
+      return
+    }
+    const projectCrop = () => {
+      if (!viewer.world.getItemCount()) return
+      const content = viewer.world.getItemAt(0)?.getContentSize()
+      const contentWidth = Math.max(1, content?.x || sourceWidth)
+      const contentHeight = Math.max(1, content?.y || sourceHeight)
+      const imageLeft = downsample > 0
+        ? (cropBox.x - cropX) / downsample
+        : cropBox.x * contentWidth / sourceWidth
+      const imageTop = downsample > 0
+        ? (cropBox.y - cropY) / downsample
+        : cropBox.y * contentHeight / sourceHeight
+      const imageRight = downsample > 0
+        ? (cropBox.x + cropBox.width - cropX) / downsample
+        : (cropBox.x + cropBox.width) * contentWidth / sourceWidth
+      const imageBottom = downsample > 0
+        ? (cropBox.y + cropBox.height - cropY) / downsample
+        : (cropBox.y + cropBox.height) * contentHeight / sourceHeight
+      const topLeft = viewer.viewport.pixelFromPoint(
+        viewer.viewport.imageToViewportCoordinates(imageLeft, imageTop),
+        true,
+      )
+      const bottomRight = viewer.viewport.pixelFromPoint(
+        viewer.viewport.imageToViewportCoordinates(imageRight, imageBottom),
+        true,
+      )
+      setCropScreen({
+        left: topLeft.x,
+        top: topLeft.y,
+        width: Math.max(1, bottomRight.x - topLeft.x),
+        height: Math.max(1, bottomRight.y - topLeft.y),
+      })
+    }
+    projectCrop()
+    viewer.addHandler('open', projectCrop)
+    viewer.addHandler('animation', projectCrop)
+    viewer.addHandler('resize', projectCrop)
+    return () => {
+      viewer.removeHandler('open', projectCrop)
+      viewer.removeHandler('animation', projectCrop)
+      viewer.removeHandler('resize', projectCrop)
+    }
+  }, [
+    cropBox,
+    cropX,
+    cropY,
+    downsample,
+    sourceHeight,
+    sourceWidth,
+    tileSource,
   ])
 
   useEffect(() => {
@@ -195,9 +313,112 @@ export function SlideViewer({
     tileSource,
   ])
 
+  const startCropGesture = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    kind: CropPointerGesture['kind'],
+    handle?: CropHandle,
+  ) => {
+    if (!cropEditing || !cropBox) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    cropGestureRef.current = {
+      kind,
+      handle,
+      start: sourcePointFromPointer(event),
+      initial: cropBox,
+    }
+  }
+
+  const continueCropGesture = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const gesture = cropGestureRef.current
+    if (!gesture) return
+    event.preventDefault()
+    event.stopPropagation()
+    const current = sourcePointFromPointer(event)
+    const deltaX = current.x - gesture.start.x
+    const deltaY = current.y - gesture.start.y
+    onCropChange?.(gesture.kind === 'move'
+      ? moveCrop(gesture.initial, deltaX, deltaY, sourceWidth, sourceHeight)
+      : resizeCrop(
+          gesture.initial,
+          gesture.handle || 'se',
+          deltaX,
+          deltaY,
+          sourceWidth,
+          sourceHeight,
+        ))
+  }
+
+  const endCropGesture = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!cropGestureRef.current) return
+    continueCropGesture(event)
+    cropGestureRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  const showCrop = Boolean(
+    cropBox
+    && cropScreen
+    && (!cropEditing || !isFullSlideCrop(cropBox, sourceWidth, sourceHeight)),
+  )
+  const cropHandleLabels: Record<CropHandle, string> = {
+    nw: 'top left',
+    n: 'top',
+    ne: 'top right',
+    e: 'right',
+    se: 'bottom right',
+    s: 'bottom',
+    sw: 'bottom left',
+    w: 'left',
+  }
+
   return (
     <div className="forge-osd-shell">
       <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
+      {showCrop && cropBox && cropScreen ? (
+        <div
+          className={`forge-crop-overlay${cropEditing ? ' editing' : ''}`}
+          style={{
+            left: cropScreen.left,
+            top: cropScreen.top,
+            width: cropScreen.width,
+            height: cropScreen.height,
+          }}
+          data-testid="forge-crop-overlay"
+        >
+          <span className="forge-crop-label">
+            Export {cropBox.width.toLocaleString()} × {cropBox.height.toLocaleString()}
+          </span>
+          {cropEditing ? (
+            <>
+              <button
+                type="button"
+                className="forge-crop-move"
+                aria-label="Move crop area"
+                onPointerDown={(event) => startCropGesture(event, 'move')}
+                onPointerMove={continueCropGesture}
+                onPointerUp={endCropGesture}
+                onPointerCancel={endCropGesture}
+              />
+              {(Object.keys(cropHandleLabels) as CropHandle[]).map((handle) => (
+                <button
+                  type="button"
+                  key={handle}
+                  className={`forge-crop-handle ${handle}`}
+                  aria-label={`Resize crop from ${cropHandleLabels[handle]}`}
+                  onPointerDown={(event) => startCropGesture(event, 'resize', handle)}
+                  onPointerMove={continueCropGesture}
+                  onPointerUp={endCropGesture}
+                  onPointerCancel={endCropGesture}
+                />
+              ))}
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {loading && !loadError ? (
         <div className="forge-preview-loading" role="status" aria-live="polite">
           <span aria-hidden="true" />

@@ -27,6 +27,7 @@ import type {
   ViewerConnection,
   ViewerPairing,
 } from './api'
+import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
@@ -43,6 +44,8 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [railExpanded, setRailExpanded] = useState(false)
   const [activeTool, setActiveTool] = useState('pan')
+  const [cropDraft, setCropDraft] = useState<CropBox>()
+  const [cropEditing, setCropEditing] = useState(false)
   const [viewer, setViewer] = useState<OpenSeadragon.Viewer | null>(null)
   const [notice, setNotice] = useState('Loading local workspace…')
   const [error, setError] = useState('')
@@ -62,6 +65,30 @@ export function App() {
   const selectedSeries = selected ? seriesByDataset[selected.id] ?? [] : []
   const revisions = selected ? artifactByDataset[selected.id] ?? [] : []
   const currentRevision = revisions.find((revision) => revision.id === selected?.currentArtifactRevision)
+
+  useEffect(() => {
+    if (!selected || selected.width <= 0 || selected.height <= 0) {
+      setCropDraft(undefined)
+      setCropEditing(false)
+      return
+    }
+    setCropDraft({
+      x: selected.cropX,
+      y: selected.cropY,
+      width: selected.cropWidth || selected.width,
+      height: selected.cropHeight || selected.height,
+    })
+    setCropEditing(false)
+  }, [
+    selected?.id,
+    selected?.selectedSeries,
+    selected?.cropX,
+    selected?.cropY,
+    selected?.cropWidth,
+    selected?.cropHeight,
+    selected?.width,
+    selected?.height,
+  ])
 
   const refresh = useCallback(async () => {
     try {
@@ -188,6 +215,13 @@ export function App() {
     try {
       const updated = await api.configure(selected.id, values)
       setDatasets((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setCropDraft({
+        x: updated.cropX,
+        y: updated.cropY,
+        width: updated.cropWidth,
+        height: updated.cropHeight,
+      })
+      setCropEditing(false)
       setNotice('Crop, scale, and artifact identity updated')
     } catch (nextError) {
       setError(message(nextError))
@@ -258,7 +292,7 @@ export function App() {
   }
 
   const createLocalAnnotation = async (geometry: string) => {
-    if (!selected || ['pan', 'select', 'marquee'].includes(activeTool)) return
+    if (!selected || cropEditing || ['pan', 'select', 'marquee'].includes(activeTool)) return
     try {
       const created = await api.createAnnotation(selected.id, {
         type: activeTool,
@@ -355,6 +389,9 @@ export function App() {
               dataset={selected}
               revision={currentRevision}
               importing={importing}
+              cropBox={cropDraft}
+              cropEditing={cropEditing}
+              onCropChange={setCropDraft}
               annotations={selected ? annotationsByDataset[selected.id] || [] : []}
               activeTool={activeTool}
               viewer={viewer}
@@ -371,8 +408,18 @@ export function App() {
               revisions={revisions}
               annotations={selected ? annotationsByDataset[selected.id] || [] : []}
               activeTool={activeTool}
+              cropDraft={cropDraft}
+              cropEditing={cropEditing}
               capabilities={capabilities}
-              onTool={setActiveTool}
+              onTool={(tool) => {
+                setCropEditing(false)
+                setActiveTool(tool)
+              }}
+              onCropDraft={setCropDraft}
+              onCropEditing={(editing) => {
+                setCropEditing(editing)
+                if (editing) setActiveTool('pan')
+              }}
               onCollapse={() => setInspectorOpen(false)}
               onInspect={inspect}
               onConfigure={updateConfiguration}
@@ -603,6 +650,9 @@ function ViewerStage({
   dataset,
   revision,
   importing,
+  cropBox,
+  cropEditing,
+  onCropChange,
   annotations,
   activeTool,
   viewer,
@@ -614,6 +664,9 @@ function ViewerStage({
   dataset?: Dataset
   revision?: ArtifactRevision
   importing: boolean
+  cropBox?: CropBox
+  cropEditing: boolean
+  onCropChange: (box: CropBox) => void
   annotations: AnnotationRecord[]
   activeTool: string
   viewer: OpenSeadragon.Viewer | null
@@ -628,7 +681,7 @@ function ViewerStage({
   )
   const converting = Boolean(dataset && CONVERSION_STATUSES.has(dataset.status))
   const inspecting = dataset?.status === 'INSPECTING'
-  const tileSource = showingConvertedResult && dataset && revision
+  const tileSource = showingConvertedResult && !cropEditing && dataset && revision
     ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi?revision=${encodeURIComponent(revision.id)}`
     : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
       ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
@@ -660,6 +713,9 @@ function ViewerStage({
         <SlideViewer
           tileSource={tileSource}
           activeTool={activeTool}
+          cropBox={cropBox}
+          cropEditing={cropEditing}
+          onCropChange={onCropChange}
           annotations={annotations}
           sourceWidth={dataset?.width || 1}
           sourceHeight={dataset?.height || 1}
@@ -735,8 +791,12 @@ function Inspector({
   revisions,
   annotations,
   activeTool,
+  cropDraft,
+  cropEditing,
   capabilities,
   onTool,
+  onCropDraft,
+  onCropEditing,
   onCollapse,
   onInspect,
   onConfigure,
@@ -753,8 +813,12 @@ function Inspector({
   revisions: ArtifactRevision[]
   annotations: AnnotationRecord[]
   activeTool: string
+  cropDraft?: CropBox
+  cropEditing: boolean
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
   onTool: (tool: string) => void
+  onCropDraft: (box: CropBox) => void
+  onCropEditing: (editing: boolean) => void
   onCollapse: () => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
@@ -796,6 +860,10 @@ function Inspector({
           series={series}
           current={current}
           capabilities={capabilities}
+          cropDraft={cropDraft}
+          cropEditing={cropEditing}
+          onCropDraft={onCropDraft}
+          onCropEditing={onCropEditing}
           onInspect={onInspect}
           onConfigure={onConfigure}
           onConvert={onConvert}
@@ -849,6 +917,10 @@ function ExportInspector({
   series,
   current,
   capabilities,
+  cropDraft,
+  cropEditing,
+  onCropDraft,
+  onCropEditing,
   onInspect,
   onConfigure,
   onConvert,
@@ -862,6 +934,10 @@ function ExportInspector({
   series: SeriesInfo[]
   current?: ArtifactRevision
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
+  cropDraft?: CropBox
+  cropEditing: boolean
+  onCropDraft: (box: CropBox) => void
+  onCropEditing: (editing: boolean) => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
   onConvert: () => void
@@ -874,10 +950,10 @@ function ExportInspector({
   const configurationDraft = () => ({
     series: String(dataset.selectedSeries),
     downsample: String(dataset.downsample),
-    x: String(dataset.cropX),
-    y: String(dataset.cropY),
-    width: String(dataset.cropWidth),
-    height: String(dataset.cropHeight),
+    x: String(cropDraft?.x ?? dataset.cropX),
+    y: String(cropDraft?.y ?? dataset.cropY),
+    width: String(cropDraft?.width ?? dataset.cropWidth),
+    height: String(cropDraft?.height ?? dataset.cropHeight),
   })
   const [draft, setDraft] = useState(configurationDraft)
   const [seriesLoading, setSeriesLoading] = useState(false)
@@ -893,6 +969,10 @@ function ExportInspector({
     dataset.cropY,
     dataset.cropWidth,
     dataset.cropHeight,
+    cropDraft?.x,
+    cropDraft?.y,
+    cropDraft?.width,
+    cropDraft?.height,
   ])
 
   const selected = series.find((item) => item.index === Number(draft.series))
@@ -914,8 +994,8 @@ function ExportInspector({
     && parsed.x + parsed.width <= selected.width
     && parsed.y + parsed.height <= selected.height,
   )
-  const projectedWidth = draftValid ? Math.floor(parsed.width / parsed.downsample) : 0
-  const projectedHeight = draftValid ? Math.floor(parsed.height / parsed.downsample) : 0
+  const projectedWidth = draftValid ? Math.max(1, Math.floor(parsed.width / parsed.downsample)) : 0
+  const projectedHeight = draftValid ? Math.max(1, Math.floor(parsed.height / parsed.downsample)) : 0
   const draftMatchesSaved = parsed.series === dataset.selectedSeries
     && parsed.downsample === dataset.downsample
     && parsed.x === dataset.cropX
@@ -930,7 +1010,16 @@ function ExportInspector({
     fileUpperBytes: dataset.projectedFileUpperBytes,
     workspaceBytes: dataset.estimatedOutputBytes,
   }
-  const displayedEstimate = draftMatchesSaved ? savedEstimate : draftEstimate
+  const liveEstimate = draftValid
+    ? estimateCropOutput(
+        { x: parsed.x, y: parsed.y, width: parsed.width, height: parsed.height },
+        parsed.downsample,
+        dataset.sourceBytes,
+        dataset.format === 'OME_TIFF',
+      )
+    : null
+  const displayedEstimate = draftMatchesSaved ? savedEstimate : draftEstimate ?? liveEstimate
+  const estimateIsLive = !draftMatchesSaved && !draftEstimate
 
   useEffect(() => {
     if (!draftValid || draftMatchesSaved) {
@@ -965,8 +1054,52 @@ function ExportInspector({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (draftValid) void onConfigure(parsed)
+    if (draftValid) {
+      onCropEditing(false)
+      void onConfigure(parsed)
+    }
   }
+
+  const updateCropField = (
+    name: 'x' | 'y' | 'width' | 'height',
+    value: string,
+  ) => {
+    const nextDraft = { ...draft, [name]: value }
+    setDraft(nextDraft)
+    const nextBox = {
+      x: Number(nextDraft.x),
+      y: Number(nextDraft.y),
+      width: Number(nextDraft.width),
+      height: Number(nextDraft.height),
+    }
+    if (
+      selected
+      && nextBox.x >= 0
+      && nextBox.y >= 0
+      && nextBox.width > 0
+      && nextBox.height > 0
+      && nextBox.x + nextBox.width <= selected.width
+      && nextBox.y + nextBox.height <= selected.height
+    ) {
+      onCropDraft(nextBox)
+    }
+  }
+
+  const resetCrop = () => {
+    if (!selected) return
+    const fullSlide = { x: 0, y: 0, width: selected.width, height: selected.height }
+    onCropDraft(fullSlide)
+    onCropEditing(false)
+  }
+
+  const fullSlideCrop = Boolean(
+    selected
+    && cropDraft
+    && isFullSlideCrop(cropDraft, selected.width, selected.height),
+  )
+  const cropAreaPercent = selected && draftValid
+    ? Math.min(100, parsed.width * parsed.height / (selected.width * selected.height) * 100)
+    : 0
 
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
@@ -987,6 +1120,8 @@ function ExportInspector({
       width: String(next.width),
       height: String(next.height),
     })
+    onCropDraft({ x: 0, y: 0, width: next.width, height: next.height })
+    onCropEditing(false)
     setSeriesLoading(true)
     try {
       await onConfigure(nextConfiguration)
@@ -1049,28 +1184,59 @@ function ExportInspector({
             </div>
             {seriesLoading ? <small role="status">Opening selected series in the viewer…</small> : null}
           </fieldset>
-          <div className="forge-crop-grid">
-            {[
-              ['x', 'X', dataset.cropX],
-              ['y', 'Y', dataset.cropY],
-              ['width', 'Width', dataset.cropWidth || selected?.width || 1],
-              ['height', 'Height', dataset.cropHeight || selected?.height || 1],
-            ].map(([name, label]) => (
-              <label key={name}>
-                {label}
-                <input
-                  name={String(name)}
-                  type="number"
-                  min="0"
-                  value={draft[String(name) as 'x' | 'y' | 'width' | 'height']}
-                  onChange={(event) => setDraft((current) => ({
-                    ...current,
-                    [String(name)]: event.target.value,
-                  }))}
-                />
-              </label>
-            ))}
+          <div className="forge-crop-panel">
+            <div className="forge-section-heading">
+              <div>
+                <h3>Export area</h3>
+                <span>{cropAreaPercent.toFixed(cropAreaPercent < 10 ? 1 : 0)}% of slide</span>
+              </div>
+              <strong>{parsed.width.toLocaleString()} × {parsed.height.toLocaleString()} px</strong>
+            </div>
+            <p>Draw directly on the slide, then drag inside the box to move it or use any handle to reshape it.</p>
+            <div className="forge-crop-actions">
+              <button
+                className={cropEditing ? 'forge-primary' : ''}
+                type="button"
+                aria-pressed={cropEditing}
+                disabled={ACTIVE_STATUSES.has(dataset.status)}
+                onClick={() => onCropEditing(!cropEditing)}
+              >
+                {cropEditing
+                  ? 'Finish crop editing'
+                  : fullSlideCrop
+                    ? 'Draw crop on slide'
+                    : 'Edit crop on slide'}
+              </button>
+              {!fullSlideCrop ? (
+                <button type="button" onClick={resetCrop}>Reset to full slide</button>
+              ) : null}
+            </div>
           </div>
+          <details className="forge-crop-precision">
+            <summary>Precise crop coordinates</summary>
+            <div className="forge-crop-grid">
+              {[
+                ['x', 'X'],
+                ['y', 'Y'],
+                ['width', 'Width'],
+                ['height', 'Height'],
+              ].map(([name, label]) => (
+                <label key={name}>
+                  {label}
+                  <input
+                    name={name}
+                    type="number"
+                    min="0"
+                    value={draft[name as 'x' | 'y' | 'width' | 'height']}
+                    onChange={(event) => updateCropField(
+                      name as 'x' | 'y' | 'width' | 'height',
+                      event.target.value,
+                    )}
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
           <label>Downsample
             <select
               name="downsample"
@@ -1087,7 +1253,10 @@ function ExportInspector({
               <b>OME-TIFF file {formatBytes(current.omeBytes)} · measured</b>
             ) : displayedEstimate ? (
               <>
-                <b>Estimated OME-TIFF ≈ {formatBytes(displayedEstimate.fileBytes)}</b>
+                <b>
+                  Estimated OME-TIFF ≈ {formatBytes(displayedEstimate.fileBytes)}
+                  {estimateIsLive ? ' · live' : ''}
+                </b>
                 <small>
                   Expected range {formatBytes(displayedEstimate.fileLowerBytes)}
                   {' – '}
@@ -1104,7 +1273,7 @@ function ExportInspector({
             </small>
           </div>
           {!draftValid ? <p className="forge-field-error">Crop must stay inside the selected image series.</p> : null}
-          <button className="forge-primary" type="submit" disabled={!draftValid}>Apply settings</button>
+          <button className="forge-primary" type="submit" disabled={!draftValid}>Apply crop & export settings</button>
         </form>
       )}
       <p className="forge-help">
