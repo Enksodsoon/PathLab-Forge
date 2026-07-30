@@ -36,6 +36,7 @@ public final class ConversionService implements AutoCloseable {
     private final Path managedRoot;
     private final ArtifactRevisionRepository artifactRepository;
     private final SeriesMetadataCache seriesMetadataCache;
+    private final QuPathRuntime quPathRuntime;
     private final Map<String, List<SeriesInfo>> inspectedSeries = new ConcurrentHashMap<>();
     private final Map<String, ReaderSession> readerSessions = new ConcurrentHashMap<>();
     private final Map<String, DirectTileSource> directSources = new ConcurrentHashMap<>();
@@ -64,6 +65,7 @@ public final class ConversionService implements AutoCloseable {
         this.managedRoot = managedRoot.toAbsolutePath().normalize();
         this.artifactRepository = new ArtifactRevisionRepository(this.managedRoot);
         this.seriesMetadataCache = new SeriesMetadataCache(this.managedRoot);
+        this.quPathRuntime = QuPathRuntime.discover();
     }
 
     public ConversionEngine engine() {
@@ -640,6 +642,11 @@ public final class ConversionService implements AutoCloseable {
             repository.save(cached);
             return cached;
         }
+        if (Boolean.parseBoolean(
+                System.getProperty("pathlab.forge.secondsBudget.enabled", "true"))) {
+            QuPathRuntime.requireSecondsBudget(
+                    request, quPathRuntime.supports(dataset.format()));
+        }
         Files.createDirectories(managedRoot);
         var peakWorkspace = OutputSizeEstimator.managedPeakWorkspace(
                 dataset.cropWidth(),
@@ -659,6 +666,8 @@ public final class ConversionService implements AutoCloseable {
                 DatasetStatus.CONVERTING,
                 revision.id().equals(dataset.currentArtifactRevision())
                         ? "Resuming last verified conversion checkpoint"
+                        : quPathRuntime.supports(dataset.format())
+                        ? "Direct tiled OME export using the 8 GB / 6-core seconds profile"
                         : useParallelRgb(dataset, request)
                         ? "Lightning RGB: decoding "
                                 + parallelRgbWorkers(Path.of(dataset.sourcePath()))
@@ -858,7 +867,21 @@ public final class ConversionService implements AutoCloseable {
                             >= StageCheckpoint.Stage.OME_VERIFIED.ordinal()
                     && Files.isRegularFile(output);
             if (!resumeOme) {
-            if (dataset.format() == DatasetFormat.OME_TIFF
+            if (quPathRuntime.supports(dataset.format())) {
+                repository.save(dataset.withConversion(
+                        DatasetStatus.OPTIMIZING_OME,
+                        "Writing the final OME pyramid directly from bounded source tiles",
+                        dataset.outputPath(),
+                        dataset.sha256(),
+                        dataset.selectedSeries(),
+                        dataset.width(),
+                        dataset.height(),
+                        dataset.downsample(),
+                        dataset.estimatedOutputBytes()));
+                updateProgress(dataset.id(), "DIRECT_OME", 0, 1);
+                quPathRuntime.writePyramidalOme(request, partial);
+                finalOmeWritten = true;
+            } else if (dataset.format() == DatasetFormat.OME_TIFF
                     && derivativeEngine.supportsOmeRendering()) {
                 derivativeEngine.renderOme(request, rendered);
             } else if (useParallelRgb(dataset, request)) {

@@ -62,4 +62,17 @@ final class ConversionRequestTest {
         assertEquals(7_557, request.outputWidth());
         assertEquals(7_360, request.outputHeight());
     }
+
+    @Test
+    void supportsSecondsProfileDownsamplesForWholeSlides() {
+        var sixteen = new ConversionRequest(
+                Path.of("slide.vsi"), 0, 0, 0, 165_845, 90_735, 165_845, 90_735, 16);
+        var thirtyTwo = new ConversionRequest(
+                Path.of("slide.vsi"), 0, 0, 0, 165_845, 90_735, 165_845, 90_735, 32);
+
+        assertEquals(10_365, sixteen.outputWidth());
+        assertEquals(5_670, sixteen.outputHeight());
+        assertEquals(5_182, thirtyTwo.outputWidth());
+        assertEquals(2_835, thirtyTwo.outputHeight());
+    }
 }

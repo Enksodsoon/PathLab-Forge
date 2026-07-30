@@ -600,7 +600,7 @@ public final class ForgeServer implements AutoCloseable {
                         + conversionService.derivativeEngine().available()
                         + ",\"derivativeRuntime\":"
                         + json(conversionService.derivativeEngine().description())
-                        + ",\"activeConversions\":1,\"downsamples\":[1,1.5,2,4,8]}");
+                        + ",\"activeConversions\":1,\"downsamples\":[1,1.5,2,4,8,16,32]}");
     }
 
     private void listDatasets(HttpExchange exchange) throws IOException {
