@@ -208,7 +208,7 @@ public final class ForgeServer implements AutoCloseable {
             if ("/".equals(path)) {
                 bootstrap(exchange);
             } else if ("/app".equals(path) && "GET".equals(exchange.getRequestMethod())) {
-                authenticatedResource(exchange, "/web/index.html", "text/html; charset=utf-8");
+                appResource(exchange);
             } else if ("/assets/app.css".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 authenticatedResource(exchange, "/web/app.css", "text/css; charset=utf-8");
             } else if ("/assets/app.js".equals(path) && "GET".equals(exchange.getRequestMethod())) {
@@ -368,6 +368,49 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         launchTokenAvailable = false;
+        setSessionCookie(exchange);
+        exchange.getResponseHeaders().set("Location", "/app");
+        exchange.sendResponseHeaders(303, -1);
+    }
+
+    private void appResource(HttpExchange exchange) throws IOException {
+        if (authenticated(exchange)) {
+            serveResource(exchange, "/web/index.html", "text/html; charset=utf-8");
+            return;
+        }
+        if (!trustedLocalDocumentNavigation(exchange)) {
+            respond(exchange, 401, "application/json", "{\"error\":\"unauthorized\"}");
+            return;
+        }
+        setSessionCookie(exchange);
+        exchange.getResponseHeaders().set("Location", "/app");
+        exchange.sendResponseHeaders(303, -1);
+    }
+
+    private boolean trustedLocalDocumentNavigation(HttpExchange exchange) {
+        var remoteAddress = exchange.getRemoteAddress().getAddress();
+        if (remoteAddress == null || !remoteAddress.isLoopbackAddress()) {
+            return false;
+        }
+        var host = exchange.getRequestHeaders().getFirst("Host");
+        if (host == null || !host.equalsIgnoreCase(baseUri.getAuthority())) {
+            return false;
+        }
+        var fetchSite = exchange.getRequestHeaders().getFirst("Sec-Fetch-Site");
+        if (fetchSite != null
+                && !"none".equalsIgnoreCase(fetchSite)
+                && !"same-origin".equalsIgnoreCase(fetchSite)) {
+            return false;
+        }
+        var fetchMode = exchange.getRequestHeaders().getFirst("Sec-Fetch-Mode");
+        if (fetchMode != null && !"navigate".equalsIgnoreCase(fetchMode)) {
+            return false;
+        }
+        var fetchDestination = exchange.getRequestHeaders().getFirst("Sec-Fetch-Dest");
+        return fetchDestination == null || "document".equalsIgnoreCase(fetchDestination);
+    }
+
+    private void setSessionCookie(HttpExchange exchange) {
         exchange.getResponseHeaders().add(
                 "Set-Cookie",
                 "forge_session="
@@ -375,8 +418,6 @@ public final class ForgeServer implements AutoCloseable {
                         + "; Path=/; Max-Age="
                         + SESSION_MAX_AGE_SECONDS
                         + "; HttpOnly; SameSite=Strict");
-        exchange.getResponseHeaders().set("Location", "/app");
-        exchange.sendResponseHeaders(303, -1);
     }
 
     private void viewerConnection(HttpExchange exchange) throws IOException {
@@ -507,6 +548,11 @@ public final class ForgeServer implements AutoCloseable {
             respond(exchange, 401, "application/json", "{\"error\":\"unauthorized\"}");
             return;
         }
+        serveResource(exchange, resource, type);
+    }
+
+    private void serveResource(HttpExchange exchange, String resource, String type)
+            throws IOException {
         try (InputStream input = ForgeServer.class.getResourceAsStream(resource)) {
             if (input == null) {
                 respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");

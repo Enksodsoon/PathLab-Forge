@@ -135,6 +135,48 @@ final class ForgeServerTest {
         }
     }
 
+    @Test
+    void permanentAppLinkAuthorizesACleanLocalBrowserButRejectsCrossSiteNavigation()
+            throws Exception {
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder()
+                .cookieHandler(cookies)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+
+        try (var server = startEphemeral()) {
+            var firstVisit = client.send(
+                    HttpRequest.newBuilder(server.appUri())
+                            .header("Sec-Fetch-Site", "same-origin")
+                            .header("Sec-Fetch-Mode", "navigate")
+                            .header("Sec-Fetch-Dest", "document")
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(303, firstVisit.statusCode());
+            assertEquals("/app", firstVisit.headers().firstValue("location").orElseThrow());
+            assertTrue(firstVisit.headers().firstValue("set-cookie").orElseThrow()
+                    .contains("HttpOnly; SameSite=Strict"));
+
+            var authorizedVisit = client.send(
+                    HttpRequest.newBuilder(server.appUri()).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, authorizedVisit.statusCode());
+            assertTrue(authorizedVisit.body().contains("<div id=\"root\"></div>"));
+
+            var crossSiteClient = HttpClient.newHttpClient();
+            var crossSiteVisit = crossSiteClient.send(
+                    HttpRequest.newBuilder(server.appUri())
+                            .header("Sec-Fetch-Site", "cross-site")
+                            .header("Sec-Fetch-Mode", "navigate")
+                            .header("Sec-Fetch-Dest", "document")
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, crossSiteVisit.statusCode());
+        }
+    }
+
     private ForgeServer startEphemeral() throws Exception {
         return startOnPort(0, LocalBrowserSession.randomToken());
     }
