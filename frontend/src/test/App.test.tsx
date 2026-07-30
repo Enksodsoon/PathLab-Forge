@@ -121,6 +121,22 @@ test('collapses and restores the slide inspector without losing its state', asyn
   expect(host).not.toHaveClass('inspector-collapsed')
   expect(inspector).toBeVisible()
   expect(screen.getByRole('heading', { name: 'Collapsible slide.ome.tif' })).toBeVisible()
+
+  const collapseLibrary = screen.getByRole('button', { name: 'Collapse slide library' })
+  const navigator = collapseLibrary.closest('.pathlab-local-navigator')
+  fireEvent.click(collapseLibrary)
+
+  expect(host).toHaveClass('navigator-collapsed')
+  expect(navigator).not.toBeVisible()
+  const restoreLibrary = screen.getByRole('button', { name: 'Slide library' })
+  expect(restoreLibrary).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(restoreLibrary)
+
+  expect(host).not.toHaveClass('navigator-collapsed')
+  expect(navigator).toBeVisible()
+  expect(screen.getByRole('button', {
+    name: /Collapsible slide\.ome\.tif Ready to convert/,
+  })).toHaveClass('active')
 })
 
 test('shows the short-lived Viewer verification code', async () => {
