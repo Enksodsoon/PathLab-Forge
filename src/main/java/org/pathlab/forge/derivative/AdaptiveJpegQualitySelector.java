@@ -6,6 +6,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import javax.imageio.IIOImage;
@@ -22,6 +24,101 @@ final class AdaptiveJpegQualitySelector {
     static final List<Integer> QUALITIES = List.of(85, 90, 95, 100);
 
     private AdaptiveJpegQualitySelector() {}
+
+    static List<Roi> planNativeRois(
+            Path overviewPath, int fullWidth, int fullHeight) throws IOException {
+        var overview = ImageIO.read(overviewPath.toFile());
+        if (overview == null || fullWidth < ROI_SIZE || fullHeight < ROI_SIZE) {
+            throw new IOException("Native DZI quality ROI overview could not be decoded");
+        }
+        var candidates = new ArrayList<RoiCandidate>();
+        for (var row = 0; row < 8; row++) {
+            var top = row * overview.getHeight() / 8;
+            var bottom = Math.max(top + 1, (row + 1) * overview.getHeight() / 8);
+            for (var column = 0; column < 8; column++) {
+                var left = column * overview.getWidth() / 8;
+                var right = Math.max(left + 1, (column + 1) * overview.getWidth() / 8);
+                var mean = 0.0;
+                var squared = 0.0;
+                var count = 0;
+                for (var y = top; y < bottom; y++) {
+                    for (var x = left; x < right; x++) {
+                        var value = luminance(overview.getRGB(x, y));
+                        mean += value;
+                        squared += value * value;
+                        count++;
+                    }
+                }
+                mean /= count;
+                var variance = Math.max(0.0, squared / count - mean * mean);
+                var centerX = ((left + right) * (long) fullWidth)
+                        / (2L * overview.getWidth());
+                var centerY = ((top + bottom) * (long) fullHeight)
+                        / (2L * overview.getHeight());
+                candidates.add(new RoiCandidate(
+                        centeredRoi(centerX, centerY, fullWidth, fullHeight),
+                        mean,
+                        variance));
+            }
+        }
+
+        var selected = new LinkedHashMap<String, Roi>();
+        addRanked(
+                selected,
+                candidates.stream()
+                        .sorted(Comparator.comparingDouble(RoiCandidate::mean))
+                        .toList(),
+                8);
+        addRanked(
+                selected,
+                candidates.stream()
+                        .sorted(Comparator.comparingDouble(RoiCandidate::mean).reversed())
+                        .toList(),
+                16);
+        addRanked(
+                selected,
+                candidates.stream()
+                        .sorted(Comparator.comparingDouble(RoiCandidate::variance).reversed())
+                        .toList(),
+                24);
+        for (var index = 0; index < 16 && selected.size() < 32; index++) {
+            var seamX = Math.max(
+                    512L,
+                    Math.min(
+                            fullWidth - 1L,
+                            Math.round((index + 1.0) * fullWidth / 17.0 / 512.0) * 512L));
+            var centerY = Math.round(((index % 8) + 0.5) * fullHeight / 8.0);
+            add(selected, centeredRoi(seamX, centerY, fullWidth, fullHeight));
+        }
+        addRanked(selected, candidates, 32);
+        if (selected.size() < 32) {
+            throw new IOException("Could not derive 32 distinct native quality ROIs");
+        }
+        return selected.values().stream().limit(32).toList();
+    }
+
+    private static void addRanked(
+            Map<String, Roi> selected, List<RoiCandidate> candidates, int targetSize) {
+        for (var candidate : candidates) {
+            if (selected.size() >= targetSize) {
+                return;
+            }
+            add(selected, candidate.roi());
+        }
+    }
+
+    private static void add(Map<String, Roi> selected, Roi roi) {
+        selected.putIfAbsent(roi.x() + ":" + roi.y(), roi);
+    }
+
+    private static Roi centeredRoi(
+            long centerX, long centerY, int fullWidth, int fullHeight) {
+        var x = Math.toIntExact(
+                Math.max(0, Math.min(fullWidth - ROI_SIZE, centerX - ROI_SIZE / 2L)));
+        var y = Math.toIntExact(
+                Math.max(0, Math.min(fullHeight - ROI_SIZE, centerY - ROI_SIZE / 2L)));
+        return new Roi(x, y, ROI_SIZE, ROI_SIZE);
+    }
 
     static Selection select(Path boundedProbe) throws IOException {
         var image = ImageIO.read(boundedProbe.toFile());
@@ -310,6 +407,10 @@ final class AdaptiveJpegQualitySelector {
     }
 
     record Selection(int quality, double minimumWindowedSsim, double meanDeltaE00) {}
+
+    record Roi(int x, int y, int width, int height) {}
+
+    private record RoiCandidate(Roi roi, double mean, double variance) {}
 
     private record Lab(double l, double a, double b) {}
 }

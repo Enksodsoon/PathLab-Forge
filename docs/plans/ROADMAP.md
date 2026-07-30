@@ -32,7 +32,8 @@ No WSI reader or GUI yet.
    - `slide.dzi`;
    - 512-pixel tiles;
    - overlap 1;
-   - adaptive JPEG quality 85, 90, or 95 under strict fidelity gates;
+   - adaptive JPEG quality 85, 90, 95, or fail-closed 100 under strict
+     native-resolution ROI fidelity gates;
    - `thumbnail.jpg`, longest edge 640, quality 82.
 
 This milestone has no API, model, state or worker behavior change.

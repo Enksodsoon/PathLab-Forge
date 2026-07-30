@@ -88,6 +88,14 @@ tasks.withType<Test>().configureEach {
     systemProperty("user.country", "US")
     systemProperty("user.timezone", "UTC")
     systemProperty("pathlab.forge.resourceGovernor.enabled", "false")
+    listOf(
+        "pathlab.forge.test.ome",
+        "pathlab.forge.test.ome.width",
+        "pathlab.forge.test.ome.height",
+        "pathlab.forge.test.fullDzi",
+    ).forEach { name ->
+        System.getProperty(name)?.let { value -> systemProperty(name, value) }
+    }
     reports.junitXml.mergeReruns = false
 }
 
