@@ -669,10 +669,10 @@ public final class ConversionService implements AutoCloseable {
         verifySourceFingerprint(dataset);
         var request = request(dataset);
         var secondsBudgetEnabled = Boolean.parseBoolean(
-                System.getProperty("pathlab.forge.secondsBudget.enabled", "true"));
+                System.getProperty("pathlab.forge.secondsBudget.enabled", "false"));
         if (secondsBudgetEnabled
                 && Boolean.parseBoolean(
-                        System.getProperty("pathlab.forge.fastProfile.enabled", "true"))) {
+                        System.getProperty("pathlab.forge.fastProfile.enabled", "false"))) {
             var fastDownsample = QuPathRuntime.fastProfileDownsample(request);
             if (fastDownsample > dataset.downsample()) {
                 var previousDownsample = dataset.downsample();

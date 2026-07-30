@@ -1011,6 +1011,7 @@ function ExportInspector({
   )
   const projectedWidth = draftValid ? Math.max(1, Math.floor(parsed.width / parsed.downsample)) : 0
   const projectedHeight = draftValid ? Math.max(1, Math.floor(parsed.height / parsed.downsample)) : 0
+  const projectedPixels = projectedWidth * projectedHeight
   const draftMatchesSaved = parsed.series === dataset.selectedSeries
     && parsed.downsample === dataset.downsample
     && parsed.x === dataset.cropX
@@ -1238,6 +1239,13 @@ function ExportInspector({
             </small>
           </div>
           {!draftValid ? <p className="forge-field-error">Crop must stay inside the selected image series.</p> : null}
+          {draftValid && projectedPixels > 250_000_000 ? (
+            <p className="forge-help" role="status">
+              Exact-resolution export: {(projectedPixels / 1_000_000_000).toFixed(2)} billion pixels.
+              This preserves the selected {parsed.downsample}× scale but cannot meet the one-minute
+              target on the 8 GB / 6-core profile.
+            </p>
+          ) : null}
           <button className="forge-primary" type="submit" disabled={!draftValid}>Apply crop & export settings</button>
         </form>
       )}
