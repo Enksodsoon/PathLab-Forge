@@ -6,6 +6,7 @@ import {
   isFullSlideCrop,
   moveCrop,
   resizeCrop,
+  shouldShowCropOverlay,
 } from '../crop'
 
 describe('crop geometry', () => {
@@ -36,6 +37,16 @@ describe('crop geometry', () => {
   it('recognizes a full-slide crop', () => {
     expect(isFullSlideCrop({ x: 0, y: 0, width: 1000, height: 900 }, 1000, 900)).toBe(true)
     expect(isFullSlideCrop({ x: 1, y: 0, width: 999, height: 900 }, 1000, 900)).toBe(false)
+  })
+
+  it('keeps the crop overlay off until crop editing is explicitly selected', () => {
+    const full = { x: 0, y: 0, width: 1000, height: 900 }
+    const partial = { x: 100, y: 100, width: 400, height: 300 }
+
+    expect(shouldShowCropOverlay(false, full, 1000, 900)).toBe(false)
+    expect(shouldShowCropOverlay(false, partial, 1000, 900)).toBe(false)
+    expect(shouldShowCropOverlay(true, full, 1000, 900)).toBe(false)
+    expect(shouldShowCropOverlay(true, partial, 1000, 900)).toBe(true)
   })
 })
 

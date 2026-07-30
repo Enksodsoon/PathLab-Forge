@@ -5,9 +5,9 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { AnnotationRecord } from './api'
 import {
   cropFromPoints,
-  isFullSlideCrop,
   moveCrop,
   resizeCrop,
+  shouldShowCropOverlay,
   type CropBox,
   type CropHandle,
 } from './crop'
@@ -362,7 +362,7 @@ export function SlideViewer({
   const showCrop = Boolean(
     cropBox
     && cropScreen
-    && (!cropEditing || !isFullSlideCrop(cropBox, sourceWidth, sourceHeight)),
+    && shouldShowCropOverlay(cropEditing, cropBox, sourceWidth, sourceHeight),
   )
   const cropHandleLabels: Record<CropHandle, string> = {
     nw: 'top left',
