@@ -702,7 +702,7 @@ public final class ConversionService implements AutoCloseable {
             return cached;
         }
         if (Boolean.parseBoolean(
-                System.getProperty("pathlab.forge.secondsBudget.enabled", "true"))) {
+                System.getProperty("pathlab.forge.secondsBudget.enabled", "false"))) {
             QuPathRuntime.requireSecondsBudget(
                     request, quPathRuntime.supports(dataset.format()));
         }
