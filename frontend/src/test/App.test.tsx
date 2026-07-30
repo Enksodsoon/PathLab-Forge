@@ -732,7 +732,7 @@ test('opens the converted viewer while the upload package is still building', as
     expect.stringContaining('/derivative/slide.dzi?revision=packaging-artifact'),
   )
   expect(screen.getByText('Result viewable · building upload package')).toBeVisible()
-  expect(screen.queryByRole('button', { name: 'Approve exact result' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Approve exact OME-TIFF' })).not.toBeInTheDocument()
 })
 
 test('replaces the estimate with the measured OME-TIFF size after conversion', async () => {

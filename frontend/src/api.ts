@@ -60,6 +60,8 @@ export interface ArtifactRevision {
   packagePath: string
   omeSha256: string
   omeBytes: number
+  omeProfile?: string
+  omeJpegQuality?: number
   packageSha256: string
   failure: string
 }
@@ -92,6 +94,7 @@ export interface ViewerUpload {
   uploadedBytes: number
   totalBytes: number
   viewerSlideId: string
+  uploadMode?: 'OME_DYNAMIC' | 'PREPARED_V2' | ''
   detail: string
 }
 

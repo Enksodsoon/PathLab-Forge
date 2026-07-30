@@ -297,7 +297,13 @@ export function App() {
     try {
       const next = await api.uploadApprovedArtifact(selected.id)
       setViewerUpload(next)
-      setNotice(next.detail)
+      setNotice(
+        next.uploadMode === 'OME_DYNAMIC'
+          ? `Direct OME-TIFF upload · ${next.detail}`
+          : next.uploadMode === 'PREPARED_V2'
+            ? `Prepared-v2 compatibility upload · ${next.detail}`
+            : next.detail,
+      )
     } catch (nextError) {
       setError(message(nextError))
     }
@@ -1260,14 +1266,20 @@ function ExportInspector({
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>Convert current revision</button>}
         {current?.status === 'READY'
-          && dataset.status === 'PACKAGE_READY'
+          && ['CONVERSION_READY', 'PACKAGE_READY'].includes(dataset.status)
           && dataset.approvedArtifactRevision !== current.id
-          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve exact result</button>
+          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve exact OME-TIFF</button>
           : null}
         {dataset.approvedArtifactRevision
-          ? <button type="button" onClick={onUpload}>Upload approved revision</button>
+          ? (
+              <button type="button" onClick={onUpload}>
+                {current?.omeProfile === 'ome-dynamic-v1'
+                  ? 'Upload OME-TIFF to Viewer'
+                  : 'Upload approved revision'}
+              </button>
+            )
           : null}
-        {current?.status === 'READY'
+        {current?.status === 'READY' && current.packageSha256
           ? <a className="forge-download" href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}>Export .plslide package</a>
           : null}
         {!ACTIVE_STATUSES.has(dataset.status)

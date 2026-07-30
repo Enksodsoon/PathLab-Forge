@@ -1348,6 +1348,8 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"packagePath\":" + json(revision.packagePath())
                 + ",\"omeSha256\":" + json(revision.omeSha256())
                 + ",\"omeBytes\":" + regularFileSize(revision.omePath())
+                + ",\"omeProfile\":" + json(revision.omeProfile())
+                + ",\"omeJpegQuality\":" + revision.omeJpegQuality()
                 + ",\"packageSha256\":" + json(revision.packageSha256())
                 + ",\"outputWidth\":" + revision.outputWidth()
                 + ",\"outputHeight\":" + revision.outputHeight()
