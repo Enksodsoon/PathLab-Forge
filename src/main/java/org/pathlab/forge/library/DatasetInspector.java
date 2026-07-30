@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -53,7 +54,7 @@ public final class DatasetInspector {
             DatasetSourceInventory inventory)
             throws IOException {
         return new LocalDataset(
-                UUID.randomUUID().toString(),
+                stableDatasetId(source),
                 source.getFileName().toString(),
                 source.toString(),
                 inventory.totalBytes(),
@@ -76,6 +77,14 @@ public final class DatasetInspector {
                 "",
                 "",
                 "");
+    }
+
+    private static String stableDatasetId(Path source) {
+        var identity = source.toString();
+        if (java.io.File.separatorChar == '\\') {
+            identity = identity.toLowerCase(Locale.ROOT);
+        }
+        return UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private static void verifyTiffSignature(Path source)

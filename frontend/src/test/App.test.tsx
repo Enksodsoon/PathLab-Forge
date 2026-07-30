@@ -262,7 +262,48 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
 })
 
 test('offers a reliable local-path import when the native picker is unavailable', async () => {
-  vi.mocked(api.importDataset).mockResolvedValue({ datasets: [] })
+  const imported: api.Dataset = {
+    id: 'instant-import',
+    displayName: 'case.ome.tif',
+    sourceBytes: 300_000_000,
+    format: 'OME_TIFF',
+    status: 'READY',
+    detail: 'Ready to inspect',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: -1,
+    width: 0,
+    height: 0,
+    downsample: 1,
+    estimatedOutputBytes: 0,
+    projectedFileBytes: 0,
+    projectedFileLowerBytes: 0,
+    projectedFileUpperBytes: 0,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 0,
+    cropHeight: 0,
+    sourceFingerprint: 'instant-source',
+    configurationRevision: '',
+    currentArtifactRevision: '',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.importDataset).mockResolvedValue({ datasets: [imported] })
+  vi.mocked(api.inspectDataset).mockResolvedValue([{
+    index: 0,
+    name: 'Main image',
+    width: 12_000,
+    height: 8_000,
+    channels: 3,
+    sizeZ: 1,
+    sizeT: 1,
+    pixelType: 'uint8',
+    physicalSizeX: .25,
+    physicalSizeY: .25,
+    physicalUnit: 'µm',
+    resolutionCount: 4,
+    rgbPlane: true,
+  }])
   render(<App />)
 
   const libraryHeader = (await screen.findByText('Local workspace')).closest('header')
@@ -274,6 +315,7 @@ test('offers a reliable local-path import when the native picker is unavailable'
   fireEvent.click(screen.getByRole('button', { name: 'Import this path' }))
 
   await waitFor(() => expect(api.importDataset).toHaveBeenCalledWith('C:\\slides\\case.ome.tif'))
+  await waitFor(() => expect(api.inspectDataset).toHaveBeenCalledWith('instant-import'))
 })
 
 test('removes a slide from the library only after an explicit preservation warning', async () => {

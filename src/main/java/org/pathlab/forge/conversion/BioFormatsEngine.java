@@ -69,7 +69,7 @@ public final class BioFormatsEngine implements ConversionEngine {
     @Override
     public List<SeriesInfo> inspect(Path source) throws IOException {
         requireAvailable();
-        var executor = Executors.newFixedThreadPool(2, runnable -> {
+        var executor = Executors.newFixedThreadPool(3, runnable -> {
             var thread = new Thread(runnable, "pathlab-bioformats-metadata");
             thread.setDaemon(true);
             return thread;
@@ -79,9 +79,11 @@ public final class BioFormatsEngine implements ConversionEngine {
         try {
             var topLevelFuture = executor.submit(() -> inspectMetadata(source, true));
             var flattenedFuture = executor.submit(() -> inspectMetadata(source, false));
+            var directReaderFuture = executor.submit(() -> directReader(source));
             try {
                 topLevel = topLevelFuture.get();
                 flattened = flattenedFuture.get();
+                directReaderFuture.get();
             } catch (ExecutionException error) {
                 var cause = error.getCause();
                 if (cause instanceof IOException io) {
@@ -694,10 +696,25 @@ public final class BioFormatsEngine implements ConversionEngine {
             loader = new URLClassLoader(
                     new java.net.URL[] {jar.toUri().toURL()},
                     ClassLoader.getPlatformClassLoader());
+            quietThirdPartyLogging(loader);
             readerClass = Class.forName("loci.formats.ImageReader", true, loader);
             reader = readerClass.getConstructor().newInstance();
             invoke("setFlattenedResolutions", new Class<?>[] {boolean.class}, false);
             invoke("setId", new Class<?>[] {String.class}, source.toString());
+        }
+
+        private static void quietThirdPartyLogging(ClassLoader loader) {
+            try {
+                var loggerFactory = Class.forName("org.slf4j.LoggerFactory", true, loader);
+                var context = loggerFactory.getMethod("getILoggerFactory").invoke(null);
+                var logger = context.getClass().getMethod("getLogger", String.class)
+                        .invoke(context, "ROOT");
+                var levelClass = Class.forName("ch.qos.logback.classic.Level", true, loader);
+                var warn = levelClass.getField("WARN").get(null);
+                logger.getClass().getMethod("setLevel", levelClass).invoke(logger, warn);
+            } catch (ReflectiveOperationException | LinkageError ignored) {
+                // Logging is optional; reader availability must not depend on its implementation.
+            }
         }
 
         private synchronized FlatSeries series(int series) throws IOException {

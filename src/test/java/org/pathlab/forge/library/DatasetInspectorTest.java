@@ -84,4 +84,15 @@ final class DatasetInspectorTest {
 
         assertNotEquals(first.sourceFingerprint(), second.sourceFingerprint());
     }
+
+    @Test
+    void reusesTheDatasetIdentityForTheSameSourcePath() throws Exception {
+        var source = temporaryDirectory.resolve("repeatable.ome.tif");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+
+        var first = new DatasetInspector().inspect(source);
+        var second = new DatasetInspector().inspect(source);
+
+        assertEquals(first.id(), second.id());
+    }
 }

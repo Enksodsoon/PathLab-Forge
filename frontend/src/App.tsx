@@ -103,11 +103,22 @@ export function App() {
   }, [datasets, refresh])
 
   const finishImport = (next: { datasets: Dataset[] }) => {
+    const imported = next.datasets.find((item) => !datasets.some((current) => current.id === item.id))
     setDatasets(next.datasets)
-    setSelectedId(next.datasets.at(-1)?.id || '')
+    setSelectedId(imported?.id || next.datasets.at(-1)?.id || '')
     setImportOpen(false)
     setImportPath('')
-    setNotice('Dataset inventory created')
+    if (imported && capabilities?.vsiConversion
+      && ['READY', 'READER_REQUIRED'].includes(imported.status)) {
+      setNotice('Slide added — opening the native-resolution viewer…')
+      void api.inspectDataset(imported.id).then((result) => {
+        setSeriesByDataset((current) => ({ ...current, [imported.id]: result }))
+        setNotice(`${result.length} image series ready`)
+        return refresh()
+      }).catch((nextError) => setError(message(nextError)))
+    } else {
+      setNotice(imported ? 'Dataset inventory created' : 'Slide is already in the local library')
+    }
   }
 
   const handleNativeImport = async () => {
@@ -953,7 +964,14 @@ function ExportInspector({
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
       {!series.length ? (
-        <button className="forge-primary" type="button" onClick={onInspect}>Inspect image series</button>
+        <button
+          className="forge-primary"
+          type="button"
+          disabled={dataset.status === 'INSPECTING'}
+          onClick={onInspect}
+        >
+          {dataset.status === 'INSPECTING' ? 'Opening slide…' : 'Inspect image series'}
+        </button>
       ) : (
         <form className="forge-export-form" onSubmit={submit}>
           <fieldset className="forge-series-picker">

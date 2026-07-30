@@ -14,6 +14,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.stream.Stream;
 
 public record DatasetSourceInventory(
@@ -82,18 +84,18 @@ public record DatasetSourceInventory(
                 .map(path -> path.toAbsolutePath().normalize())
                 .sorted(Comparator.comparing(path -> portable(root.relativize(path))))
                 .toList();
+        var identities = identities(root, sorted);
         var manifest = new StringBuilder();
         long total = 0;
-        for (var file : sorted) {
-            var bytes = Files.size(file);
-            total = Math.addExact(total, bytes);
-            manifest.append(portable(root.relativize(file)))
+        for (var identity : identities) {
+            total = Math.addExact(total, identity.bytes());
+            manifest.append(identity.relativePath())
                     .append('|')
-                    .append(bytes)
+                    .append(identity.bytes())
                     .append('|')
-                    .append(Files.getLastModifiedTime(file).toMillis())
+                    .append(identity.modifiedAt())
                     .append('|')
-                    .append(sha256(file))
+                    .append(identity.sha256())
                     .append('\n');
         }
         var serialized = manifest.toString();
@@ -102,6 +104,50 @@ public record DatasetSourceInventory(
                 sha256(serialized.getBytes(StandardCharsets.UTF_8)),
                 serialized,
                 sorted.size());
+    }
+
+    private static List<FileIdentity> identities(Path root, List<Path> files)
+            throws IOException {
+        if (files.size() == 1) {
+            return List.of(identity(root, files.get(0)));
+        }
+        var workers = Math.min(4, files.size());
+        var executor = Executors.newFixedThreadPool(workers, runnable -> {
+            var thread = new Thread(runnable, "pathlab-source-fingerprint");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            var futures = files.stream()
+                    .map(file -> executor.submit(() -> identity(root, file)))
+                    .toList();
+            var identities = new ArrayList<FileIdentity>(files.size());
+            for (var future : futures) {
+                try {
+                    identities.add(future.get());
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Source fingerprinting was interrupted", error);
+                } catch (ExecutionException error) {
+                    var cause = error.getCause();
+                    if (cause instanceof IOException io) {
+                        throw io;
+                    }
+                    throw new IOException("Source fingerprinting failed", cause);
+                }
+            }
+            return List.copyOf(identities);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static FileIdentity identity(Path root, Path file) throws IOException {
+        return new FileIdentity(
+                portable(root.relativize(file)),
+                Files.size(file),
+                Files.getLastModifiedTime(file).toMillis(),
+                sha256(file));
     }
 
     private static boolean isEts(Path path) {
@@ -159,4 +205,7 @@ public record DatasetSourceInventory(
             throw new IllegalStateException("SHA-256 is unavailable", error);
         }
     }
+
+    private record FileIdentity(
+            String relativePath, long bytes, long modifiedAt, String sha256) {}
 }
