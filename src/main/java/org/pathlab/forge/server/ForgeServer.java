@@ -10,8 +10,6 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -43,7 +41,8 @@ import org.pathlab.forge.viewer.WindowsCredentialStore;
 
 public final class ForgeServer implements AutoCloseable {
     private static final int MAX_WRITE_BYTES = 65_536;
-    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final int DEFAULT_DESKTOP_PORT = 51_274;
+    private static final long SESSION_MAX_AGE_SECONDS = 315_360_000L;
     private final HttpServer server;
     private final ExecutorService executor;
     private final String launchToken;
@@ -66,12 +65,13 @@ public final class ForgeServer implements AutoCloseable {
             DatasetPicker picker,
             Path managedRoot,
             ConversionEngine conversionEngine,
-            DerivativeEngine derivativeEngine) {
+            DerivativeEngine derivativeEngine,
+            String sessionToken) {
         this.server = server;
         this.executor = executor;
-        launchToken = randomToken();
-        sessionToken = randomToken();
-        csrfToken = randomToken();
+        launchToken = LocalBrowserSession.randomToken();
+        this.sessionToken = sessionToken;
+        csrfToken = LocalBrowserSession.randomToken();
         baseUri = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
         this.repository = repository;
         this.picker = picker;
@@ -84,12 +84,16 @@ public final class ForgeServer implements AutoCloseable {
 
     public static ForgeServer start() throws IOException {
         var paths = ForgePaths.defaults();
-        return start(
+        var configuredPort = Integer.getInteger("pathlab.forge.port", DEFAULT_DESKTOP_PORT);
+        return startConfigured(
                 new PropertiesDatasetRepository(paths.repositoryFile()),
                 new SwingDatasetPicker(),
                 paths.managedRoot(),
                 BioFormatsEngine.discover(paths.dataRoot()),
-                VipsRuntime.discover(paths.dataRoot()));
+                VipsRuntime.discover(paths.dataRoot()),
+                configuredPort,
+                LocalBrowserSession.loadOrCreate(
+                        paths.dataRoot().resolve("browser-session.token")));
     }
 
     public static ForgeServer start(
@@ -125,7 +129,44 @@ public final class ForgeServer implements AutoCloseable {
             DerivativeEngine derivativeEngine)
             throws IOException {
         var configuredPort = Integer.getInteger("pathlab.forge.port", 0);
-        var address = new InetSocketAddress(InetAddress.getLoopbackAddress(), configuredPort);
+        return startConfigured(
+                repository,
+                picker,
+                managedRoot,
+                conversionEngine,
+                derivativeEngine,
+                configuredPort,
+                LocalBrowserSession.randomToken());
+    }
+
+    static ForgeServer startOnPort(
+            DatasetRepository repository,
+            DatasetPicker picker,
+            Path managedRoot,
+            int port,
+            String sessionToken)
+            throws IOException {
+        var runtimeRoot = managedRoot.toAbsolutePath().normalize().getParent();
+        return startConfigured(
+                repository,
+                picker,
+                managedRoot,
+                BioFormatsEngine.discover(runtimeRoot),
+                VipsRuntime.discover(runtimeRoot),
+                port,
+                sessionToken);
+    }
+
+    private static ForgeServer startConfigured(
+            DatasetRepository repository,
+            DatasetPicker picker,
+            Path managedRoot,
+            ConversionEngine conversionEngine,
+            DerivativeEngine derivativeEngine,
+            int port,
+            String sessionToken)
+            throws IOException {
+        var address = new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
         var httpServer = HttpServer.create(address, 32);
         var executor = Executors.newFixedThreadPool(4, runnable -> {
             var thread = new Thread(runnable, "pathlab-forge-http");
@@ -140,7 +181,8 @@ public final class ForgeServer implements AutoCloseable {
                         picker,
                         managedRoot,
                         conversionEngine,
-                        derivativeEngine);
+                        derivativeEngine,
+                        sessionToken);
         httpServer.createContext("/", forgeServer::handle);
         httpServer.setExecutor(executor);
         httpServer.start();
@@ -153,6 +195,10 @@ public final class ForgeServer implements AutoCloseable {
 
     public URI launchUri() {
         return URI.create(baseUri + "/?launchToken=" + launchToken);
+    }
+
+    public URI appUri() {
+        return baseUri.resolve("/app");
     }
 
     private void handle(HttpExchange exchange) throws IOException {
@@ -316,15 +362,19 @@ public final class ForgeServer implements AutoCloseable {
             exchange.sendResponseHeaders(303, -1);
             return;
         }
-        var expected = "launchToken=" + launchToken;
-        if (!launchTokenAvailable || !constantTimeEquals(expected, exchange.getRequestURI().getQuery())) {
+        var suppliedToken = queryValue(exchange, "launchToken", null);
+        if (!launchTokenAvailable || !constantTimeEquals(launchToken, suppliedToken)) {
             respond(exchange, 401, "application/json", "{\"error\":\"invalid_launch_token\"}");
             return;
         }
         launchTokenAvailable = false;
         exchange.getResponseHeaders().add(
                 "Set-Cookie",
-                "forge_session=" + sessionToken + "; Path=/; HttpOnly; SameSite=Strict");
+                "forge_session="
+                        + sessionToken
+                        + "; Path=/; Max-Age="
+                        + SESSION_MAX_AGE_SECONDS
+                        + "; HttpOnly; SameSite=Strict");
         exchange.getResponseHeaders().set("Location", "/app");
         exchange.sendResponseHeaders(303, -1);
     }
@@ -1260,11 +1310,18 @@ public final class ForgeServer implements AutoCloseable {
             var pair = part.trim().split("=", 2);
             if (pair.length == 2
                     && "forge_session".equals(pair[0])
-                    && constantTimeEquals(sessionToken, pair[1])) {
+                    && constantTimeEquals(sessionToken, unquoteCookieValue(pair[1]))) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static String unquoteCookieValue(String value) {
+        if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+            return value.substring(1, value.length() - 1);
+        }
+        return value;
     }
 
     private static void addSecurityHeaders(HttpExchange exchange) {
@@ -1306,12 +1363,6 @@ public final class ForgeServer implements AutoCloseable {
         return MessageDigest.isEqual(
                 expected.getBytes(StandardCharsets.UTF_8),
                 actual.getBytes(StandardCharsets.UTF_8));
-    }
-
-    private static String randomToken() {
-        var bytes = new byte[32];
-        RANDOM.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     @Override

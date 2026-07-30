@@ -43,12 +43,12 @@ public final class ForgeApp {
             server.close();
             stopped.countDown();
         }, "pathlab-forge-shutdown"));
-        System.out.println("PathLab Forge is available at " + server.baseUri());
-        System.out.println("Open this one-time local URL: " + server.launchUri());
+        System.out.println("PathLab Forge permanent local link: " + server.appUri());
+        System.out.println("Authorize a new browser once with: " + server.launchUri());
         if (!Arrays.asList(args).contains("--no-browser")
                 && Desktop.isDesktopSupported()
                 && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-            Desktop.getDesktop().browse(server.launchUri());
+            Desktop.getDesktop().browse(server.appUri());
         }
         stopped.await();
     }
