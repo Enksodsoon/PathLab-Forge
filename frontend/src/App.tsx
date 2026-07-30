@@ -1060,31 +1060,6 @@ function ExportInspector({
     }
   }
 
-  const updateCropField = (
-    name: 'x' | 'y' | 'width' | 'height',
-    value: string,
-  ) => {
-    const nextDraft = { ...draft, [name]: value }
-    setDraft(nextDraft)
-    const nextBox = {
-      x: Number(nextDraft.x),
-      y: Number(nextDraft.y),
-      width: Number(nextDraft.width),
-      height: Number(nextDraft.height),
-    }
-    if (
-      selected
-      && nextBox.x >= 0
-      && nextBox.y >= 0
-      && nextBox.width > 0
-      && nextBox.height > 0
-      && nextBox.x + nextBox.width <= selected.width
-      && nextBox.y + nextBox.height <= selected.height
-    ) {
-      onCropDraft(nextBox)
-    }
-  }
-
   const resetCrop = () => {
     if (!selected) return
     const fullSlide = { x: 0, y: 0, width: selected.width, height: selected.height }
@@ -1212,31 +1187,6 @@ function ExportInspector({
               ) : null}
             </div>
           </div>
-          <details className="forge-crop-precision">
-            <summary>Precise crop coordinates</summary>
-            <div className="forge-crop-grid">
-              {[
-                ['x', 'X'],
-                ['y', 'Y'],
-                ['width', 'Width'],
-                ['height', 'Height'],
-              ].map(([name, label]) => (
-                <label key={name}>
-                  {label}
-                  <input
-                    name={name}
-                    type="number"
-                    min="0"
-                    value={draft[name as 'x' | 'y' | 'width' | 'height']}
-                    onChange={(event) => updateCropField(
-                      name as 'x' | 'y' | 'width' | 'height',
-                      event.target.value,
-                    )}
-                  />
-                </label>
-              ))}
-            </div>
-          </details>
           <label>Downsample
             <select
               name="downsample"

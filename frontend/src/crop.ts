@@ -75,6 +75,15 @@ export function isFullSlideCrop(
     && box.height === sourceHeight
 }
 
+export function shouldShowCropOverlay(
+  editing: boolean,
+  box: CropBox,
+  sourceWidth: number,
+  sourceHeight: number,
+) {
+  return editing && !isFullSlideCrop(box, sourceWidth, sourceHeight)
+}
+
 export function estimateCropOutput(
   box: CropBox,
   downsample: number,
