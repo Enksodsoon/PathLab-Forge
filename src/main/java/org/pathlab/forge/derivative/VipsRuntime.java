@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -317,33 +318,72 @@ public final class VipsRuntime implements DerivativeEngine {
             Path omeTiff, Path outputRoot, int width, int height) throws IOException {
         requireAvailable();
         Files.createDirectories(outputRoot);
-        run(List.of(
-                "dzsave",
-                omeTiff.toString(),
-                outputRoot.resolve("slide").toString(),
-                "--layout",
-                "dz",
-                "--tile-size",
-                "512",
-                "--overlap",
-                "1",
-                "--suffix",
-                ".jpg[Q=95,strip]",
-                "--depth",
-                "onepixel",
-                "--region-shrink",
-                "mean",
-                "--skip-blanks",
-                "-1"));
-        run(List.of(
-                "thumbnail",
-                omeTiff.toString(),
-                outputRoot.resolve("thumbnail.jpg[Q=82,strip]").toString(),
-                "640",
-                "--size",
-                "down"));
-        Files.deleteIfExists(outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
-        return DziValidator.validate(outputRoot, width, height);
+        var probe = outputRoot.resolve("quality-probe.png");
+        var candidates = new LinkedHashMap<Integer, Path>();
+        try {
+            run(List.of(
+                    "thumbnail",
+                    omeTiff.toString(),
+                    probe.toString(),
+                    "1024",
+                    "--size",
+                    "down"));
+            for (var quality : List.of(85, 90, 95)) {
+                var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
+                candidates.put(quality, candidate);
+                run(List.of(
+                        "copy",
+                        probe.toString(),
+                        candidate + "[Q=" + quality + ",strip]"));
+            }
+            var selection = AdaptiveJpegQualitySelector.select(probe, candidates);
+            Files.deleteIfExists(probe);
+            for (var candidate : candidates.values()) {
+                Files.deleteIfExists(candidate);
+            }
+            run(List.of(
+                    "dzsave",
+                    omeTiff.toString(),
+                    outputRoot.resolve("slide").toString(),
+                    "--layout",
+                    "dz",
+                    "--tile-size",
+                    "512",
+                    "--overlap",
+                    "1",
+                    "--suffix",
+                    ".jpg[Q=" + selection.quality() + ",strip]",
+                    "--depth",
+                    "onepixel",
+                    "--region-shrink",
+                    "mean",
+                    "--skip-blanks",
+                    "-1"));
+            run(List.of(
+                    "thumbnail",
+                    omeTiff.toString(),
+                    outputRoot.resolve("thumbnail.jpg[Q=82,strip]").toString(),
+                    "640",
+                    "--size",
+                    "down"));
+            Files.deleteIfExists(outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
+            var validated = DziValidator.validate(outputRoot, width, height);
+            return new DerivativeInfo(
+                    validated.root(),
+                    validated.bytes(),
+                    validated.fileCount(),
+                    validated.tileCount(),
+                    validated.sha256(),
+                    validated.ledger(),
+                    selection.quality(),
+                    selection.minimumWindowedSsim(),
+                    selection.meanDeltaE00());
+        } finally {
+            Files.deleteIfExists(probe);
+            for (var candidate : candidates.values()) {
+                Files.deleteIfExists(candidate);
+            }
+        }
     }
 
     private String run(List<String> arguments) throws IOException {

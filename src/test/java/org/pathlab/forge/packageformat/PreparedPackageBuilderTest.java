@@ -27,6 +27,10 @@ final class PreparedPackageBuilderTest {
                 """);
         var level = Files.createDirectories(derivative.resolve("slide_files").resolve("0"));
         writeJpeg(level.resolve("0_0.jpg"));
+        var levelOne = Files.createDirectories(derivative.resolve("slide_files").resolve("1"));
+        writeJpeg(levelOne.resolve("0_0.jpg"));
+        var levelTen = Files.createDirectories(derivative.resolve("slide_files").resolve("10"));
+        writeJpeg(levelTen.resolve("0_0.jpg"));
         writeJpeg(derivative.resolve("thumbnail.jpg"));
         var first = temporaryDirectory.resolve("first.plslide");
         var second = temporaryDirectory.resolve("second.plslide");
@@ -50,12 +54,19 @@ final class PreparedPackageBuilderTest {
 
         assertArrayEquals(Files.readAllBytes(first), Files.readAllBytes(second));
         assertEquals(firstInfo.sha256(), secondInfo.sha256());
-        assertEquals(3, firstInfo.derivativeFileCount());
+        assertEquals(5, firstInfo.derivativeFileCount());
         var listing = tarEntry(first, "manifest.json");
         assertTrue(listing.contains("\"schema\":\"pathlab-prepared-slide/v2\""));
         assertTrue(listing.contains("\"sourceFingerprint\":\"source-fingerprint\""));
         assertTrue(listing.contains("\"scale\":0.6666666666666666"));
+        assertTrue(listing.contains("\"format\":\"ndjson-v1\""));
+        assertTrue(listing.contains("\"quality\":95"));
         assertEquals(64, tarEntry(first, "manifest.sha256").length());
+        var inventory = tarEntry(first, "inventory.ndjson");
+        assertEquals(5, inventory.lines().count());
+        assertTrue(
+                inventory.indexOf("derivative/slide_files/1/0_0.jpg")
+                        < inventory.indexOf("derivative/slide_files/10/0_0.jpg"));
         var indexedTile = firstInfo.entryIndex().require(
                 "derivative/slide_files/0/0_0.jpg");
         try (var channel = java.nio.channels.FileChannel.open(first)) {

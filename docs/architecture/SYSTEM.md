@@ -35,37 +35,47 @@ files/folders
  -> build .plslide package
  -> negotiate Viewer capabilities
  -> reserve an Unfiled/folder-aware library slide
- -> resumable tus upload
+ -> resumable capability-negotiated upload
  -> poll existing Viewer states
  -> ready_private
  -> open existing browser preview
 ```
 
-## Prepared package v1
+## Prepared package v2
 
-Package version 1 contains only files needed by PathLab Viewer:
+Package version 2 contains only files needed by PathLab Viewer, in canonical order:
 
 ```text
 manifest.json
+manifest.sha256
+inventory.ndjson
 derivative/slide.dzi
 derivative/slide_files/<level>/<column>_<row>.jpg
 derivative/thumbnail.jpg
 ```
 
-The standardized OME-TIFF remains local and is not included in package v1.
+The standardized OME-TIFF remains local and is not included in the package.
 
 The output must match the current Viewer derivative contract:
 
 ```text
 DZI tile size: 512
 DZI overlap: 1
-DZI JPEG quality: 85
+DZI JPEG quality: adaptive Q85/Q90/Q95 under the strict visual gate
 Thumbnail: thumbnail.jpg
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
 ```
 
-Generate the DZI and thumbnail from the newly written OME-TIFF so the crop, dimensions, downsample and RGB rendering are identical.
+Generate the DZI and thumbnail from the newly written OME-TIFF so the crop,
+dimensions, downsample and RGB rendering are identical. The selector evaluates
+at least 32 deterministic tissue/background/edge/seam regions with the same
+libvips JPEG settings used by `dzsave`; it fails closed if Q95 does not pass.
+
+Source verification continues asynchronously after metadata and thumbnail become
+available. Conversion remains blocked until the complete companion inventory is
+verified. Preview readers share a 512 MiB global cache, allow at most two live
+sessions, and close explicitly on eviction and shutdown.
 
 ## Architectural interfaces
 

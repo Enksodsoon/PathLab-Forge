@@ -18,6 +18,7 @@ public final class ChildProcessContainment implements AutoCloseable {
 
     public ChildProcessContainment() {
         windowsJob = WindowsJob.create(RuntimeProfile.target().processTreeLimitBytes());
+        windowsJob.assign(ProcessHandle.current().pid());
     }
 
     public static ChildProcessContainment global() {
@@ -87,7 +88,9 @@ public final class ChildProcessContainment implements AutoCloseable {
             try {
                 var kernel = Native.load(
                         "kernel32", Kernel32.class, W32APIOptions.UNICODE_OPTIONS);
-                var job = kernel.CreateJobObjectW(Pointer.NULL, new WString("PathLabForge"));
+                var job = kernel.CreateJobObjectW(
+                        Pointer.NULL,
+                        new WString("PathLabForge-" + ProcessHandle.current().pid()));
                 if (job == null) {
                     return new WindowsJob(null, null);
                 }

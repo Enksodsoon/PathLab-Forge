@@ -61,7 +61,8 @@ public final class SourceVerificationService implements AutoCloseable {
             if (!snapshot.fingerprint().equals(after.fingerprint())) {
                 throw new IOException("Source changed while content digest was being computed");
             }
-            var verified = dataset.withSourceIdentity(
+            var current = repository.find(dataset.id()).orElse(dataset);
+            var verified = current.withSourceIdentity(
                     DatasetInspector.readyStatus(dataset.format(), snapshot),
                     DatasetInspector.readyDetail(dataset.format(), snapshot),
                     digest.fingerprint(),
@@ -70,7 +71,8 @@ public final class SourceVerificationService implements AutoCloseable {
             return verified;
         } catch (IOException | DatasetInspectionException error) {
             try {
-                repository.save(dataset.withPreparation(
+                var current = repository.find(dataset.id()).orElse(dataset);
+                repository.save(current.withPreparation(
                         DatasetStatus.FAILED,
                         error.getMessage() == null ? "Source verification failed" : error.getMessage(),
                         dataset.outputPath(),

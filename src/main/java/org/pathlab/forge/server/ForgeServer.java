@@ -701,12 +701,18 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
-            sourceVerificationService.await(id);
+            var dataset = repository.find(id)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Dataset was not found"));
+            var series = dataset.status()
+                            == org.pathlab.forge.library.DatasetStatus.VERIFYING_SOURCE
+                    ? conversionService.inspectWhileVerifying(id)
+                    : conversionService.inspect(id);
             respond(
                     exchange,
                     200,
                     "application/json",
-                    seriesJson(conversionService.inspect(id)));
+                    seriesJson(series));
         } catch (IllegalArgumentException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
         } catch (IllegalStateException error) {

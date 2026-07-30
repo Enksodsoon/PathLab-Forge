@@ -82,30 +82,40 @@ public record DatasetSourceInventory(
         if (serialized == null || serialized.isBlank()) {
             return false;
         }
-        var root = source.toAbsolutePath().normalize().getParent();
-        for (var line : serialized.split("\\R")) {
-            if (line.isBlank()) {
-                continue;
-            }
-            var fields = line.split("\\|", 4);
-            if (fields.length != 4) {
+        try {
+            var normalized = source.toAbsolutePath().normalize();
+            var snapshot = normalized.getFileName()
+                            .toString()
+                            .toLowerCase(Locale.ROOT)
+                            .endsWith(".vsi")
+                    ? SourceSnapshot.forVsi(normalized)
+                    : SourceSnapshot.singleFile(normalized);
+            var lines = serialized.lines().filter(line -> !line.isBlank()).toList();
+            if (lines.size() != snapshot.files().size()) {
                 return false;
             }
-            try {
-                var relative = Path.of(fields[0].replace('/', java.io.File.separatorChar));
-                var file = root.resolve(relative).normalize();
-                if (!file.startsWith(root)
-                        || !Files.isRegularFile(file)
-                        || Files.size(file) != Long.parseLong(fields[1])
-                        || Files.getLastModifiedTime(file).toMillis()
-                                != Long.parseLong(fields[2])) {
+            for (var index = 0; index < lines.size(); index++) {
+                var fields = lines.get(index).split("\\|", 5);
+                var entry = snapshot.files().get(index);
+                if ((fields.length != 4 && fields.length != 5)
+                        || !fields[0].equals(entry.relativePath())
+                        || Long.parseLong(fields[1]) != entry.size()
+                        || Long.parseLong(fields[2]) != entry.modifiedAt()) {
                     return false;
                 }
-            } catch (IOException | RuntimeException error) {
-                return false;
+                if (fields.length == 5) {
+                    var fileId = new String(
+                            java.util.Base64.getUrlDecoder().decode(fields[3]),
+                            StandardCharsets.UTF_8);
+                    if (!fileId.equals(entry.fileId())) {
+                        return false;
+                    }
+                }
             }
+            return true;
+        } catch (IOException | DatasetInspectionException | RuntimeException error) {
+            return false;
         }
-        return true;
     }
 
     private static DatasetSourceInventory create(Path root, List<Path> files)

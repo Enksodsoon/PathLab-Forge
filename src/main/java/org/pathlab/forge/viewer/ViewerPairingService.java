@@ -1,6 +1,8 @@
 package org.pathlab.forge.viewer;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.Proxy;
 import java.net.ProxySelector;
@@ -8,27 +10,29 @@ import java.net.SocketAddress;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationTransformer;
+import org.pathlab.forge.conversion.ArtifactIntegrityStamp;
 import org.pathlab.forge.conversion.ArtifactRevision;
 
 public final class ViewerPairingService implements AutoCloseable {
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
-    private static final int UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
+    private static final int LEGACY_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
+    private static final int MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
     private static final ProxySelector DIRECT_LOOPBACK = new ProxySelector() {
         @Override
         public List<Proxy> select(URI uri) {
@@ -171,7 +175,7 @@ public final class ViewerPairingService implements AutoCloseable {
         }
         var packagePath = Path.of(revision.packagePath());
         if (!Files.isRegularFile(packagePath)
-                || !revision.packageSha256().equals(sha256(packagePath))) {
+                || !ArtifactIntegrityStamp.matches(revision)) {
             throw new IllegalStateException("Approved package hash no longer matches");
         }
         var total = Files.size(packagePath);
@@ -216,15 +220,24 @@ public final class ViewerPairingService implements AutoCloseable {
             double downsample) {
         try {
             var length = Files.size(packagePath);
+            var manifest = tarText(packagePath, "manifest.json", 16 * 1024 * 1024);
+            var derivativeBytes = optionalLong(manifest, "derivativeBytes");
+            var derivativeFileCount = optionalLong(manifest, "fileCount");
+            var chunkBytes = uploadChunkBytes(credential);
             var session = activeUpload;
             if (session == null || !session.revisionId().equals(revision.id())) {
+                var derivativeDeclaration = derivativeBytes > 0 && derivativeFileCount > 0
+                        ? ",\"derivativeBytes\":" + derivativeBytes
+                                + ",\"derivativeFileCount\":" + derivativeFileCount
+                        : "";
                 var create = sendJson(
                         credential.base().resolve("/api/v1/desktop/ingests"),
                         "{\"displayName\":\"" + escape(displayName)
                                 + "\",\"artifactRevisionId\":\"" + escape(revision.id())
                                 + "\",\"packageLength\":" + length
                                 + ",\"packageSha256\":\"" + revision.packageSha256()
-                                + "\",\"manifestSha256\":\"" + manifestSha256 + "\"}",
+                                + "\",\"manifestSha256\":\"" + manifestSha256 + "\""
+                                + derivativeDeclaration + "}",
                         "Bearer " + credential.token());
                 requireStatus(create, 201, "Viewer could not create the prepared ingest");
                 session = new ActiveUpload(
@@ -246,41 +259,52 @@ public final class ViewerPairingService implements AutoCloseable {
             if (offset < 0 || offset > length) {
                 throw new IOException("Viewer returned an invalid upload offset");
             }
-            try (var input = Files.newInputStream(packagePath)) {
-                input.skipNBytes(offset);
-                var buffer = new byte[UPLOAD_CHUNK_BYTES];
-                while (offset < length) {
-                    var wanted = (int) Math.min(buffer.length, length - offset);
-                    var read = input.readNBytes(buffer, 0, wanted);
-                    if (read != wanted) {
-                        throw new IOException("Prepared package ended during upload");
-                    }
-                    var request = HttpRequest.newBuilder(uploadUri)
-                            .timeout(Duration.ofHours(24))
+            while (offset < length) {
+                var read = Math.min(chunkBytes, length - offset);
+                var chunkOffset = offset;
+                var request = HttpRequest.newBuilder(uploadUri)
+                        .timeout(Duration.ofHours(24))
+                        .header("Authorization", "Bearer " + credential.token())
+                        .header("Upload-Offset", Long.toString(offset))
+                        .header("Content-Type", "application/offset+octet-stream")
+                        .method(
+                                "PATCH",
+                                HttpRequest.BodyPublishers.ofInputStream(
+                                        () -> new BoundedFileInputStream(
+                                                packagePath, chunkOffset, read)))
+                        .build();
+                var response = send(request);
+                requireStatus(
+                        response,
+                        List.of(200, 202),
+                        "Viewer rejected an upload chunk");
+                offset += read;
+                uploadStatus = new ViewerUploadStatus(
+                        "UPLOADING",
+                        revision.id(),
+                        offset,
+                        length,
+                        stringOrEmpty(response.body(), "slideId"),
+                        offset == length
+                                ? "Viewer is finalizing the prepared package"
+                                : "Uploading prepared package");
+            }
+            if (!"READY_PRIVATE".equals(uploadStatus.state()) && offset == length) {
+                var statusUri = URI.create(
+                        uploadUri.toString().substring(
+                                0, uploadUri.toString().length() - "/content".length()));
+                var deadline = System.nanoTime() + Duration.ofHours(24).toNanos();
+                while (System.nanoTime() < deadline) {
+                    var statusRequest = HttpRequest.newBuilder(statusUri)
+                            .timeout(Duration.ofSeconds(30))
                             .header("Authorization", "Bearer " + credential.token())
-                            .header("Upload-Offset", Long.toString(offset))
-                            .header("Content-Type", "application/offset+octet-stream")
-                            .method(
-                                    "PATCH",
-                                    HttpRequest.BodyPublishers.ofByteArray(
-                                            read == buffer.length
-                                                    ? buffer
-                                                    : Arrays.copyOf(buffer, read)))
+                            .GET()
                             .build();
-                    var response = send(request);
-                    requireStatus(response, 200, "Viewer rejected an upload chunk");
-                    offset += read;
-                    uploadStatus = new ViewerUploadStatus(
-                            "UPLOADING",
-                            revision.id(),
-                            offset,
-                            length,
-                            stringOrEmpty(response.body(), "slideId"),
-                            offset == length
-                                    ? "Viewer is finalizing the prepared package"
-                                    : "Uploading prepared package");
-                    if (response.body().contains("\"status\":\"ready_private\"")) {
-                        var slideId = string(response.body(), "slideId");
+                    var statusResponse = send(statusRequest);
+                    requireStatus(
+                            statusResponse, 200, "Viewer could not recover ingest finalization");
+                    if (statusResponse.body().contains("\"status\":\"ready_private\"")) {
+                        var slideId = string(statusResponse.body(), "slideId");
                         syncAnnotations(
                                 credential,
                                 slideId,
@@ -301,42 +325,14 @@ public final class ViewerPairingService implements AutoCloseable {
                                         ? "Viewer private slide is ready"
                                         : "Viewer private slide and annotations are synchronized");
                         activeUpload = null;
+                        break;
                     }
-                }
-            }
-            if (!"READY_PRIVATE".equals(uploadStatus.state()) && offset == length) {
-                var statusUri = URI.create(
-                        uploadUri.toString().substring(
-                                0, uploadUri.toString().length() - "/content".length()));
-                var statusRequest = HttpRequest.newBuilder(statusUri)
-                        .timeout(Duration.ofHours(24))
-                        .header("Authorization", "Bearer " + credential.token())
-                        .GET()
-                        .build();
-                var statusResponse = send(statusRequest);
-                requireStatus(statusResponse, 200, "Viewer could not recover ingest finalization");
-                if (statusResponse.body().contains("\"status\":\"ready_private\"")) {
-                    var slideId = string(statusResponse.body(), "slideId");
-                    syncAnnotations(
-                            credential,
-                            slideId,
-                            revision,
-                            annotations,
-                            cropX,
-                            cropY,
-                            cropWidth,
-                            cropHeight,
-                            downsample);
-                    uploadStatus = new ViewerUploadStatus(
-                            "READY_PRIVATE",
-                            revision.id(),
-                            length,
-                            length,
-                            slideId,
-                            annotations.isEmpty()
-                                    ? "Viewer private slide is ready"
-                                    : "Viewer private slide and annotations are synchronized");
-                    activeUpload = null;
+                    if (statusResponse.body().contains("\"status\":\"failed\"")) {
+                        throw new IOException(
+                                "Viewer finalization failed: "
+                                        + stringOrEmpty(statusResponse.body(), "errorCode"));
+                    }
+                    Thread.sleep(500);
                 }
             }
             if (!"READY_PRIVATE".equals(uploadStatus.state())) {
@@ -573,21 +569,34 @@ public final class ViewerPairingService implements AutoCloseable {
         }
     }
 
-    private static String sha256(Path path) throws IOException {
-        var digest = sha256Digest();
-        try (var input = Files.newInputStream(path)) {
-            input.transferTo(new java.security.DigestOutputStream(
-                    java.io.OutputStream.nullOutputStream(), digest));
+    private int uploadChunkBytes(StoredCredential credential) throws IOException {
+        var request = HttpRequest.newBuilder(
+                        credential.base().resolve("/api/v1/desktop/capabilities"))
+                .timeout(Duration.ofSeconds(15))
+                .header("Authorization", "Bearer " + credential.token())
+                .GET()
+                .build();
+        var response = send(request);
+        if (response.statusCode() == 404) {
+            return LEGACY_UPLOAD_CHUNK_BYTES;
         }
-        return HexFormat.of().formatHex(digest.digest());
+        requireStatus(response, 200, "Viewer capability discovery failed");
+        var recommended = integer(response.body(), "recommendedChunkBytes");
+        var maximum = integer(response.body(), "maxChunkBytes");
+        if (recommended < 1 || maximum < 1) {
+            throw new IOException("Viewer returned invalid upload capabilities");
+        }
+        return Math.min(MAX_UPLOAD_CHUNK_BYTES, Math.min(recommended, maximum));
     }
 
-    private static MessageDigest sha256Digest() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException error) {
-            throw new IllegalStateException("SHA-256 is unavailable", error);
+    private static long optionalLong(String json, String key) {
+        var pattern = Pattern.compile(
+                "\"" + Pattern.quote(key) + "\"\\s*:\\s*(\\d+)");
+        var match = pattern.matcher(json);
+        if (!match.find()) {
+            return -1;
         }
+        return Long.parseLong(match.group(1));
     }
 
     @Override
@@ -617,7 +626,13 @@ public final class ViewerPairingService implements AutoCloseable {
 
     private static void requireStatus(
             HttpResponse<String> response, int expected, String message) throws IOException {
-        if (response.statusCode() != expected) {
+        requireStatus(response, List.of(expected), message);
+    }
+
+    private static void requireStatus(
+            HttpResponse<String> response, List<Integer> expected, String message)
+            throws IOException {
+        if (!expected.contains(response.statusCode())) {
             var detail = response.body().length() > 1_000
                     ? response.body().substring(0, 1_000)
                     : response.body();
@@ -682,4 +697,44 @@ public final class ViewerPairingService implements AutoCloseable {
     private record StoredCredential(URI base, String token) {}
 
     private record ActiveUpload(String revisionId, URI uploadUri) {}
+
+    private static final class BoundedFileInputStream extends InputStream {
+        private final FileChannel channel;
+        private long remaining;
+
+        private BoundedFileInputStream(Path path, long offset, long length) {
+            try {
+                channel = FileChannel.open(path, StandardOpenOption.READ);
+                channel.position(offset);
+                remaining = length;
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            }
+        }
+
+        @Override
+        public int read() throws IOException {
+            var single = new byte[1];
+            return read(single, 0, 1) < 0 ? -1 : single[0] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            if (remaining == 0) {
+                return -1;
+            }
+            var requested = Math.toIntExact(Math.min(length, remaining));
+            var read = channel.read(ByteBuffer.wrap(bytes, offset, requested));
+            if (read < 0) {
+                throw new IOException("Prepared package ended during upload");
+            }
+            remaining -= read;
+            return read;
+        }
+
+        @Override
+        public void close() throws IOException {
+            channel.close();
+        }
+    }
 }

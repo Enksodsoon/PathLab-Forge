@@ -5,7 +5,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.function.BiConsumer;
 
-public interface ConversionEngine {
+public interface ConversionEngine extends AutoCloseable {
     boolean available();
 
     String runtimeDescription();
@@ -36,6 +36,15 @@ public interface ConversionEngine {
     default byte[] seriesThumbnail(Path source, int seriesIndex, int maxDimension)
             throws IOException {
         throw new IOException("This conversion engine does not support series thumbnails");
+    }
+
+    default void closeDirectSource(Path source) throws IOException {
+        // Engines without persistent direct readers have nothing to release.
+    }
+
+    @Override
+    default void close() throws IOException {
+        // Engines without persistent resources have nothing to release.
     }
 
     default void convert(ConversionRequest request, Path output) throws IOException {

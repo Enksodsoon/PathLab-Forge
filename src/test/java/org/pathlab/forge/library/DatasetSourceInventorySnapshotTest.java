@@ -29,4 +29,21 @@ final class DatasetSourceInventorySnapshotTest {
                 FileTime.fromMillis(Files.getLastModifiedTime(companion).toMillis() + 2_000));
         assertFalse(DatasetSourceInventory.matchesSnapshot(source, inventory.serialized()));
     }
+
+    @Test
+    void invalidatesDigestWhenACompanionIsAddedAfterVerification() throws Exception {
+        var source = temporaryDirectory.resolve("case.vsi");
+        Files.write(source, new byte[] {1, 2, 3});
+        var companionRoot = Files.createDirectories(temporaryDirectory.resolve("_case_"));
+        Files.write(companionRoot.resolve("frame.ets"), new byte[] {4, 5, 6});
+        var digest = SourceDigest.compute(SourceSnapshot.forVsi(source));
+
+        assertTrue(DatasetSourceInventory.matchesSnapshot(
+                source, digest.serializedInventory()));
+
+        Files.write(companionRoot.resolve("metadata.bin"), new byte[] {7});
+
+        assertFalse(DatasetSourceInventory.matchesSnapshot(
+                source, digest.serializedInventory()));
+    }
 }

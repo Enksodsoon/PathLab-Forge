@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
 import java.util.HexFormat;
 
 public record SourceDigest(String fingerprint, String serializedInventory) {
@@ -22,6 +23,9 @@ public record SourceDigest(String fingerprint, String serializedInventory) {
                     .append(entry.size())
                     .append('|')
                     .append(entry.modifiedAt())
+                    .append('|')
+                    .append(Base64.getUrlEncoder().withoutPadding().encodeToString(
+                            entry.fileId().getBytes(StandardCharsets.UTF_8)))
                     .append('|')
                     .append(sha256(entry.path()))
                     .append('\n');

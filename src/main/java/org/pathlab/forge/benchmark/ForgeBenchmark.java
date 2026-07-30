@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionService;
+import org.pathlab.forge.conversion.SeriesInfo;
 import org.pathlab.forge.derivative.VipsRuntime;
 import org.pathlab.forge.library.DatasetInspector;
 import org.pathlab.forge.library.DatasetInspectionException;
@@ -18,11 +19,11 @@ import org.pathlab.forge.library.DatasetRepository;
 import org.pathlab.forge.library.DatasetStatus;
 import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.runtime.ProcessTreeMemory;
-import org.pathlab.forge.runtime.RuntimeProfile;
 
 public final class ForgeBenchmark {
-    public static final long PACKAGE_READY_LIMIT_MS = TimeUnit.MINUTES.toMillis(3) + 30_000;
-    public static final long RETAINED_LIMIT_BYTES = 1_600L * 1024 * 1024;
+    public static final long PACKAGE_READY_LIMIT_MS = 72_000;
+    public static final long PROCESS_TREE_OBSERVED_LIMIT_BYTES = 4L * 1024 * 1024 * 1024;
+    public static final long RETAINED_LIMIT_BYTES = 400L * 1024 * 1024;
     public static final long WORKSPACE_LIMIT_BYTES = 3_500L * 1024 * 1024;
 
     private ForgeBenchmark() {}
@@ -50,8 +51,12 @@ public final class ForgeBenchmark {
             try (var conversion =
                     new ConversionService(repository, bioFormats, vips, paths.managedRoot())) {
                 var series = conversion.inspect(dataset.id());
+                var configuredSeries =
+                        Integer.getInteger("pathlab.forge.benchmark.series", -1);
                 var selected = series.stream()
-                        .filter(item -> item.isRgbPlane())
+                        .filter(SeriesInfo::isRgbPlane)
+                        .filter(item -> configuredSeries < 0
+                                || item.index() == configuredSeries)
                         .max(Comparator.comparingLong(
                                 item -> (long) item.width() * item.height()))
                         .orElseThrow(() -> new IOException("No 2D RGB image series was found"));
@@ -104,14 +109,13 @@ public final class ForgeBenchmark {
                     + (error.getMessage() == null ? "" : error.getMessage());
         }
         var elapsed = System.currentTimeMillis() - startedAt;
-        var profile = RuntimeProfile.target();
         var passed = status.equals("PACKAGE_READY")
                 && elapsed <= PACKAGE_READY_LIMIT_MS
-                && peakProcessTree <= profile.processTreeLimitBytes()
+                && peakProcessTree <= PROCESS_TREE_OBSERVED_LIMIT_BYTES
                 && retained <= RETAINED_LIMIT_BYTES
                 && peakWorkspace <= WORKSPACE_LIMIT_BYTES;
         if (!passed && failure.isBlank()) {
-            failure = gateFailure(elapsed, peakProcessTree, retained, peakWorkspace, profile);
+            failure = gateFailure(elapsed, peakProcessTree, retained, peakWorkspace);
         }
         var report = new PerformanceReport(
                 source.toAbsolutePath().normalize().toString(),
@@ -130,12 +134,11 @@ public final class ForgeBenchmark {
             long elapsed,
             long peakProcessTree,
             long retained,
-            long peakWorkspace,
-            RuntimeProfile profile) {
+            long peakWorkspace) {
         if (elapsed > PACKAGE_READY_LIMIT_MS) {
             return "PACKAGE_READY_TIME_LIMIT";
         }
-        if (peakProcessTree > profile.processTreeLimitBytes()) {
+        if (peakProcessTree > PROCESS_TREE_OBSERVED_LIMIT_BYTES) {
             return "PROCESS_TREE_MEMORY_LIMIT";
         }
         if (retained > RETAINED_LIMIT_BYTES) {

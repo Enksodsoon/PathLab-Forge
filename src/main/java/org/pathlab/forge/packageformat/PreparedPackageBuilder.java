@@ -51,7 +51,7 @@ public final class PreparedPackageBuilder {
                         sha256(path)));
             }
         }
-        return build(root, payloads, width, height, metadata, output);
+        return build(root, payloads, width, height, metadata, output, 95, 1.0, 0.0);
     }
 
     public static PackageInfo build(
@@ -73,7 +73,16 @@ public final class PreparedPackageBuilder {
                         entry.size(),
                         entry.sha256()))
                 .toList();
-        return build(root, payloads, width, height, metadata, output);
+        return build(
+                root,
+                payloads,
+                width,
+                height,
+                metadata,
+                output,
+                derivative.jpegQuality(),
+                derivative.minimumWindowedSsim(),
+                derivative.meanDeltaE00());
     }
 
     private static PackageInfo build(
@@ -82,12 +91,33 @@ public final class PreparedPackageBuilder {
             int width,
             int height,
             PackageMetadata metadata,
-            Path output)
+            Path output,
+            int jpegQuality,
+            double minimumWindowedSsim,
+            double meanDeltaE00)
             throws IOException {
+        payloads = payloads.stream()
+                .sorted(java.util.Comparator.comparing(Payload::name))
+                .toList();
         if (payloads.size() < 3) {
             throw new IOException("Derivative is incomplete");
         }
-        var manifest = manifest(width, height, metadata, payloads)
+        var inventory = inventory(payloads).getBytes(StandardCharsets.UTF_8);
+        var inventoryHash = HexFormat.of().formatHex(
+                sha256Digest().digest(inventory));
+        var derivativeBytes = payloads.stream()
+                .mapToLong(Payload::bytes)
+                .reduce(0, Math::addExact);
+        var manifest = manifest(
+                        width,
+                        height,
+                        metadata,
+                        payloads.size(),
+                        derivativeBytes,
+                        inventoryHash,
+                        jpegQuality,
+                        minimumWindowedSsim,
+                        meanDeltaE00)
                 .getBytes(StandardCharsets.UTF_8);
         var manifestHash = HexFormat.of().formatHex(sha256Digest().digest(manifest))
                 .getBytes(StandardCharsets.US_ASCII);
@@ -111,6 +141,12 @@ public final class PreparedPackageBuilder {
                         "manifest.sha256",
                         manifestHash.length,
                         new java.io.ByteArrayInputStream(manifestHash));
+                index(entries, stream, "inventory.ndjson", inventory.length);
+                writeEntry(
+                        stream,
+                        "inventory.ndjson",
+                        inventory.length,
+                        new java.io.ByteArrayInputStream(inventory));
                 for (var payload : payloads) {
                     if (!payload.path().startsWith(root)
                             || !Files.isRegularFile(
@@ -137,9 +173,6 @@ public final class PreparedPackageBuilder {
         } finally {
             Files.deleteIfExists(partial);
         }
-        var derivativeBytes = payloads.stream()
-                .mapToLong(Payload::bytes)
-                .reduce(0, Math::addExact);
         var entryIndex = new PackageEntryIndex(entries);
         entryIndex.write(output.resolveSibling(output.getFileName() + ".index"));
         return new PackageInfo(
@@ -159,13 +192,24 @@ public final class PreparedPackageBuilder {
         entries.put(name, new PackageEntryIndex.Entry(stream.count() + BLOCK, size));
     }
 
-    private static String manifest(
-            int width, int height, PackageMetadata metadata, List<Payload> payloads) {
-        var files = payloads.stream()
+    private static String inventory(List<Payload> payloads) {
+        return payloads.stream()
                 .map(payload -> "{\"path\":\"" + payload.name()
                         + "\",\"size\":" + payload.bytes()
-                        + ",\"sha256\":\"" + payload.sha256() + "\"}")
-                .collect(java.util.stream.Collectors.joining(","));
+                        + ",\"sha256\":\"" + payload.sha256() + "\"}\n")
+                .collect(java.util.stream.Collectors.joining());
+    }
+
+    private static String manifest(
+            int width,
+            int height,
+            PackageMetadata metadata,
+            int fileCount,
+            long derivativeBytes,
+            String inventoryHash,
+            int jpegQuality,
+            double minimumWindowedSsim,
+            double meanDeltaE00) {
         return "{\"schema\":\"pathlab-prepared-slide/v2\",\"producer\":{"
                 + "\"name\":\"PathLab Forge\",\"version\":\""
                 + escape(metadata.producerVersion()) + "\"},\"provenance\":{"
@@ -186,8 +230,16 @@ public final class PreparedPackageBuilder {
                         * metadata.downsample()
                 + ",\"unit\":\"" + escape(metadata.physicalUnit()) + "\"}},\"slide\":{"
                 + "\"width\":" + width + ",\"height\":" + height
-                + ",\"tileSize\":512,\"overlap\":1,\"format\":\"jpg\"},"
-                + "\"files\":[" + files + "]}";
+                + ",\"tileSize\":512,\"overlap\":1,\"format\":\"jpg\","
+                + "\"encoding\":{\"codec\":\"jpeg\",\"quality\":" + jpegQuality
+                + ",\"selector\":\"quality-gated-v1\","
+                + "\"qualityProfile\":\"pathlab-visual-v1\","
+                + "\"minimumWindowedSsim\":" + minimumWindowedSsim
+                + ",\"meanDeltaE00\":" + meanDeltaE00 + "}},"
+                + "\"inventory\":{\"format\":\"ndjson-v1\","
+                + "\"path\":\"inventory.ndjson\",\"sha256\":\"" + inventoryHash + "\","
+                + "\"fileCount\":" + fileCount
+                + ",\"derivativeBytes\":" + derivativeBytes + "}}";
     }
 
     private static String escape(String value) {

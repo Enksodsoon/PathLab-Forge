@@ -19,12 +19,12 @@ Forge must integrate with those contracts rather than create a parallel slide li
 
 ## API version
 
-New desktop endpoints use `/api/v2/desktop`. The existing tus transport remains `/api/v1/uploads/`.
+The implemented desktop ingest endpoints use `/api/v1/desktop`.
 
 ### Capabilities
 
 ```text
-GET /api/v2/desktop/capabilities
+GET /api/v1/desktop/capabilities
 Authorization: Bearer <desktop credential>
 ```
 
@@ -34,7 +34,8 @@ Expected response concepts:
 - accepted `.plslide` schema versions;
 - maximum package bytes;
 - package extraction limits;
-- DZI tile size, overlap, format and JPEG quality;
+- supported package schemas and inventory formats;
+- recommended and maximum chunk sizes (64 MiB in the current Viewer);
 - thumbnail dimensions and JPEG quality;
 - whether folder assignment is supported;
 - current usable storage;
@@ -45,7 +46,7 @@ Forge checks capabilities before packaging for a server.
 ### Prepared-slide reservation
 
 ```text
-POST /api/v2/desktop/prepared-slides
+POST /api/v1/desktop/ingests
 Authorization: Bearer <desktop credential>
 ```
 
@@ -64,46 +65,38 @@ PathLab Viewer returns:
 
 - slide ID;
 - current slide state;
-- tus upload URL;
-- short-lived size-bound upload token;
-- token expiration.
+- ingest ID and upload offset.
 
 The server creates the slide in the current library domain. A missing folder places it in Unfiled. A supplied folder must exist and must not be in Trash.
 
 ### Upload
 
-Use the existing tus endpoint and upload-token metadata/header contract. Forge must persist its tus fingerprint, resume interrupted uploads, and request a replacement reservation or token when required.
+Upload with `PATCH /api/v1/desktop/ingests/{id}` and `Upload-Offset`. Forge uses
+the capability-advertised chunk size, streams each chunk with a bounded buffer,
+and falls back to 16 MiB for older Viewers.
 
 A failed network upload must never cause local reconversion when a valid package still exists.
 
 ### Status
 
 ```text
-GET /api/v2/desktop/prepared-slides/{slideId}
+GET /api/v1/desktop/ingests/{ingestId}
 Authorization: Bearer <desktop credential>
 ```
 
-The MVP deliberately reuses PathLab Viewer’s current slide states:
+The desktop ingest states are:
 
 ```text
 uploading
-queued
-validating
-converting
+finalizing
 ready_private
 failed
-published
-deleting
 ```
 
-For prepared packages their meanings are:
-
-- `queued`: waiting for the existing serial worker;
-- `validating`: checksum, archive, manifest, DZI and file validation;
-- `converting`: atomic derivative installation and measurement; no WSI conversion occurs;
-- `ready_private`: available in the library, thumbnail endpoint, private preview, annotation workspace and later publication/sharing workflows.
-
-The desktop status payload may expose a more specific `phase`, but Forge must not require new database slide states for the MVP.
+The final upload only transitions to `finalizing`. A single bounded Viewer worker
+claims and validates it asynchronously; `HEAD` and status requests never perform
+finalization. `ready_private` means the derivative was atomically installed and
+committed to the private library.
 
 ### Private preview
 
@@ -115,39 +108,40 @@ When the slide reaches `ready_private`, Forge opens the existing browser route:
 
 The user authenticates in the browser if needed. Forge does not embed or bypass the browser administrator session.
 
-## Prepared package v1
+## Prepared package v2
 
-The canonical acceptance schema will live in:
-
-```text
-PathLab-Viewer/contracts/prepared-slide-v1.schema.json
-```
-
-Forge keeps a pinned compatible copy after the Viewer contract is merged.
-
-Version 1 contains only server-ready derivative assets:
+New packages have this canonical order:
 
 ```text
 manifest.json
+manifest.sha256
+inventory.ndjson
 derivative/slide.dzi
 derivative/slide_files/<level>/<column>_<row>.jpg
 derivative/thumbnail.jpg
 ```
 
-Version 1 does not upload the standardized OME-TIFF. Forge keeps that file locally. This minimizes server storage and keeps server import free of WSI decoding.
+The NDJSON inventory contains one canonical path, size and SHA-256 per derivative.
+`manifest.json` records its format, path, hash, file count and derivative bytes.
+Existing v2 packages that use `files[]` remain accepted. The standardized
+OME-TIFF remains local.
 
 Required output contract:
 
 ```text
 DZI tile size: 512
 DZI overlap: 1
-DZI JPEG quality: 85
+DZI JPEG quality: adaptively selected Q85, Q90 or Q95
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
 Thumbnail filename: thumbnail.jpg
 ```
 
-The server measures the installed derivative and verifies it against the manifest and reservation. Manifest declarations are never trusted by themselves.
+Forge evaluates 32 deterministic ROIs and chooses the smallest quality for which
+every ROI has windowed SSIM at least 0.985 and mean Delta E00 is at most 1.5.
+Viewer validates one streaming TAR pass, including archive and payload hashes,
+JPEG signatures, DZI geometry, declared counts and bytes. Output remains private
+until the entire archive, including physical EOF, has passed.
 
 ## Library integration
 
@@ -183,7 +177,7 @@ Automatic public publication is disabled by default. Existing Viewer publication
 
 ## Versioning
 
-- Never redefine schema version 1 silently.
+- Never redefine schema version 2 silently.
 - Breaking package changes create a new schema version.
 - Viewer may accept multiple schema versions concurrently.
 - Forge records the server capability response and producer versions in each job’s diagnostics.

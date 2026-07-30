@@ -31,6 +31,7 @@ dependencies {
 
 application {
     mainClass = "org.pathlab.forge.ForgeApp"
+    applicationDefaultJvmArgs = listOf("-Xmx512m")
 }
 
 val pnpmCommand = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "pnpm.cmd" else "pnpm"
