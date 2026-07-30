@@ -1233,21 +1233,33 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
             artifactRepository.cleanupSupersededUnapproved(dataset.id(), revision.id());
         } catch (Exception error) {
+            var failure = concise(error.getMessage());
+            var wasCancelled = cancelled.remove(dataset.id());
+            cleanupFailedOutput(partial);
+            cleanupFailedOutput(rendered);
             try {
-                Files.deleteIfExists(partial);
-                Files.deleteIfExists(rendered);
                 deleteTree(outputDirectory, derivativePartial);
-                if (cancelled.remove(dataset.id())) {
+            } catch (IOException ignored) {
+                // Status persistence must not depend on immediate Windows handle release.
+            }
+            try {
+                if (!wasCancelled) {
+                    artifactRepository.save(revision.failed(concise(error.getMessage())));
+                }
+            } catch (IOException ignored) {
+                // Dataset status below remains the authoritative user-visible failure.
+            }
+            try {
+                if (wasCancelled) {
                     repository.save(dataset.withPreparation(
                             DatasetStatus.CANCELLED,
-                            "Conversion cancelled; incomplete output removed",
+                            "Conversion cancelled; incomplete output cleanup is pending",
                             dataset.outputPath(),
                             dataset.sha256()));
                 } else {
-                    artifactRepository.save(revision.failed(concise(error.getMessage())));
                     repository.save(dataset.withConversion(
                             DatasetStatus.FAILED,
-                            concise(error.getMessage()),
+                            failure,
                             dataset.outputPath(),
                             dataset.sha256(),
                             dataset.selectedSeries(),
@@ -1257,7 +1269,7 @@ public final class ConversionService implements AutoCloseable {
                             dataset.estimatedOutputBytes()));
                 }
             } catch (IOException ignored) {
-                // The original conversion error remains the useful diagnostic.
+                // The executor cannot recover from a repository write failure.
             }
         } finally {
             if (regionRoot != null && cancelled.contains(dataset.id())) {
@@ -1268,6 +1280,24 @@ public final class ConversionService implements AutoCloseable {
                 }
             }
             activeConversions.remove(dataset.id());
+        }
+    }
+
+    private static void cleanupFailedOutput(Path path) {
+        for (var attempt = 0; attempt < 20; attempt++) {
+            try {
+                if (Files.deleteIfExists(path) || !Files.exists(path)) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // A terminated child may retain a Windows file handle briefly.
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 

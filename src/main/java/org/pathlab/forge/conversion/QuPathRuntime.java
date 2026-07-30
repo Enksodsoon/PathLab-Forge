@@ -19,7 +19,8 @@ final class QuPathRuntime {
     static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 1_500_000_000L;
     static final long STANDARD_SECONDS_BUDGET_PIXELS = 80_000_000L;
     private static final long UNCOMPRESSED_PIXEL_LIMIT = 200_000_000L;
-    private static final Duration EXPORT_TIMEOUT = Duration.ofMinutes(4);
+    private static final Duration EXPORT_STALL_TIMEOUT = Duration.ofMinutes(2);
+    private static final Duration EXPORT_ABSOLUTE_TIMEOUT = Duration.ofHours(24);
     private final Path javaExecutable;
     private final Path appDirectory;
 
@@ -71,10 +72,26 @@ final class QuPathRuntime {
         reader.setDaemon(true);
         reader.start();
         try {
-            if (!process.waitFor(EXPORT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly();
-                throw new IOException(
-                        "Direct OME export exceeded the four-minute recovery timeout");
+            var started = System.nanoTime();
+            var lastActivity = started;
+            long observedBytes = -1;
+            while (!process.waitFor(500, TimeUnit.MILLISECONDS)) {
+                var currentBytes = Files.isRegularFile(output) ? Files.size(output) : 0;
+                if (currentBytes != observedBytes) {
+                    observedBytes = currentBytes;
+                    lastActivity = System.nanoTime();
+                }
+                var now = System.nanoTime();
+                if (now - lastActivity > EXPORT_STALL_TIMEOUT.toNanos()) {
+                    terminateAndAwait(process);
+                    throw new IOException(
+                            "Direct OME export stopped producing output for two minutes");
+                }
+                if (now - started > EXPORT_ABSOLUTE_TIMEOUT.toNanos()) {
+                    terminateAndAwait(process);
+                    throw new IOException(
+                            "Direct OME export exceeded the 24-hour recovery ceiling");
+                }
             }
             reader.join(5_000);
             if (process.exitValue() != 0 || !Files.isRegularFile(output)
@@ -85,9 +102,22 @@ final class QuPathRuntime {
                                 + tail(capture.toString(StandardCharsets.UTF_8)));
             }
         } catch (InterruptedException error) {
-            process.destroyForcibly();
+            terminateAndAwait(process);
             Thread.currentThread().interrupt();
             throw new IOException("QuPath direct OME export was interrupted", error);
+        }
+    }
+
+    private static void terminateAndAwait(Process process) {
+        process.destroy();
+        try {
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(10, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException error) {
+            process.destroyForcibly();
+            Thread.currentThread().interrupt();
         }
     }
 
