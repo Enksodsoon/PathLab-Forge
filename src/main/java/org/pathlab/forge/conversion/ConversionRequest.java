@@ -14,7 +14,8 @@ public record ConversionRequest(
         int seriesWidth,
         int seriesHeight,
         double downsample) {
-    private static final Set<Double> SUPPORTED_DOWNSAMPLES = Set.of(1.0, 1.5, 2.0, 4.0, 8.0);
+    private static final Set<Double> SUPPORTED_DOWNSAMPLES =
+            Set.of(1.0, 1.5, 2.0, 4.0, 8.0, 16.0, 32.0);
 
     public ConversionRequest {
         source = Objects.requireNonNull(source, "source").toAbsolutePath().normalize();
@@ -33,7 +34,8 @@ public record ConversionRequest(
             throw new IllegalArgumentException("Crop must be inside the selected image series");
         }
         if (!SUPPORTED_DOWNSAMPLES.contains(downsample)) {
-            throw new IllegalArgumentException("Downsample must be 1x, 1.5x, 2x, 4x, or 8x");
+            throw new IllegalArgumentException(
+                    "Downsample must be 1x, 1.5x, 2x, 4x, 8x, 16x, or 32x");
         }
     }
 

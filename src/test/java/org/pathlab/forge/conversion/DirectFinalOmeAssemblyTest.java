@@ -87,14 +87,25 @@ final class DirectFinalOmeAssemblyTest {
             }
         };
 
-        try (var service = new ConversionService(
-                repository, engine, derivative, temporaryDirectory.resolve("managed"))) {
-            service.start(dataset.id());
-            for (var attempt = 0; attempt < 200; attempt++) {
-                if (repository.find(dataset.id()).orElseThrow().status() == DatasetStatus.FAILED) {
-                    break;
+        var priorBudget = System.getProperty("pathlab.forge.secondsBudget.enabled");
+        System.setProperty("pathlab.forge.secondsBudget.enabled", "false");
+        try {
+            try (var service = new ConversionService(
+                    repository, engine, derivative, temporaryDirectory.resolve("managed"))) {
+                service.start(dataset.id());
+                for (var attempt = 0; attempt < 200; attempt++) {
+                    if (repository.find(dataset.id()).orElseThrow().status()
+                            == DatasetStatus.FAILED) {
+                        break;
+                    }
+                    Thread.sleep(10);
                 }
-                Thread.sleep(10);
+            }
+        } finally {
+            if (priorBudget == null) {
+                System.clearProperty("pathlab.forge.secondsBudget.enabled");
+            } else {
+                System.setProperty("pathlab.forge.secondsBudget.enabled", priorBudget);
             }
         }
 

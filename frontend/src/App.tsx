@@ -1208,7 +1208,7 @@ function ExportInspector({
               value={draft.downsample}
               onChange={(event) => setDraft((current) => ({ ...current, downsample: event.target.value }))}
             >
-              {(capabilities?.downsamples || [1, 1.5, 2, 4, 8]).map((value) => <option value={value} key={value}>{value}×</option>)}
+              {(capabilities?.downsamples || [1, 1.5, 2, 4, 8, 16, 32]).map((value) => <option value={value} key={value}>{value}×</option>)}
             </select>
           </label>
           <div className="forge-output-summary">
