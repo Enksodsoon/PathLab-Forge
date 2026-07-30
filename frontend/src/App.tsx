@@ -301,61 +301,65 @@ export function App() {
 
   return (
     <>
-      <ViewerCanvasShell
-      rail={rail}
-      railExpanded={railExpanded}
-      navigatorOpen={navigatorOpen}
-      inspectorOpen={inspectorOpen}
-      navigator={(
-        <SlideNavigator
-          datasets={datasets}
-          selectedId={selected?.id || ''}
-          onSelect={setSelectedId}
-          onImport={() => setImportOpen(true)}
-          onConnect={connect}
+      <div className={`forge-canvas-host${inspectorOpen ? '' : ' inspector-collapsed'}`}>
+        <ViewerCanvasShell
+          rail={rail}
+          railExpanded={railExpanded}
+          navigatorOpen={navigatorOpen}
+          inspectorOpen={inspectorOpen}
+          navigator={(
+            <SlideNavigator
+              datasets={datasets}
+              selectedId={selected?.id || ''}
+              onSelect={setSelectedId}
+              onImport={() => setImportOpen(true)}
+              onConnect={connect}
+            />
+          )}
+          stage={(
+            <ViewerStage
+              dataset={selected}
+              revision={currentRevision}
+              annotations={selected ? annotationsByDataset[selected.id] || [] : []}
+              activeTool={activeTool}
+              viewer={viewer}
+              onViewer={setViewer}
+              onCreateAnnotation={createLocalAnnotation}
+              inspectorOpen={inspectorOpen}
+              onInspector={() => setInspectorOpen((current) => !current)}
+            />
+          )}
+          inspector={(
+            <Inspector
+              dataset={selected}
+              series={selectedSeries}
+              revisions={revisions}
+              annotations={selected ? annotationsByDataset[selected.id] || [] : []}
+              activeTool={activeTool}
+              capabilities={capabilities}
+              onTool={setActiveTool}
+              onCollapse={() => setInspectorOpen(false)}
+              onInspect={inspect}
+              onConfigure={updateConfiguration}
+              onConvert={beginConversion}
+              onCancel={() => selected && void api.cancel(selected.id).then(() => refresh())}
+              onApprove={approveCurrent}
+              onConnect={connect}
+              onUpload={uploadApproved}
+              onRemove={() => selected && setRemoveTarget(selected)}
+              onDeleteAnnotation={deleteLocalAnnotation}
+            />
+          )}
+          queue={(
+            <QueueDock
+              datasets={datasets}
+              notice={error || notice}
+              isError={Boolean(error)}
+              onClearError={() => setError('')}
+            />
+          )}
         />
-      )}
-      stage={(
-        <ViewerStage
-          dataset={selected}
-          revision={currentRevision}
-          annotations={selected ? annotationsByDataset[selected.id] || [] : []}
-          activeTool={activeTool}
-          viewer={viewer}
-          onViewer={setViewer}
-          onCreateAnnotation={createLocalAnnotation}
-          onInspector={() => setInspectorOpen((current) => !current)}
-        />
-      )}
-      inspector={(
-        <Inspector
-          dataset={selected}
-          series={selectedSeries}
-          revisions={revisions}
-          annotations={selected ? annotationsByDataset[selected.id] || [] : []}
-          activeTool={activeTool}
-          capabilities={capabilities}
-          onTool={setActiveTool}
-          onInspect={inspect}
-          onConfigure={updateConfiguration}
-          onConvert={beginConversion}
-          onCancel={() => selected && void api.cancel(selected.id).then(() => refresh())}
-          onApprove={approveCurrent}
-          onConnect={connect}
-          onUpload={uploadApproved}
-          onRemove={() => selected && setRemoveTarget(selected)}
-          onDeleteAnnotation={deleteLocalAnnotation}
-        />
-      )}
-      queue={(
-        <QueueDock
-          datasets={datasets}
-          notice={error || notice}
-          isError={Boolean(error)}
-          onClearError={() => setError('')}
-        />
-      )}
-      />
+      </div>
       {importOpen ? (
         <ImportDialog
           path={importPath}
@@ -556,6 +560,7 @@ function ViewerStage({
   viewer,
   onViewer,
   onCreateAnnotation,
+  inspectorOpen,
   onInspector,
 }: {
   dataset?: Dataset
@@ -565,6 +570,7 @@ function ViewerStage({
   viewer: OpenSeadragon.Viewer | null
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
   onCreateAnnotation: (geometry: string) => void
+  inspectorOpen: boolean
   onInspector: () => void
 }) {
   const previewIdentity = dataset?.configurationRevision || String(dataset?.selectedSeries ?? '')
@@ -584,7 +590,16 @@ function ViewerStage({
           <strong>{dataset?.displayName || 'PathLab Forge viewer'}</strong>
           <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Direct source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
-        <button type="button" aria-label="Toggle inspector" onClick={onInspector}><SidebarSimple /></button>
+        <button
+          type="button"
+          aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
+          aria-expanded={inspectorOpen}
+          aria-controls="forge-slide-inspector"
+          title={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
+          onClick={onInspector}
+        >
+          <SidebarSimple />
+        </button>
       </header>
       {tileSource ? (
         <SlideViewer
@@ -652,6 +667,7 @@ function Inspector({
   activeTool,
   capabilities,
   onTool,
+  onCollapse,
   onInspect,
   onConfigure,
   onConvert,
@@ -669,6 +685,7 @@ function Inspector({
   activeTool: string
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
   onTool: (tool: string) => void
+  onCollapse: () => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
   onConvert: () => void
@@ -683,8 +700,19 @@ function Inspector({
   if (!dataset) return <div className="forge-inspector-empty">Slide details appear here.</div>
   const current = revisions.find((revision) => revision.id === dataset.currentArtifactRevision)
   return (
-    <div className="forge-inspector">
-      <header><span>Slide inspector</span><h2>{dataset.displayName}</h2></header>
+    <div className="forge-inspector" id="forge-slide-inspector">
+      <header>
+        <div><span>Slide inspector</span><h2>{dataset.displayName}</h2></div>
+        <button
+          className="forge-inspector-collapse"
+          type="button"
+          aria-label="Collapse slide inspector"
+          title="Collapse slide inspector"
+          onClick={onCollapse}
+        >
+          <SidebarSimple />
+        </button>
+      </header>
       <div className="forge-inspector-tabs" role="tablist">
         {(['export', 'annotations', 'history'] as const).map((item) => (
           <button type="button" role="tab" aria-selected={section === item} key={item} onClick={() => setSection(item)}>
