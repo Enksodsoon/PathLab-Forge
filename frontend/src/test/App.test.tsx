@@ -5,8 +5,37 @@ import * as api from '../api'
 import { App } from '../App'
 
 vi.mock('../SlideViewer', () => ({
-  SlideViewer: ({ tileSource }: { tileSource: string }) => (
-    <div data-testid="forge-osd" data-tile-source={tileSource} />
+  SlideViewer: ({
+    tileSource,
+    cropBox,
+    cropEditing,
+    onCropChange,
+  }: {
+    tileSource: string
+    cropBox?: { x: number; y: number; width: number; height: number }
+    cropEditing?: boolean
+    onCropChange?: (box: { x: number; y: number; width: number; height: number }) => void
+  }) => (
+    <div
+      data-testid="forge-osd"
+      data-tile-source={tileSource}
+      data-crop-box={cropBox ? JSON.stringify(cropBox) : ''}
+    >
+      {cropEditing ? (
+        <>
+          <button
+            type="button"
+            aria-label="Test draw crop"
+            onClick={() => onCropChange?.({ x: 69790, y: 23372, width: 11336, height: 11040 })}
+          />
+          <button
+            type="button"
+            aria-label="Test reshape crop"
+            onClick={() => onCropChange?.({ x: 69790, y: 23372, width: 10000, height: 9000 })}
+          />
+        </>
+      ) : null}
+    </div>
   ),
 }))
 
@@ -169,7 +198,7 @@ test('shows the short-lived Viewer verification code', async () => {
   )
 })
 
-test('keeps crop edits local until the user applies a valid configuration', async () => {
+test('updates dimensions and file size live while drawing and reshaping a crop', async () => {
   const dataset: api.Dataset = {
     id: 'dataset-1',
     displayName: 'Main slide.vsi',
@@ -235,29 +264,36 @@ test('keeps crop edits local until the user applies a valid configuration', asyn
   expect(await screen.findByTestId('forge-osd')).toBeVisible()
   expect(api.series).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Inspect image series' }))
-  const x = await screen.findByRole('spinbutton', { name: 'X' })
+  await screen.findByRole('button', { name: 'Draw crop on slide' })
   await screen.findByText('82,922 × 45,367')
   expect(screen.getByText(/Estimated OME-TIFF ≈/)).toBeVisible()
   expect(screen.getByText(/Expected range/)).toBeVisible()
   expect(screen.getByText(/Peak conversion workspace ≤/)).toBeVisible()
-  fireEvent.change(x, { target: { value: '69790' } })
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Y' }), { target: { value: '23372' } })
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Width' }), { target: { value: '11336' } })
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Height' }), { target: { value: '11040' } })
+
+  fireEvent.click(screen.getByRole('button', { name: 'Draw crop on slide' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Test draw crop' }))
+  expect(screen.getByText('5,668 × 5,520')).toBeVisible()
+  const drawnEstimate = screen.getByText(/Estimated OME-TIFF ≈/).textContent
+  expect(drawnEstimate).toContain('live')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Test reshape crop' }))
+  expect(screen.getByText('5,000 × 4,500')).toBeVisible()
+  expect(screen.getByText(/Estimated OME-TIFF ≈/).textContent).not.toBe(drawnEstimate)
+
   fireEvent.change(screen.getByRole('combobox', { name: 'Downsample' }), { target: { value: '1.5' } })
 
   expect(api.configure).not.toHaveBeenCalled()
-  expect(screen.getByText('7,557 × 7,360')).toBeVisible()
+  expect(screen.getByText('6,666 × 6,000')).toBeVisible()
 
-  fireEvent.click(screen.getByRole('button', { name: 'Apply settings' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Apply crop & export settings' }))
 
   await waitFor(() => expect(api.configure).toHaveBeenCalledWith('dataset-1', {
     series: 2,
     downsample: 1.5,
     x: 69790,
     y: 23372,
-    width: 11336,
-    height: 11040,
+    width: 10000,
+    height: 9000,
   }))
 })
 
