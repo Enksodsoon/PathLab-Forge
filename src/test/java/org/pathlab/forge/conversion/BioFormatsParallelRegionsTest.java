@@ -64,6 +64,18 @@ class BioFormatsParallelRegionsTest {
     }
 
     @Test
+    void choosesNearbyRegionCountThatDividesFinalHeightExactly() {
+        assertEquals(
+                7,
+                BioFormatsEngine.preferredRegionCount(
+                        103_130, 75_118, 50_078, 5));
+        assertEquals(
+                5,
+                BioFormatsEngine.preferredRegionCount(
+                        50_000, 50_000, 50_003, 5));
+    }
+
+    @Test
     void mapsTopLevelSeriesAndResolutionToFlattenedReaderIndexWithoutARescan() {
         var resolutionCounts = new int[] {6, 7, 10, 1};
 

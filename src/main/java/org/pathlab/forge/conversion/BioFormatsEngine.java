@@ -214,7 +214,15 @@ public final class BioFormatsEngine implements ConversionEngine {
         var selected = requireSeries(request.source(), request.seriesIndex());
         var resolution = selectResolution(selected, request.downsample());
         var crop = scaleCrop(request, resolution);
-        var regions = planRegions(crop.x(), crop.y(), crop.width(), crop.height(), workers);
+        var directFinalResample = request.downsample() == 1.0
+                || Boolean.getBoolean("pathlab.forge.directFinalDownsample")
+                || Boolean.getBoolean("pathlab.forge.experimentalNativeFallback");
+        var regionCount = directFinalResample
+                ? preferredRegionCount(
+                        crop.width(), crop.height(), request.outputHeight(), workers)
+                : workers;
+        var regions = planRegions(
+                crop.x(), crop.y(), crop.width(), crop.height(), regionCount);
         var completed = new AtomicInteger();
         for (var index = 0; index < regions.size(); index++) {
             var output = outputDirectory.resolve("region-%02d.ome.tif".formatted(index));
@@ -299,12 +307,37 @@ public final class BioFormatsEngine implements ConversionEngine {
         return List.copyOf(regions);
     }
 
+    static int preferredRegionCount(
+            int sourceWidth, int sourceHeight, int outputHeight, int requestedWorkers) {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || outputHeight <= 0
+                || requestedWorkers <= 0) {
+            throw new IllegalArgumentException("Parallel render geometry is invalid");
+        }
+        var minimumRegions = Math.toIntExact(Math.max(
+                1,
+                ((long) sourceWidth * sourceHeight + MAX_RENDER_REGION_PIXELS - 1)
+                        / MAX_RENDER_REGION_PIXELS));
+        var baseline = Math.max(requestedWorkers, minimumRegions);
+        var upperBound = Math.min(sourceHeight, Math.min(outputHeight, baseline + 8));
+        for (var candidate = baseline; candidate <= upperBound; candidate++) {
+            if (outputHeight % candidate == 0) {
+                return candidate;
+            }
+        }
+        return baseline;
+    }
+
     private void convertRegion(
             ConversionRequest request, Resolution resolution, ScaledCrop crop, Path output)
             throws IOException {
         org.pathlab.forge.runtime.ResourceGovernor.system().awaitWorkerLaunch();
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
-        var partial = output.resolveSibling(output.getFileName() + ".partial");
+        var outputName = output.getFileName().toString();
+        var partialName = outputName.endsWith(".ome.tif")
+                ? outputName.substring(0, outputName.length() - ".ome.tif".length())
+                        + ".partial.ome.tif"
+                : outputName + ".partial.tif";
+        var partial = output.resolveSibling(partialName);
         Files.deleteIfExists(partial);
         var arguments = new ArrayList<>(List.of(
                 "-no-upgrade",

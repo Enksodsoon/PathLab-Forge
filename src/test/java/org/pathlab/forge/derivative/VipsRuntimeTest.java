@@ -1,7 +1,9 @@
 package org.pathlab.forge.derivative;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -39,6 +41,31 @@ class VipsRuntimeTest {
         assertEquals("--vips-cache-max-files=128", command.get(3));
         assertEquals("--vips-cache-max=100", command.get(4));
         assertEquals(List.of("dzsave", "input.tif", "output"), command.subList(5, 8));
+    }
+
+    @Test
+    void distributesNonIntegerResampleGeometryWithoutCroppingOrAddingRows() {
+        var heights = VipsRuntime.targetRegionHeights(
+                List.of(7_512, 7_512, 7_512, 7_512, 7_512, 7_512, 7_512, 7_511),
+                50_078);
+
+        assertEquals(8, heights.size());
+        assertEquals(50_078, heights.stream().mapToInt(Integer::intValue).sum());
+        assertEquals(List.of(6_260, 6_260, 6_260, 6_259, 6_260, 6_260, 6_260, 6_259), heights);
+    }
+
+    @Test
+    void readsMachineValueAfterWindowsTiffWarnings() throws IOException {
+        var output = """
+                (vipsheader.exe:43872): VIPS-WARNING **: Auto-corrected TIFF values [2,2]
+
+                68753
+                """;
+
+        assertEquals(68_753, VipsRuntime.parseIntegerOutput(output));
+        assertThrows(
+                IOException.class,
+                () -> VipsRuntime.parseIntegerOutput("VIPS-WARNING: no property returned"));
     }
 
     private static String escaped(Path path) {

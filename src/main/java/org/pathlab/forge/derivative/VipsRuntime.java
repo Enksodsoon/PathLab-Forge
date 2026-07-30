@@ -119,12 +119,10 @@ public final class VipsRuntime implements DerivativeEngine {
     public void validateOmeGeometry(Path omeTiff, int width, int height) throws IOException {
         var header = executable.resolveSibling(
                 java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
-        var actualWidth = Integer.parseInt(runCommand(
-                        List.of(header.toString(), "-f", "width", omeTiff.toString()))
-                .strip());
-        var actualHeight = Integer.parseInt(runCommand(
-                        List.of(header.toString(), "-f", "height", omeTiff.toString()))
-                .strip());
+        var actualWidth = parseIntegerOutput(runCommand(
+                List.of(header.toString(), "-f", "width", omeTiff.toString())));
+        var actualHeight = parseIntegerOutput(runCommand(
+                List.of(header.toString(), "-f", "height", omeTiff.toString())));
         if (actualWidth != width || actualHeight != height) {
             throw new IOException(
                     "OME geometry mismatch: expected "
@@ -156,14 +154,22 @@ public final class VipsRuntime implements DerivativeEngine {
         }
         var prepared = regions;
         var resizedRoot = pyramidalOme.resolveSibling("resized-regions.partial");
+        var paddedJoin = pyramidalOme.resolveSibling("joined-resized.partial.tif");
         try {
+            Files.deleteIfExists(paddedJoin);
+            boolean uniformTargetHeights = true;
             if (downsample != 1.0) {
                 deleteTree(resizedRoot);
                 Files.createDirectories(resizedRoot);
                 var resized = new ArrayList<Path>(regions.size());
-                var uniformHeight = Math.toIntExact(
-                        ((long) height + regions.size() - 1) / regions.size());
+                var sourceHeights = new ArrayList<Integer>(regions.size());
+                for (var region : regions) {
+                    sourceHeights.add(imageDimension(region, "height"));
+                }
+                var targetHeights = targetRegionHeights(sourceHeights, height);
+                uniformTargetHeights = targetHeights.stream().distinct().count() == 1;
                 for (var index = 0; index < regions.size(); index++) {
+                    var targetHeight = targetHeights.get(index);
                     var output = resizedRoot.resolve("region-%02d.tif".formatted(index));
                     run(List.of(
                             "thumbnail",
@@ -172,14 +178,14 @@ public final class VipsRuntime implements DerivativeEngine {
                                     + "compression=jpeg,Q=95,bigtiff,properties=false]",
                             Integer.toString(width),
                             "--height",
-                            Integer.toString(uniformHeight),
+                            Integer.toString(targetHeight),
                             "--size",
                             "force"));
                     resized.add(output);
                 }
                 prepared = List.copyOf(resized);
             }
-            if (downsample == 1.0) {
+            if (uniformTargetHeights) {
                 run(List.of(
                         "arrayjoin",
                         serializeImageArray(prepared),
@@ -189,20 +195,16 @@ public final class VipsRuntime implements DerivativeEngine {
                         "--across",
                         "1"));
             } else {
-                var joined = resizedRoot.resolve("joined.tif");
                 run(List.of(
                         "arrayjoin",
                         serializeImageArray(prepared),
-                        joined + "[tile,tile-width=512,tile-height=512,"
-                                + "compression=jpeg,Q=95,bigtiff,properties=false]",
+                        paddedJoin + "[tile,tile-width=512,tile-height=512,"
+                                + "compression=jpeg,Q=95,bigtiff]",
                         "--across",
                         "1"));
-                for (var item : prepared) {
-                    Files.deleteIfExists(item);
-                }
                 run(List.of(
                         "crop",
-                        joined.toString(),
+                        paddedJoin.toString(),
                         pyramidalOme + "[pyramid,tile,tile-width=512,tile-height=512,"
                                 + "compression=jpeg,Q=" + omeJpegQuality(width, height)
                                 + ",bigtiff,subifd]",
@@ -213,8 +215,61 @@ public final class VipsRuntime implements DerivativeEngine {
             }
             requireNonempty(pyramidalOme, "final pyramidal OME-TIFF");
         } finally {
+            Files.deleteIfExists(paddedJoin);
             deleteTree(resizedRoot);
         }
+    }
+
+    static List<Integer> targetRegionHeights(List<Integer> sourceHeights, int targetHeight) {
+        if (sourceHeights.isEmpty()
+                || targetHeight < sourceHeights.size()
+                || sourceHeights.stream().anyMatch(height -> height == null || height < 1)) {
+            throw new IllegalArgumentException("Region resample geometry is invalid");
+        }
+        var totalSourceHeight = sourceHeights.stream()
+                .mapToLong(Integer::longValue)
+                .reduce(0, Math::addExact);
+        var targetHeights = new ArrayList<Integer>(sourceHeights.size());
+        long cumulativeSourceHeight = 0;
+        int previousTargetBottom = 0;
+        for (var index = 0; index < sourceHeights.size(); index++) {
+            cumulativeSourceHeight = Math.addExact(
+                    cumulativeSourceHeight, sourceHeights.get(index));
+            var targetBottom = index == sourceHeights.size() - 1
+                    ? targetHeight
+                    : Math.toIntExact(Math.round(
+                            (double) cumulativeSourceHeight * targetHeight
+                                    / totalSourceHeight));
+            var regionHeight = targetBottom - previousTargetBottom;
+            if (regionHeight < 1) {
+                throw new IllegalArgumentException("Resampled region height is invalid");
+            }
+            targetHeights.add(regionHeight);
+            previousTargetBottom = targetBottom;
+        }
+        return List.copyOf(targetHeights);
+    }
+
+    private int imageDimension(Path image, String field) throws IOException {
+        var header = executable.resolveSibling(
+                java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
+        return parseIntegerOutput(runCommand(
+                List.of(header.toString(), "-f", field, image.toString())));
+    }
+
+    static int parseIntegerOutput(String output) throws IOException {
+        var lines = output.lines().toList();
+        for (var index = lines.size() - 1; index >= 0; index--) {
+            var value = lines.get(index).strip();
+            if (value.matches("[0-9]+")) {
+                try {
+                    return Integer.parseInt(value);
+                } catch (NumberFormatException error) {
+                    throw new IOException("libvips numeric output is outside the supported range", error);
+                }
+            }
+        }
+        throw new IOException("libvips did not return a numeric image property: " + tail(output));
     }
 
     static String serializeImageArray(List<Path> paths) {

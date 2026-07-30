@@ -741,14 +741,23 @@ public final class ConversionService implements AutoCloseable {
             return false;
         }
         var ome = Path.of(revision.omePath());
-        var derivative = Path.of(revision.derivativePath());
         var preparedPackage = Path.of(revision.packagePath());
-        return Files.isRegularFile(ome)
-                && Files.isRegularFile(derivative.resolve("slide.dzi"))
-                && Files.isRegularFile(derivative.resolve("thumbnail.jpg"))
-                && Files.isRegularFile(preparedPackage)
-                && revision.omeSha256().equals(sha256(ome))
+        var packageIndex = preparedPackage.resolveSibling(
+                preparedPackage.getFileName() + ".index");
+        if (!Files.isRegularFile(ome)
+                || !Files.isRegularFile(preparedPackage)
+                || !Files.isRegularFile(packageIndex)) {
+            return false;
+        }
+        if (ArtifactIntegrityStamp.matches(revision)) {
+            return true;
+        }
+        var verified = revision.omeSha256().equals(sha256(ome))
                 && revision.packageSha256().equals(sha256(preparedPackage));
+        if (verified) {
+            ArtifactIntegrityStamp.write(revision);
+        }
+        return verified;
     }
 
     public LocalDataset cancel(String id) throws IOException {
@@ -795,7 +804,7 @@ public final class ConversionService implements AutoCloseable {
             try (var files = Files.list(regions)) {
                 for (var partial : files.filter(path -> path.getFileName()
                                 .toString()
-                                .endsWith(".partial"))
+                                .contains(".partial."))
                         .toList()) {
                     Files.deleteIfExists(partial);
                 }
@@ -1116,7 +1125,9 @@ public final class ConversionService implements AutoCloseable {
                     derivativeInfo.fileCount(),
                     derivativeInfo.fileCount());
             deleteTree(outputDirectory, derivative);
-            artifactRepository.save(revision.ready(digest, packageInfo.sha256()));
+            var readyRevision = revision.ready(digest, packageInfo.sha256());
+            artifactRepository.save(readyRevision);
+            ArtifactIntegrityStamp.write(readyRevision);
             repository.save(dataset.withConversion(
                     DatasetStatus.PACKAGE_READY,
                     derivativeInfo.tileCount() + " DZI tiles · "
@@ -1207,6 +1218,8 @@ public final class ConversionService implements AutoCloseable {
     private boolean useDirectFinalOme(ConversionRequest request) {
         return derivativeEngine.supportsDirectFinalOme()
                 && (request.downsample() == 1.0
+                        || Boolean.getBoolean(
+                                "pathlab.forge.directFinalDownsample")
                         || Boolean.getBoolean(
                                 "pathlab.forge.experimentalNativeFallback"));
     }

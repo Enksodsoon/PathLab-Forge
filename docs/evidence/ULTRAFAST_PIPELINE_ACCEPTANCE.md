@@ -37,6 +37,30 @@ Approved-OME comparison:
 The fallback is therefore not a production path. This follows the acceptance
 rule that performance cannot override image quality.
 
+## Direct-final non-integer resample evidence
+
+A second experiment removed the full-size assembled-image rewrite and resumed
+from five verified full-resolution regions after a libvips warning/parser
+failure was corrected:
+
+- finalization and package build after checkpoint resume: 176,982 ms
+- process-tree peak: 1,042,534,400 bytes
+- retained artifact: 1,516,386,811 bytes
+- package entries: 17,736
+- exact geometry: `68753x50078`
+
+The legacy five-region checkpoint needed a padded recovery join and exceeded
+the temporary workspace gate. More importantly, approved-OME comparison
+reported minimum sampled SSIM `0.5584282549200127` despite a low maximum mean
+Delta E00 of `0.3918308406198163`. Independent per-region resampling changes
+spatial phase at region boundaries and is not production-safe. Non-integer
+exports therefore continue to use one global resampling step by default.
+
+The experimental direct-final switch remains opt-in. New experiments choose a
+nearby region count that divides the final height, eliminating libvips
+`arrayjoin` padding, but the path must still pass every image-quality sample
+before it can become the default.
+
 ## Legacy storage inventory
 
 The existing LocalAppData tree contained 273,521 files totaling
