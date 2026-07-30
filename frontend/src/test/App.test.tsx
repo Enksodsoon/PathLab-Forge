@@ -64,6 +64,20 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
 })
 
+test('gives the expanded product rail enough width to show its labels', async () => {
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Expand navigation rail' }))
+
+  const rail = screen.getByRole('complementary', { name: 'Product navigation' })
+  const shell = rail.closest('.pathlab-canvas-shell')
+  expect(shell).toHaveClass('rail-expanded')
+  expect(within(rail).getByText('Slide library')).toBeVisible()
+  expect(within(rail).getByText('Import')).toBeVisible()
+  expect(within(rail).getByText('Viewer account')).toBeVisible()
+  expect(within(rail).getByText('Disconnect')).toBeVisible()
+})
+
 test('collapses and restores the slide inspector without losing its state', async () => {
   const dataset: api.Dataset = {
     id: 'collapsible-inspector-slide',
