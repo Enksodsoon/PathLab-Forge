@@ -720,6 +720,10 @@ public final class ConversionService implements AutoCloseable {
 
     private ArtifactRevision reusableArtifact(
             LocalDataset dataset, ConversionRequest request) throws IOException {
+        if (!Boolean.parseBoolean(
+                System.getProperty("pathlab.forge.artifactReuse.enabled", "true"))) {
+            return null;
+        }
         if (!dataset.currentArtifactRevision().isBlank()) {
             var current = artifactRepository
                     .find(dataset.id(), dataset.currentArtifactRevision())

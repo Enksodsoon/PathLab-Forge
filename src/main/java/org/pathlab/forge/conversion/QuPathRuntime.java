@@ -16,9 +16,10 @@ import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.runtime.ChildProcessContainment;
 
 final class QuPathRuntime {
-    static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 200_000_000L;
+    static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 1_500_000_000L;
     static final long STANDARD_SECONDS_BUDGET_PIXELS = 80_000_000L;
-    private static final Duration EXPORT_TIMEOUT = Duration.ofMinutes(1);
+    private static final long UNCOMPRESSED_PIXEL_LIMIT = 200_000_000L;
+    private static final Duration EXPORT_TIMEOUT = Duration.ofMinutes(4);
     private final Path javaExecutable;
     private final Path appDirectory;
 
@@ -73,7 +74,7 @@ final class QuPathRuntime {
             if (!process.waitFor(EXPORT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
                 throw new IOException(
-                        "SECONDS_BUDGET_EXCEEDED: direct OME export exceeded 59 seconds");
+                        "Direct OME export exceeded the four-minute recovery timeout");
             }
             reader.join(5_000);
             if (process.exitValue() != 0 || !Files.isRegularFile(output)
@@ -124,11 +125,18 @@ final class QuPathRuntime {
                 "--downsample=" + request.downsample(),
                 "--crop=" + request.cropX() + "," + request.cropY() + ","
                         + request.cropWidth() + "," + request.cropHeight(),
-                "--compression=UNCOMPRESSED",
+                "--compression=" + compression(request),
                 "--tile-size=512",
+                "--pyramid-scale=4",
                 "--overwrite",
                 request.source().toString(),
                 output.toString());
+    }
+
+    private static String compression(ConversionRequest request) {
+        var pixels = Math.multiplyExact(
+                (long) request.outputWidth(), request.outputHeight());
+        return pixels <= UNCOMPRESSED_PIXEL_LIMIT ? "UNCOMPRESSED" : "JPEG";
     }
 
     private static Path configuredJava() {

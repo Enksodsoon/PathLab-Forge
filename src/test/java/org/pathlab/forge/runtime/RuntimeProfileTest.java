@@ -13,8 +13,8 @@ final class RuntimeProfileTest {
 
         assertEquals(5, profile.maxConversionWorkers());
         assertEquals(640L * 1024 * 1024, profile.bioFormatsHeapBytes());
-        assertEquals(4, profile.vipsConcurrency());
-        assertEquals(768L * 1024 * 1024, profile.vipsCacheBytes());
+        assertEquals(5, profile.vipsConcurrency());
+        assertEquals(1_024L * 1024 * 1024, profile.vipsCacheBytes());
         assertEquals(5_500L * 1024 * 1024, profile.processTreeLimitBytes());
         assertFalse(profile.mayLaunchWorker(1_249L * 1024 * 1024));
         assertTrue(profile.mayLaunchWorker(1_250L * 1024 * 1024));

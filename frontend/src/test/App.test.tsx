@@ -603,7 +603,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect((await screen.findAllByText('Rendering RGB regions'))[0]).toBeVisible()
   expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(11)
   expect(screen.getByText('Step 1 of 5')).toBeVisible()
-  expect(screen.getByText(/Large whole-slide exports can take several minutes/)).toBeVisible()
+  expect(screen.getByText(/Full-slide exports run at the fastest verified source-reader profile/)).toBeVisible()
   expect(screen.getByText(/Elapsed/)).toBeVisible()
   expect(screen.queryByTestId('forge-osd')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
