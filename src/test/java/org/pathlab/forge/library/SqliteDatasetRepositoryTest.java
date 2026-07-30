@@ -39,4 +39,32 @@ final class SqliteDatasetRepositoryTest {
             assertEquals(java.util.List.of(dataset), restarted.list());
         }
     }
+
+    @Test
+    void marksInterruptedConversionsRetryableOnRestart() throws Exception {
+        var legacy = temporaryDirectory.resolve("library.properties");
+        var database = temporaryDirectory.resolve("forge.db");
+        var dataset = new LocalDataset(
+                "dataset-1",
+                "case.vsi",
+                temporaryDirectory.resolve("case.vsi").toString(),
+                4096,
+                DatasetFormat.VSI,
+                DatasetStatus.OPTIMIZING_OME,
+                "Writing the final OME pyramid",
+                "",
+                "");
+
+        try (var repository = new SqliteDatasetRepository(database, legacy)) {
+            repository.save(dataset);
+        }
+
+        try (var restarted = new SqliteDatasetRepository(database, legacy)) {
+            var recovered = restarted.find("dataset-1").orElseThrow();
+            assertEquals(DatasetStatus.FAILED, recovered.status());
+            assertEquals(
+                    "Interrupted by application restart; retry is safe",
+                    recovered.detail());
+        }
+    }
 }

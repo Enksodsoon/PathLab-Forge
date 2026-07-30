@@ -26,6 +26,7 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
             configure();
             createSchema();
             migrateLegacy(legacyProperties.toAbsolutePath().normalize());
+            recoverInterruptedConversions();
         } catch (SQLException error) {
             throw new IOException("Unable to open Forge SQLite library", error);
         }
@@ -111,6 +112,24 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                         "SELECT value FROM forge_meta WHERE key='legacy_migrated'");
                 var rows = statement.executeQuery()) {
             return rows.next() && "1".equals(rows.getString(1));
+        }
+    }
+
+    private void recoverInterruptedConversions() throws SQLException {
+        try (var statement = connection.prepareStatement("""
+                UPDATE datasets
+                SET status=?,
+                    detail=?,
+                    workspace_revision=workspace_revision+1
+                WHERE status IN (?,?,?,?)
+                """)) {
+            statement.setString(1, DatasetStatus.FAILED.name());
+            statement.setString(2, "Interrupted by application restart; retry is safe");
+            statement.setString(3, DatasetStatus.INSPECTING.name());
+            statement.setString(4, DatasetStatus.CONVERTING.name());
+            statement.setString(5, DatasetStatus.OPTIMIZING_OME.name());
+            statement.setString(6, DatasetStatus.VALIDATING.name());
+            statement.executeUpdate();
         }
     }
 
