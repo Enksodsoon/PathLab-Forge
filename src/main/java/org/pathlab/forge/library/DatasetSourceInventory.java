@@ -78,6 +78,36 @@ public record DatasetSourceInventory(
         return create(parent, files);
     }
 
+    public static boolean matchesSnapshot(Path source, String serialized) {
+        if (serialized == null || serialized.isBlank()) {
+            return false;
+        }
+        var root = source.toAbsolutePath().normalize().getParent();
+        for (var line : serialized.split("\\R")) {
+            if (line.isBlank()) {
+                continue;
+            }
+            var fields = line.split("\\|", 4);
+            if (fields.length != 4) {
+                return false;
+            }
+            try {
+                var relative = Path.of(fields[0].replace('/', java.io.File.separatorChar));
+                var file = root.resolve(relative).normalize();
+                if (!file.startsWith(root)
+                        || !Files.isRegularFile(file)
+                        || Files.size(file) != Long.parseLong(fields[1])
+                        || Files.getLastModifiedTime(file).toMillis()
+                                != Long.parseLong(fields[2])) {
+                    return false;
+                }
+            } catch (IOException | RuntimeException error) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static DatasetSourceInventory create(Path root, List<Path> files)
             throws IOException {
         var sorted = files.stream()

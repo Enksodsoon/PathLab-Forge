@@ -31,7 +31,7 @@ import org.pathlab.forge.library.DatasetPreparationService;
 import org.pathlab.forge.library.DatasetRepository;
 import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.LocalDataset;
-import org.pathlab.forge.library.PropertiesDatasetRepository;
+import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
 import org.pathlab.forge.model.BatchId;
 import org.pathlab.forge.viewer.ViewerConnection;
@@ -84,9 +84,18 @@ public final class ForgeServer implements AutoCloseable {
 
     public static ForgeServer start() throws IOException {
         var paths = ForgePaths.defaults();
+        return start(
+                paths,
+                new SqliteDatasetRepository(
+                        paths.repositoryFile(),
+                        paths.dataRoot().resolve("library.properties")));
+    }
+
+    public static ForgeServer start(ForgePaths paths, DatasetRepository repository)
+            throws IOException {
         var configuredPort = Integer.getInteger("pathlab.forge.port", DEFAULT_DESKTOP_PORT);
         return startConfigured(
-                new PropertiesDatasetRepository(paths.repositoryFile()),
+                repository,
                 new SwingDatasetPicker(),
                 paths.managedRoot(),
                 BioFormatsEngine.discover(paths.dataRoot()),
