@@ -311,12 +311,21 @@ test('switches image series immediately and reloads the revision-qualified previ
 
   expect(await screen.findByTestId('forge-osd')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Inspect image series' }))
-  const seriesSelect = await screen.findByRole('combobox', { name: 'Image series' })
+  const tissueSeries = await screen.findByRole('button', {
+    name: 'Tissue, 24000 by 18000 pixels',
+  })
+  expect(screen.getByRole('button', {
+    name: 'Overview, 8000 by 6000 pixels',
+  }).querySelector('img')).toHaveAttribute(
+    'src',
+    expect.stringContaining('/series/0/thumbnail?v=multi-image-source'),
+  )
+  expect(tissueSeries).toHaveTextContent('6 pyramid levels')
   expect(screen.getByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
     expect.stringContaining('revision=series-revision-0'),
   )
-  fireEvent.change(seriesSelect, { target: { value: '1' } })
+  fireEvent.click(tissueSeries)
 
   await waitFor(() => expect(api.configure).toHaveBeenCalledWith('series-switch-slide', {
     series: 1,
