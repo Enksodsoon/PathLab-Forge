@@ -604,7 +604,15 @@ public final class ForgeServer implements AutoCloseable {
         if (!requireAuthenticated(exchange)) {
             return;
         }
-        respond(exchange, 200, "application/json", datasetsJson(repository.list()));
+        var body = datasetsJson(repository.list());
+        var etag = "\"" + sha256(body.getBytes(StandardCharsets.UTF_8)) + "\"";
+        exchange.getResponseHeaders().set("ETag", etag);
+        exchange.getResponseHeaders().set("Cache-Control", "private, no-cache");
+        if (etag.equals(exchange.getRequestHeaders().getFirst("If-None-Match"))) {
+            exchange.sendResponseHeaders(304, -1);
+            return;
+        }
+        respond(exchange, 200, "application/json", body);
     }
 
     private void selectDatasets(HttpExchange exchange) throws IOException {
@@ -928,25 +936,22 @@ public final class ForgeServer implements AutoCloseable {
         }
         var id = remainder.substring(0, separator);
         try {
-            var root = conversionService.artifacts(id).derivativeRoot().toAbsolutePath().normalize();
             var relative = remainder.substring(separator + "/derivative/".length());
             if (!relative.matches("slide\\.dzi|thumbnail\\.jpg|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
-                respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
-                return;
-            }
-            var file = root.resolve(relative.replace('/', java.io.File.separatorChar))
-                    .normalize();
-            if (!file.startsWith(root)
-                    || !Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
-                    || Files.isSymbolicLink(file)) {
                 respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
                 return;
             }
             var type = relative.endsWith(".dzi")
                     ? "application/xml; charset=utf-8"
                     : "image/jpeg";
-            respondFile(exchange, type, file);
-        } catch (IllegalArgumentException | IllegalStateException error) {
+            var dataset = repository.find(id).orElseThrow(
+                    () -> new IllegalArgumentException("Dataset was not found"));
+            if (immutableNotModified(
+                    exchange, dataset.currentArtifactRevision() + "|" + relative)) {
+                return;
+            }
+            respond(exchange, 200, type, conversionService.derivativeEntry(id, relative));
+        } catch (IllegalArgumentException | IllegalStateException | java.nio.file.NoSuchFileException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
         }
     }
@@ -986,6 +991,12 @@ public final class ForgeServer implements AutoCloseable {
                     preview.sourceWidth() + "x" + preview.sourceHeight());
             exchange.getResponseHeaders().set(
                     "X-PathLab-Preview-Geometry", preview.width() + "x" + preview.height());
+            var dataset = repository.find(id).orElseThrow(
+                    () -> new IllegalArgumentException("Dataset was not found"));
+            if (immutableNotModified(
+                    exchange, dataset.configurationRevision() + "|" + relative)) {
+                return;
+            }
             respondFile(
                     exchange,
                     relative.endsWith(".dzi") ? "application/xml; charset=utf-8" : "image/jpeg",
@@ -1001,6 +1012,13 @@ public final class ForgeServer implements AutoCloseable {
 
     private void serveDirectPreview(HttpExchange exchange, String id, String relative)
             throws IOException {
+        var dataset = repository.find(id).orElseThrow(
+                () -> new IllegalArgumentException("Dataset was not found"));
+        if (immutableNotModified(
+                exchange,
+                dataset.sourceFingerprint() + "|" + dataset.selectedSeries() + "|" + relative)) {
+            return;
+        }
         var source = conversionService.directPreview(id);
         exchange.getResponseHeaders().set(
                 "X-PathLab-Source-Geometry", source.width() + "x" + source.height());
@@ -1029,6 +1047,19 @@ public final class ForgeServer implements AutoCloseable {
                 Integer.parseInt(matcher.group(2)),
                 Integer.parseInt(matcher.group(3)));
         respond(exchange, 200, "image/jpeg", tile);
+    }
+
+    private static boolean immutableNotModified(HttpExchange exchange, String identity)
+            throws IOException {
+        var etag = "\"" + sha256(identity.getBytes(StandardCharsets.UTF_8)) + "\"";
+        exchange.getResponseHeaders().set("ETag", etag);
+        exchange.getResponseHeaders().set(
+                "Cache-Control", "private, max-age=31536000, immutable");
+        if (etag.equals(exchange.getRequestHeaders().getFirst("If-None-Match"))) {
+            exchange.sendResponseHeaders(304, -1);
+            return true;
+        }
+        return false;
     }
 
     private void packageResource(HttpExchange exchange, String id) throws IOException {
@@ -1159,13 +1190,14 @@ public final class ForgeServer implements AutoCloseable {
         return true;
     }
 
-    private static String datasetsJson(List<LocalDataset> datasets) {
+    private String datasetsJson(List<LocalDataset> datasets) {
         return "{\"datasets\":["
-                + datasets.stream().map(ForgeServer::datasetJson).collect(java.util.stream.Collectors.joining(","))
+                + datasets.stream().map(this::datasetJson).collect(java.util.stream.Collectors.joining(","))
                 + "]}";
     }
 
-    private static String datasetJson(LocalDataset dataset) {
+    private String datasetJson(LocalDataset dataset) {
+        var progress = conversionService.progress(dataset.id());
         var estimate = dataset.cropWidth() > 0 && dataset.cropHeight() > 0
                 ? org.pathlab.forge.conversion.OutputSizeEstimator.compressedOmeTiff(
                         dataset.cropWidth(),
@@ -1202,6 +1234,18 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"configurationRevision\":" + json(dataset.configurationRevision())
                 + ",\"currentArtifactRevision\":" + json(dataset.currentArtifactRevision())
                 + ",\"approvedArtifactRevision\":" + json(dataset.approvedArtifactRevision())
+                + ",\"workspaceRevision\":"
+                + Integer.toUnsignedLong(dataset.hashCode())
+                + ",\"verificationState\":"
+                + json(dataset.sourceFingerprint().isBlank() ? "PENDING" : "VERIFIED")
+                + ",\"stage\":"
+                + json(progress.stage().isBlank() ? dataset.status().name() : progress.stage())
+                + ",\"completedUnits\":" + progress.completedUnits()
+                + ",\"totalUnits\":" + progress.totalUnits()
+                + ",\"elapsedMs\":" + progress.elapsedMs()
+                + ",\"peakWorkingSetBytes\":" + progress.peakWorkingSetBytes()
+                + ",\"resourceProfile\":" + json(progress.resourceProfile())
+                + ",\"cacheHitReason\":" + json(progress.cacheHitReason())
                 + "}";
     }
 
@@ -1354,6 +1398,15 @@ public final class ForgeServer implements AutoCloseable {
             }
         }
         return escaped.append('"').toString();
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException("SHA-256 is unavailable", error);
+        }
     }
 
     private boolean authenticated(HttpExchange exchange) {

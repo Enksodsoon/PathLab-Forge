@@ -95,16 +95,6 @@ export function App() {
       const next = await api.datasets()
       setDatasets(next)
       setSelectedId((current) => current || next[0]?.id || '')
-      for (const dataset of next) {
-        void api.annotations(dataset.id).then((items) => {
-          setAnnotationsByDataset((current) => ({ ...current, [dataset.id]: items }))
-        })
-        if (dataset.currentArtifactRevision) {
-          void api.artifacts(dataset.id).then((result) => {
-            setArtifactByDataset((current) => ({ ...current, [dataset.id]: result.revisions }))
-          })
-        }
-      }
       setNotice(next.length ? 'Local workspace ready' : 'Choose a slide to begin')
     } catch (nextError) {
       setError(message(nextError))
@@ -129,6 +119,26 @@ export function App() {
     const timer = window.setInterval(() => void refresh(), 1500)
     return () => window.clearInterval(timer)
   }, [datasets, refresh])
+
+  useEffect(() => {
+    if (!selected) return
+    let cancelled = false
+    void api.annotations(selected.id).then((items) => {
+      if (!cancelled) {
+        setAnnotationsByDataset((current) => ({ ...current, [selected.id]: items }))
+      }
+    }).catch(() => undefined)
+    if (selected.currentArtifactRevision) {
+      void api.artifacts(selected.id).then((result) => {
+        if (!cancelled) {
+          setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
+        }
+      }).catch(() => undefined)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [selected?.id, selected?.currentArtifactRevision])
 
   const finishImport = (next: { datasets: Dataset[] }) => {
     const imported = next.datasets.find((item) => !datasets.some((current) => current.id === item.id))
@@ -760,7 +770,7 @@ function PreviewLoading({ title, detail }: { title: string; detail: string }) {
 }
 
 function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?: ArtifactRevision }) {
-  const phase = conversionPhase(dataset.status)
+  const phase = conversionPhase(dataset)
   const elapsed = useElapsed(revision?.createdAt)
   return (
     <div className="forge-conversion-progress" aria-live="polite">
@@ -1268,7 +1278,7 @@ function QueueDock({
 }) {
   const active = datasets.filter((dataset) => ACTIVE_STATUSES.has(dataset.status))
   const converting = active.find((dataset) => CONVERSION_STATUSES.has(dataset.status))
-  const phase = converting ? conversionPhase(converting.status) : undefined
+  const phase = converting ? conversionPhase(converting) : undefined
   return (
     <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
       <span className="forge-queue-mark" />
@@ -1286,15 +1296,26 @@ function QueueDock({
   )
 }
 
-function conversionPhase(status: string) {
-  return ({
+function conversionPhase(dataset: Dataset) {
+  const phase = ({
     CONVERTING: { step: 1, percent: 15, label: 'Exporting rendered RGB' },
     OPTIMIZING_OME: { step: 2, percent: 42, label: 'Compressing OME-TIFF pyramid' },
     VALIDATING: { step: 3, percent: 60, label: 'Validating OME-TIFF' },
     GENERATING_DZI: { step: 4, percent: 78, label: 'Generating viewer tiles' },
     DZI_READY: { step: 5, percent: 93, label: 'Result viewable · building upload package' },
-  } as Record<string, { step: number; percent: number; label: string }>)[status]
+  } as Record<string, { step: number; percent: number; label: string }>)[dataset.status]
     || { step: 1, percent: 0, label: 'Preparing conversion' }
+  if ((dataset.totalUnits || 0) > 0) {
+    return {
+      ...phase,
+      percent: Math.min(
+        100,
+        Math.round((dataset.completedUnits || 0) / dataset.totalUnits! * 100),
+      ),
+      label: dataset.stage?.replaceAll('_', ' ').toLowerCase() || phase.label,
+    }
+  }
+  return phase
 }
 
 function statusLabel(status: string) {

@@ -37,7 +37,10 @@ public final class ConversionService implements AutoCloseable {
     private final ArtifactRevisionRepository artifactRepository;
     private final SeriesMetadataCache seriesMetadataCache;
     private final Map<String, List<SeriesInfo>> inspectedSeries = new ConcurrentHashMap<>();
+    private final Map<String, ReaderSession> readerSessions = new ConcurrentHashMap<>();
+    private final Map<String, DirectTileSource> directSources = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> activeConversions = new ConcurrentHashMap<>();
+    private final Map<String, ConversionProgress> progress = new ConcurrentHashMap<>();
     private final java.util.Set<Path> cleanedPreviewRoots =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<Path> scheduledPreviewCleanups =
@@ -71,6 +74,11 @@ public final class ConversionService implements AutoCloseable {
         return derivativeEngine;
     }
 
+    public ConversionProgress progress(String id) {
+        return progress.getOrDefault(
+                id, new ConversionProgress("", 0, 0, 0, currentWorkingSet(), "8gb-6core", ""));
+    }
+
     public LocalArtifacts artifacts(String id) {
         var dataset = requireDataset(id);
         if (dataset.currentArtifactRevision().isBlank()) {
@@ -91,6 +99,38 @@ public final class ConversionService implements AutoCloseable {
         } catch (IOException error) {
             throw new IllegalStateException("Artifact revisions could not be read", error);
         }
+    }
+
+    public byte[] derivativeEntry(String id, String relative) throws IOException {
+        if (!relative.matches("slide\\.dzi|thumbnail\\.jpg|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
+            throw new IllegalArgumentException("Invalid derivative entry");
+        }
+        var artifacts = artifacts(id);
+        var loose = artifacts.derivativeRoot()
+                .resolve(relative.replace('/', java.io.File.separatorChar))
+                .normalize();
+        if (loose.startsWith(artifacts.derivativeRoot())
+                && Files.isRegularFile(loose, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                && !Files.isSymbolicLink(loose)) {
+            return Files.readAllBytes(loose);
+        }
+        var indexPath = artifacts.packagePath()
+                .resolveSibling(artifacts.packagePath().getFileName() + ".index");
+        var entry = org.pathlab.forge.packageformat.PackageEntryIndex.read(indexPath)
+                .require("derivative/" + relative);
+        if (entry.size() > 32L * 1024 * 1024) {
+            throw new IOException("Derivative package entry exceeds the local serving limit");
+        }
+        var bytes = java.nio.ByteBuffer.allocate(Math.toIntExact(entry.size()));
+        try (var channel = java.nio.channels.FileChannel.open(artifacts.packagePath())) {
+            channel.position(entry.offset());
+            while (bytes.hasRemaining()) {
+                if (channel.read(bytes) < 0) {
+                    throw new IOException("Derivative package entry is truncated");
+                }
+            }
+        }
+        return bytes.array();
     }
 
     public List<ArtifactRevision> revisions(String id) throws IOException {
@@ -212,8 +252,16 @@ public final class ConversionService implements AutoCloseable {
         if (dataset.selectedSeries() < 0) {
             throw new IllegalStateException("Inspect and select an image series before preview");
         }
-        return engine.directTileSource(
+        evictIdleReaderSessions();
+        var key = readerSessionKey(dataset);
+        var existing = directSources.get(key);
+        if (existing != null) {
+            return existing;
+        }
+        var opened = engine.directTileSource(
                 Path.of(dataset.sourcePath()), dataset.selectedSeries());
+        var raced = directSources.putIfAbsent(key, opened);
+        return raced == null ? opened : raced;
     }
 
     public byte[] directPreviewTile(
@@ -222,8 +270,40 @@ public final class ConversionService implements AutoCloseable {
         if (dataset.selectedSeries() < 0) {
             throw new IllegalStateException("Inspect and select an image series before preview");
         }
-        return engine.readDirectTile(
-                Path.of(dataset.sourcePath()), dataset.selectedSeries(), level, tileX, tileY);
+        evictIdleReaderSessions();
+        var session = readerSessions.computeIfAbsent(
+                readerSessionKey(dataset),
+                ignored -> new ReaderSession(256L * 1024 * 1024));
+        try {
+            return session.tile(
+                    new ReaderSession.TileKey(dataset.selectedSeries(), level, tileX, tileY),
+                    () -> engine.readDirectTile(
+                            Path.of(dataset.sourcePath()),
+                            dataset.selectedSeries(),
+                            level,
+                            tileX,
+                            tileY));
+        } catch (IOException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IOException("Direct preview tile read failed", error);
+        }
+    }
+
+    private static String readerSessionKey(LocalDataset dataset) {
+        return dataset.id() + "|" + dataset.sourceFingerprint() + "|" + dataset.selectedSeries();
+    }
+
+    private void evictIdleReaderSessions() {
+        var idleNanos = java.util.concurrent.TimeUnit.MINUTES.toNanos(5);
+        var expired = readerSessions.entrySet().stream()
+                .filter(entry -> entry.getValue().idleFor(idleNanos))
+                .map(Map.Entry::getKey)
+                .toList();
+        for (var key : expired) {
+            readerSessions.remove(key);
+            directSources.remove(key);
+        }
     }
 
     private Path previewRoot(String id, LocalDataset dataset) {
@@ -529,6 +609,16 @@ public final class ConversionService implements AutoCloseable {
         var reusable = reusableArtifact(dataset, request);
         if (reusable != null) {
             var detail = "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
+            progress.put(
+                    id,
+                    new ConversionProgress(
+                            "PACKAGE_COMMITTED",
+                            1,
+                            1,
+                            System.currentTimeMillis(),
+                            currentWorkingSet(),
+                            "8gb-6core",
+                            "configuration and source fingerprint matched verified artifact"));
             var cached = reusable.id().equals(dataset.currentArtifactRevision())
                     ? dataset.withConversion(
                             DatasetStatus.PACKAGE_READY,
@@ -553,21 +643,63 @@ public final class ConversionService implements AutoCloseable {
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 dataset.estimatedOutputBytes());
-        var revision = artifactRepository.create(
-                dataset, request.outputWidth(), request.outputHeight());
+        var resumable = resumableRevision(dataset);
+        var revision = resumable.isPresent()
+                ? resumable.get()
+                : artifactRepository.create(
+                        dataset, request.outputWidth(), request.outputHeight());
         var converting = dataset.withArtifactRevision(
                 DatasetStatus.CONVERTING,
-                useParallelRgb(dataset, request)
+                revision.id().equals(dataset.currentArtifactRevision())
+                        ? "Resuming last verified conversion checkpoint"
+                        : useParallelRgb(dataset, request)
                         ? "Lightning RGB: decoding "
-                                + parallelRgbWorkers() + " image regions in parallel"
+                                + parallelRgbWorkers(Path.of(dataset.sourcePath()))
+                                + " image regions in parallel"
                         : "Exporting QuPath-style rendered RGB with JPEG compression",
                 "",
                 "",
                 revision.id());
         repository.save(converting);
+        progress.put(
+                id,
+                new ConversionProgress(
+                        "SOURCE_VERIFIED",
+                        1,
+                        1,
+                        System.currentTimeMillis(),
+                        currentWorkingSet(),
+                        "8gb-6core",
+                        resumable.isPresent() ? "verified checkpoint" : ""));
         cancelled.remove(id);
         activeConversions.put(id, conversionExecutor.submit(() -> convert(converting)));
         return converting;
+    }
+
+    private java.util.Optional<ArtifactRevision> resumableRevision(LocalDataset dataset)
+            throws IOException {
+        if (dataset.currentArtifactRevision().isBlank()) {
+            return java.util.Optional.empty();
+        }
+        var revision = artifactRepository
+                .find(dataset.id(), dataset.currentArtifactRevision())
+                .orElse(null);
+        if (revision == null
+                || revision.status() == ArtifactRevisionStatus.READY
+                || revision.status() == ArtifactRevisionStatus.APPROVED
+                || !revision.configurationRevision().equals(dataset.configurationRevision())
+                || !revision.sourceFingerprint().equals(dataset.sourceFingerprint())) {
+            return java.util.Optional.empty();
+        }
+        var checkpoint = new StageCheckpointStore(Path.of(revision.omePath()).getParent())
+                .load()
+                .orElse(null);
+        return checkpoint != null
+                        && checkpoint.artifactRevisionId().equals(revision.id())
+                        && checkpoint.configurationRevision().equals(dataset.configurationRevision())
+                        && checkpoint.sourceFingerprint().equals(dataset.sourceFingerprint())
+                ? java.util.Optional.of(revision)
+                : java.util.Optional.empty();
     }
 
     private ArtifactRevision reusableArtifact(
@@ -651,6 +783,7 @@ public final class ConversionService implements AutoCloseable {
         Files.deleteIfExists(output.resolveSibling("export.partial.ome.tif"));
         Files.deleteIfExists(output.resolveSibling("render.partial.ome.tif"));
         deleteTree(outputDirectory, outputDirectory.resolve("derivative.partial"));
+        deleteTree(outputDirectory, outputDirectory.resolve("regions.partial"));
     }
 
     private void convert(LocalDataset dataset) {
@@ -670,7 +803,16 @@ public final class ConversionService implements AutoCloseable {
         var derivativePartial = outputDirectory.resolve("derivative.partial");
         var derivative = outputDirectory.resolve("derivative");
         Path regionRoot = null;
+        var checkpoints = new StageCheckpointStore(outputDirectory);
         try {
+            boolean finalOmeWritten = false;
+            var existingCheckpoint = checkpoints.load().orElse(null);
+            saveCheckpoint(
+                    checkpoints,
+                    revision,
+                    StageCheckpoint.Stage.SOURCE_VERIFIED,
+                    1,
+                    1);
             Files.createDirectories(outputDirectory);
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
@@ -679,12 +821,39 @@ public final class ConversionService implements AutoCloseable {
                     && derivativeEngine.supportsOmeRendering()) {
                 derivativeEngine.renderOme(request, rendered);
             } else if (useParallelRgb(dataset, request)) {
-                regionRoot = Files.createTempDirectory("pathlab-forge-rgb-regions-");
-                var regions =
-                        engine.convertRegions(request, regionRoot, parallelRgbWorkers());
+                regionRoot = outputDirectory.resolve("regions.partial");
+                List<Path> regions;
+                if (existingCheckpoint != null
+                        && existingCheckpoint.stage() == StageCheckpoint.Stage.REGIONS_VERIFIED
+                        && existingCheckpoint.configurationRevision()
+                                .equals(revision.configurationRevision())
+                        && Files.isDirectory(regionRoot)) {
+                    try (var files = Files.list(regionRoot)) {
+                        regions = files.filter(Files::isRegularFile).sorted().toList();
+                    }
+                    if (regions.size() < 2) {
+                        throw new IOException("Verified region checkpoint is incomplete");
+                    }
+                } else {
+                    deleteTree(outputDirectory, regionRoot);
+                    Files.createDirectories(regionRoot);
+                    regions = engine.convertRegions(
+                            request, regionRoot, parallelRgbWorkers(request.source()));
+                }
+                saveCheckpoint(
+                        checkpoints,
+                        revision,
+                        StageCheckpoint.Stage.REGIONS_VERIFIED,
+                        regions.size(),
+                        regions.size());
+                updateProgress(
+                        dataset.id(), "REGIONS_VERIFIED", regions.size(), regions.size());
                 repository.save(dataset.withConversion(
                         DatasetStatus.CONVERTING,
-                        "Parallel RGB decode complete; assembling exact slide geometry",
+                        derivativeEngine.supportsDirectFinalOme()
+                                        && request.downsample() == 1.0
+                                ? "Parallel RGB decode complete; writing final OME pyramid"
+                                : "Parallel RGB decode complete; assembling exact slide geometry",
                         dataset.outputPath(),
                         dataset.sha256(),
                         dataset.selectedSeries(),
@@ -692,13 +861,21 @@ public final class ConversionService implements AutoCloseable {
                         dataset.height(),
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
-                derivativeEngine.assembleRegions(regions, rendered);
-                deleteTree(regionRoot);
-                regionRoot = null;
+                if (derivativeEngine.supportsDirectFinalOme()
+                        && request.downsample() == 1.0) {
+                    derivativeEngine.assembleRegionsFinal(
+                            regions,
+                            partial,
+                            request.outputWidth(),
+                            request.outputHeight());
+                    finalOmeWritten = true;
+                } else {
+                    derivativeEngine.assembleRegions(regions, rendered);
+                }
             } else {
                 engine.convert(request, rendered);
             }
-            if (derivativeEngine.available()) {
+            if (derivativeEngine.available() && !finalOmeWritten) {
                 repository.save(dataset.withConversion(
                         DatasetStatus.OPTIMIZING_OME,
                         "Rendered RGB complete; compressing the tiled OME-BigTIFF pyramid",
@@ -712,7 +889,7 @@ public final class ConversionService implements AutoCloseable {
                 derivativeEngine.optimizeOme(
                         rendered, partial, request.outputWidth(), request.outputHeight());
                 Files.deleteIfExists(rendered);
-            } else {
+            } else if (!finalOmeWritten) {
                 Files.move(rendered, partial, StandardCopyOption.REPLACE_EXISTING);
             }
             repository.save(dataset.withConversion(
@@ -725,6 +902,7 @@ public final class ConversionService implements AutoCloseable {
                     dataset.height(),
                     dataset.downsample(),
                     dataset.estimatedOutputBytes()));
+            updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
             verifyTiff(partial);
             OutputSizeGuard.requireSuitable(
                     Files.size(partial),
@@ -734,6 +912,17 @@ public final class ConversionService implements AutoCloseable {
                     request.downsample());
             var digest = sha256(partial);
             atomicReplace(partial, output);
+            saveCheckpoint(
+                    checkpoints,
+                    revision,
+                    StageCheckpoint.Stage.OME_VERIFIED,
+                    1,
+                    1);
+            updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
+            if (regionRoot != null) {
+                deleteTree(outputDirectory, regionRoot);
+                regionRoot = null;
+            }
             if (!derivativeEngine.available()) {
                 repository.save(dataset.withConversion(
                         DatasetStatus.CONVERSION_READY,
@@ -757,6 +946,7 @@ public final class ConversionService implements AutoCloseable {
                     dataset.height(),
                     dataset.downsample(),
                     dataset.estimatedOutputBytes()));
+            updateProgress(dataset.id(), "GENERATING_DZI", 0, 1);
             deleteTree(outputDirectory, derivativePartial);
             var derivativeInfo = derivativeEngine.generateDzi(
                     output,
@@ -764,6 +954,17 @@ public final class ConversionService implements AutoCloseable {
                     request.outputWidth(),
                     request.outputHeight());
             installDirectory(outputDirectory, derivativePartial, derivative);
+            saveCheckpoint(
+                    checkpoints,
+                    revision,
+                    StageCheckpoint.Stage.DZI_LEDGER_VERIFIED,
+                    derivativeInfo.tileCount(),
+                    derivativeInfo.tileCount());
+            updateProgress(
+                    dataset.id(),
+                    "DZI_LEDGER_VERIFIED",
+                    derivativeInfo.tileCount(),
+                    derivativeInfo.tileCount());
             artifactRepository.save(revision.ready(digest, ""));
             repository.save(dataset.withConversion(
                     DatasetStatus.DZI_READY,
@@ -776,13 +977,15 @@ public final class ConversionService implements AutoCloseable {
                     dataset.height(),
                     dataset.downsample(),
                     dataset.estimatedOutputBytes()));
+            updateProgress(
+                    dataset.id(), "PACKAGING", 0, derivativeInfo.fileCount());
             var seriesInfo = inspectedSeries.getOrDefault(dataset.id(), List.of()).stream()
                     .filter(item -> item.index() == dataset.selectedSeries())
                     .findFirst()
                     .orElseThrow(() -> new IOException(
                             "Selected-series calibration is unavailable"));
             var packageInfo = PreparedPackageBuilder.build(
-                    derivative,
+                    derivativeInfo,
                     request.outputWidth(),
                     request.outputHeight(),
                     new PackageMetadata(
@@ -800,6 +1003,18 @@ public final class ConversionService implements AutoCloseable {
                             seriesInfo.physicalUnit(),
                             "0.1.0-rc"),
                     outputDirectory.resolve("slide.plslide"));
+            saveCheckpoint(
+                    checkpoints,
+                    revision,
+                    StageCheckpoint.Stage.PACKAGE_COMMITTED,
+                    derivativeInfo.fileCount(),
+                    derivativeInfo.fileCount());
+            updateProgress(
+                    dataset.id(),
+                    "PACKAGE_COMMITTED",
+                    derivativeInfo.fileCount(),
+                    derivativeInfo.fileCount());
+            deleteTree(outputDirectory, derivative);
             artifactRepository.save(revision.ready(digest, packageInfo.sha256()));
             repository.save(dataset.withConversion(
                     DatasetStatus.PACKAGE_READY,
@@ -814,14 +1029,11 @@ public final class ConversionService implements AutoCloseable {
                     dataset.height(),
                     dataset.downsample(),
                     dataset.estimatedOutputBytes()));
+            artifactRepository.cleanupSupersededUnapproved(dataset.id(), revision.id());
         } catch (Exception error) {
             try {
                 Files.deleteIfExists(partial);
                 Files.deleteIfExists(rendered);
-                if (regionRoot != null) {
-                    deleteTree(regionRoot);
-                    regionRoot = null;
-                }
                 deleteTree(outputDirectory, derivativePartial);
                 if (cancelled.remove(dataset.id())) {
                     repository.save(dataset.withPreparation(
@@ -846,9 +1058,9 @@ public final class ConversionService implements AutoCloseable {
                 // The original conversion error remains the useful diagnostic.
             }
         } finally {
-            if (regionRoot != null) {
+            if (regionRoot != null && cancelled.contains(dataset.id())) {
                 try {
-                    deleteTree(regionRoot);
+                    deleteTree(outputDirectory, regionRoot);
                 } catch (IOException ignored) {
                     // A cancelled Bio-Formats process may release its final handle shortly.
                 }
@@ -857,12 +1069,47 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    private static void saveCheckpoint(
+            StageCheckpointStore store,
+            ArtifactRevision revision,
+            StageCheckpoint.Stage stage,
+            long completedUnits,
+            long totalUnits)
+            throws IOException {
+        store.save(new StageCheckpoint(
+                revision.id(),
+                revision.configurationRevision(),
+                revision.sourceFingerprint(),
+                stage,
+                completedUnits,
+                totalUnits,
+                System.currentTimeMillis()));
+    }
+
+    private void updateProgress(String id, String stage, long completed, long total) {
+        progress.compute(id, (ignored, current) -> new ConversionProgress(
+                stage,
+                completed,
+                total,
+                current == null ? System.currentTimeMillis() : current.startedAt(),
+                Math.max(
+                        current == null ? 0 : current.peakWorkingSetBytes(),
+                        currentWorkingSet()),
+                "8gb-6core",
+                current == null ? "" : current.cacheHitReason()));
+    }
+
+    private static long currentWorkingSet() {
+        var runtime = Runtime.getRuntime();
+        return runtime.totalMemory() - runtime.freeMemory();
+    }
+
     private boolean useParallelRgb(LocalDataset dataset, ConversionRequest request) {
         return shouldUseParallelRgb(
                 dataset.format(),
                 engine.supportsParallelRegions(),
                 derivativeEngine.available(),
-                parallelRgbWorkers(),
+                parallelRgbWorkers(request.source()),
                 request);
     }
 
@@ -880,16 +1127,20 @@ public final class ConversionService implements AutoCloseable {
                         >= PARALLEL_RGB_MINIMUM_PIXELS;
     }
 
-    private static int parallelRgbWorkers() {
+    private static int parallelRgbWorkers(Path source) {
         var configured = Integer.getInteger(
                 "pathlab.forge.rgb.workers", DEFAULT_PARALLEL_RGB_WORKERS);
-        var stableProcessorLimit =
-                Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
-        return Math.max(
-                1,
-                Math.min(
-                        Math.min(configured, 12),
-                        stableProcessorLimit));
+        var slowSource = Boolean.getBoolean("pathlab.forge.source.slow")
+                || source.toString().startsWith("\\\\");
+        return parallelRgbWorkers(
+                Runtime.getRuntime().availableProcessors(), configured, slowSource);
+    }
+
+    static int parallelRgbWorkers(
+            int availableProcessors, int configuredWorkers, boolean slowSource) {
+        var processorLimit = Math.max(1, availableProcessors - 1);
+        var profileLimit = slowSource ? 2 : 5;
+        return Math.max(1, Math.min(Math.min(configuredWorkers, profileLimit), processorLimit));
     }
 
     private void failRevision(LocalDataset dataset, ArtifactRevision revision, Exception error) {
@@ -1047,5 +1298,7 @@ public final class ConversionService implements AutoCloseable {
     @Override
     public void close() {
         conversionExecutor.shutdownNow();
+        readerSessions.clear();
+        directSources.clear();
     }
 }

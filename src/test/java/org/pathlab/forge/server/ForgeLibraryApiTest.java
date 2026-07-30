@@ -48,6 +48,11 @@ final class ForgeLibraryApiTest {
             assertEquals(200, selected.statusCode());
             assertTrue(selected.body().contains("case.ome.tif"));
             assertTrue(selected.body().contains("\"status\":\"READY\""));
+            assertTrue(selected.body().contains("\"workspaceRevision\":"));
+            assertTrue(selected.body().contains("\"verificationState\":\"VERIFIED\""));
+            assertTrue(selected.body().contains("\"completedUnits\":"));
+            assertTrue(selected.body().contains("\"peakWorkingSetBytes\":"));
+            assertTrue(selected.body().contains("\"resourceProfile\":\"8gb-6core\""));
 
             var reloadedRepository = new PropertiesDatasetRepository(repositoryFile);
             var dataset = reloadedRepository.list().get(0);
@@ -78,6 +83,7 @@ final class ForgeLibraryApiTest {
         var managed = tempDirectory.resolve("managed-conversion");
         var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        var directReads = new java.util.concurrent.atomic.AtomicInteger();
         ConversionEngine fakeEngine = new ConversionEngine() {
             @Override
             public boolean available() {
@@ -108,6 +114,7 @@ final class ForgeLibraryApiTest {
             @Override
             public byte[] readDirectTile(
                     Path ignored, int seriesIndex, int level, int tileX, int tileY) {
+                directReads.incrementAndGet();
                 return new byte[] {(byte) 0xff, (byte) 0xd8, 1, 2, (byte) 0xff, (byte) 0xd9};
             }
 
@@ -211,6 +218,17 @@ final class ForgeLibraryApiTest {
             assertEquals(200, tile.statusCode());
             assertEquals("image/jpeg", tile.headers().firstValue("content-type").orElseThrow());
             assertEquals(6, tile.body().length);
+            var tileEtag = tile.headers().firstValue("etag").orElseThrow();
+            var unchangedTile = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve(
+                                    "/api/datasets/" + dataset.id()
+                                            + "/preview/slide_files/10/0_0.jpg"))
+                            .header("If-None-Match", tileEtag)
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(304, unchangedTile.statusCode());
+            assertEquals(1, directReads.get());
             assertEquals(
                     200,
                     write(

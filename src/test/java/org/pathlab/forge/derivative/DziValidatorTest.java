@@ -33,6 +33,14 @@ final class DziValidatorTest {
 
         assertEquals(1, result.tileCount());
         assertEquals(3, result.fileCount());
+        assertEquals(3, result.ledger().size());
+        var tile = result.ledger().stream()
+                .filter(entry -> entry.path().equals("slide_files/0/0_0.jpg"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(1, tile.width());
+        assertEquals(1, tile.height());
+        assertEquals(64, tile.sha256().length());
     }
 
     @Test

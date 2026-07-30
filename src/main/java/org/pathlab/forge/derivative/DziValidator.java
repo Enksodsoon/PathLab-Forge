@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 
@@ -43,6 +45,7 @@ public final class DziValidator {
         }
 
         var maxLevel = ceilLog2(Math.max(width, height));
+        var dimensions = new HashMap<String, Dimensions>();
         long tileCount = 0;
         for (var level = 0; level <= maxLevel; level++) {
             var directory = tileRoot.resolve(Integer.toString(level));
@@ -69,6 +72,11 @@ public final class DziValidator {
                                     + level + "/" + column + "_" + row);
                         }
                     }
+                    dimensions.put(
+                            "slide_files/" + level + "/" + column + "_" + row + ".jpg",
+                            new Dimensions(
+                                    expectedTileDimension(levelWidth, column, columns),
+                                    expectedTileDimension(levelHeight, row, rows)));
                     tileCount++;
                     if (tileCount > MAX_FILES) {
                         throw new IOException("DZI tile count exceeds the safety limit");
@@ -80,6 +88,9 @@ public final class DziValidator {
         long fileCount = 0;
         long bytes = 0;
         var digest = sha256Digest();
+        var ledger = new ArrayList<FileLedgerEntry>();
+        var thumbnailDimensions = verifyPreviewContent(thumbnail, width, height);
+        dimensions.put("thumbnail.jpg", thumbnailDimensions);
         try (var paths = Files.walk(normalized)) {
             for (var path : paths.sorted().toList()) {
                 if (path.equals(normalized) || Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
@@ -96,25 +107,46 @@ public final class DziValidator {
                     throw new IOException("Unexpected derivative file: " + relative);
                 }
                 fileCount++;
-                bytes = Math.addExact(bytes, Files.size(path));
+                var size = Files.size(path);
+                bytes = Math.addExact(bytes, size);
                 digest.update(relative.getBytes(StandardCharsets.UTF_8));
                 digest.update((byte) 0);
-                try (InputStream input = Files.newInputStream(path)) {
-                    input.transferTo(new java.security.DigestOutputStream(
-                            java.io.OutputStream.nullOutputStream(), digest));
-                }
+                var fileHash = hash(path, digest);
+                var jpeg = relative.endsWith(".jpg");
+                var imageDimensions = dimensions.getOrDefault(relative, Dimensions.NONE);
+                ledger.add(new FileLedgerEntry(
+                        relative,
+                        size,
+                        fileHash,
+                        jpeg,
+                        jpeg,
+                        imageDimensions.width(),
+                        imageDimensions.height()));
             }
         }
         if (fileCount != tileCount + 2) {
             throw new IOException("Derivative has missing or duplicate files");
         }
-        verifyPreviewContent(thumbnail, width, height);
         return new DerivativeInfo(
                 normalized,
                 bytes,
                 Math.toIntExact(fileCount),
                 Math.toIntExact(tileCount),
-                HexFormat.of().formatHex(digest.digest()));
+                HexFormat.of().formatHex(digest.digest()),
+                ledger);
+    }
+
+    private static String hash(Path path, MessageDigest aggregate) throws IOException {
+        var fileDigest = sha256Digest();
+        try (InputStream input = Files.newInputStream(path)) {
+            var buffer = new byte[1024 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                aggregate.update(buffer, 0, read);
+                fileDigest.update(buffer, 0, read);
+            }
+        }
+        return HexFormat.of().formatHex(fileDigest.digest());
     }
 
     private static boolean sampleTile(
@@ -176,14 +208,14 @@ public final class DziValidator {
         }
     }
 
-    private static void verifyPreviewContent(Path thumbnail, int width, int height)
+    private static Dimensions verifyPreviewContent(Path thumbnail, int width, int height)
             throws IOException {
-        if ((long) width * height < (long) TILE_SIZE * TILE_SIZE) {
-            return;
-        }
         var image = ImageIO.read(thumbnail.toFile());
         if (image == null) {
             throw new IOException("Derivative thumbnail could not be decoded");
+        }
+        if ((long) width * height < (long) TILE_SIZE * TILE_SIZE) {
+            return new Dimensions(image.getWidth(), image.getHeight());
         }
         var minimum = 255;
         var maximum = 0;
@@ -208,6 +240,7 @@ public final class DziValidator {
         if (maximum - minimum < 12 && variance < 4) {
             throw new IOException("Derivative preview is blank or near-blank");
         }
+        return new Dimensions(image.getWidth(), image.getHeight());
     }
 
     private static MessageDigest sha256Digest() {
@@ -216,5 +249,9 @@ public final class DziValidator {
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException("SHA-256 is unavailable", error);
         }
+    }
+
+    private record Dimensions(int width, int height) {
+        private static final Dimensions NONE = new Dimensions(0, 0);
     }
 }

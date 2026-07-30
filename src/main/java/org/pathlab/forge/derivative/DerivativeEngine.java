@@ -22,6 +22,15 @@ public interface DerivativeEngine {
         throw new IOException("Rendered-region assembly is unavailable");
     }
 
+    default boolean supportsDirectFinalOme() {
+        return false;
+    }
+
+    default void assembleRegionsFinal(
+            List<Path> regions, Path pyramidalOme, int width, int height) throws IOException {
+        throw new IOException("Direct final OME assembly is unavailable");
+    }
+
     void optimizeOme(Path renderedOme, Path pyramidalOme, int width, int height)
             throws IOException;
 

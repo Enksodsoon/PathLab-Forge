@@ -110,6 +110,32 @@ public final class VipsRuntime implements DerivativeEngine {
         requireNonempty(renderedOme, "assembled rendered OME-TIFF");
     }
 
+    @Override
+    public boolean supportsDirectFinalOme() {
+        return available();
+    }
+
+    @Override
+    public void assembleRegionsFinal(
+            List<Path> regions, Path pyramidalOme, int width, int height) throws IOException {
+        requireAvailable();
+        if (regions.size() < 2 || width < 1 || height < 1) {
+            throw new IllegalArgumentException("Direct final OME geometry is invalid");
+        }
+        for (var region : regions) {
+            requireNonempty(region, "rendered RGB region");
+        }
+        run(List.of(
+                "arrayjoin",
+                serializeImageArray(regions),
+                pyramidalOme + "[pyramid,tile,tile-width=512,tile-height=512,"
+                        + "compression=jpeg,Q=" + omeJpegQuality(width, height)
+                        + ",bigtiff,subifd]",
+                "--across",
+                "1"));
+        requireNonempty(pyramidalOme, "final pyramidal OME-TIFF");
+    }
+
     static String serializeImageArray(List<Path> paths) {
         if (paths.isEmpty()) {
             throw new IllegalArgumentException("Image array is empty");
@@ -139,7 +165,12 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     static int omeJpegQuality(int width, int height) {
-        return (long) width * height >= 1_000_000_000L ? 75 : 93;
+        var quality = Integer.getInteger("pathlab.forge.ome.jpegQuality", 93);
+        if (!List.of(75, 80, 85, 90, 93).contains(quality)) {
+            throw new IllegalArgumentException(
+                    "OME JPEG quality must be one of 75, 80, 85, 90 or 93");
+        }
+        return quality;
     }
 
     @Override
@@ -177,9 +208,7 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     private void run(List<String> arguments) throws IOException {
-        var command = new ArrayList<String>();
-        command.add(executable.toString());
-        command.addAll(arguments);
+        var command = commandLine(executable, arguments);
         var builder = new ProcessBuilder(command).redirectErrorStream(true);
         var currentPath = builder.environment().getOrDefault("PATH", "");
         builder.environment().put(
@@ -206,6 +235,17 @@ public final class VipsRuntime implements DerivativeEngine {
             Thread.currentThread().interrupt();
             throw new IOException("libvips operation was interrupted", error);
         }
+    }
+
+    static List<String> commandLine(Path executable, List<String> arguments) {
+        var command = new ArrayList<String>();
+        command.add(executable.toString());
+        command.add("--vips-concurrency=4");
+        command.add("--vips-cache-max-memory=805306368");
+        command.add("--vips-cache-max-files=128");
+        command.add("--vips-cache-max=100");
+        command.addAll(arguments);
+        return List.copyOf(command);
     }
 
     private static void copyBounded(

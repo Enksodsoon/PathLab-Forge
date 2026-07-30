@@ -52,4 +52,12 @@ class BioFormatsParallelRegionsTest {
         assertTrue(!ConversionService.shouldUseParallelRgb(
                 DatasetFormat.VSI, true, false, 11, large));
     }
+
+    @Test
+    void capsWorkersForSixCoreTargetAndUsesTwoForSlowSources() {
+        assertEquals(5, ConversionService.parallelRgbWorkers(6, 9, false));
+        assertEquals(2, ConversionService.parallelRgbWorkers(6, 9, true));
+        assertEquals(3, ConversionService.parallelRgbWorkers(4, 5, false));
+        assertEquals(1, ConversionService.parallelRgbWorkers(1, 5, false));
+    }
 }
