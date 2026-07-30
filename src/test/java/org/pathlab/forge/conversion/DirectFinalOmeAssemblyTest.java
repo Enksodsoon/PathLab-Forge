@@ -111,6 +111,9 @@ final class DirectFinalOmeAssemblyTest {
 
         assertEquals(1, directAssemblies.get());
         assertEquals(0, optimizationRewrites.get());
-        assertEquals(5, observedWorkers.get());
+        assertEquals(
+                ConversionService.parallelRgbWorkers(
+                        Runtime.getRuntime().availableProcessors(), 11, false),
+                observedWorkers.get());
     }
 }
