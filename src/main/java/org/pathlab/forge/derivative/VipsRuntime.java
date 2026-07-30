@@ -318,16 +318,86 @@ public final class VipsRuntime implements DerivativeEngine {
             Path omeTiff, Path outputRoot, int width, int height) throws IOException {
         requireAvailable();
         Files.createDirectories(outputRoot);
+        var selection = selectDziQuality(omeTiff, outputRoot, width, height);
+        run(List.of(
+                "dzsave",
+                omeTiff.toString(),
+                outputRoot.resolve("slide").toString(),
+                "--layout",
+                "dz",
+                "--tile-size",
+                "512",
+                "--overlap",
+                "1",
+                "--suffix",
+                ".jpg[Q=" + selection.quality() + ",subsample-mode=off,strip]",
+                "--depth",
+                "onepixel",
+                "--region-shrink",
+                "mean",
+                "--skip-blanks",
+                "-1"));
+        run(List.of(
+                "thumbnail",
+                omeTiff.toString(),
+                outputRoot.resolve("thumbnail.jpg[Q=82,strip]").toString(),
+                "640",
+                "--size",
+                "down"));
+        Files.deleteIfExists(outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
+        var validated = DziValidator.validate(outputRoot, width, height);
+        return new DerivativeInfo(
+                validated.root(),
+                validated.bytes(),
+                validated.fileCount(),
+                validated.tileCount(),
+                validated.sha256(),
+                validated.ledger(),
+                selection.quality(),
+                selection.minimumWindowedSsim(),
+                selection.meanDeltaE00());
+    }
+
+    AdaptiveJpegQualitySelector.Selection selectDziQuality(
+            Path omeTiff, Path outputRoot, int width, int height) throws IOException {
+        requireAvailable();
+        Files.createDirectories(outputRoot);
+        var overview = outputRoot.resolve("quality-overview.png");
         var probe = outputRoot.resolve("quality-probe.png");
+        var roiRoot = outputRoot.resolve("quality-rois");
         var candidates = new LinkedHashMap<Integer, Path>();
         try {
             run(List.of(
                     "thumbnail",
                     omeTiff.toString(),
-                    probe.toString(),
+                    overview.toString(),
                     "1024",
                     "--size",
                     "down"));
+            deleteTree(roiRoot);
+            Files.createDirectories(roiRoot);
+            var roiFiles = new ArrayList<Path>();
+            var rois = AdaptiveJpegQualitySelector.planNativeRois(
+                    overview, width, height);
+            for (var index = 0; index < rois.size(); index++) {
+                var roi = rois.get(index);
+                var roiFile = roiRoot.resolve("roi-%02d.png".formatted(index));
+                run(List.of(
+                        "crop",
+                        omeTiff.toString(),
+                        roiFile.toString(),
+                        Integer.toString(roi.x()),
+                        Integer.toString(roi.y()),
+                        Integer.toString(roi.width()),
+                        Integer.toString(roi.height())));
+                roiFiles.add(roiFile);
+            }
+            run(List.of(
+                    "arrayjoin",
+                    serializeImageArray(roiFiles),
+                    probe.toString(),
+                    "--across",
+                    "8"));
             for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
                 var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
                 candidates.put(quality, candidate);
@@ -336,50 +406,11 @@ public final class VipsRuntime implements DerivativeEngine {
                         probe.toString(),
                         candidate + "[Q=" + quality + ",subsample-mode=off,strip]"));
             }
-            var selection = AdaptiveJpegQualitySelector.select(probe, candidates);
-            Files.deleteIfExists(probe);
-            for (var candidate : candidates.values()) {
-                Files.deleteIfExists(candidate);
-            }
-            run(List.of(
-                    "dzsave",
-                    omeTiff.toString(),
-                    outputRoot.resolve("slide").toString(),
-                    "--layout",
-                    "dz",
-                    "--tile-size",
-                    "512",
-                    "--overlap",
-                    "1",
-                    "--suffix",
-                    ".jpg[Q=" + selection.quality() + ",subsample-mode=off,strip]",
-                    "--depth",
-                    "onepixel",
-                    "--region-shrink",
-                    "mean",
-                    "--skip-blanks",
-                    "-1"));
-            run(List.of(
-                    "thumbnail",
-                    omeTiff.toString(),
-                    outputRoot.resolve("thumbnail.jpg[Q=82,strip]").toString(),
-                    "640",
-                    "--size",
-                    "down"));
-            Files.deleteIfExists(outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
-            var validated = DziValidator.validate(outputRoot, width, height);
-            return new DerivativeInfo(
-                    validated.root(),
-                    validated.bytes(),
-                    validated.fileCount(),
-                    validated.tileCount(),
-                    validated.sha256(),
-                    validated.ledger(),
-                    selection.quality(),
-                    selection.minimumWindowedSsim(),
-                    selection.meanDeltaE00());
+            return AdaptiveJpegQualitySelector.select(probe, candidates);
         } finally {
+            Files.deleteIfExists(overview);
             Files.deleteIfExists(probe);
+            deleteTree(roiRoot);
             for (var candidate : candidates.values()) {
                 Files.deleteIfExists(candidate);
             }

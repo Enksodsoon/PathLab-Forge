@@ -85,6 +85,35 @@
       "derivativeBytes": 500196832,
       "derivativeFileCount": 7210,
       "result": "accepted"
+    },
+    "exactFullSlide15x": {
+      "outputWidth": 110563,
+      "outputHeight": 60490,
+      "outputPixels": 6687955870,
+      "observedPackageReadyMs": 562000,
+      "observedOmeBytes": 433745579,
+      "observedQ100PackageBytes": 3982018048,
+      "nativeRoiQ95Benchmark": {
+        "elapsedMs": 158041,
+        "derivativeBytes": 1822097260,
+        "derivativeFileCount": 34371,
+        "tileCount": 34369,
+        "selectedQuality": 95,
+        "minimumWindowedSsim": 0.989477906,
+        "meanDeltaE00": 0.182981001,
+        "packageByteReductionEstimatePercent": 54.2
+      },
+      "qupathWriterBenchmark": {
+        "crop": [60000, 30000, 30000, 30000],
+        "downsample": 1.5,
+        "outputWidth": 20000,
+        "outputHeight": 20000,
+        "tile512ElapsedMs": 29868,
+        "tile1024ElapsedMs": 31591,
+        "tile1024DeltaPercent": 5.8,
+        "selectedTileSize": 512,
+        "geometryAndCalibrationMatched": true
+      }
     }
   },
   "gates": {
@@ -99,6 +128,9 @@
   },
   "notes": [
     "Q85 and Q90 failed the strict per-ROI quality gate on this reference; Q95 was selected fail-closed.",
+    "The exact full-slide 1.5x native-resolution ROI selector passed Q95; the former overview selector unnecessarily chose Q100.",
+    "A representative calibrated QuPath writer benchmark found 1024-pixel tiles 5.8% slower than 512, so the existing 512-pixel writer remains selected.",
+    "The 6.69-billion-pixel exact export cannot meet a one-minute eager OME plus complete DZI target on the measured 8 GiB, six-core host.",
     "No comparable pre-change Viewer finalization measurement was available, so speedup percentages are not claimed.",
     "The observed OME stage varied materially above the historical 55-57 second floor and dominates the failed time gate."
   ]

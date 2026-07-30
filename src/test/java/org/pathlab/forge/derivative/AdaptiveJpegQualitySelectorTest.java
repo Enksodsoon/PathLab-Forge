@@ -41,4 +41,26 @@ final class AdaptiveJpegQualitySelectorTest {
         assertEquals(1.0, AdaptiveJpegQualitySelector.windowedSsim(image, image));
         assertEquals(0.0, AdaptiveJpegQualitySelector.meanDeltaE00(image, image));
     }
+
+    @Test
+    void derivesThirtyTwoBoundedNativeRoisAcrossImageClasses() throws Exception {
+        var overview = new BufferedImage(128, 128, BufferedImage.TYPE_INT_RGB);
+        for (var y = 0; y < overview.getHeight(); y++) {
+            for (var x = 0; x < overview.getWidth(); x++) {
+                var value = (x * 3 + y * 5) & 0xff;
+                overview.setRGB(x, y, new Color(value, 255 - value, value / 2).getRGB());
+            }
+        }
+        var path = temporaryDirectory.resolve("overview.png");
+        ImageIO.write(overview, "png", path.toFile());
+
+        var rois = AdaptiveJpegQualitySelector.planNativeRois(path, 16_384, 8_192);
+
+        assertEquals(32, rois.size());
+        assertEquals(32, rois.stream().distinct().count());
+        assertTrue(rois.stream().allMatch(roi -> roi.x() >= 0
+                && roi.y() >= 0
+                && roi.x() + roi.width() <= 16_384
+                && roi.y() + roi.height() <= 8_192));
+    }
 }
