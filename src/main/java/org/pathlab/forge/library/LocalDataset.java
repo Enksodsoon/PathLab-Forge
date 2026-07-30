@@ -123,6 +123,37 @@ public record LocalDataset(
                 approvedArtifactRevision);
     }
 
+    public LocalDataset withSourceIdentity(
+            DatasetStatus nextStatus,
+            String nextDetail,
+            String nextFingerprint,
+            String nextInventory) {
+        return new LocalDataset(
+                id,
+                displayName,
+                sourcePath,
+                sourceBytes,
+                format,
+                nextStatus,
+                nextDetail,
+                outputPath,
+                sha256,
+                selectedSeries,
+                width,
+                height,
+                downsample,
+                estimatedOutputBytes,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight,
+                nextFingerprint,
+                nextInventory,
+                configurationRevision,
+                currentArtifactRevision,
+                approvedArtifactRevision);
+    }
+
     public LocalDataset withConversion(
             DatasetStatus nextStatus,
             String nextDetail,

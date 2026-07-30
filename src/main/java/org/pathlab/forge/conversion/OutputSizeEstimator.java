@@ -63,6 +63,20 @@ public final class OutputSizeEstimator {
         return new CompressedEstimate(expected, lower, upper);
     }
 
+    public static long managedPeakWorkspace(
+            int width,
+            int height,
+            double downsample,
+            long sourceBytes,
+            boolean sourceIsOmeTiff) {
+        var compressed = compressedOmeTiff(
+                width, height, downsample, sourceBytes, sourceIsOmeTiff);
+        var estimate = BigInteger.valueOf(compressed.expectedBytes())
+                .multiply(FOUR)
+                .add(BigInteger.valueOf(512L * 1024 * 1024));
+        return estimate.min(BigInteger.valueOf(Long.MAX_VALUE)).longValueExact();
+    }
+
     private static long saturatedRound(double value) {
         if (!Double.isFinite(value) || value >= Long.MAX_VALUE) {
             return Long.MAX_VALUE;

@@ -7,6 +7,14 @@ import org.junit.jupiter.api.Test;
 
 final class OutputSizeEstimatorTest {
     @Test
+    void estimatesManagedPeakFromCompressedOutputsInsteadOfRawRgbPyramid() {
+        var peak = OutputSizeEstimator.managedPeakWorkspace(
+                68_753, 50_078, 1, 2_001_290_718L, false);
+
+        assertTrue(peak < 3_500L * 1024 * 1024);
+        assertTrue(peak > 512L * 1024 * 1024);
+    }
+    @Test
     void estimatesRgbPyramidAndDownsampleWithoutOverflow() {
         assertEquals(400, OutputSizeEstimator.rgbPyramidUpperBound(10, 10, 1));
         assertEquals(100, OutputSizeEstimator.rgbPyramidUpperBound(10, 10, 2));

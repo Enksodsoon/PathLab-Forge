@@ -27,10 +27,11 @@ public final class BioFormatsEngine implements ConversionEngine {
     private static final int MAX_METADATA_BYTES = 32 * 1024 * 1024;
     private static final Duration INSPECTION_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration CONVERSION_TIMEOUT = Duration.ofHours(24);
+    private static final long MAX_RENDER_REGION_PIXELS = 1_600_000_000L;
     private final Path runtimeRoot;
     private final java.util.Map<Path, java.util.Map<Integer, FlatSeries>> flattenedSeries =
             new ConcurrentHashMap<>();
-    private final java.util.Map<Path, DirectReader> directReaders = new ConcurrentHashMap<>();
+    private final java.util.Map<Path, DirectReaderPool> directReaders = new ConcurrentHashMap<>();
 
     private BioFormatsEngine(Path runtimeRoot) {
         this.runtimeRoot = runtimeRoot;
@@ -69,7 +70,17 @@ public final class BioFormatsEngine implements ConversionEngine {
     @Override
     public List<SeriesInfo> inspect(Path source) throws IOException {
         requireAvailable();
-        return directReader(source).inspect();
+        var reader = directReader(source);
+        var series = reader.inspect();
+        var mapping = new java.util.HashMap<Integer, FlatSeries>();
+        for (var item : series) {
+            mapping.put(item.index(), reader.series(item.index()));
+        }
+        flattenedSeries.put(source.toAbsolutePath().normalize(), Map.copyOf(mapping));
+        return series.stream()
+                .map(item -> item.withResolutionCount(
+                        mapping.get(item.index()).resolutions().size()))
+                .toList();
     }
 
     private List<SeriesInfo> inspectConversionMetadata(Path source) throws IOException {
@@ -129,7 +140,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                         && candidate.height() <= item.series().height()
                         && similarAspect(candidate, item.series())) {
                     resolutions.add(new Resolution(
-                            candidate.index(), candidate.width(), candidate.height()));
+                            candidate.index(), candidate.index(), candidate.width(), candidate.height()));
                 }
             }
             mapping.put(
@@ -190,7 +201,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         var resolution = selectResolution(selected, request.downsample());
         var crop = scaleCrop(request, resolution);
         var regions = planRegions(crop.x(), crop.y(), crop.width(), crop.height(), workers);
-        var executor = Executors.newFixedThreadPool(regions.size(), runnable -> {
+        var executor = Executors.newFixedThreadPool(Math.min(workers, regions.size()), runnable -> {
             var thread = new Thread(runnable, "pathlab-bioformats-region");
             thread.setDaemon(true);
             return thread;
@@ -241,12 +252,16 @@ public final class BioFormatsEngine implements ConversionEngine {
         if (x < 0 || y < 0 || width <= 0 || height <= 0 || requestedWorkers <= 0) {
             throw new IllegalArgumentException("Parallel render geometry is invalid");
         }
-        var workers = Math.min(requestedWorkers, height);
-        var baseHeight = height / workers;
-        var remainder = height % workers;
-        var regions = new ArrayList<RenderRegion>(workers);
+        var minimumRegions = Math.toIntExact(Math.max(
+                1,
+                ((long) width * height + MAX_RENDER_REGION_PIXELS - 1)
+                        / MAX_RENDER_REGION_PIXELS));
+        var regionCount = Math.min(height, Math.max(requestedWorkers, minimumRegions));
+        var baseHeight = height / regionCount;
+        var remainder = height % regionCount;
+        var regions = new ArrayList<RenderRegion>(regionCount);
         var nextY = y;
-        for (var index = 0; index < workers; index++) {
+        for (var index = 0; index < regionCount; index++) {
             var regionHeight = baseHeight + (index < remainder ? 1 : 0);
             regions.add(new RenderRegion(x, nextY, width, regionHeight));
             nextY += regionHeight;
@@ -257,6 +272,7 @@ public final class BioFormatsEngine implements ConversionEngine {
     private void convertRegion(
             ConversionRequest request, Resolution resolution, ScaledCrop crop, Path output)
             throws IOException {
+        org.pathlab.forge.runtime.ResourceGovernor.system().awaitWorkerLaunch();
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
         var arguments = new ArrayList<>(List.of(
                 "-no-upgrade",
@@ -288,7 +304,13 @@ public final class BioFormatsEngine implements ConversionEngine {
                 CONVERSION_TIMEOUT,
                 4 * 1024 * 1024);
         if (result.exitCode() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
-            throw new IOException("Bio-Formats conversion failed: " + tail(result.output()));
+            throw new IOException(
+                    "Bio-Formats conversion failed for reader series "
+                            + resolution.readerIndex()
+                            + " crop "
+                            + crop.x() + "," + crop.y() + "," + crop.width() + "," + crop.height()
+                            + ": "
+                            + diagnostic(result.output()));
         }
     }
 
@@ -352,7 +374,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         if (tileX < 0 || tileY < 0 || level < 0) {
             throw new IllegalArgumentException("Direct tile coordinates are invalid");
         }
-        var reader = directReader(source);
+        var reader = directTileReader(source);
         var selected = reader.series(seriesIndex);
         var tileSource = new DirectTileSource(selected.width(), selected.height(), 512);
         if (level > tileSource.maximumLevel()) {
@@ -380,7 +402,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                 Math.max(1, Math.min(resolution.height() - sourceY, sourceBottom - sourceY));
         var image = reader.read(
                 seriesIndex,
-                resolution.readerIndex(),
+                resolution.directIndex(),
                 sourceX,
                 sourceY,
                 sourceWidth,
@@ -405,7 +427,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                 .orElseThrow(() -> new IOException("Series has no readable resolutions"));
         var image = reader.read(
                 seriesIndex,
-                resolution.readerIndex(),
+                resolution.directIndex(),
                 0,
                 0,
                 resolution.width(),
@@ -425,27 +447,52 @@ public final class BioFormatsEngine implements ConversionEngine {
         var sourceKey = source.toAbsolutePath().normalize();
         var selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
         if (selected == null) {
-            inspectConversionMetadata(source);
-            selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
-        }
-        if (selected == null) {
-            throw new IOException("Selected image series is no longer available");
+            var opened = directReader(source).series(seriesIndex);
+            flattenedSeries.compute(sourceKey, (ignored, existing) -> {
+                var updated = new java.util.HashMap<Integer, FlatSeries>(
+                        existing == null ? Map.of() : existing);
+                updated.put(seriesIndex, opened);
+                return Map.copyOf(updated);
+            });
+            selected = opened;
         }
         return selected;
     }
 
     private static Resolution selectResolution(FlatSeries series, double downsample)
             throws IOException {
+        if (!Boolean.getBoolean("pathlab.forge.experimentalNativeFallback")) {
+            return series.resolutions().stream()
+                    .filter(resolution ->
+                            (double) series.width() / resolution.width() <= downsample + 0.01)
+                    .max(java.util.Comparator.comparingDouble(
+                            resolution -> (double) series.width() / resolution.width()))
+                    .or(() -> series.resolutions().stream().max(
+                            java.util.Comparator.comparingLong(
+                                    resolution -> (long) resolution.width()
+                                            * resolution.height())))
+                    .orElseThrow(() -> new IOException(
+                            "Series has no readable resolutions"));
+        }
         var selected = series.resolutions().stream()
-                .filter(resolution ->
-                        (double) series.width() / resolution.width() <= downsample + 0.01)
-                .max(java.util.Comparator.comparingDouble(
-                        resolution -> (double) series.width() / resolution.width()))
-                .or(() -> series.resolutions().stream().max(
-                        java.util.Comparator.comparingLong(
-                                resolution -> (long) resolution.width() * resolution.height())))
+                .min(java.util.Comparator
+                        .comparingDouble((Resolution resolution) -> resolutionScaleDistance(
+                                (double) series.width() / resolution.width(), downsample))
+                        .thenComparing(
+                                java.util.Comparator.comparingLong(
+                                                (Resolution resolution) ->
+                                                        (long) resolution.width()
+                                                                * resolution.height())
+                                        .reversed()))
                 .orElseThrow(() -> new IOException("Series has no readable resolutions"));
         return selected;
+    }
+
+    static double resolutionScaleDistance(double nativeDownsample, double requestedDownsample) {
+        if (nativeDownsample <= 0 || requestedDownsample <= 0) {
+            throw new IllegalArgumentException("Resolution scales must be positive");
+        }
+        return Math.abs(Math.log(nativeDownsample / requestedDownsample));
     }
 
     private static Resolution selectDirectResolution(FlatSeries series, double downsample)
@@ -551,15 +598,22 @@ public final class BioFormatsEngine implements ConversionEngine {
         var key = source.toAbsolutePath().normalize();
         var existing = directReaders.get(key);
         if (existing != null) {
-            return existing;
+            return existing.primary();
         }
         try {
-            var opened = new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key);
+            var opened = new DirectReaderPool(
+                    new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key),
+                    new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key));
             directReaders.put(key, opened);
-            return opened;
+            return opened.primary();
         } catch (ReflectiveOperationException error) {
             throw new IOException("Bio-Formats direct viewer could not open the slide", error);
         }
+    }
+
+    private synchronized DirectReader directTileReader(Path source) throws IOException {
+        directReader(source);
+        return directReaders.get(source.toAbsolutePath().normalize()).next();
     }
 
     private static BufferedImage resize(BufferedImage source, int width, int height) {
@@ -615,7 +669,8 @@ public final class BioFormatsEngine implements ConversionEngine {
     private static ProcessResult run(
             List<String> command, Duration timeout, int outputLimit)
             throws IOException {
-        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        var process = org.pathlab.forge.runtime.ChildProcessContainment.global()
+                .register(new ProcessBuilder(command).redirectErrorStream(true).start());
         var output = new ByteArrayOutputStream();
         var reader = new Thread(
                 () -> copyBounded(process.getInputStream(), output, outputLimit, process),
@@ -675,6 +730,21 @@ public final class BioFormatsEngine implements ConversionEngine {
                 : normalized.substring(normalized.length() - 800);
     }
 
+    private static String diagnostic(String value) {
+        var lines = value.lines().map(String::strip).filter(line -> !line.isEmpty()).toList();
+        var primary = lines.stream()
+                .filter(line -> line.contains("Invalid")
+                        || line.contains("Exception")
+                        || line.contains("OutOfMemory")
+                        || line.startsWith("Error"))
+                .findFirst()
+                .orElse("");
+        var suffix = tail(value);
+        return primary.isEmpty() || suffix.contains(primary)
+                ? suffix
+                : primary + System.lineSeparator() + suffix;
+    }
+
     private static boolean isWindows() {
         return java.io.File.separatorChar == '\\';
     }
@@ -683,12 +753,44 @@ public final class BioFormatsEngine implements ConversionEngine {
 
     private record MatchedTop(SeriesInfo series, int readerIndex) {}
 
-    private record Resolution(int readerIndex, int width, int height) {}
+    static int flattenedIndex(int series, int resolution, int[] resolutionCounts) {
+        if (series < 0
+                || series >= resolutionCounts.length
+                || resolution < 0
+                || resolution >= resolutionCounts[series]) {
+            throw new IllegalArgumentException("Bio-Formats resolution index is invalid");
+        }
+        var index = resolution;
+        for (var previous = 0; previous < series; previous++) {
+            index = Math.addExact(index, resolutionCounts[previous]);
+        }
+        return index;
+    }
+
+    private record Resolution(int readerIndex, int directIndex, int width, int height) {}
 
     private record FlatSeries(int width, int height, List<Resolution> resolutions) {}
 
     private record ScaledCrop(
             int x, int y, int width, int height, boolean fullResolution) {}
+
+    private static final class DirectReaderPool {
+        private final DirectReader[] readers;
+        private final java.util.concurrent.atomic.AtomicInteger cursor =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        private DirectReaderPool(DirectReader... readers) {
+            this.readers = readers;
+        }
+
+        private DirectReader primary() {
+            return readers[0];
+        }
+
+        private DirectReader next() {
+            return readers[Math.floorMod(cursor.getAndIncrement(), readers.length)];
+        }
+    }
 
     private static final class DirectReader {
         private final URLClassLoader loader;
@@ -803,6 +905,13 @@ public final class BioFormatsEngine implements ConversionEngine {
 
         private synchronized FlatSeries series(int series) throws IOException {
             try {
+                var seriesCount = (int) invoke("getSeriesCount", new Class<?>[0]);
+                var resolutionCounts = new int[seriesCount];
+                for (var seriesIndex = 0; seriesIndex < seriesCount; seriesIndex++) {
+                    invoke("setSeries", new Class<?>[] {int.class}, seriesIndex);
+                    resolutionCounts[seriesIndex] =
+                            (int) invoke("getResolutionCount", new Class<?>[0]);
+                }
                 invoke("setSeries", new Class<?>[] {int.class}, series);
                 var width = (int) invoke("getSizeX", new Class<?>[0]);
                 var height = (int) invoke("getSizeY", new Class<?>[0]);
@@ -811,6 +920,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                 for (var resolution = 0; resolution < count; resolution++) {
                     invoke("setResolution", new Class<?>[] {int.class}, resolution);
                     resolutions.add(new Resolution(
+                            flattenedIndex(series, resolution, resolutionCounts),
                             resolution,
                             (int) invoke("getSizeX", new Class<?>[0]),
                             (int) invoke("getSizeY", new Class<?>[0])));

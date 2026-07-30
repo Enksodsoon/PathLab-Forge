@@ -31,7 +31,7 @@ import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
-const ACTIVE_STATUSES = new Set(['INSPECTING', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
+const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 
 export function App() {
@@ -143,7 +143,7 @@ export function App() {
   const finishImport = (next: { datasets: Dataset[] }) => {
     const imported = next.datasets.find((item) => !datasets.some((current) => current.id === item.id))
     const opensAutomatically = Boolean(imported && capabilities?.vsiConversion
-      && ['READY', 'READER_REQUIRED'].includes(imported.status))
+      && ['READY', 'READER_REQUIRED', 'VERIFYING_SOURCE'].includes(imported.status))
     setDatasets(next.datasets.map((item) => opensAutomatically && item.id === imported?.id
       ? { ...item, status: 'INSPECTING', detail: 'Opening the slide reader and native pyramid' }
       : item))
@@ -1323,6 +1323,7 @@ function statusLabel(status: string) {
     READY: 'Ready',
     NEEDS_COMPANIONS: 'ETS companions missing',
     READER_REQUIRED: 'Ready to inspect',
+    VERIFYING_SOURCE: 'Verifying source',
     INSPECTING: 'Inspecting',
     READY_TO_CONVERT: 'Ready to convert',
     CONVERTING: 'Converting locally',

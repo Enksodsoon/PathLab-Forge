@@ -417,6 +417,7 @@ public final class ConversionService implements AutoCloseable {
     public List<SeriesInfo> inspect(String id) throws IOException {
         var dataset = requireDataset(id);
         verifySourceFingerprint(dataset);
+        org.pathlab.forge.runtime.ResourceGovernor.system().requireConversionStart();
         var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
         if (cached.isPresent()) {
             inspectedSeries.put(id, cached.get());
@@ -640,9 +641,15 @@ public final class ConversionService implements AutoCloseable {
             return cached;
         }
         Files.createDirectories(managedRoot);
+        var peakWorkspace = OutputSizeEstimator.managedPeakWorkspace(
+                dataset.cropWidth(),
+                dataset.cropHeight(),
+                dataset.downsample(),
+                dataset.sourceBytes(),
+                dataset.format() == DatasetFormat.OME_TIFF);
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
-                dataset.estimatedOutputBytes());
+                peakWorkspace);
         var resumable = resumableRevision(dataset);
         var revision = resumable.isPresent()
                 ? resumable.get()
@@ -817,6 +824,14 @@ public final class ConversionService implements AutoCloseable {
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
             var request = request(dataset);
+            String digest;
+            var resumeOme = existingCheckpoint != null
+                    && existingCheckpoint.configurationRevision()
+                            .equals(revision.configurationRevision())
+                    && existingCheckpoint.stage().ordinal()
+                            >= StageCheckpoint.Stage.OME_VERIFIED.ordinal()
+                    && Files.isRegularFile(output);
+            if (!resumeOme) {
             if (dataset.format() == DatasetFormat.OME_TIFF
                     && derivativeEngine.supportsOmeRendering()) {
                 derivativeEngine.renderOme(request, rendered);
@@ -850,8 +865,7 @@ public final class ConversionService implements AutoCloseable {
                         dataset.id(), "REGIONS_VERIFIED", regions.size(), regions.size());
                 repository.save(dataset.withConversion(
                         DatasetStatus.CONVERTING,
-                        derivativeEngine.supportsDirectFinalOme()
-                                        && request.downsample() == 1.0
+                        useDirectFinalOme(request)
                                 ? "Parallel RGB decode complete; writing final OME pyramid"
                                 : "Parallel RGB decode complete; assembling exact slide geometry",
                         dataset.outputPath(),
@@ -861,13 +875,13 @@ public final class ConversionService implements AutoCloseable {
                         dataset.height(),
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
-                if (derivativeEngine.supportsDirectFinalOme()
-                        && request.downsample() == 1.0) {
+                if (useDirectFinalOme(request)) {
                     derivativeEngine.assembleRegionsFinal(
                             regions,
                             partial,
                             request.outputWidth(),
-                            request.outputHeight());
+                            request.outputHeight(),
+                            request.downsample());
                     finalOmeWritten = true;
                 } else {
                     derivativeEngine.assembleRegions(regions, rendered);
@@ -904,13 +918,15 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
             updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
             verifyTiff(partial);
+            derivativeEngine.validateOmeGeometry(
+                    partial, request.outputWidth(), request.outputHeight());
             OutputSizeGuard.requireSuitable(
                     Files.size(partial),
                     dataset.sourceBytes(),
                     request.outputWidth(),
                     request.outputHeight(),
                     request.downsample());
-            var digest = sha256(partial);
+            digest = sha256(partial);
             atomicReplace(partial, output);
             saveCheckpoint(
                     checkpoints,
@@ -922,6 +938,38 @@ public final class ConversionService implements AutoCloseable {
             if (regionRoot != null) {
                 deleteTree(outputDirectory, regionRoot);
                 regionRoot = null;
+            }
+            } else {
+                try {
+                    verifyTiff(output);
+                    derivativeEngine.validateOmeGeometry(
+                            output, request.outputWidth(), request.outputHeight());
+                } catch (IOException invalidOme) {
+                    var quarantine = outputDirectory.resolve("quarantine");
+                    Files.createDirectories(quarantine);
+                    Files.move(
+                            output,
+                            quarantine.resolve(
+                                    "invalid-ome-" + System.currentTimeMillis() + ".tif"),
+                            StandardCopyOption.REPLACE_EXISTING);
+                    var recoverableRegions = outputDirectory.resolve("regions.partial");
+                    if (Files.isDirectory(recoverableRegions)) {
+                        try (var files = Files.list(recoverableRegions)) {
+                            var count = files.filter(Files::isRegularFile).count();
+                            if (count >= 2) {
+                                saveCheckpoint(
+                                        checkpoints,
+                                        revision,
+                                        StageCheckpoint.Stage.REGIONS_VERIFIED,
+                                        count,
+                                        count);
+                            }
+                        }
+                    }
+                    throw invalidOme;
+                }
+                digest = sha256(output);
+                updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
             }
             if (!derivativeEngine.available()) {
                 repository.save(dataset.withConversion(
@@ -954,6 +1002,13 @@ public final class ConversionService implements AutoCloseable {
                     request.outputWidth(),
                     request.outputHeight());
             installDirectory(outputDirectory, derivativePartial, derivative);
+            derivativeInfo = new org.pathlab.forge.derivative.DerivativeInfo(
+                    derivative,
+                    derivativeInfo.bytes(),
+                    derivativeInfo.fileCount(),
+                    derivativeInfo.tileCount(),
+                    derivativeInfo.sha256(),
+                    derivativeInfo.ledger());
             saveCheckpoint(
                     checkpoints,
                     revision,
@@ -1100,8 +1155,14 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private static long currentWorkingSet() {
-        var runtime = Runtime.getRuntime();
-        return runtime.totalMemory() - runtime.freeMemory();
+        return org.pathlab.forge.runtime.ProcessTreeMemory.workingSetBytes();
+    }
+
+    private boolean useDirectFinalOme(ConversionRequest request) {
+        return derivativeEngine.supportsDirectFinalOme()
+                && (request.downsample() == 1.0
+                        || Boolean.getBoolean(
+                                "pathlab.forge.experimentalNativeFallback"));
     }
 
     private boolean useParallelRgb(LocalDataset dataset, ConversionRequest request) {

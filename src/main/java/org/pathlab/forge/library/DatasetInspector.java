@@ -10,6 +10,20 @@ import java.util.UUID;
 
 public final class DatasetInspector {
     public LocalDataset inspect(Path input) throws IOException, DatasetInspectionException {
+        var pending = inspectFast(input);
+        if (pending.status() == DatasetStatus.NEEDS_COMPANIONS) {
+            return pending;
+        }
+        var snapshot = snapshot(Path.of(pending.sourcePath()), pending.format());
+        var digest = SourceDigest.compute(snapshot);
+        return pending.withSourceIdentity(
+                readyStatus(pending.format(), snapshot),
+                readyDetail(pending.format(), snapshot),
+                digest.fingerprint(),
+                digest.serializedInventory());
+    }
+
+    public LocalDataset inspectFast(Path input) throws IOException, DatasetInspectionException {
         var source = input.toAbsolutePath().normalize();
         if (!Files.isRegularFile(source)) {
             throw new DatasetInspectionException("SOURCE_NOT_FOUND", "Selected source is not a file");
@@ -17,30 +31,35 @@ public final class DatasetInspector {
         var lowerName = source.getFileName().toString().toLowerCase(Locale.ROOT);
         if (lowerName.endsWith(".ome.tif") || lowerName.endsWith(".ome.tiff")) {
             verifyTiffSignature(source);
-            var inventory = DatasetSourceInventory.singleFile(source);
+            var snapshot = SourceSnapshot.singleFile(source);
             return dataset(
                     source,
                     DatasetFormat.OME_TIFF,
-                    DatasetStatus.READY,
-                    "OME-TIFF signature verified; ready for managed local copy",
-                    inventory);
+                    DatasetStatus.VERIFYING_SOURCE,
+                    "Source snapshot captured; verifying content in background",
+                    snapshot);
         }
         if (lowerName.endsWith(".vsi")) {
-            var inventory = DatasetSourceInventory.forVsi(source);
-            if (inventory.fingerprint().isEmpty()) {
+            var snapshot = SourceSnapshot.forVsi(source);
+            if (!snapshot.hasEtsCompanion()) {
                 return dataset(
                         source,
                         DatasetFormat.VSI,
                         DatasetStatus.NEEDS_COMPANIONS,
                         "No matching CellSens .ets companion set was found",
-                        inventory);
+                        snapshot)
+                        .withSourceIdentity(
+                                DatasetStatus.NEEDS_COMPANIONS,
+                                "No matching CellSens .ets companion set was found",
+                                "",
+                                "");
             }
             return dataset(
                     source,
                     DatasetFormat.VSI,
-                    DatasetStatus.READER_REQUIRED,
-                    "Complete VSI/ETS set found; Bio-Formats reader license/runtime required",
-                    inventory);
+                    DatasetStatus.VERIFYING_SOURCE,
+                    "VSI/ETS snapshot captured; verifying content in background",
+                    snapshot);
         }
         throw new DatasetInspectionException(
                 "UNSUPPORTED_FORMAT", "Only OME-TIFF and VSI datasets are supported");
@@ -51,13 +70,13 @@ public final class DatasetInspector {
             DatasetFormat format,
             DatasetStatus status,
             String detail,
-            DatasetSourceInventory inventory)
+            SourceSnapshot snapshot)
             throws IOException {
         return new LocalDataset(
                 stableDatasetId(source),
                 source.getFileName().toString(),
                 source.toString(),
-                inventory.totalBytes(),
+                snapshot.totalBytes(),
                 format,
                 status,
                 detail,
@@ -72,11 +91,36 @@ public final class DatasetInspector {
                 0,
                 0,
                 0,
-                inventory.fingerprint(),
-                inventory.serialized(),
+                "",
+                snapshot.serialized(),
                 "",
                 "",
                 "");
+    }
+
+    static SourceSnapshot snapshot(Path source, DatasetFormat format)
+            throws IOException, DatasetInspectionException {
+        return format == DatasetFormat.VSI
+                ? SourceSnapshot.forVsi(source)
+                : SourceSnapshot.singleFile(source);
+    }
+
+    static DatasetStatus readyStatus(DatasetFormat format, SourceSnapshot snapshot) {
+        if (format == DatasetFormat.VSI && !snapshot.hasEtsCompanion()) {
+            return DatasetStatus.NEEDS_COMPANIONS;
+        }
+        return format == DatasetFormat.VSI
+                ? DatasetStatus.READER_REQUIRED
+                : DatasetStatus.READY;
+    }
+
+    static String readyDetail(DatasetFormat format, SourceSnapshot snapshot) {
+        if (format == DatasetFormat.VSI && !snapshot.hasEtsCompanion()) {
+            return "No matching CellSens .ets companion set was found";
+        }
+        return format == DatasetFormat.VSI
+                ? "Complete VSI/ETS set verified; ready for Bio-Formats inspection"
+                : "OME-TIFF signature verified and content digested; ready for managed local copy";
     }
 
     private static String stableDatasetId(Path source) {
