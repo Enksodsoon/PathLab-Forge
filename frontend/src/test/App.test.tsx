@@ -93,6 +93,23 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
 })
 
+test('keeps the viewer visible by collapsing the navigator on compact browser widths', async () => {
+  const originalWidth = window.innerWidth
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 648 })
+  try {
+    const view = render(<App />)
+    const main = await screen.findByRole('main')
+    expect(main.closest('.forge-canvas-host')).toHaveClass('navigator-collapsed')
+    expect(screen.getByRole('button', { name: 'Slide library' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    view.unmount()
+  } finally {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
+  }
+})
+
 test('gives the expanded product rail enough width to show its labels', async () => {
   render(<App />)
 
@@ -550,6 +567,9 @@ test('shows conversion progress and keeps viewer controls locked until validatio
     configurationRevision: 'conversion-configuration',
     currentArtifactRevision: 'artifact-1',
     approvedArtifactRevision: '',
+    stage: 'REGIONS_RENDERING',
+    completedUnits: 2,
+    totalUnits: 10,
   }
   vi.mocked(api.bootstrap).mockResolvedValue([[converting], {
     conversionRuntime: 'Bio-Formats test',
@@ -580,8 +600,8 @@ test('shows conversion progress and keeps viewer controls locked until validatio
 
   render(<App />)
 
-  expect((await screen.findAllByText('Exporting rendered RGB'))[0]).toBeVisible()
-  expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(15)
+  expect((await screen.findAllByText('Rendering RGB regions'))[0]).toBeVisible()
+  expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(11)
   expect(screen.getByText('Step 1 of 5')).toBeVisible()
   expect(screen.getByText(/Large whole-slide exports can take several minutes/)).toBeVisible()
   expect(screen.getByText(/Elapsed/)).toBeVisible()
@@ -589,7 +609,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
   expect(screen.getByRole('progressbar', {
     name: 'Converting slide.vsi conversion progress',
-  })).toHaveValue(15)
+  })).toHaveValue(11)
 })
 
 test('refreshes annotations and artifacts only for the selected active slide', async () => {

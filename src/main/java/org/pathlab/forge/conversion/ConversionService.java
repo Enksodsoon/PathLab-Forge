@@ -790,7 +790,17 @@ public final class ConversionService implements AutoCloseable {
         Files.deleteIfExists(output.resolveSibling("export.partial.ome.tif"));
         Files.deleteIfExists(output.resolveSibling("render.partial.ome.tif"));
         deleteTree(outputDirectory, outputDirectory.resolve("derivative.partial"));
-        deleteTree(outputDirectory, outputDirectory.resolve("regions.partial"));
+        var regions = outputDirectory.resolve("regions.partial");
+        if (Files.isDirectory(regions)) {
+            try (var files = Files.list(regions)) {
+                for (var partial : files.filter(path -> path.getFileName()
+                                .toString()
+                                .endsWith(".partial"))
+                        .toList()) {
+                    Files.deleteIfExists(partial);
+                }
+            }
+        }
     }
 
     private void convert(LocalDataset dataset) {
@@ -814,12 +824,19 @@ public final class ConversionService implements AutoCloseable {
         try {
             boolean finalOmeWritten = false;
             var existingCheckpoint = checkpoints.load().orElse(null);
-            saveCheckpoint(
-                    checkpoints,
-                    revision,
-                    StageCheckpoint.Stage.SOURCE_VERIFIED,
-                    1,
-                    1);
+            var matchingCheckpoint = existingCheckpoint != null
+                    && existingCheckpoint.configurationRevision()
+                            .equals(revision.configurationRevision())
+                    && existingCheckpoint.sourceFingerprint()
+                            .equals(revision.sourceFingerprint());
+            if (!matchingCheckpoint) {
+                saveCheckpoint(
+                        checkpoints,
+                        revision,
+                        StageCheckpoint.Stage.SOURCE_VERIFIED,
+                        1,
+                        1);
+            }
             Files.createDirectories(outputDirectory);
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
@@ -850,10 +867,37 @@ public final class ConversionService implements AutoCloseable {
                         throw new IOException("Verified region checkpoint is incomplete");
                     }
                 } else {
-                    deleteTree(outputDirectory, regionRoot);
+                    var resumePartialRegions = matchingCheckpoint
+                            && existingCheckpoint.stage().ordinal()
+                                    >= StageCheckpoint.Stage.REGIONS_RENDERING.ordinal();
+                    if (!resumePartialRegions) {
+                        deleteTree(outputDirectory, regionRoot);
+                    }
                     Files.createDirectories(regionRoot);
+                    var progressLock = new Object();
                     regions = engine.convertRegions(
-                            request, regionRoot, parallelRgbWorkers(request.source()));
+                            request,
+                            regionRoot,
+                            parallelRgbWorkers(request.source()),
+                            (completed, total) -> {
+                                synchronized (progressLock) {
+                                    updateProgress(
+                                            dataset.id(),
+                                            "REGIONS_RENDERING",
+                                            completed,
+                                            total);
+                                    try {
+                                        saveCheckpoint(
+                                                checkpoints,
+                                                revision,
+                                                StageCheckpoint.Stage.REGIONS_RENDERING,
+                                                completed,
+                                                total);
+                                    } catch (IOException error) {
+                                        throw new java.io.UncheckedIOException(error);
+                                    }
+                                }
+                            });
                 }
                 saveCheckpoint(
                         checkpoints,
@@ -875,6 +919,7 @@ public final class ConversionService implements AutoCloseable {
                         dataset.height(),
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
+                updateProgress(dataset.id(), "ASSEMBLING_OME", 0, 1);
                 if (useDirectFinalOme(request)) {
                     derivativeEngine.assembleRegionsFinal(
                             regions,
@@ -900,6 +945,7 @@ public final class ConversionService implements AutoCloseable {
                         dataset.height(),
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
+                updateProgress(dataset.id(), "OPTIMIZING_OME", 0, 1);
                 derivativeEngine.optimizeOme(
                         rendered, partial, request.outputWidth(), request.outputHeight());
                 Files.deleteIfExists(rendered);

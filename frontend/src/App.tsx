@@ -40,7 +40,9 @@ export function App() {
   const [selectedId, setSelectedId] = useState('')
   const [seriesByDataset, setSeriesByDataset] = useState<Record<string, SeriesInfo[]>>({})
   const [artifactByDataset, setArtifactByDataset] = useState<Record<string, ArtifactRevision[]>>({})
-  const [navigatorOpen, setNavigatorOpen] = useState(true)
+  const [navigatorOpen, setNavigatorOpen] = useState(
+    () => typeof window === 'undefined' || window.innerWidth > 960,
+  )
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [railExpanded, setRailExpanded] = useState(false)
   const [activeTool, setActiveTool] = useState('pan')
@@ -385,7 +387,10 @@ export function App() {
             <SlideNavigator
               datasets={datasets}
               selectedId={selected?.id || ''}
-              onSelect={setSelectedId}
+              onSelect={(id) => {
+                setSelectedId(id)
+                if (window.innerWidth <= 960) setNavigatorOpen(false)
+              }}
               onImport={() => setImportOpen(true)}
               onConnect={connect}
               onCollapse={() => {
@@ -1305,14 +1310,26 @@ function conversionPhase(dataset: Dataset) {
     DZI_READY: { step: 5, percent: 93, label: 'Result viewable · building upload package' },
   } as Record<string, { step: number; percent: number; label: string }>)[dataset.status]
     || { step: 1, percent: 0, label: 'Preparing conversion' }
-  if ((dataset.totalUnits || 0) > 0) {
+  const unitProgress = (dataset.totalUnits || 0) > 0
+    ? Math.min(1, (dataset.completedUnits || 0) / dataset.totalUnits!)
+    : 0
+  const measuredStage = ({
+    SOURCE_VERIFIED: { base: 5, span: 0, label: 'Source verified · preparing RGB regions' },
+    REGIONS_RENDERING: { base: 5, span: 30, label: 'Rendering RGB regions' },
+    REGIONS_VERIFIED: { base: 35, span: 0, label: 'RGB regions verified · assembling OME-TIFF' },
+    ASSEMBLING_OME: { base: 35, span: 0, label: 'Assembling exact slide geometry' },
+    OPTIMIZING_OME: { base: 45, span: 0, label: 'Compressing OME-TIFF pyramid' },
+    VALIDATING_OME: { base: 58, span: 7, label: 'Validating OME-TIFF' },
+    OME_VERIFIED: { base: 65, span: 0, label: 'OME-TIFF verified' },
+    GENERATING_DZI: { base: 65, span: 25, label: 'Generating viewer tiles' },
+    DZI_LEDGER_VERIFIED: { base: 90, span: 0, label: 'Viewer tiles verified · building package' },
+    PACKAGE_COMMITTED: { base: 100, span: 0, label: 'Package committed' },
+  } as Record<string, { base: number; span: number; label: string }>)[dataset.stage || '']
+  if (measuredStage) {
     return {
       ...phase,
-      percent: Math.min(
-        100,
-        Math.round((dataset.completedUnits || 0) / dataset.totalUnits! * 100),
-      ),
-      label: dataset.stage?.replaceAll('_', ' ').toLowerCase() || phase.label,
+      percent: Math.round(measuredStage.base + measuredStage.span * unitProgress),
+      label: measuredStage.label,
     }
   }
   return phase

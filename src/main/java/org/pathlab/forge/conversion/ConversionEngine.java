@@ -3,6 +3,7 @@ package org.pathlab.forge.conversion;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.BiConsumer;
 
 public interface ConversionEngine {
     boolean available();
@@ -51,5 +52,16 @@ public interface ConversionEngine {
     default List<Path> convertRegions(
             ConversionRequest request, Path outputDirectory, int workers) throws IOException {
         throw new IOException("This conversion engine does not support parallel regions");
+    }
+
+    default List<Path> convertRegions(
+            ConversionRequest request,
+            Path outputDirectory,
+            int workers,
+            BiConsumer<Integer, Integer> progress)
+            throws IOException {
+        var outputs = convertRegions(request, outputDirectory, workers);
+        progress.accept(outputs.size(), outputs.size());
+        return outputs;
     }
 }
