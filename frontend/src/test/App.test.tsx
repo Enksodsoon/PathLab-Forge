@@ -64,6 +64,65 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
 })
 
+test('collapses and restores the slide inspector without losing its state', async () => {
+  const dataset: api.Dataset = {
+    id: 'collapsible-inspector-slide',
+    displayName: 'Collapsible slide.ome.tif',
+    sourceBytes: 320_000_000,
+    format: 'OME_TIFF',
+    status: 'READY_TO_CONVERT',
+    detail: 'Ready',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: -1,
+    width: 0,
+    height: 0,
+    downsample: 1.5,
+    estimatedOutputBytes: 0,
+    projectedFileBytes: 0,
+    projectedFileLowerBytes: 0,
+    projectedFileUpperBytes: 0,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 0,
+    cropHeight: 0,
+    sourceFingerprint: 'collapsible-source',
+    configurationRevision: '',
+    currentArtifactRevision: '',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[dataset], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([dataset])
+
+  render(<App />)
+
+  const inspectorLabel = await screen.findByText('Slide inspector')
+  const host = inspectorLabel.closest('.forge-canvas-host')
+  const inspector = inspectorLabel.closest('aside')
+  expect(host).not.toHaveClass('inspector-collapsed')
+  expect(inspector).toBeVisible()
+
+  fireEvent.click(within(inspectorLabel.closest('header')!).getByRole('button', {
+    name: 'Collapse slide inspector',
+  }))
+
+  expect(host).toHaveClass('inspector-collapsed')
+  expect(inspector).not.toBeVisible()
+  const restore = screen.getByRole('button', { name: 'Open slide inspector' })
+  expect(restore).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(restore)
+
+  expect(host).not.toHaveClass('inspector-collapsed')
+  expect(inspector).toBeVisible()
+  expect(screen.getByRole('heading', { name: 'Collapsible slide.ome.tif' })).toBeVisible()
+})
+
 test('shows the short-lived Viewer verification code', async () => {
   render(<App />)
 
