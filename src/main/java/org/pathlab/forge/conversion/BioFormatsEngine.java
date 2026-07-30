@@ -8,8 +8,10 @@ import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,6 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
@@ -192,6 +196,16 @@ public final class BioFormatsEngine implements ConversionEngine {
     @Override
     public List<Path> convertRegions(
             ConversionRequest request, Path outputDirectory, int workers) throws IOException {
+        return convertRegions(request, outputDirectory, workers, (completed, total) -> {});
+    }
+
+    @Override
+    public List<Path> convertRegions(
+            ConversionRequest request,
+            Path outputDirectory,
+            int workers,
+            BiConsumer<Integer, Integer> progress)
+            throws IOException {
         requireAvailable();
         if (workers < 2) {
             throw new IllegalArgumentException("Parallel rendering requires at least two workers");
@@ -201,6 +215,14 @@ public final class BioFormatsEngine implements ConversionEngine {
         var resolution = selectResolution(selected, request.downsample());
         var crop = scaleCrop(request, resolution);
         var regions = planRegions(crop.x(), crop.y(), crop.width(), crop.height(), workers);
+        var completed = new AtomicInteger();
+        for (var index = 0; index < regions.size(); index++) {
+            var output = outputDirectory.resolve("region-%02d.ome.tif".formatted(index));
+            if (Files.isRegularFile(output) && Files.size(output) > 0) {
+                completed.incrementAndGet();
+            }
+        }
+        progress.accept(completed.get(), regions.size());
         var executor = Executors.newFixedThreadPool(Math.min(workers, regions.size()), runnable -> {
             var thread = new Thread(runnable, "pathlab-bioformats-region");
             thread.setDaemon(true);
@@ -211,6 +233,10 @@ public final class BioFormatsEngine implements ConversionEngine {
             for (var index = 0; index < regions.size(); index++) {
                 var region = regions.get(index);
                 var output = outputDirectory.resolve("region-%02d.ome.tif".formatted(index));
+                if (Files.isRegularFile(output) && Files.size(output) > 0) {
+                    tasks.add(() -> output);
+                    continue;
+                }
                 tasks.add(() -> {
                     convertRegion(
                             request,
@@ -222,6 +248,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                                     region.height(),
                                     false),
                             output);
+                    progress.accept(completed.incrementAndGet(), regions.size());
                     return output;
                 });
             }
@@ -234,6 +261,9 @@ public final class BioFormatsEngine implements ConversionEngine {
                     var cause = error.getCause();
                     if (cause instanceof IOException io) {
                         throw io;
+                    }
+                    if (cause instanceof java.io.UncheckedIOException unchecked) {
+                        throw unchecked.getCause();
                     }
                     throw new IOException("Parallel Bio-Formats rendering failed", cause);
                 }
@@ -274,6 +304,8 @@ public final class BioFormatsEngine implements ConversionEngine {
             throws IOException {
         org.pathlab.forge.runtime.ResourceGovernor.system().awaitWorkerLaunch();
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
+        var partial = output.resolveSibling(output.getFileName() + ".partial");
+        Files.deleteIfExists(partial);
         var arguments = new ArrayList<>(List.of(
                 "-no-upgrade",
                 "-series",
@@ -295,7 +327,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                 "cellsens.fail_on_missing_ets",
                 "true",
                 request.source().toString(),
-                output.toString()));
+                partial.toString()));
         var result = run(
                 commandWithHeap(
                         "640m",
@@ -303,7 +335,8 @@ public final class BioFormatsEngine implements ConversionEngine {
                         arguments),
                 CONVERSION_TIMEOUT,
                 4 * 1024 * 1024);
-        if (result.exitCode() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
+        if (result.exitCode() != 0 || !Files.isRegularFile(partial) || Files.size(partial) == 0) {
+            Files.deleteIfExists(partial);
             throw new IOException(
                     "Bio-Formats conversion failed for reader series "
                             + resolution.readerIndex()
@@ -311,6 +344,15 @@ public final class BioFormatsEngine implements ConversionEngine {
                             + crop.x() + "," + crop.y() + "," + crop.width() + "," + crop.height()
                             + ": "
                             + diagnostic(result.output()));
+        }
+        try {
+            Files.move(
+                    partial,
+                    output,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(partial, output, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

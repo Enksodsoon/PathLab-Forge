@@ -32,6 +32,7 @@ public record StageCheckpoint(
 
     public enum Stage {
         SOURCE_VERIFIED,
+        REGIONS_RENDERING,
         REGIONS_VERIFIED,
         OME_VERIFIED,
         DZI_LEDGER_VERIFIED,
