@@ -32,11 +32,10 @@ class ArtifactReuseTest {
                 dataset.downsample());
         var root = temporaryDirectory.resolve("artifact");
         var derivative = root.resolve("derivative");
-        Files.createDirectories(derivative);
+        Files.createDirectories(root);
         var ome = Files.writeString(root.resolve("export.ome.tif"), "verified ome");
         var preparedPackage = Files.writeString(root.resolve("slide.plslide"), "verified package");
-        Files.writeString(derivative.resolve("slide.dzi"), "descriptor");
-        Files.writeString(derivative.resolve("thumbnail.jpg"), "thumbnail");
+        Files.writeString(root.resolve("slide.plslide.index"), "entry index");
         var revision = new ArtifactRevision(
                 "11111111-1111-1111-1111-111111111111",
                 dataset.id(),
@@ -54,6 +53,10 @@ class ArtifactReuseTest {
                 0,
                 "");
 
+        assertTrue(ConversionService.isReusableArtifact(dataset, request, revision));
+        assertTrue(Files.isRegularFile(root.resolve("artifact.integrity.properties")));
+
+        Files.writeString(root.resolve("artifact.integrity.properties"), "omeSize=invalid");
         assertTrue(ConversionService.isReusableArtifact(dataset, request, revision));
 
         Files.writeString(ome, "mutated");
