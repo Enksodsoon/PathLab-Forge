@@ -30,6 +30,8 @@ public final class ConversionService implements AutoCloseable {
     private static final String PREVIEW_CACHE_VERSION = "efficient-rgb-2x-v4";
     private static final long PARALLEL_RGB_MINIMUM_PIXELS = 250_000_000L;
     private static final int DEFAULT_PARALLEL_RGB_WORKERS = 11;
+    private static final int MAX_READER_SESSIONS = 2;
+    private static final long READER_SESSION_BYTES = 256L * 1024 * 1024;
     private final DatasetRepository repository;
     private final ConversionEngine engine;
     private final DerivativeEngine derivativeEngine;
@@ -40,6 +42,7 @@ public final class ConversionService implements AutoCloseable {
     private final Map<String, List<SeriesInfo>> inspectedSeries = new ConcurrentHashMap<>();
     private final Map<String, ReaderSession> readerSessions = new ConcurrentHashMap<>();
     private final Map<String, DirectTileSource> directSources = new ConcurrentHashMap<>();
+    private final Map<String, Path> readerSourcePaths = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> activeConversions = new ConcurrentHashMap<>();
     private final Map<String, ConversionProgress> progress = new ConcurrentHashMap<>();
     private final java.util.Set<Path> cleanedPreviewRoots =
@@ -53,6 +56,12 @@ public final class ConversionService implements AutoCloseable {
         thread.setDaemon(true);
         return thread;
     });
+    private final java.util.concurrent.ScheduledExecutorService memorySampler =
+            Executors.newSingleThreadScheduledExecutor(runnable -> {
+                var thread = new Thread(runnable, "pathlab-memory-sampler");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     public ConversionService(
             DatasetRepository repository,
@@ -66,6 +75,11 @@ public final class ConversionService implements AutoCloseable {
         this.artifactRepository = new ArtifactRevisionRepository(this.managedRoot);
         this.seriesMetadataCache = new SeriesMetadataCache(this.managedRoot);
         this.quPathRuntime = QuPathRuntime.discover();
+        memorySampler.scheduleAtFixedRate(
+                this::sampleActiveMemory,
+                0,
+                200,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
     public ConversionEngine engine() {
@@ -256,6 +270,7 @@ public final class ConversionService implements AutoCloseable {
         }
         evictIdleReaderSessions();
         var key = readerSessionKey(dataset);
+        ensureReaderSession(dataset);
         var existing = directSources.get(key);
         if (existing != null) {
             return existing;
@@ -273,9 +288,7 @@ public final class ConversionService implements AutoCloseable {
             throw new IllegalStateException("Inspect and select an image series before preview");
         }
         evictIdleReaderSessions();
-        var session = readerSessions.computeIfAbsent(
-                readerSessionKey(dataset),
-                ignored -> new ReaderSession(256L * 1024 * 1024));
+        var session = ensureReaderSession(dataset);
         try {
             return session.tile(
                     new ReaderSession.TileKey(dataset.selectedSeries(), level, tileX, tileY),
@@ -296,15 +309,47 @@ public final class ConversionService implements AutoCloseable {
         return dataset.id() + "|" + dataset.sourceFingerprint() + "|" + dataset.selectedSeries();
     }
 
-    private void evictIdleReaderSessions() {
+    private synchronized ReaderSession ensureReaderSession(LocalDataset dataset)
+            throws IOException {
+        var key = readerSessionKey(dataset);
+        var existing = readerSessions.get(key);
+        if (existing != null) {
+            return existing;
+        }
+        if (readerSessions.size() >= MAX_READER_SESSIONS) {
+            var oldest = readerSessions.entrySet().stream()
+                    .min(Comparator.comparingLong(
+                            entry -> entry.getValue().lastAccessNanos()))
+                    .map(Map.Entry::getKey)
+                    .orElseThrow();
+            evictReaderSession(oldest);
+        }
+        var opened = new ReaderSession(READER_SESSION_BYTES);
+        readerSessions.put(key, opened);
+        readerSourcePaths.put(key, Path.of(dataset.sourcePath()).toAbsolutePath().normalize());
+        return opened;
+    }
+
+    private synchronized void evictIdleReaderSessions() throws IOException {
         var idleNanos = java.util.concurrent.TimeUnit.MINUTES.toNanos(5);
         var expired = readerSessions.entrySet().stream()
                 .filter(entry -> entry.getValue().idleFor(idleNanos))
                 .map(Map.Entry::getKey)
                 .toList();
         for (var key : expired) {
-            readerSessions.remove(key);
-            directSources.remove(key);
+            evictReaderSession(key);
+        }
+    }
+
+    private void evictReaderSession(String key) throws IOException {
+        var removed = readerSessions.remove(key);
+        if (removed != null) {
+            removed.clear();
+        }
+        directSources.remove(key);
+        var source = readerSourcePaths.remove(key);
+        if (source != null && readerSourcePaths.values().stream().noneMatch(source::equals)) {
+            engine.closeDirectSource(source);
         }
     }
 
@@ -458,6 +503,18 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    public List<SeriesInfo> inspectWhileVerifying(String id) throws IOException {
+        var dataset = requireDataset(id);
+        if (dataset.status() != DatasetStatus.VERIFYING_SOURCE
+                || !dataset.sourceFingerprint().isBlank()) {
+            return inspect(id);
+        }
+        org.pathlab.forge.runtime.ResourceGovernor.system().requireConversionStart();
+        var series = engine.inspect(Path.of(dataset.sourcePath()));
+        inspectedSeries.put(id, series);
+        return series;
+    }
+
     public synchronized List<SeriesInfo> series(String id) throws IOException {
         var dataset = requireDataset(id);
         return restoreSeries(id, dataset);
@@ -560,6 +617,10 @@ public final class ConversionService implements AutoCloseable {
             int cropHeight)
             throws IOException {
         var dataset = requireDataset(id);
+        if (dataset.sourceFingerprint().isBlank()) {
+            throw new IllegalStateException(
+                    "Source verification must complete before export configuration");
+        }
         var info = requireSeriesInfo(id, seriesIndex);
         if (!info.isRgbPlane()) {
             throw new IllegalArgumentException(
@@ -647,6 +708,7 @@ public final class ConversionService implements AutoCloseable {
             QuPathRuntime.requireSecondsBudget(
                     request, quPathRuntime.supports(dataset.format()));
         }
+        org.pathlab.forge.runtime.ResourceGovernor.system().requireConversionStart();
         Files.createDirectories(managedRoot);
         var peakWorkspace = OutputSizeEstimator.managedPeakWorkspace(
                 dataset.cropWidth(),
@@ -1090,7 +1152,10 @@ public final class ConversionService implements AutoCloseable {
                     derivativeInfo.fileCount(),
                     derivativeInfo.tileCount(),
                     derivativeInfo.sha256(),
-                    derivativeInfo.ledger());
+                    derivativeInfo.ledger(),
+                    derivativeInfo.jpegQuality(),
+                    derivativeInfo.minimumWindowedSsim(),
+                    derivativeInfo.meanDeltaE00());
             saveCheckpoint(
                     checkpoints,
                     revision,
@@ -1240,6 +1305,21 @@ public final class ConversionService implements AutoCloseable {
 
     private static long currentWorkingSet() {
         return org.pathlab.forge.runtime.ProcessTreeMemory.workingSetBytes();
+    }
+
+    private void sampleActiveMemory() {
+        if (activeConversions.isEmpty()) {
+            return;
+        }
+        var workingSet = currentWorkingSet();
+        progress.replaceAll((ignored, current) -> new ConversionProgress(
+                current.stage(),
+                current.completedUnits(),
+                current.totalUnits(),
+                current.startedAt(),
+                Math.max(current.peakWorkingSetBytes(), workingSet),
+                current.resourceProfile(),
+                current.cacheHitReason()));
     }
 
     private boolean useDirectFinalOme(ConversionRequest request) {
@@ -1445,7 +1525,18 @@ public final class ConversionService implements AutoCloseable {
     @Override
     public void close() {
         conversionExecutor.shutdownNow();
-        readerSessions.clear();
-        directSources.clear();
+        memorySampler.shutdownNow();
+        for (var key : List.copyOf(readerSessions.keySet())) {
+            try {
+                evictReaderSession(key);
+            } catch (IOException ignored) {
+                // Shutdown remains best-effort after all bounded caches are cleared.
+            }
+        }
+        try {
+            engine.close();
+        } catch (IOException ignored) {
+            // The process is shutting down; child containment remains authoritative.
+        }
     }
 }

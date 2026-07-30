@@ -13,7 +13,7 @@ Complete:
 
 - current Viewer library, storage, publication, thumbnail, worker and upload behavior reviewed;
 - obsolete assumptions removed: no new publication system, no full-copy replacement, no separate importer container for MVP;
-- prepared package v1 aligned to current derivative layout.
+- prepared package v2 aligned to the current derivative layout.
 
 ## Forge Milestone F1 — Dependency-light core
 
@@ -32,7 +32,7 @@ No WSI reader or GUI yet.
    - `slide.dzi`;
    - 512-pixel tiles;
    - overlap 1;
-   - JPEG quality 85;
+   - adaptive JPEG quality 85, 90, or 95 under strict fidelity gates;
    - `thumbnail.jpg`, longest edge 640, quality 82.
 
 This milestone has no API, model, state or worker behavior change.
@@ -43,7 +43,7 @@ This milestone has no API, model, state or worker behavior change.
 2. controlled crop/downsample RGB OME-TIFF output.
 3. DZI and thumbnail generation matching Viewer V1.
 4. local derivative validation and OpenSeadragon preview.
-5. `.plslide` v1 packaging using the pinned Viewer schema.
+5. canonical `.plslide` v2 packaging with NDJSON inventory and legacy-v2 compatibility.
 6. mixed valid/invalid batch behavior and report.
 
 ## Viewer Milestone V2 — Prepared reservation and storage accounting
@@ -78,10 +78,10 @@ No QuPath, Bio-Formats or image conversion is added to Viewer.
 
 ## Viewer Milestone V4 — Scoped desktop API
 
-1. Add `/api/v2/desktop/capabilities`.
-2. Add `/api/v2/desktop/prepared-slides` reservation.
-3. Add `/api/v2/desktop/prepared-slides/{slideId}` status.
-4. Reuse `/api/v1/uploads/` tus transport and current short-lived upload grant.
+1. Add `/api/v1/desktop/capabilities`.
+2. Add `/api/v1/desktop/ingests` reservation.
+3. Add `/api/v1/desktop/ingests/{ingestId}` upload and status.
+4. Advertise 64 MiB chunks while retaining a 16 MiB legacy fallback.
 5. Add a revocable, hashed, scoped desktop credential.
 6. Initial scopes: prepared create/upload/status and optional folder read.
 7. Keep browser CSRF/session authentication unchanged.
@@ -93,7 +93,7 @@ No QuPath, Bio-Formats or image conversion is added to Viewer.
 2. Credential Manager/Keychain abstraction.
 3. optional folder-target discovery.
 4. prepared-slide reservation.
-5. tus upload with 20 MiB-compatible chunking and bounded retry.
+5. streamed capability-sized upload with bounded retry.
 6. resume without reconversion.
 7. poll current Viewer states and expose `SERVER_PROCESSING` locally.
 8. open `/admin/preview/{slideId}` after ready.

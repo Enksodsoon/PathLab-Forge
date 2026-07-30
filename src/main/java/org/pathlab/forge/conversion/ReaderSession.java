@@ -98,6 +98,18 @@ public final class ReaderSession {
         return System.nanoTime() - lastAccessNanos >= nanos;
     }
 
+    public long lastAccessNanos() {
+        return lastAccessNanos;
+    }
+
+    public void clear() {
+        synchronized (cache) {
+            cache.clear();
+            cachedBytes = 0;
+        }
+        inFlight.clear();
+    }
+
     public record TileKey(int series, int level, int tileX, int tileY) {
         public TileKey {
             if (series < 0 || level < 0 || tileX < 0 || tileY < 0) {

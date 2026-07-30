@@ -691,6 +691,37 @@ public final class BioFormatsEngine implements ConversionEngine {
         return directReaders.get(source.toAbsolutePath().normalize()).next();
     }
 
+    @Override
+    public synchronized void closeDirectSource(Path source) throws IOException {
+        var key = source.toAbsolutePath().normalize();
+        flattenedSeries.remove(key);
+        var pool = directReaders.remove(key);
+        if (pool != null) {
+            pool.close();
+        }
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
+        IOException failure = null;
+        for (var pool : directReaders.values()) {
+            try {
+                pool.close();
+            } catch (IOException error) {
+                if (failure == null) {
+                    failure = error;
+                } else {
+                    failure.addSuppressed(error);
+                }
+            }
+        }
+        directReaders.clear();
+        flattenedSeries.clear();
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
     private static BufferedImage resize(BufferedImage source, int width, int height) {
         var resized = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         var graphics = resized.createGraphics();
@@ -864,6 +895,24 @@ public final class BioFormatsEngine implements ConversionEngine {
 
         private DirectReader next() {
             return readers[Math.floorMod(cursor.getAndIncrement(), readers.length)];
+        }
+
+        private void close() throws IOException {
+            IOException failure = null;
+            for (var reader : readers) {
+                try {
+                    reader.close();
+                } catch (IOException error) {
+                    if (failure == null) {
+                        failure = error;
+                    } else {
+                        failure.addSuppressed(error);
+                    }
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 
@@ -1063,6 +1112,27 @@ public final class BioFormatsEngine implements ConversionEngine {
                     throw new ReflectiveOperationException(exception);
                 }
                 throw error;
+            }
+        }
+
+        private synchronized void close() throws IOException {
+            IOException failure = null;
+            try {
+                invoke("close", new Class<?>[0]);
+            } catch (ReflectiveOperationException error) {
+                failure = new IOException("Bio-Formats reader could not be closed", error);
+            }
+            try {
+                loader.close();
+            } catch (IOException error) {
+                if (failure == null) {
+                    failure = error;
+                } else {
+                    failure.addSuppressed(error);
+                }
+            }
+            if (failure != null) {
+                throw failure;
             }
         }
     }

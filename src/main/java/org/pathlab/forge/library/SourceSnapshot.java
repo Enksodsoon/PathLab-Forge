@@ -94,7 +94,14 @@ public record SourceSnapshot(
                 .toList()) {
             var attributes = Files.readAttributes(path, BasicFileAttributes.class);
             var relative = portable(root.relativize(path));
-            var key = String.valueOf(attributes.fileKey());
+            var key = attributes.fileKey() == null
+                    ? "fallback:"
+                            + attributes.creationTime().toMillis()
+                            + ":"
+                            + Files.getFileStore(path).name()
+                            + ":"
+                            + Files.getFileStore(path).type()
+                    : attributes.fileKey().toString();
             entries.add(new Entry(
                     path,
                     relative,

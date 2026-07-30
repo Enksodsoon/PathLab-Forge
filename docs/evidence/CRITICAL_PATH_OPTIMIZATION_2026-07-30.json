@@ -1,0 +1,105 @@
+{
+  "schema": "pathlab-critical-path-evidence/v1",
+  "measuredAt": "2026-07-30",
+  "hostProfile": {
+    "operatingSystem": "Windows",
+    "memoryGiB": 8,
+    "logicalCoreBudget": 6,
+    "source": "anonymized-reference-vsi-1",
+    "series": 2,
+    "downsample": 1.5
+  },
+  "baseline": {
+    "artifactToPackageReadyMs": 80800,
+    "omeStageMsRange": [55000, 57000],
+    "dziJpegQuality": 95,
+    "source": "approved-plan-baseline"
+  },
+  "after": {
+    "coldRuns": [
+      {
+        "run": 1,
+        "packageReadyMs": 117456,
+        "stageTimingsMs": {
+          "metadataAndVerification": 2393,
+          "omeWrite": 72057,
+          "dziSelectionGenerationAndValidation": 36042,
+          "packageWrite": 3021,
+          "commit": 1897
+        },
+        "peakProcessTreeBytes": 3949789184,
+        "peakWorkspaceBytes": 1129793996
+      },
+      {
+        "run": 2,
+        "packageReadyMs": 135953,
+        "stageTimingsMs": {
+          "metadataAndVerification": 2723,
+          "omeWrite": 83023,
+          "dziSelectionGenerationAndValidation": 43216,
+          "packageWrite": 2922,
+          "commit": 1850
+        },
+        "peakProcessTreeBytes": 3877314560,
+        "peakWorkspaceBytes": 1118247978
+      },
+      {
+        "run": 3,
+        "packageReadyMs": 136034,
+        "stageTimingsMs": {
+          "metadataAndVerification": 2726,
+          "omeWrite": 83233,
+          "dziSelectionGenerationAndValidation": 42919,
+          "packageWrite": 3154,
+          "commit": 2090
+        },
+        "peakProcessTreeBytes": 3944861696,
+        "peakWorkspaceBytes": 1130166384
+      }
+    ],
+    "medians": {
+      "packageReadyMs": 135953,
+      "peakProcessTreeBytes": 3944861696,
+      "peakWorkspaceBytes": 1129793996
+    },
+    "sourceBytes": 1118251168,
+    "omeBytes": 122882284,
+    "derivativeBytes": 500196832,
+    "derivativeFileCount": 7210,
+    "packageBytes": 506711552,
+    "retainedOmePackageAndIndexBytes": 629966226,
+    "minimumBytesRead": 2241341836,
+    "minimumBytesWritten": 1629987500,
+    "ioMeasurementScope": "artifact lower bound; host process-tree IO counters were unavailable",
+    "quality": {
+      "codec": "jpeg",
+      "selectedQuality": 95,
+      "selectorVersion": "quality-gated-v1",
+      "qualityProfileVersion": "pathlab-visual-v1",
+      "minimumWindowedSsim": 0.9866596456756361,
+      "meanDeltaE00": 0.7653310530095905
+    },
+    "viewerStreamingImport": {
+      "elapsedMs": 10230,
+      "packageBytes": 506711552,
+      "derivativeBytes": 500196832,
+      "derivativeFileCount": 7210,
+      "result": "accepted"
+    }
+  },
+  "gates": {
+    "firstMetadataAndThumbnailAtMost3000Ms": true,
+    "packageReadyAtMost72000Ms": false,
+    "processTreePeakAtMost4GiB": true,
+    "retainedOmeAndPackageAtMost400MiB": false,
+    "qualityGatePassed": true,
+    "realForgePackageAcceptedByViewer": true,
+    "viewerImportAtLeast20PercentFaster": null,
+    "uploadFinalizationAtLeast40PercentFaster": null
+  },
+  "notes": [
+    "Q85 and Q90 failed the strict per-ROI quality gate on this reference; Q95 was selected fail-closed.",
+    "No comparable pre-change Viewer finalization measurement was available, so speedup percentages are not claimed.",
+    "The observed OME stage varied materially above the historical 55-57 second floor and dominates the failed time gate."
+  ]
+}

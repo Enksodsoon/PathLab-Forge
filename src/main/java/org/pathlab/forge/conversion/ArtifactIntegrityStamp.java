@@ -7,12 +7,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
-final class ArtifactIntegrityStamp {
+public final class ArtifactIntegrityStamp {
     private static final String FILE_NAME = "artifact.integrity.properties";
 
     private ArtifactIntegrityStamp() {}
 
-    static boolean matches(ArtifactRevision revision) throws IOException {
+    public static boolean matches(ArtifactRevision revision) throws IOException {
         var file = stampFile(revision);
         if (!Files.isRegularFile(file)) {
             return false;
