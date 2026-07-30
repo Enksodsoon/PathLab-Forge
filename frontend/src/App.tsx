@@ -47,6 +47,7 @@ export function App() {
   const [notice, setNotice] = useState('Loading local workspace…')
   const [error, setError] = useState('')
   const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [importPath, setImportPath] = useState('')
   const [removeTarget, setRemoveTarget] = useState<Dataset>()
   const [pairingOpen, setPairingOpen] = useState(false)
@@ -104,12 +105,15 @@ export function App() {
 
   const finishImport = (next: { datasets: Dataset[] }) => {
     const imported = next.datasets.find((item) => !datasets.some((current) => current.id === item.id))
-    setDatasets(next.datasets)
+    const opensAutomatically = Boolean(imported && capabilities?.vsiConversion
+      && ['READY', 'READER_REQUIRED'].includes(imported.status))
+    setDatasets(next.datasets.map((item) => opensAutomatically && item.id === imported?.id
+      ? { ...item, status: 'INSPECTING', detail: 'Opening the slide reader and native pyramid' }
+      : item))
     setSelectedId(imported?.id || next.datasets.at(-1)?.id || '')
     setImportOpen(false)
     setImportPath('')
-    if (imported && capabilities?.vsiConversion
-      && ['READY', 'READER_REQUIRED'].includes(imported.status)) {
+    if (imported && opensAutomatically) {
       setNotice('Slide added — opening the native-resolution viewer…')
       void api.inspectDataset(imported.id).then((result) => {
         setSeriesByDataset((current) => ({ ...current, [imported.id]: result }))
@@ -122,21 +126,29 @@ export function App() {
   }
 
   const handleNativeImport = async () => {
+    setImporting(true)
     try {
       const next = await api.chooseDatasets()
       finishImport(next)
     } catch (nextError) {
       setError(message(nextError))
+    } finally {
+      setImporting(false)
     }
   }
 
   const handlePathImport = async () => {
     if (!importPath.trim()) return
+    setImportOpen(false)
+    setImporting(true)
     try {
       const next = await api.importDataset(importPath.trim())
       finishImport(next)
     } catch (nextError) {
       setError(message(nextError))
+      setImportOpen(true)
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -158,6 +170,9 @@ export function App() {
   const inspect = async () => {
     if (!selected) return
     try {
+      setDatasets((current) => current.map((item) => item.id === selected.id
+        ? { ...item, status: 'INSPECTING', detail: 'Opening the slide reader and native pyramid' }
+        : item))
       setNotice('Inspecting image series and native pyramid…')
       const result = await api.inspectDataset(selected.id)
       setSeriesByDataset((current) => ({ ...current, [selected.id]: result }))
@@ -339,6 +354,7 @@ export function App() {
             <ViewerStage
               dataset={selected}
               revision={currentRevision}
+              importing={importing}
               annotations={selected ? annotationsByDataset[selected.id] || [] : []}
               activeTool={activeTool}
               viewer={viewer}
@@ -586,6 +602,7 @@ function SlideNavigator({
 function ViewerStage({
   dataset,
   revision,
+  importing,
   annotations,
   activeTool,
   viewer,
@@ -596,6 +613,7 @@ function ViewerStage({
 }: {
   dataset?: Dataset
   revision?: ArtifactRevision
+  importing: boolean
   annotations: AnnotationRecord[]
   activeTool: string
   viewer: OpenSeadragon.Viewer | null
@@ -609,6 +627,7 @@ function ViewerStage({
     dataset && revision && ['READY', 'APPROVED'].includes(revision.status),
   )
   const converting = Boolean(dataset && CONVERSION_STATUSES.has(dataset.status))
+  const inspecting = dataset?.status === 'INSPECTING'
   const tileSource = showingConvertedResult && dataset && revision
     ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi?revision=${encodeURIComponent(revision.id)}`
     : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
@@ -632,7 +651,12 @@ function ViewerStage({
           <SidebarSimple />
         </button>
       </header>
-      {tileSource ? (
+      {importing ? (
+        <PreviewLoading
+          title="Preparing imported slide"
+          detail="Verifying the source and companion files before the viewer opens…"
+        />
+      ) : tileSource ? (
         <SlideViewer
           tileSource={tileSource}
           activeTool={activeTool}
@@ -644,6 +668,11 @@ function ViewerStage({
           downsample={revision && ['READY', 'APPROVED'].includes(revision.status) ? dataset?.downsample || 1 : 0}
           onCreate={onCreateAnnotation}
           onReady={onViewer}
+        />
+      ) : inspecting && dataset ? (
+        <PreviewLoading
+          title="Opening slide"
+          detail="Reading the image series and preparing the first visible tile…"
         />
       ) : converting && dataset ? (
         <ConversionProgress dataset={dataset} revision={revision} />
@@ -661,6 +690,16 @@ function ViewerStage({
         <button type="button" aria-label="Full screen" disabled={!viewer} onClick={() => viewer?.setFullScreen(!viewer.isFullPage())}><ArrowsOut /></button>
       </div>
     </section>
+  )
+}
+
+function PreviewLoading({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="forge-preview-loading" role="status" aria-live="polite">
+      <span aria-hidden="true" />
+      <strong>{title}</strong>
+      <small>{detail}</small>
+    </div>
   )
 }
 

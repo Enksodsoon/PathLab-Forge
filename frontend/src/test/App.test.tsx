@@ -288,8 +288,11 @@ test('offers a reliable local-path import when the native picker is unavailable'
     currentArtifactRevision: '',
     approvedArtifactRevision: '',
   }
-  vi.mocked(api.importDataset).mockResolvedValue({ datasets: [imported] })
-  vi.mocked(api.inspectDataset).mockResolvedValue([{
+  let finishImportRequest!: (result: { datasets: api.Dataset[] }) => void
+  vi.mocked(api.importDataset).mockImplementation(() => new Promise((resolve) => {
+    finishImportRequest = resolve
+  }))
+  const mainSeries: api.SeriesInfo = {
     index: 0,
     name: 'Main image',
     width: 12_000,
@@ -303,7 +306,11 @@ test('offers a reliable local-path import when the native picker is unavailable'
     physicalUnit: 'µm',
     resolutionCount: 4,
     rgbPlane: true,
-  }])
+  }
+  let finishInspection!: (series: api.SeriesInfo[]) => void
+  vi.mocked(api.inspectDataset).mockImplementation(() => new Promise((resolve) => {
+    finishInspection = resolve
+  }))
   render(<App />)
 
   const libraryHeader = (await screen.findByText('Local workspace')).closest('header')
@@ -315,7 +322,13 @@ test('offers a reliable local-path import when the native picker is unavailable'
   fireEvent.click(screen.getByRole('button', { name: 'Import this path' }))
 
   await waitFor(() => expect(api.importDataset).toHaveBeenCalledWith('C:\\slides\\case.ome.tif'))
+  expect(screen.getByText('Preparing imported slide')).toBeVisible()
+  finishImportRequest({ datasets: [imported] })
   await waitFor(() => expect(api.inspectDataset).toHaveBeenCalledWith('instant-import'))
+  const previewStatus = screen.getByText('Opening slide').closest('[role="status"]')
+  expect(previewStatus).toHaveTextContent('preparing the first visible tile')
+  finishInspection([mainSeries])
+  await waitFor(() => expect(screen.queryByText('Opening slide')).not.toBeInTheDocument())
 })
 
 test('removes a slide from the library only after an explicit preservation warning', async () => {

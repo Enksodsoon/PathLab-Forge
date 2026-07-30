@@ -69,6 +69,10 @@ public final class BioFormatsEngine implements ConversionEngine {
     @Override
     public List<SeriesInfo> inspect(Path source) throws IOException {
         requireAvailable();
+        return directReader(source).inspect();
+    }
+
+    private List<SeriesInfo> inspectConversionMetadata(Path source) throws IOException {
         var executor = Executors.newFixedThreadPool(3, runnable -> {
             var thread = new Thread(runnable, "pathlab-bioformats-metadata");
             thread.setDaemon(true);
@@ -421,7 +425,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         var sourceKey = source.toAbsolutePath().normalize();
         var selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
         if (selected == null) {
-            inspect(source);
+            inspectConversionMetadata(source);
             selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
         }
         if (selected == null) {
@@ -543,7 +547,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         }
     }
 
-    private DirectReader directReader(Path source) throws IOException {
+    private synchronized DirectReader directReader(Path source) throws IOException {
         var key = source.toAbsolutePath().normalize();
         var existing = directReaders.get(key);
         if (existing != null) {
@@ -551,8 +555,8 @@ public final class BioFormatsEngine implements ConversionEngine {
         }
         try {
             var opened = new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key);
-            var raced = directReaders.putIfAbsent(key, opened);
-            return raced == null ? opened : raced;
+            directReaders.put(key, opened);
+            return opened;
         } catch (ReflectiveOperationException error) {
             throw new IOException("Bio-Formats direct viewer could not open the slide", error);
         }
@@ -690,6 +694,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         private final URLClassLoader loader;
         private final Object reader;
         private final Class<?> readerClass;
+        private final Object metadata;
 
         private DirectReader(Path jar, Path source)
                 throws ReflectiveOperationException, IOException {
@@ -699,6 +704,10 @@ public final class BioFormatsEngine implements ConversionEngine {
             quietThirdPartyLogging(loader);
             readerClass = Class.forName("loci.formats.ImageReader", true, loader);
             reader = readerClass.getConstructor().newInstance();
+            var metadataTools = Class.forName("loci.formats.MetadataTools", true, loader);
+            metadata = metadataTools.getMethod("createOMEXMLMetadata").invoke(null);
+            var metadataStore = Class.forName("loci.formats.meta.MetadataStore", true, loader);
+            readerClass.getMethod("setMetadataStore", metadataStore).invoke(reader, metadata);
             invoke("setFlattenedResolutions", new Class<?>[] {boolean.class}, false);
             invoke("setId", new Class<?>[] {String.class}, source.toString());
         }
@@ -714,6 +723,81 @@ public final class BioFormatsEngine implements ConversionEngine {
                 logger.getClass().getMethod("setLevel", levelClass).invoke(logger, warn);
             } catch (ReflectiveOperationException | LinkageError ignored) {
                 // Logging is optional; reader availability must not depend on its implementation.
+            }
+        }
+
+        private synchronized List<SeriesInfo> inspect() throws IOException {
+            try {
+                var count = (int) invoke("getSeriesCount", new Class<?>[0]);
+                var result = new ArrayList<SeriesInfo>(count);
+                for (var seriesIndex = 0; seriesIndex < count; seriesIndex++) {
+                    invoke("setSeries", new Class<?>[] {int.class}, seriesIndex);
+                    var scale = physicalScale(seriesIndex);
+                    result.add(new SeriesInfo(
+                            seriesIndex,
+                            imageName(seriesIndex),
+                            (int) invoke("getSizeX", new Class<?>[0]),
+                            (int) invoke("getSizeY", new Class<?>[0]),
+                            (int) invoke("getSizeC", new Class<?>[0]),
+                            (int) invoke("getSizeZ", new Class<?>[0]),
+                            (int) invoke("getSizeT", new Class<?>[0]),
+                            pixelType(),
+                            scale.x(),
+                            scale.y(),
+                            scale.unit(),
+                            (int) invoke("getResolutionCount", new Class<?>[0])));
+                }
+                return List.copyOf(result);
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not inspect the slide", error);
+            }
+        }
+
+        private String imageName(int seriesIndex) {
+            try {
+                var value = metadata.getClass()
+                        .getMethod("getImageName", int.class)
+                        .invoke(metadata, seriesIndex);
+                if (value instanceof String name && !name.isBlank()) {
+                    return name;
+                }
+            } catch (ReflectiveOperationException ignored) {
+                // A stable fallback is sufficient when the format omits an image name.
+            }
+            return "Image " + (seriesIndex + 1);
+        }
+
+        private String pixelType() {
+            try {
+                var type = (int) invoke("getPixelType", new Class<?>[0]);
+                var formatTools = Class.forName("loci.formats.FormatTools", true, loader);
+                return (String) formatTools
+                        .getMethod("getPixelTypeString", int.class)
+                        .invoke(null, type);
+            } catch (ReflectiveOperationException error) {
+                return "";
+            }
+        }
+
+        private PhysicalScale physicalScale(int seriesIndex) {
+            try {
+                var x = metadata.getClass()
+                        .getMethod("getPixelsPhysicalSizeX", int.class)
+                        .invoke(metadata, seriesIndex);
+                var y = metadata.getClass()
+                        .getMethod("getPixelsPhysicalSizeY", int.class)
+                        .invoke(metadata, seriesIndex);
+                if (x == null || y == null) {
+                    return PhysicalScale.UNKNOWN;
+                }
+                var xValue = ((Number) x.getClass().getMethod("value").invoke(x)).doubleValue();
+                var yValue = ((Number) y.getClass().getMethod("value").invoke(y)).doubleValue();
+                var unit = x.getClass().getMethod("unit").invoke(x);
+                var symbol = String.valueOf(
+                        unit.getClass().getMethod("getSymbol").invoke(unit));
+                return new PhysicalScale(xValue, yValue, symbol);
+            } catch (ReflectiveOperationException | ClassCastException error) {
+                return PhysicalScale.UNKNOWN;
             }
         }
 
@@ -796,5 +880,9 @@ public final class BioFormatsEngine implements ConversionEngine {
                 throw error;
             }
         }
+    }
+
+    private record PhysicalScale(double x, double y, String unit) {
+        private static final PhysicalScale UNKNOWN = new PhysicalScale(0, 0, "");
     }
 }
