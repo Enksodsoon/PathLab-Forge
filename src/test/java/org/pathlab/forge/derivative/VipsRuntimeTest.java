@@ -5,8 +5,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class VipsRuntimeTest {
+    @TempDir
+    Path temporaryDirectory;
+
     @Test
     void usesQuPathSizedQualityForWholeSlidesAndHigherQualityForCrops() {
         assertEquals(75, VipsRuntime.omeJpegQuality(82_922, 45_367));
@@ -15,12 +19,20 @@ class VipsRuntimeTest {
 
     @Test
     void serializesRegionPathsForTheVipsArrayParserIncludingSpaces() {
-        var serialized = VipsRuntime.serializeImageArray(List.of(
-                Path.of("C:\\Temp Folder\\region-00.ome.tif"),
-                Path.of("C:\\Temp Folder\\region-01.ome.tif")));
+        var first = temporaryDirectory.resolve("Temp Folder").resolve("region-00.ome.tif");
+        var second = temporaryDirectory.resolve("Temp Folder").resolve("region-01.ome.tif");
+        var serialized = VipsRuntime.serializeImageArray(List.of(first, second));
 
         assertEquals(
-                "C:/Temp\\ Folder/region-00.ome.tif C:/Temp\\ Folder/region-01.ome.tif",
+                escaped(first) + " " + escaped(second),
                 serialized);
+    }
+
+    private static String escaped(Path path) {
+        return path.toAbsolutePath()
+                .normalize()
+                .toString()
+                .replace('\\', '/')
+                .replace(" ", "\\ ");
     }
 }
