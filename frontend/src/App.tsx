@@ -301,7 +301,11 @@ export function App() {
 
   return (
     <>
-      <div className={`forge-canvas-host${inspectorOpen ? '' : ' inspector-collapsed'}`}>
+      <div className={[
+        'forge-canvas-host',
+        navigatorOpen ? '' : 'navigator-collapsed',
+        inspectorOpen ? '' : 'inspector-collapsed',
+      ].filter(Boolean).join(' ')}>
         <ViewerCanvasShell
           rail={rail}
           railExpanded={railExpanded}
@@ -314,6 +318,10 @@ export function App() {
               onSelect={setSelectedId}
               onImport={() => setImportOpen(true)}
               onConnect={connect}
+              onCollapse={() => {
+                setNavigatorOpen(false)
+                window.requestAnimationFrame(() => navigatorButtonRef.current?.focus())
+              }}
             />
           )}
           stage={(
@@ -506,18 +514,30 @@ function SlideNavigator({
   onSelect,
   onImport,
   onConnect,
+  onCollapse,
 }: {
   datasets: Dataset[]
   selectedId: string
   onSelect: (id: string) => void
   onImport: () => void
   onConnect: () => void
+  onCollapse: () => void
 }) {
   return (
     <div className="forge-navigator">
       <header>
         <div><span>Local workspace</span><strong>Slide library</strong></div>
-        <button type="button" onClick={onImport}><FolderOpen /> Import</button>
+        <div className="forge-navigator-actions">
+          <button
+            type="button"
+            aria-label="Collapse slide library"
+            title="Collapse slide library"
+            onClick={onCollapse}
+          >
+            <SidebarSimple />
+          </button>
+          <button type="button" onClick={onImport}><FolderOpen /> Import</button>
+        </div>
       </header>
       <label className="forge-search">
         <span className="visually-hidden">Search local slides</span>
