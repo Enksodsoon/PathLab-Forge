@@ -38,4 +38,13 @@ public interface ConversionEngine {
         }
         convert(request.source(), request.seriesIndex(), output);
     }
+
+    default boolean supportsParallelRegions() {
+        return false;
+    }
+
+    default List<Path> convertRegions(
+            ConversionRequest request, Path outputDirectory, int workers) throws IOException {
+        throw new IOException("This conversion engine does not support parallel regions");
+    }
 }

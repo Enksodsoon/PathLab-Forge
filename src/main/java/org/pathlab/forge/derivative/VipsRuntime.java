@@ -92,6 +92,35 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     @Override
+    public void assembleRegions(List<Path> regions, Path renderedOme) throws IOException {
+        requireAvailable();
+        if (regions.size() < 2) {
+            throw new IllegalArgumentException("At least two rendered regions are required");
+        }
+        for (var region : regions) {
+            requireNonempty(region, "rendered RGB region");
+        }
+        run(List.of(
+                "arrayjoin",
+                serializeImageArray(regions),
+                renderedOme + "[tile,tile-width=512,tile-height=512,"
+                        + "compression=jpeg,Q=95,bigtiff]",
+                "--across",
+                "1"));
+        requireNonempty(renderedOme, "assembled rendered OME-TIFF");
+    }
+
+    static String serializeImageArray(List<Path> paths) {
+        if (paths.isEmpty()) {
+            throw new IllegalArgumentException("Image array is empty");
+        }
+        return paths.stream()
+                .map(path -> path.toAbsolutePath().normalize().toString().replace('\\', '/'))
+                .map(path -> path.replace(" ", "\\ "))
+                .collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    @Override
     public void optimizeOme(Path renderedOme, Path pyramidalOme, int width, int height)
             throws IOException {
         requireAvailable();

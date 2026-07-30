@@ -173,7 +173,7 @@ export function App() {
     try {
       const updated = await api.convert(selected.id)
       setDatasets((current) => current.map((item) => item.id === updated.id ? updated : item))
-      setNotice('Conversion started with bounded tiled I/O')
+      setNotice(updated.detail)
     } catch (nextError) {
       setError(message(nextError))
     }
@@ -984,6 +984,7 @@ function ExportInspector({
           ? `${series.length} top-level image${series.length === 1 ? '' : 's'} · ${series.reduce((total, item) => total + item.resolutionCount, 0)} flattened resolution${series.reduce((total, item) => total + item.resolutionCount, 0) === 1 ? '' : 's'}`
           : dataset.detail}
       </p>
+      {series.length ? <p className="forge-help" role="status">{dataset.detail}</p> : null}
       <div className="forge-action-stack">
         {ACTIVE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
