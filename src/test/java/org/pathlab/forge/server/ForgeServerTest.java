@@ -5,13 +5,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.CookieManager;
 import java.net.CookiePolicy;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Path;
+import org.junit.jupiter.api.io.TempDir;
+import org.pathlab.forge.library.PropertiesDatasetRepository;
 import org.junit.jupiter.api.Test;
 
 final class ForgeServerTest {
+    @TempDir
+    Path temp;
+
     @Test
     void bootstrapsOneTimeSessionAndServesPathLabShell() throws Exception {
         var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
@@ -20,15 +28,14 @@ final class ForgeServerTest {
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
 
-        try (var server = ForgeServer.start()) {
+        try (var server = startEphemeral()) {
             var bootstrap = client.send(
                     HttpRequest.newBuilder(server.launchUri()).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(303, bootstrap.statusCode());
             assertEquals("/app", bootstrap.headers().firstValue("location").orElseThrow());
             assertTrue(bootstrap.headers().firstValue("set-cookie").orElseThrow()
-                    .contains("HttpOnly; SameSite=Strict"));
-
+                    .contains("Max-Age=315360000; HttpOnly; SameSite=Strict"));
             var reused = client.send(
                     HttpRequest.newBuilder(server.launchUri()).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
@@ -65,7 +72,7 @@ final class ForgeServerTest {
         var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         var client = HttpClient.newBuilder().cookieHandler(cookies).build();
 
-        try (var server = ForgeServer.start()) {
+        try (var server = startEphemeral()) {
             client.send(
                     HttpRequest.newBuilder(server.launchUri()).GET().build(),
                     HttpResponse.BodyHandlers.discarding());
@@ -92,6 +99,56 @@ final class ForgeServerTest {
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(201, accepted.statusCode());
             assertTrue(accepted.body().contains("\"state\":\"staged\""));
+        }
+    }
+
+    @Test
+    void fixedAddressAndAuthorizedBrowserSurviveServerRestart() throws Exception {
+        var sessionFile = temp.resolve("browser-session.token");
+        var sessionToken = LocalBrowserSession.loadOrCreate(sessionFile);
+        assertEquals(sessionToken, LocalBrowserSession.loadOrCreate(sessionFile));
+
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder()
+                .cookieHandler(cookies)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        var port = availableLoopbackPort();
+        URI permanentUri;
+
+        try (var first = startOnPort(port, sessionToken)) {
+            permanentUri = first.appUri();
+            var bootstrap = client.send(
+                    HttpRequest.newBuilder(first.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            assertEquals(303, bootstrap.statusCode());
+            assertEquals("http://127.0.0.1:" + port + "/app", permanentUri.toString());
+        }
+
+        try (var restarted = startOnPort(port, LocalBrowserSession.loadOrCreate(sessionFile))) {
+            assertEquals(permanentUri, restarted.appUri());
+            var app = client.send(
+                    HttpRequest.newBuilder(permanentUri).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, app.statusCode());
+            assertTrue(app.body().contains("<div id=\"root\"></div>"));
+        }
+    }
+
+    private ForgeServer startEphemeral() throws Exception {
+        return startOnPort(0, LocalBrowserSession.randomToken());
+    }
+
+    private ForgeServer startOnPort(int port, String sessionToken) throws Exception {
+        var repository =
+                new PropertiesDatasetRepository(temp.resolve("library-" + port + ".properties"));
+        return ForgeServer.startOnPort(
+                repository, java.util.List::of, temp.resolve("managed-" + port), port, sessionToken);
+    }
+
+    private static int availableLoopbackPort() throws Exception {
+        try (var socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            return socket.getLocalPort();
         }
     }
 }
