@@ -14,8 +14,10 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
@@ -140,6 +142,94 @@ public final class BioFormatsEngine implements ConversionEngine {
         var selected = requireSeries(request.source(), request.seriesIndex());
         var resolution = selectResolution(selected, request.downsample());
         var crop = scaleCrop(request, resolution);
+        convertRegion(request, resolution, crop, output);
+    }
+
+    @Override
+    public boolean supportsParallelRegions() {
+        return available();
+    }
+
+    @Override
+    public List<Path> convertRegions(
+            ConversionRequest request, Path outputDirectory, int workers) throws IOException {
+        requireAvailable();
+        if (workers < 2) {
+            throw new IllegalArgumentException("Parallel rendering requires at least two workers");
+        }
+        Files.createDirectories(outputDirectory);
+        var selected = requireSeries(request.source(), request.seriesIndex());
+        var resolution = selectResolution(selected, request.downsample());
+        var crop = scaleCrop(request, resolution);
+        var regions = planRegions(crop.x(), crop.y(), crop.width(), crop.height(), workers);
+        var executor = Executors.newFixedThreadPool(regions.size(), runnable -> {
+            var thread = new Thread(runnable, "pathlab-bioformats-region");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            var tasks = new ArrayList<java.util.concurrent.Callable<Path>>();
+            for (var index = 0; index < regions.size(); index++) {
+                var region = regions.get(index);
+                var output = outputDirectory.resolve("region-%02d.ome.tif".formatted(index));
+                tasks.add(() -> {
+                    convertRegion(
+                            request,
+                            resolution,
+                            new ScaledCrop(
+                                    region.x(),
+                                    region.y(),
+                                    region.width(),
+                                    region.height(),
+                                    false),
+                            output);
+                    return output;
+                });
+            }
+            var futures = executor.invokeAll(tasks);
+            var outputs = new ArrayList<Path>(futures.size());
+            for (var future : futures) {
+                try {
+                    outputs.add(future.get());
+                } catch (ExecutionException error) {
+                    var cause = error.getCause();
+                    if (cause instanceof IOException io) {
+                        throw io;
+                    }
+                    throw new IOException("Parallel Bio-Formats rendering failed", cause);
+                }
+            }
+            return List.copyOf(outputs);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Parallel Bio-Formats rendering was interrupted", error);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    static List<RenderRegion> planRegions(
+            int x, int y, int width, int height, int requestedWorkers) {
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 || requestedWorkers <= 0) {
+            throw new IllegalArgumentException("Parallel render geometry is invalid");
+        }
+        var workers = Math.min(requestedWorkers, height);
+        var baseHeight = height / workers;
+        var remainder = height % workers;
+        var regions = new ArrayList<RenderRegion>(workers);
+        var nextY = y;
+        for (var index = 0; index < workers; index++) {
+            var regionHeight = baseHeight + (index < remainder ? 1 : 0);
+            regions.add(new RenderRegion(x, nextY, width, regionHeight));
+            nextY += regionHeight;
+        }
+        return List.copyOf(regions);
+    }
+
+    private void convertRegion(
+            ConversionRequest request, Resolution resolution, ScaledCrop crop, Path output)
+            throws IOException {
+        Files.createDirectories(output.toAbsolutePath().normalize().getParent());
         var arguments = new ArrayList<>(List.of(
                 "-no-upgrade",
                 "-series",
@@ -163,7 +253,8 @@ public final class BioFormatsEngine implements ConversionEngine {
                 request.source().toString(),
                 output.toString()));
         var result = run(
-                command(
+                commandWithHeap(
+                        "640m",
                         "loci.formats.tools.ImageConverter",
                         arguments),
                 CONVERSION_TIMEOUT,
@@ -346,6 +437,11 @@ public final class BioFormatsEngine implements ConversionEngine {
     }
 
     private List<String> command(String mainClass, List<String> arguments) {
+        return commandWithHeap(null, mainClass, arguments);
+    }
+
+    private List<String> commandWithHeap(
+            String maximumHeap, String mainClass, List<String> arguments) {
         var command = new ArrayList<String>();
         command.add(Path.of(
                         System.getProperty("java.home"),
@@ -355,6 +451,9 @@ public final class BioFormatsEngine implements ConversionEngine {
         command.add("-Dfile.encoding=UTF-8");
         command.add("-Dsun.stdout.encoding=UTF-8");
         command.add("-Dsun.stderr.encoding=UTF-8");
+        if (maximumHeap != null) {
+            command.add("-Xmx" + maximumHeap);
+        }
         command.add("-cp");
         command.add(runtimeRoot.resolve("bioformats_package.jar").toString());
         command.add(mainClass);

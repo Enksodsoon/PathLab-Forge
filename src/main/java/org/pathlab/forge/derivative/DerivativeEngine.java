@@ -2,6 +2,7 @@ package org.pathlab.forge.derivative;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 import org.pathlab.forge.conversion.ConversionRequest;
 
 public interface DerivativeEngine {
@@ -15,6 +16,10 @@ public interface DerivativeEngine {
 
     default void renderOme(ConversionRequest request, Path output) throws IOException {
         throw new IOException("OME rendering is unavailable");
+    }
+
+    default void assembleRegions(List<Path> regions, Path renderedOme) throws IOException {
+        throw new IOException("Rendered-region assembly is unavailable");
     }
 
     void optimizeOme(Path renderedOme, Path pyramidalOme, int width, int height)

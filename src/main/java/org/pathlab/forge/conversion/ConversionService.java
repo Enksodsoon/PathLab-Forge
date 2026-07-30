@@ -28,6 +28,8 @@ import org.pathlab.forge.packageformat.PackageMetadata;
 public final class ConversionService implements AutoCloseable {
     private static final int PREVIEW_DOWNSAMPLE = 2;
     private static final String PREVIEW_CACHE_VERSION = "efficient-rgb-2x-v4";
+    private static final long PARALLEL_RGB_MINIMUM_PIXELS = 250_000_000L;
+    private static final int DEFAULT_PARALLEL_RGB_WORKERS = 11;
     private final DatasetRepository repository;
     private final ConversionEngine engine;
     private final DerivativeEngine derivativeEngine;
@@ -479,17 +481,43 @@ public final class ConversionService implements AutoCloseable {
                 .anyMatch(item -> !item.getKey().equals(id) && !item.getValue().isDone())) {
             throw new IllegalStateException("Another conversion is already active");
         }
+        verifySourceFingerprint(dataset);
+        var request = request(dataset);
+        var reusable = reusableArtifact(dataset, request);
+        if (reusable != null) {
+            var detail = "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
+            var cached = reusable.id().equals(dataset.currentArtifactRevision())
+                    ? dataset.withConversion(
+                            DatasetStatus.PACKAGE_READY,
+                            detail,
+                            reusable.omePath(),
+                            reusable.omeSha256(),
+                            dataset.selectedSeries(),
+                            dataset.width(),
+                            dataset.height(),
+                            dataset.downsample(),
+                            dataset.estimatedOutputBytes())
+                    : dataset.withArtifactRevision(
+                            DatasetStatus.PACKAGE_READY,
+                            detail,
+                            reusable.omePath(),
+                            reusable.omeSha256(),
+                            reusable.id());
+            repository.save(cached);
+            return cached;
+        }
         Files.createDirectories(managedRoot);
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 dataset.estimatedOutputBytes());
-        verifySourceFingerprint(dataset);
-        var request = request(dataset);
         var revision = artifactRepository.create(
                 dataset, request.outputWidth(), request.outputHeight());
         var converting = dataset.withArtifactRevision(
                 DatasetStatus.CONVERTING,
-                "Exporting QuPath-style rendered RGB with JPEG compression",
+                useParallelRgb(dataset, request)
+                        ? "Lightning RGB: decoding "
+                                + parallelRgbWorkers() + " image regions in parallel"
+                        : "Exporting QuPath-style rendered RGB with JPEG compression",
                 "",
                 "",
                 revision.id());
@@ -497,6 +525,48 @@ public final class ConversionService implements AutoCloseable {
         cancelled.remove(id);
         activeConversions.put(id, conversionExecutor.submit(() -> convert(converting)));
         return converting;
+    }
+
+    private ArtifactRevision reusableArtifact(
+            LocalDataset dataset, ConversionRequest request) throws IOException {
+        if (!dataset.currentArtifactRevision().isBlank()) {
+            var current = artifactRepository
+                    .find(dataset.id(), dataset.currentArtifactRevision())
+                    .orElse(null);
+            if (current != null && isReusableArtifact(dataset, request, current)) {
+                return current;
+            }
+        }
+        for (var historical : artifactRepository.list(dataset.id())) {
+            if (isReusableArtifact(dataset, request, historical)) {
+                return historical;
+            }
+        }
+        return null;
+    }
+
+    static boolean isReusableArtifact(
+            LocalDataset dataset, ConversionRequest request, ArtifactRevision revision)
+            throws IOException {
+        if (!revision.configurationRevision().equals(dataset.configurationRevision())
+                || !revision.sourceFingerprint().equals(dataset.sourceFingerprint())
+                || revision.outputWidth() != request.outputWidth()
+                || revision.outputHeight() != request.outputHeight()
+                || (revision.status() != ArtifactRevisionStatus.READY
+                        && revision.status() != ArtifactRevisionStatus.APPROVED)
+                || revision.omeSha256().isBlank()
+                || revision.packageSha256().isBlank()) {
+            return false;
+        }
+        var ome = Path.of(revision.omePath());
+        var derivative = Path.of(revision.derivativePath());
+        var preparedPackage = Path.of(revision.packagePath());
+        return Files.isRegularFile(ome)
+                && Files.isRegularFile(derivative.resolve("slide.dzi"))
+                && Files.isRegularFile(derivative.resolve("thumbnail.jpg"))
+                && Files.isRegularFile(preparedPackage)
+                && revision.omeSha256().equals(sha256(ome))
+                && revision.packageSha256().equals(sha256(preparedPackage));
     }
 
     public LocalDataset cancel(String id) throws IOException {
@@ -556,6 +626,7 @@ public final class ConversionService implements AutoCloseable {
         var rendered = output.resolveSibling("render.partial.ome.tif");
         var derivativePartial = outputDirectory.resolve("derivative.partial");
         var derivative = outputDirectory.resolve("derivative");
+        Path regionRoot = null;
         try {
             Files.createDirectories(outputDirectory);
             Files.deleteIfExists(partial);
@@ -564,6 +635,23 @@ public final class ConversionService implements AutoCloseable {
             if (dataset.format() == DatasetFormat.OME_TIFF
                     && derivativeEngine.supportsOmeRendering()) {
                 derivativeEngine.renderOme(request, rendered);
+            } else if (useParallelRgb(dataset, request)) {
+                regionRoot = Files.createTempDirectory("pathlab-forge-rgb-regions-");
+                var regions =
+                        engine.convertRegions(request, regionRoot, parallelRgbWorkers());
+                repository.save(dataset.withConversion(
+                        DatasetStatus.CONVERTING,
+                        "Parallel RGB decode complete; assembling exact slide geometry",
+                        dataset.outputPath(),
+                        dataset.sha256(),
+                        dataset.selectedSeries(),
+                        dataset.width(),
+                        dataset.height(),
+                        dataset.downsample(),
+                        dataset.estimatedOutputBytes()));
+                derivativeEngine.assembleRegions(regions, rendered);
+                deleteTree(regionRoot);
+                regionRoot = null;
             } else {
                 engine.convert(request, rendered);
             }
@@ -687,6 +775,10 @@ public final class ConversionService implements AutoCloseable {
             try {
                 Files.deleteIfExists(partial);
                 Files.deleteIfExists(rendered);
+                if (regionRoot != null) {
+                    deleteTree(regionRoot);
+                    regionRoot = null;
+                }
                 deleteTree(outputDirectory, derivativePartial);
                 if (cancelled.remove(dataset.id())) {
                     repository.save(dataset.withPreparation(
@@ -711,8 +803,50 @@ public final class ConversionService implements AutoCloseable {
                 // The original conversion error remains the useful diagnostic.
             }
         } finally {
+            if (regionRoot != null) {
+                try {
+                    deleteTree(regionRoot);
+                } catch (IOException ignored) {
+                    // A cancelled Bio-Formats process may release its final handle shortly.
+                }
+            }
             activeConversions.remove(dataset.id());
         }
+    }
+
+    private boolean useParallelRgb(LocalDataset dataset, ConversionRequest request) {
+        return shouldUseParallelRgb(
+                dataset.format(),
+                engine.supportsParallelRegions(),
+                derivativeEngine.available(),
+                parallelRgbWorkers(),
+                request);
+    }
+
+    static boolean shouldUseParallelRgb(
+            DatasetFormat format,
+            boolean engineSupportsParallelRegions,
+            boolean derivativeAvailable,
+            int workers,
+            ConversionRequest request) {
+        return format == DatasetFormat.VSI
+                && engineSupportsParallelRegions
+                && derivativeAvailable
+                && workers >= 2
+                && (long) request.outputWidth() * request.outputHeight()
+                        >= PARALLEL_RGB_MINIMUM_PIXELS;
+    }
+
+    private static int parallelRgbWorkers() {
+        var configured = Integer.getInteger(
+                "pathlab.forge.rgb.workers", DEFAULT_PARALLEL_RGB_WORKERS);
+        var stableProcessorLimit =
+                Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        return Math.max(
+                1,
+                Math.min(
+                        Math.min(configured, 12),
+                        stableProcessorLimit));
     }
 
     private void failRevision(LocalDataset dataset, ArtifactRevision revision, Exception error) {
