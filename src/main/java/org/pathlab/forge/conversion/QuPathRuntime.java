@@ -11,12 +11,13 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongConsumer;
 import java.util.stream.Stream;
 import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.runtime.ChildProcessContainment;
 
 final class QuPathRuntime {
-    static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 1_500_000_000L;
+    static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 250_000_000L;
     static final long STANDARD_SECONDS_BUDGET_PIXELS = 80_000_000L;
     private static final long UNCOMPRESSED_PIXEL_LIMIT = 200_000_000L;
     private static final Duration EXPORT_STALL_TIMEOUT = Duration.ofMinutes(2);
@@ -57,6 +58,11 @@ final class QuPathRuntime {
     }
 
     void writePyramidalOme(ConversionRequest request, Path output) throws IOException {
+        writePyramidalOme(request, output, ignored -> {});
+    }
+
+    void writePyramidalOme(
+            ConversionRequest request, Path output, LongConsumer outputBytes) throws IOException {
         if (!available()) {
             throw new IOException("The QuPath direct writer is unavailable");
         }
@@ -80,6 +86,7 @@ final class QuPathRuntime {
                 if (currentBytes != observedBytes) {
                     observedBytes = currentBytes;
                     lastActivity = System.nanoTime();
+                    outputBytes.accept(currentBytes);
                 }
                 var now = System.nanoTime();
                 if (now - lastActivity > EXPORT_STALL_TIMEOUT.toNanos()) {
@@ -106,6 +113,20 @@ final class QuPathRuntime {
             Thread.currentThread().interrupt();
             throw new IOException("QuPath direct OME export was interrupted", error);
         }
+    }
+
+    static double fastProfileDownsample(ConversionRequest request) {
+        for (var candidate : List.of(1.0, 1.5, 2.0, 4.0, 8.0, 16.0, 32.0)) {
+            if (candidate < request.downsample()) {
+                continue;
+            }
+            var width = Math.max(1L, (long) Math.floor(request.cropWidth() / candidate));
+            var height = Math.max(1L, (long) Math.floor(request.cropHeight() / candidate));
+            if (Math.multiplyExact(width, height) <= ACCELERATED_SECONDS_BUDGET_PIXELS) {
+                return candidate;
+            }
+        }
+        return 32.0;
     }
 
     private static void terminateAndAwait(Process process) {

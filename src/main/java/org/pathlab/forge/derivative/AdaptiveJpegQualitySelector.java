@@ -19,6 +19,7 @@ final class AdaptiveJpegQualitySelector {
     private static final int ROI_ROWS = 4;
     private static final int ROI_SIZE = 256;
     private static final int WINDOW = 8;
+    static final List<Integer> QUALITIES = List.of(85, 90, 95, 100);
 
     private AdaptiveJpegQualitySelector() {}
 
@@ -29,7 +30,7 @@ final class AdaptiveJpegQualitySelector {
         }
         var regions = regions(image);
         Selection last = null;
-        for (var quality : List.of(85, 90, 95)) {
+        for (var quality : QUALITIES) {
             var candidates = regions.stream()
                     .map(region -> {
                         try {
@@ -56,7 +57,7 @@ final class AdaptiveJpegQualitySelector {
         }
         var regions = regions(image);
         Selection last = null;
-        for (var quality : List.of(85, 90, 95)) {
+        for (var quality : QUALITIES) {
             var path = encodedCandidates.get(quality);
             var candidate = path == null ? null : ImageIO.read(path.toFile());
             if (candidate == null
@@ -92,9 +93,12 @@ final class AdaptiveJpegQualitySelector {
             throw new IOException("DZI quality candidates are unavailable");
         }
         throw new IOException(
-                ("DZI JPEG quality gate failed at Q95: minimum windowed SSIM %.6f; "
+                ("DZI JPEG quality gate failed at Q%d: minimum windowed SSIM %.6f; "
                                 + "mean Delta E00 %.6f")
-                        .formatted(last.minimumWindowedSsim(), last.meanDeltaE00()));
+                        .formatted(
+                                last.quality(),
+                                last.minimumWindowedSsim(),
+                                last.meanDeltaE00()));
     }
 
     private static List<BufferedImage> regions(BufferedImage image) {

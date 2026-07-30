@@ -328,13 +328,13 @@ public final class VipsRuntime implements DerivativeEngine {
                     "1024",
                     "--size",
                     "down"));
-            for (var quality : List.of(85, 90, 95)) {
+            for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
                 var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
                 candidates.put(quality, candidate);
                 run(List.of(
                         "copy",
                         probe.toString(),
-                        candidate + "[Q=" + quality + ",strip]"));
+                        candidate + "[Q=" + quality + ",subsample-mode=off,strip]"));
             }
             var selection = AdaptiveJpegQualitySelector.select(probe, candidates);
             Files.deleteIfExists(probe);
@@ -352,7 +352,7 @@ public final class VipsRuntime implements DerivativeEngine {
                     "--overlap",
                     "1",
                     "--suffix",
-                    ".jpg[Q=" + selection.quality() + ",strip]",
+                    ".jpg[Q=" + selection.quality() + ",subsample-mode=off,strip]",
                     "--depth",
                     "onepixel",
                     "--region-shrink",

@@ -668,6 +668,44 @@ public final class ConversionService implements AutoCloseable {
         }
         verifySourceFingerprint(dataset);
         var request = request(dataset);
+        var secondsBudgetEnabled = Boolean.parseBoolean(
+                System.getProperty("pathlab.forge.secondsBudget.enabled", "true"));
+        if (secondsBudgetEnabled
+                && Boolean.parseBoolean(
+                        System.getProperty("pathlab.forge.fastProfile.enabled", "true"))) {
+            var fastDownsample = QuPathRuntime.fastProfileDownsample(request);
+            if (fastDownsample > dataset.downsample()) {
+                var previousDownsample = dataset.downsample();
+                var fastRequest = new ConversionRequest(
+                        Path.of(dataset.sourcePath()),
+                        dataset.selectedSeries(),
+                        dataset.cropX(),
+                        dataset.cropY(),
+                        dataset.cropWidth(),
+                        dataset.cropHeight(),
+                        dataset.width(),
+                        dataset.height(),
+                        fastDownsample);
+                dataset = dataset.withExportConfiguration(
+                        DatasetStatus.READY_TO_CONVERT,
+                        "Fast one-minute profile adjusted "
+                                + previousDownsample
+                                + "x to "
+                                + fastDownsample
+                                + "x for this export area",
+                        dataset.selectedSeries(),
+                        dataset.width(),
+                        dataset.height(),
+                        fastDownsample,
+                        fastRequest.estimatedRgbPyramidBytes(),
+                        dataset.cropX(),
+                        dataset.cropY(),
+                        dataset.cropWidth(),
+                        dataset.cropHeight());
+                repository.save(dataset);
+                request = fastRequest;
+            }
+        }
         var reusable = reusableArtifact(dataset, request);
         if (reusable != null) {
             var detail = "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
@@ -701,8 +739,7 @@ public final class ConversionService implements AutoCloseable {
             repository.save(cached);
             return cached;
         }
-        if (Boolean.parseBoolean(
-                System.getProperty("pathlab.forge.secondsBudget.enabled", "false"))) {
+        if (secondsBudgetEnabled) {
             QuPathRuntime.requireSecondsBudget(
                     request, quPathRuntime.supports(dataset.format()));
         }
@@ -943,7 +980,21 @@ public final class ConversionService implements AutoCloseable {
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
                 updateProgress(dataset.id(), "DIRECT_OME", 0, 1);
-                quPathRuntime.writePyramidalOme(request, partial);
+                var projectedBytes = OutputSizeEstimator.compressedOmeTiff(
+                                dataset.cropWidth(),
+                                dataset.cropHeight(),
+                                dataset.downsample(),
+                                dataset.sourceBytes(),
+                                false)
+                        .expectedBytes();
+                quPathRuntime.writePyramidalOme(
+                        request,
+                        partial,
+                        bytes -> updateProgress(
+                                dataset.id(),
+                                "DIRECT_OME",
+                                Math.min(bytes, projectedBytes),
+                                projectedBytes));
                 finalOmeWritten = true;
             } else if (dataset.format() == DatasetFormat.OME_TIFF
                     && derivativeEngine.supportsOmeRendering()) {
@@ -1179,11 +1230,7 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
             updateProgress(
                     dataset.id(), "PACKAGING", 0, derivativeInfo.fileCount());
-            var seriesInfo = inspectedSeries.getOrDefault(dataset.id(), List.of()).stream()
-                    .filter(item -> item.index() == dataset.selectedSeries())
-                    .findFirst()
-                    .orElseThrow(() -> new IOException(
-                            "Selected-series calibration is unavailable"));
+            var seriesInfo = requireSeriesInfo(dataset.id(), dataset.selectedSeries());
             var packageInfo = PreparedPackageBuilder.build(
                     derivativeInfo,
                     request.outputWidth(),

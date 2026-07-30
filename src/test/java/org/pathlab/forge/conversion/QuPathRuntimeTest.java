@@ -52,20 +52,20 @@ class QuPathRuntimeTest {
     }
 
     @Test
-    void acceptsCalibratedFullSlideAndRejectsLargerWork() {
+    void acceptsFastProfileSlideAndRejectsLargerWork() {
         var small = new ConversionRequest(
                 Path.of("slide.vsi"), 2, 0, 0, 11_336, 11_040, 11_336, 11_040, 1.5);
         var fullSlide = new ConversionRequest(
-                Path.of("slide.vsi"), 2, 0, 0, 49_941, 62_174, 49_941, 62_174, 1.5);
+                Path.of("slide.vsi"), 2, 0, 0, 20_000, 20_000, 20_000, 20_000, 1.5);
         var tooLarge = new ConversionRequest(
                 Path.of("slide.vsi"),
                 2,
                 0,
                 0,
-                103_130,
-                75_118,
-                103_130,
-                75_118,
+                49_941,
+                62_174,
+                49_941,
+                62_174,
                 1.5);
 
         QuPathRuntime.requireSecondsBudget(small, true);
@@ -73,5 +73,21 @@ class QuPathRuntimeTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> QuPathRuntime.requireSecondsBudget(tooLarge, true));
+    }
+
+    @Test
+    void selectsTheSmallestSupportedDownsampleInsideTheFastProfile() {
+        var request = new ConversionRequest(
+                Path.of("slide.vsi"),
+                2,
+                0,
+                0,
+                165_845,
+                90_735,
+                165_845,
+                90_735,
+                1.5);
+
+        assertEquals(8.0, QuPathRuntime.fastProfileDownsample(request));
     }
 }
