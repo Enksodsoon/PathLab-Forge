@@ -24,9 +24,32 @@ public final class ArtifactIntegrityStamp {
         try {
             return revision.omeSha256().equals(values.getProperty("omeSha256"))
                     && revision.packageSha256().equals(values.getProperty("packageSha256"))
+                    && revision.omeProfile().equals(values.getProperty("omeProfile", ""))
+                    && revision.omeJpegQuality()
+                            == Integer.parseInt(values.getProperty("omeJpegQuality", "0"))
                     && unchanged(Path.of(revision.omePath()), values, "ome")
                     && unchanged(Path.of(revision.packagePath()), values, "package")
                     && unchanged(packageIndex(revision), values, "index");
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
+    }
+
+    public static boolean matchesOme(ArtifactRevision revision) throws IOException {
+        var file = stampFile(revision);
+        if (!Files.isRegularFile(file)) {
+            return false;
+        }
+        var values = new Properties();
+        try (var input = Files.newInputStream(file)) {
+            values.load(input);
+        }
+        try {
+            return revision.omeSha256().equals(values.getProperty("omeSha256"))
+                    && revision.omeProfile().equals(values.getProperty("omeProfile", ""))
+                    && revision.omeJpegQuality()
+                            == Integer.parseInt(values.getProperty("omeJpegQuality", "0"))
+                    && unchanged(Path.of(revision.omePath()), values, "ome");
         } catch (IllegalArgumentException ignored) {
             return false;
         }
@@ -37,14 +60,21 @@ public final class ArtifactIntegrityStamp {
         var preparedPackage = Path.of(revision.packagePath());
         var index = packageIndex(revision);
         requireFile(ome);
-        requireFile(preparedPackage);
-        requireFile(index);
+        var hasPackage = !revision.packageSha256().isBlank();
+        if (hasPackage) {
+            requireFile(preparedPackage);
+            requireFile(index);
+        }
         var values = new Properties();
         values.setProperty("omeSha256", revision.omeSha256());
         values.setProperty("packageSha256", revision.packageSha256());
+        values.setProperty("omeProfile", revision.omeProfile());
+        values.setProperty("omeJpegQuality", Integer.toString(revision.omeJpegQuality()));
         record(values, "ome", ome);
-        record(values, "package", preparedPackage);
-        record(values, "index", index);
+        if (hasPackage) {
+            record(values, "package", preparedPackage);
+            record(values, "index", index);
+        }
         var file = stampFile(revision);
         var partial = file.resolveSibling(FILE_NAME + ".partial");
         try (var output = Files.newOutputStream(partial)) {

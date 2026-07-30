@@ -2,7 +2,10 @@
 
 ## Current boundary
 
-PathLab Forge is a separate desktop application. It prepares browser-ready slide assets locally and communicates with PathLab Viewer through HTTPS JSON APIs plus the existing tus upload transport.
+PathLab Forge is a separate desktop application. It writes a calibrated,
+pyramidal OME-TIFF locally and communicates with PathLab Viewer through HTTPS
+JSON APIs plus resumable upload transport. A dynamic-capable Viewer stores that
+OME-TIFF as the only canonical image payload and creates tiles on demand.
 
 PathLab Viewer already has:
 
@@ -11,7 +14,7 @@ PathLab Viewer already has:
 - storage reservations and reconciliation;
 - one serial background worker with heartbeat and stale-job recovery;
 - cached private thumbnails;
-- privacy-gated publication grants and hardlinked public delivery;
+- privacy-gated publication grants and authorized dynamic delivery;
 - administrator annotations on the existing private preview;
 - bounded slide-status polling.
 
@@ -31,7 +34,7 @@ Authorization: Bearer <desktop credential>
 Expected response concepts:
 
 - desktop API version;
-- accepted `.plslide` schema versions;
+- accepted `.plslide` schema versions and ingest modes;
 - maximum package bytes;
 - package extraction limits;
 - supported package schemas and inventory formats;
@@ -41,7 +44,24 @@ Expected response concepts:
 - current usable storage;
 - tus upload endpoint.
 
-Forge checks capabilities before packaging for a server.
+Forge checks capabilities before upload. `ome-dynamic-v1` uploads the approved
+OME-TIFF directly; absent or malformed capabilities retain the prepared-v2
+fallback with 16 MiB chunks.
+
+### Direct OME reservation
+
+```text
+POST /api/v1/desktop/ome-ingests
+Authorization: Bearer <desktop credential>
+```
+
+Forge supplies the artifact revision, exact OME length and SHA-256, output
+geometry, downsample, dynamic profile, and JPEG quality. The OME is streamed
+through the same durable offset endpoint. Viewer validates the complete TIFF,
+calibration, pyramid, tiles, and hash before committing `ready_private`.
+
+No `.plslide` or persistent DZI tree is created for this path. Prepared v2 is
+built only when the connected Viewer does not advertise dynamic OME ingest.
 
 ### Prepared-slide reservation
 

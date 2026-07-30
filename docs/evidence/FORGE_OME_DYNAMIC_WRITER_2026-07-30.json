@@ -1,0 +1,66 @@
+{
+  "schema": "pathlab-forge-ome-writer-evidence/v1",
+  "measuredAt": "2026-07-30",
+  "hostProfile": {
+    "memoryGiB": 8,
+    "logicalCoreBudget": 6,
+    "operatingSystem": "Windows"
+  },
+  "fixture": {
+    "source": "private-approved-vsi",
+    "series": 2,
+    "crop": [0, 0, 165845, 90735],
+    "downsample": 1.5,
+    "outputWidth": 110563,
+    "outputHeight": 60490
+  },
+  "writer": {
+    "codec": "jpeg",
+    "jpegQuality": 75,
+    "tileSize": 512,
+    "colorSpace": "sRGB",
+    "bitsPerSample": 8
+  },
+  "factor2": {
+    "coldRuns": [
+      {
+        "elapsedMs": 481698,
+        "bytes": 532515812,
+        "subIfds": 6,
+        "observedWorkingSetBytes": 3827306496
+      }
+    ],
+    "medianElapsedMs": 481698,
+    "medianBytes": 532515812
+  },
+  "factor4": {
+    "coldRuns": [
+      {
+        "elapsedMs": 357045,
+        "bytes": 433745579,
+        "subIfds": 3
+      }
+    ],
+    "medianElapsedMs": 357045,
+    "medianBytes": 433745579
+  },
+  "selection": {
+    "pyramidFactor": 4,
+    "factor4ElapsedReductionPercent": 25.88,
+    "factor4StorageReductionPercent": 18.55,
+    "geometryMatched": true,
+    "calibrationMatched": true,
+    "sampledBaseJpegTilesByteIdentical": [true, true, true],
+    "viewerVirtualFactor2UsesGloballyAlignedResize": true
+  },
+  "gates": {
+    "factor4AtLeast5PercentFaster": true,
+    "conversionAtMost60Seconds": false,
+    "processWorkingSetAtMost4GiB": true
+  },
+  "limitations": [
+    "Only one directly comparable cold artifact per pyramid factor was available in this implementation run; three-run medians remain outstanding.",
+    "The earlier 55-57 second midpoint is not supported by these exact artifact creation timestamps; the measured factor-4 artifact took 357045 ms.",
+    "The exact 6.69-billion-pixel 1.5x VSI decode cannot meet a 60-second conversion gate on this 8 GiB six-core host."
+  ]
+}

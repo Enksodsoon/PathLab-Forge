@@ -133,6 +133,65 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     @Override
+    public void validateOmeProfile(
+            Path omeTiff,
+            int width,
+            int height,
+            OmeDynamicProfile profile,
+            int jpegQuality)
+            throws IOException {
+        validateOmeGeometry(omeTiff, width, height);
+        if (!"jpeg".equals(profile.codec())
+                || !"sRGB".equals(profile.colorSpace())
+                || profile.bitsPerSample() != 8
+                || jpegQuality < 1
+                || jpegQuality > 100) {
+            throw new IOException("Unsupported dynamic OME encoding profile");
+        }
+        requireField(omeTiff, "", "bands", "3");
+        requireField(omeTiff, "", "format", "uchar");
+        requireField(omeTiff, "", "interpretation", "srgb");
+        requireField(omeTiff, "", "tile-width", Integer.toString(profile.tileSize()));
+        requireField(omeTiff, "", "tile-height", Integer.toString(profile.tileSize()));
+        requireField(
+                omeTiff,
+                "",
+                "bits-per-sample",
+                Integer.toString(profile.bitsPerSample()));
+        var subifds = imageDimension(omeTiff, "", "n-subifds");
+        int expectedSubifds = 0;
+        int expectedWidth = width;
+        int expectedHeight = height;
+        while (Math.max(
+                        expectedWidth / profile.pyramidFactor(),
+                        expectedHeight / profile.pyramidFactor())
+                > profile.tileSize()) {
+            expectedWidth = Math.max(1, expectedWidth / profile.pyramidFactor());
+            expectedHeight = Math.max(1, expectedHeight / profile.pyramidFactor());
+            var selector = "[subifd=" + expectedSubifds + "]";
+            if (imageDimension(omeTiff, selector, "width") != expectedWidth
+                    || imageDimension(omeTiff, selector, "height") != expectedHeight) {
+                throw new IOException("Dynamic OME pyramid geometry is not factor "
+                        + profile.pyramidFactor());
+            }
+            requireField(
+                    omeTiff,
+                    selector,
+                    "tile-width",
+                    Integer.toString(profile.tileSize()));
+            requireField(
+                    omeTiff,
+                    selector,
+                    "tile-height",
+                    Integer.toString(profile.tileSize()));
+            expectedSubifds++;
+        }
+        if (subifds != expectedSubifds) {
+            throw new IOException("Dynamic OME pyramid level count is invalid");
+        }
+    }
+
+    @Override
     public void assembleRegionsFinal(
             List<Path> regions, Path pyramidalOme, int width, int height) throws IOException {
         assembleRegionsFinal(regions, pyramidalOme, width, height, 1.0);
@@ -221,6 +280,65 @@ public final class VipsRuntime implements DerivativeEngine {
         }
     }
 
+    @Override
+    public void assembleRegionsFinal(
+            List<Path> regions,
+            Path pyramidalOme,
+            int width,
+            int height,
+            double downsample,
+            OmeDynamicProfile profile,
+            int jpegQuality)
+            throws IOException {
+        requireAvailable();
+        if (regions.size() < 2 || width < 1 || height < 1) {
+            throw new IllegalArgumentException("Direct final OME geometry is invalid");
+        }
+        for (var region : regions) {
+            requireNonempty(region, "rendered RGB region");
+        }
+        var prepared = regions;
+        var resizedRoot = pyramidalOme.resolveSibling("resized-regions.partial");
+        try {
+            if (downsample != 1.0) {
+                deleteTree(resizedRoot);
+                Files.createDirectories(resizedRoot);
+                var resized = new ArrayList<Path>(regions.size());
+                var sourceHeights = new ArrayList<Integer>(regions.size());
+                for (var region : regions) {
+                    sourceHeights.add(imageDimension(region, "", "height"));
+                }
+                var targetHeights = targetRegionHeights(sourceHeights, height);
+                for (var index = 0; index < regions.size(); index++) {
+                    var output = resizedRoot.resolve("region-%02d.tif".formatted(index));
+                    run(List.of(
+                            "thumbnail",
+                            regions.get(index).toString(),
+                            output + "[tile,tile-width=" + profile.tileSize()
+                                    + ",tile-height=" + profile.tileSize()
+                                    + ",compression=jpeg,Q=" + jpegQuality
+                                    + ",bigtiff,properties=false]",
+                            Integer.toString(width),
+                            "--height",
+                            Integer.toString(targetHeights.get(index)),
+                            "--size",
+                            "force"));
+                    resized.add(output);
+                }
+                prepared = List.copyOf(resized);
+            }
+            run(List.of(
+                    "arrayjoin",
+                    serializeImageArray(prepared),
+                    pyramidalOme + omeTiffOptions(profile, jpegQuality),
+                    "--across",
+                    "1"));
+            requireNonempty(pyramidalOme, "final dynamic OME-TIFF");
+        } finally {
+            deleteTree(resizedRoot);
+        }
+    }
+
     static List<Integer> targetRegionHeights(List<Integer> sourceHeights, int targetHeight) {
         if (sourceHeights.isEmpty()
                 || targetHeight < sourceHeights.size()
@@ -252,10 +370,39 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     private int imageDimension(Path image, String field) throws IOException {
+        return imageDimension(image, "", field);
+    }
+
+    private int imageDimension(Path image, String selector, String field) throws IOException {
         var header = executable.resolveSibling(
                 java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
         return parseIntegerOutput(runCommand(
-                List.of(header.toString(), "-f", field, image.toString())));
+                List.of(header.toString(), "-f", field, image + selector)));
+    }
+
+    private void requireField(Path image, String selector, String field, String expected)
+            throws IOException {
+        var header = executable.resolveSibling(
+                java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
+        var actual = lastNonblankLine(runCommand(
+                List.of(header.toString(), "-f", field, image + selector)));
+        var normalized = actual.toLowerCase(java.util.Locale.ROOT);
+        var normalizedExpected = expected.toLowerCase(java.util.Locale.ROOT);
+        if (!expected.equalsIgnoreCase(actual)
+                && !normalized.endsWith("_" + normalizedExpected + ")")) {
+            throw new IOException("Dynamic OME " + field + " is invalid: " + actual);
+        }
+    }
+
+    static String lastNonblankLine(String output) throws IOException {
+        var lines = output.lines().toList();
+        for (var index = lines.size() - 1; index >= 0; index--) {
+            var value = lines.get(index).strip();
+            if (!value.isEmpty()) {
+                return value;
+            }
+        }
+        throw new IOException("libvips did not return an image property");
     }
 
     static int parseIntegerOutput(String output) throws IOException {
@@ -311,6 +458,17 @@ public final class VipsRuntime implements DerivativeEngine {
                     "OME JPEG quality must be one of 75, 80, 85, 90 or 93");
         }
         return quality;
+    }
+
+    static String omeTiffOptions(OmeDynamicProfile profile, int jpegQuality) {
+        if (jpegQuality < 1 || jpegQuality > 100) {
+            throw new IllegalArgumentException("OME JPEG quality is invalid");
+        }
+        return "[pyramid,tile,tile-width=" + profile.tileSize()
+                + ",tile-height=" + profile.tileSize()
+                + ",compression=" + profile.codec()
+                + ",Q=" + jpegQuality
+                + ",bigtiff,subifd,properties=false]";
     }
 
     @Override

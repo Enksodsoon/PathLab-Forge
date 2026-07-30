@@ -531,6 +531,9 @@ public final class ForgeServer implements AutoCloseable {
                     .orElseThrow(() -> new IllegalArgumentException(
                             "Dataset was not found"));
             var revision = conversionService.approvedRevision(id);
+            if (!viewerPairingService.supportsDynamicUpload(revision)) {
+                revision = conversionService.ensurePreparedPackage(id);
+            }
             respond(
                     exchange,
                     202,
@@ -1320,6 +1323,7 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"uploadedBytes\":" + upload.uploadedBytes()
                 + ",\"totalBytes\":" + upload.totalBytes()
                 + ",\"viewerSlideId\":" + json(upload.viewerSlideId())
+                + ",\"uploadMode\":" + json(upload.uploadMode())
                 + ",\"detail\":" + json(upload.detail()) + "}";
     }
 

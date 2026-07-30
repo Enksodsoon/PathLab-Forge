@@ -5,6 +5,8 @@ const state = {
   theme: localStorage.getItem('pathlab-forge-theme') || 'system',
   series: {},
   capabilities: {},
+  viewerConnection: {connected: false},
+  viewerUpload: {state: 'IDLE'},
   viewer: null,
   viewerDataset: null,
   annotations: [],
@@ -138,7 +140,7 @@ function datasetCard(dataset) {
     downsampleLabel.textContent = 'Downsample'
     const downsample = document.createElement('select')
     downsample.dataset.exportField = 'downsample'
-    ;[1, 2, 4, 8].forEach((value) => {
+    ;[1, 1.5, 2, 4, 8].forEach((value) => {
       const option = document.createElement('option')
       option.value = value
       option.textContent = `${value}×`
@@ -165,11 +167,21 @@ function datasetCard(dataset) {
   if (['LOCAL_COPY_READY', 'CONVERSION_READY', 'DZI_READY', 'PACKAGE_READY'].includes(dataset.status) && dataset.outputPath) {
     actions.append(actionButton('Copy output path', 'copy-path', dataset))
   }
-  if (['DZI_READY', 'PACKAGE_READY'].includes(dataset.status)) {
+  if (['CONVERSION_READY', 'DZI_READY', 'PACKAGE_READY'].includes(dataset.status)) {
     actions.append(actionButton('Open slide viewer', 'open-viewer', dataset))
   }
   if (dataset.status === 'PACKAGE_READY') {
     actions.append(actionButton('Download .plslide', 'download-package', dataset, true))
+  }
+  if (dataset.currentArtifactRevision &&
+      dataset.currentArtifactRevision !== dataset.approvedArtifactRevision &&
+      ['CONVERSION_READY', 'PACKAGE_READY'].includes(dataset.status)) {
+    actions.append(actionButton('Approve OME for Viewer', 'approve-artifact', dataset))
+  }
+  if (dataset.approvedArtifactRevision &&
+      dataset.approvedArtifactRevision === dataset.currentArtifactRevision &&
+      state.viewerConnection.connected) {
+    actions.append(actionButton('Upload to Viewer', 'upload-viewer', dataset))
   }
   actions.append(actionButton('Remove from library', 'remove', dataset, true))
   card.append(actions)
@@ -303,6 +315,22 @@ grid.addEventListener('click', async (event) => {
     } else if (button.dataset.action === 'download-package') {
       button.disabled = false
       window.location.assign(`/api/datasets/${encodeURIComponent(dataset.id)}/package`)
+    } else if (button.dataset.action === 'approve-artifact') {
+      await request(
+        `/api/datasets/${encodeURIComponent(dataset.id)}/artifacts/${encodeURIComponent(dataset.currentArtifactRevision)}/approve`,
+        'POST',
+      )
+      await loadDatasets('OME-TIFF approved for direct Viewer upload.')
+    } else if (button.dataset.action === 'upload-viewer') {
+      const upload = await request(
+        `/api/datasets/${encodeURIComponent(dataset.id)}/upload`,
+        'POST',
+      )
+      state.viewerUpload = upload
+      renderViewerConnection()
+      notify(upload.uploadMode === 'OME_DYNAMIC'
+        ? 'Uploading only the OME-TIFF to Viewer.'
+        : 'Viewer requires the prepared-v2 compatibility package.')
     }
   } catch (error) {
     button.disabled = false
@@ -372,6 +400,80 @@ setInterval(() => {
   }
 }, 2000)
 
+const viewerConnection = document.querySelector('[data-viewer-connection]')
+const viewerUrl = document.querySelector('[data-viewer-url]')
+const viewerComplete = document.querySelector('[data-viewer-complete]')
+const viewerRevoke = document.querySelector('[data-viewer-revoke]')
+const viewerUploadStatus = document.querySelector('[data-viewer-upload-status]')
+
+function renderViewerConnection() {
+  viewerConnection.textContent = state.viewerConnection.connected
+    ? `Connected to ${state.viewerConnection.viewerUrl}`
+    : 'Not connected'
+  viewerRevoke.hidden = !state.viewerConnection.connected
+  viewerUploadStatus.textContent = state.viewerUpload.state === 'IDLE'
+    ? 'Direct OME upload is selected when Viewer supports it.'
+    : `${state.viewerUpload.uploadMode || 'UPLOAD'} · ${state.viewerUpload.detail}`
+  render()
+}
+
+async function loadViewerConnection() {
+  try {
+    state.viewerConnection = await request('/api/viewer/connection')
+    state.viewerUpload = await request('/api/viewer/upload')
+    renderViewerConnection()
+  } catch (error) {
+    viewerConnection.textContent = error.message
+  }
+}
+
+document.querySelector('[data-viewer-connect]').addEventListener('click', async () => {
+  try {
+    const pairing = await request(
+      `/api/viewer/pairing/start?viewerUrl=${encodeURIComponent(viewerUrl.value)}`,
+      'POST',
+    )
+    viewerComplete.hidden = false
+    viewerConnection.textContent = `Enter ${pairing.userCode} in Viewer`
+    window.open(pairing.verificationUrl, '_blank', 'noopener,noreferrer')
+  } catch (error) {
+    notify(error.message)
+  }
+})
+
+viewerComplete.addEventListener('click', async () => {
+  try {
+    state.viewerConnection = await request('/api/viewer/pairing/exchange', 'POST')
+    viewerComplete.hidden = true
+    renderViewerConnection()
+    notify('PathLab Viewer connected.')
+  } catch (error) {
+    notify(error.message)
+  }
+})
+
+viewerRevoke.addEventListener('click', async () => {
+  try {
+    await request('/api/viewer/connection/revoke', 'POST')
+    state.viewerConnection = {connected: false}
+    renderViewerConnection()
+    notify('Viewer connection removed.')
+  } catch (error) {
+    notify(error.message)
+  }
+})
+
+loadViewerConnection()
+setInterval(async () => {
+  if (!['UPLOADING'].includes(state.viewerUpload.state)) return
+  try {
+    state.viewerUpload = await request('/api/viewer/upload')
+    renderViewerConnection()
+  } catch (_) {
+    // The next poll recovers transient local status failures.
+  }
+}, 1000)
+
 const viewerDialog = document.querySelector('[data-viewer-dialog]')
 const viewerElement = document.querySelector('[data-slide-viewer]')
 const annotationOverlay = document.querySelector('[data-annotation-overlay]')
@@ -394,7 +496,9 @@ async function openViewer(dataset) {
   viewerDialog.showModal()
   state.viewer = OpenSeadragon({
     element: viewerElement,
-    tileSources: `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi`,
+    tileSources: dataset.status === 'CONVERSION_READY'
+      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi`
+      : `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi`,
     showNavigationControl: false,
     showNavigator: true,
     navigatorPosition: 'BOTTOM_RIGHT',

@@ -44,6 +44,16 @@ class VipsRuntimeTest {
     }
 
     @Test
+    void dynamicOmeOptionsAreFactorTwoTiledJpegAndMetadataStripped() {
+        var options = VipsRuntime.omeTiffOptions(OmeDynamicProfile.V1, 75);
+
+        assertEquals(
+                "[pyramid,tile,tile-width=512,tile-height=512,"
+                        + "compression=jpeg,Q=75,bigtiff,subifd,properties=false]",
+                options);
+    }
+
+    @Test
     void distributesNonIntegerResampleGeometryWithoutCroppingOrAddingRows() {
         var heights = VipsRuntime.targetRegionHeights(
                 List.of(7_512, 7_512, 7_512, 7_512, 7_512, 7_512, 7_512, 7_511),
@@ -66,6 +76,7 @@ class VipsRuntimeTest {
         assertThrows(
                 IOException.class,
                 () -> VipsRuntime.parseIntegerOutput("VIPS-WARNING: no property returned"));
+        assertEquals("srgb", VipsRuntime.lastNonblankLine("VIPS-WARNING\r\nsrgb\r\n"));
     }
 
     private static String escaped(Path path) {

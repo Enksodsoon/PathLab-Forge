@@ -45,6 +45,7 @@ final class DirectFinalOmeAssemblyTest {
         repository.save(dataset);
         var directAssemblies = new AtomicInteger();
         var optimizationRewrites = new AtomicInteger();
+        var dziGenerations = new AtomicInteger();
         var observedWorkers = new AtomicInteger();
         ConversionEngine engine = new ConversionEngine() {
             @Override public boolean available() { return true; }
@@ -83,7 +84,8 @@ final class DirectFinalOmeAssemblyTest {
             @Override
             public DerivativeInfo generateDzi(Path ome, Path root, int width, int height)
                     throws IOException {
-                throw new IOException("stop after direct final OME");
+                dziGenerations.incrementAndGet();
+                throw new AssertionError("Direct OME conversion must not eagerly generate DZI");
             }
         };
 
@@ -95,7 +97,7 @@ final class DirectFinalOmeAssemblyTest {
                 service.start(dataset.id());
                 for (var attempt = 0; attempt < 200; attempt++) {
                     if (repository.find(dataset.id()).orElseThrow().status()
-                            == DatasetStatus.FAILED) {
+                            == DatasetStatus.CONVERSION_READY) {
                         break;
                     }
                     Thread.sleep(10);
@@ -111,6 +113,10 @@ final class DirectFinalOmeAssemblyTest {
 
         assertEquals(1, directAssemblies.get());
         assertEquals(0, optimizationRewrites.get());
+        assertEquals(0, dziGenerations.get());
+        assertEquals(
+                DatasetStatus.CONVERSION_READY,
+                repository.find(dataset.id()).orElseThrow().status());
         assertEquals(
                 ConversionService.parallelRgbWorkers(
                         Runtime.getRuntime().availableProcessors(), 11, false),

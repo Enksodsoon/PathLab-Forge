@@ -65,7 +65,18 @@
           <span class="status" data-queue-status>0 staged</span>
         </section>
         <section id="sync" class="sync-note">
-          <strong>Viewer sync:</strong> staged, not connected. Secure account pairing and the reviewed prepared-slide API are required before upload can be enabled.
+          <strong>Viewer sync</strong>
+          <span data-viewer-connection>Not connected</span>
+          <label>
+            Viewer URL
+            <input type="url" value="http://127.0.0.1:8000" data-viewer-url>
+          </label>
+          <div class="card-actions">
+            <button data-viewer-connect>Connect Viewer</button>
+            <button class="secondary" data-viewer-complete hidden>Complete pairing</button>
+            <button class="secondary" data-viewer-revoke hidden>Disconnect</button>
+          </div>
+          <small data-viewer-upload-status>Direct OME upload is selected when Viewer supports it.</small>
         </section>
       </main>
     </div>

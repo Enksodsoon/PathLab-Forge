@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -31,8 +32,6 @@ import org.pathlab.forge.conversion.ArtifactRevision;
 
 public final class ViewerPairingService implements AutoCloseable {
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
-    private static final int LEGACY_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
-    private static final int MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
     private static final ProxySelector DIRECT_LOOPBACK = new ProxySelector() {
         @Override
         public List<Proxy> select(URI uri) {
@@ -173,26 +172,38 @@ public final class ViewerPairingService implements AutoCloseable {
         if (credential == null) {
             throw new IllegalStateException("Connect to Viewer before uploading");
         }
-        var packagePath = Path.of(revision.packagePath());
-        if (!Files.isRegularFile(packagePath)
-                || !ArtifactIntegrityStamp.matches(revision)) {
-            throw new IllegalStateException("Approved package hash no longer matches");
+        var capabilities = viewerCapabilities(credential);
+        var dynamic = capabilities.supportsDynamicOme()
+                && "ome-dynamic-v1".equals(revision.omeProfile());
+        var artifactPath = Path.of(dynamic ? revision.omePath() : revision.packagePath());
+        var integrityMatches = dynamic
+                ? ArtifactIntegrityStamp.matchesOme(revision)
+                : ArtifactIntegrityStamp.matches(revision);
+        if (!Files.isRegularFile(artifactPath) || !integrityMatches) {
+            throw new IllegalStateException(
+                    dynamic
+                            ? "Approved OME-TIFF hash no longer matches"
+                            : "Approved package hash no longer matches");
         }
-        var total = Files.size(packagePath);
-        var manifestSha256 = tarText(packagePath, "manifest.sha256", 64);
+        var total = Files.size(artifactPath);
+        var manifestSha256 = dynamic ? "" : tarText(artifactPath, "manifest.sha256", 64);
+        var uploadMode = dynamic ? "OME_DYNAMIC" : "PREPARED_V2";
         uploadStatus = new ViewerUploadStatus(
                 "UPLOADING",
                 revision.id(),
                 0,
                 total,
                 "",
-                "Creating prepared ingest");
+                uploadMode,
+                dynamic ? "Creating direct OME ingest" : "Creating prepared ingest");
         uploadExecutor.submit(() -> upload(
                 credential,
+                capabilities,
                 displayName,
                 revision,
-                packagePath,
+                artifactPath,
                 manifestSha256,
+                dynamic,
                 annotations,
                 cropX,
                 cropY,
@@ -206,12 +217,23 @@ public final class ViewerPairingService implements AutoCloseable {
         return uploadStatus;
     }
 
+    public boolean supportsDynamicUpload(ArtifactRevision revision) throws IOException {
+        var credential = storedCredential();
+        if (credential == null) {
+            throw new IllegalStateException("Connect to Viewer before uploading");
+        }
+        return "ome-dynamic-v1".equals(revision.omeProfile())
+                && viewerCapabilities(credential).supportsDynamicOme();
+    }
+
     private void upload(
             StoredCredential credential,
+            ViewerCapabilities capabilities,
             String displayName,
             ArtifactRevision revision,
-            Path packagePath,
+            Path artifactPath,
             String manifestSha256,
+            boolean dynamic,
             List<AnnotationRecord> annotations,
             int cropX,
             int cropY,
@@ -219,30 +241,54 @@ public final class ViewerPairingService implements AutoCloseable {
             int cropHeight,
             double downsample) {
         try {
-            var length = Files.size(packagePath);
-            var manifest = tarText(packagePath, "manifest.json", 16 * 1024 * 1024);
-            var derivativeBytes = optionalLong(manifest, "derivativeBytes");
-            var derivativeFileCount = optionalLong(manifest, "fileCount");
-            var chunkBytes = uploadChunkBytes(credential);
+            var length = Files.size(artifactPath);
+            var manifest = dynamic
+                    ? ""
+                    : tarText(artifactPath, "manifest.json", 16 * 1024 * 1024);
+            var derivativeBytes = dynamic ? -1 : optionalLong(manifest, "derivativeBytes");
+            var derivativeFileCount = dynamic ? -1 : optionalLong(manifest, "fileCount");
+            var chunkBytes = capabilities.uploadChunkBytes();
             var session = activeUpload;
-            if (session == null || !session.revisionId().equals(revision.id())) {
+            var uploadMode = dynamic ? "OME_DYNAMIC" : "PREPARED_V2";
+            if (session == null
+                    || !session.revisionId().equals(revision.id())
+                    || !session.uploadMode().equals(uploadMode)) {
                 var derivativeDeclaration = derivativeBytes > 0 && derivativeFileCount > 0
                         ? ",\"derivativeBytes\":" + derivativeBytes
                                 + ",\"derivativeFileCount\":" + derivativeFileCount
                         : "";
-                var create = sendJson(
-                        credential.base().resolve("/api/v1/desktop/ingests"),
-                        "{\"displayName\":\"" + escape(displayName)
+                var createBody = dynamic
+                        ? "{\"displayName\":\"" + escape(displayName)
+                                + "\",\"artifactRevisionId\":\"" + escape(revision.id())
+                                + "\",\"omeLength\":" + length
+                                + ",\"omeSha256\":\"" + revision.omeSha256()
+                                + "\",\"profile\":\"" + escape(revision.omeProfile())
+                                + "\",\"width\":" + revision.outputWidth()
+                                + ",\"height\":" + revision.outputHeight()
+                                + ",\"downsample\":" + downsample
+                                + ",\"jpegQuality\":" + revision.omeJpegQuality() + "}"
+                        : "{\"displayName\":\"" + escape(displayName)
                                 + "\",\"artifactRevisionId\":\"" + escape(revision.id())
                                 + "\",\"packageLength\":" + length
                                 + ",\"packageSha256\":\"" + revision.packageSha256()
                                 + "\",\"manifestSha256\":\"" + manifestSha256 + "\""
-                                + derivativeDeclaration + "}",
+                                + derivativeDeclaration + "}";
+                var create = sendJson(
+                        credential.base().resolve(dynamic
+                                ? "/api/v1/desktop/ome-ingests"
+                                : "/api/v1/desktop/ingests"),
+                        createBody,
                         "Bearer " + credential.token());
-                requireStatus(create, 201, "Viewer could not create the prepared ingest");
+                requireStatus(
+                        create,
+                        201,
+                        dynamic
+                                ? "Viewer could not create the direct OME ingest"
+                                : "Viewer could not create the prepared ingest");
                 session = new ActiveUpload(
                         revision.id(),
-                        credential.base().resolve(string(create.body(), "uploadUrl")));
+                        credential.base().resolve(string(create.body(), "uploadUrl")),
+                        uploadMode);
                 activeUpload = session;
             }
             var uploadUri = session.uploadUri();
@@ -270,8 +316,8 @@ public final class ViewerPairingService implements AutoCloseable {
                         .method(
                                 "PATCH",
                                 HttpRequest.BodyPublishers.ofInputStream(
-                                        () -> new BoundedFileInputStream(
-                                                packagePath, chunkOffset, read)))
+                                                () -> new BoundedFileInputStream(
+                                                artifactPath, chunkOffset, read)))
                         .build();
                 var response = send(request);
                 requireStatus(
@@ -285,9 +331,11 @@ public final class ViewerPairingService implements AutoCloseable {
                         offset,
                         length,
                         stringOrEmpty(response.body(), "slideId"),
+                        uploadMode,
                         offset == length
-                                ? "Viewer is finalizing the prepared package"
-                                : "Uploading prepared package");
+                                ? "Viewer is finalizing the "
+                                        + (dynamic ? "OME-TIFF" : "prepared package")
+                                : "Uploading " + (dynamic ? "OME-TIFF" : "prepared package"));
             }
             if (!"READY_PRIVATE".equals(uploadStatus.state()) && offset == length) {
                 var statusUri = URI.create(
@@ -321,6 +369,7 @@ public final class ViewerPairingService implements AutoCloseable {
                                 length,
                                 length,
                                 slideId,
+                                uploadMode,
                                 annotations.isEmpty()
                                         ? "Viewer private slide is ready"
                                         : "Viewer private slide and annotations are synchronized");
@@ -345,6 +394,7 @@ public final class ViewerPairingService implements AutoCloseable {
                     uploadStatus.uploadedBytes(),
                     uploadStatus.totalBytes(),
                     uploadStatus.viewerSlideId(),
+                    uploadStatus.uploadMode(),
                     error.getMessage() == null ? "Viewer upload failed" : error.getMessage());
         }
     }
@@ -569,7 +619,7 @@ public final class ViewerPairingService implements AutoCloseable {
         }
     }
 
-    private int uploadChunkBytes(StoredCredential credential) throws IOException {
+    private ViewerCapabilities viewerCapabilities(StoredCredential credential) throws IOException {
         var request = HttpRequest.newBuilder(
                         credential.base().resolve("/api/v1/desktop/capabilities"))
                 .timeout(Duration.ofSeconds(15))
@@ -578,15 +628,21 @@ public final class ViewerPairingService implements AutoCloseable {
                 .build();
         var response = send(request);
         if (response.statusCode() == 404) {
-            return LEGACY_UPLOAD_CHUNK_BYTES;
+            return ViewerCapabilities.legacy();
         }
-        requireStatus(response, 200, "Viewer capability discovery failed");
-        var recommended = integer(response.body(), "recommendedChunkBytes");
-        var maximum = integer(response.body(), "maxChunkBytes");
-        if (recommended < 1 || maximum < 1) {
-            throw new IOException("Viewer returned invalid upload capabilities");
+        if (response.statusCode() != 200) {
+            return ViewerCapabilities.legacy();
         }
-        return Math.min(MAX_UPLOAD_CHUNK_BYTES, Math.min(recommended, maximum));
+        try {
+            var recommended = integer(response.body(), "recommendedChunkBytes");
+            var maximum = integer(response.body(), "maxChunkBytes");
+            return new ViewerCapabilities(
+                    Set.copyOf(strings(response.body(), "ingestModes")),
+                    maximum,
+                    recommended);
+        } catch (IOException | IllegalArgumentException error) {
+            return ViewerCapabilities.legacy();
+        }
     }
 
     private static long optionalLong(String json, String key) {
@@ -696,7 +752,7 @@ public final class ViewerPairingService implements AutoCloseable {
 
     private record StoredCredential(URI base, String token) {}
 
-    private record ActiveUpload(String revisionId, URI uploadUri) {}
+    private record ActiveUpload(String revisionId, URI uploadUri, String uploadMode) {}
 
     private static final class BoundedFileInputStream extends InputStream {
         private final FileChannel channel;

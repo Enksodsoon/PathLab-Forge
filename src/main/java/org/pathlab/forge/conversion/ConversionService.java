@@ -22,6 +22,7 @@ import org.pathlab.forge.library.DatasetSourceInventory;
 import org.pathlab.forge.library.DatasetStatus;
 import org.pathlab.forge.library.LocalDataset;
 import org.pathlab.forge.derivative.DerivativeEngine;
+import org.pathlab.forge.derivative.OmeDynamicProfile;
 import org.pathlab.forge.packageformat.PreparedPackageBuilder;
 import org.pathlab.forge.packageformat.PackageMetadata;
 
@@ -169,6 +170,67 @@ public final class ConversionService implements AutoCloseable {
             throw new IllegalStateException("Artifact approval is no longer valid");
         }
         return revision;
+    }
+
+    public synchronized ArtifactRevision ensurePreparedPackage(String id) throws IOException {
+        var dataset = requireDataset(id);
+        var revision = approvedRevision(id);
+        if (!revision.packageSha256().isBlank()
+                && Files.isRegularFile(Path.of(revision.packagePath()))
+                && ArtifactIntegrityStamp.matches(revision)) {
+            return revision;
+        }
+        if (!derivativeEngine.available()) {
+            throw new IllegalStateException(
+                    "This older Viewer requires libvips to build a prepared package");
+        }
+        if (!ArtifactIntegrityStamp.matchesOme(revision)) {
+            throw new IllegalStateException("Approved OME-TIFF hash no longer matches");
+        }
+        var request = request(dataset);
+        var output = Path.of(revision.omePath());
+        var outputDirectory = output.getParent();
+        var derivativePartial = outputDirectory.resolve("derivative.partial");
+        var derivative = Path.of(revision.derivativePath());
+        deleteTree(outputDirectory, derivativePartial);
+        var derivativeInfo = derivativeEngine.generateDzi(
+                output, derivativePartial, request.outputWidth(), request.outputHeight());
+        installDirectory(outputDirectory, derivativePartial, derivative);
+        derivativeInfo = new org.pathlab.forge.derivative.DerivativeInfo(
+                derivative,
+                derivativeInfo.bytes(),
+                derivativeInfo.fileCount(),
+                derivativeInfo.tileCount(),
+                derivativeInfo.sha256(),
+                derivativeInfo.ledger(),
+                derivativeInfo.jpegQuality(),
+                derivativeInfo.minimumWindowedSsim(),
+                derivativeInfo.meanDeltaE00());
+        var seriesInfo = requireSeriesInfo(dataset.id(), dataset.selectedSeries());
+        var packageInfo = PreparedPackageBuilder.build(
+                derivativeInfo,
+                request.outputWidth(),
+                request.outputHeight(),
+                new PackageMetadata(
+                        revision.id(),
+                        revision.configurationRevision(),
+                        revision.sourceFingerprint(),
+                        dataset.selectedSeries(),
+                        request.cropX(),
+                        request.cropY(),
+                        request.cropWidth(),
+                        request.cropHeight(),
+                        request.downsample(),
+                        seriesInfo.physicalSizeX(),
+                        seriesInfo.physicalSizeY(),
+                        seriesInfo.physicalUnit(),
+                        "0.1.0-rc"),
+                Path.of(revision.packagePath()));
+        deleteTree(outputDirectory, derivative);
+        var packaged = revision.withPackageSha256(packageInfo.sha256());
+        artifactRepository.save(packaged);
+        ArtifactIntegrityStamp.write(packaged);
+        return packaged;
     }
 
     public synchronized LocalPreview preview(String id) throws IOException {
@@ -448,11 +510,12 @@ public final class ConversionService implements AutoCloseable {
             throw new IllegalStateException("Artifact must pass validation before approval");
         }
         var ome = Path.of(revision.omePath());
-        var packagePath = Path.of(revision.packagePath());
         if (!Files.isRegularFile(ome)
-                || !Files.isRegularFile(packagePath)
                 || !revision.omeSha256().equals(sha256(ome))
-                || !revision.packageSha256().equals(sha256(packagePath))) {
+                || (!revision.packageSha256().isBlank()
+                        && (!Files.isRegularFile(Path.of(revision.packagePath()))
+                                || !revision.packageSha256()
+                                        .equals(sha256(Path.of(revision.packagePath())))))) {
             throw new IllegalStateException("Artifact files changed after validation");
         }
         artifactRepository.save(revision.approved(System.currentTimeMillis()));
@@ -708,11 +771,16 @@ public final class ConversionService implements AutoCloseable {
         }
         var reusable = reusableArtifact(dataset, request);
         if (reusable != null) {
-            var detail = "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
+            var omeOnly = reusable.packageSha256().isBlank();
+            var detail = omeOnly
+                    ? "Instant cache hit: verified direct-upload OME-TIFF reused"
+                    : "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
+            var readyStatus =
+                    omeOnly ? DatasetStatus.CONVERSION_READY : DatasetStatus.PACKAGE_READY;
             progress.put(
                     id,
                     new ConversionProgress(
-                            "PACKAGE_COMMITTED",
+                            omeOnly ? "OME_VERIFIED" : "PACKAGE_COMMITTED",
                             1,
                             1,
                             System.currentTimeMillis(),
@@ -721,7 +789,7 @@ public final class ConversionService implements AutoCloseable {
                             "configuration and source fingerprint matched verified artifact"));
             var cached = reusable.id().equals(dataset.currentArtifactRevision())
                     ? dataset.withConversion(
-                            DatasetStatus.PACKAGE_READY,
+                            readyStatus,
                             detail,
                             reusable.omePath(),
                             reusable.omeSha256(),
@@ -731,7 +799,7 @@ public final class ConversionService implements AutoCloseable {
                             dataset.downsample(),
                             dataset.estimatedOutputBytes())
                     : dataset.withArtifactRevision(
-                            DatasetStatus.PACKAGE_READY,
+                            readyStatus,
                             detail,
                             reusable.omePath(),
                             reusable.omeSha256(),
@@ -846,16 +914,28 @@ public final class ConversionService implements AutoCloseable {
                 || revision.outputHeight() != request.outputHeight()
                 || (revision.status() != ArtifactRevisionStatus.READY
                         && revision.status() != ArtifactRevisionStatus.APPROVED)
-                || revision.omeSha256().isBlank()
-                || revision.packageSha256().isBlank()) {
+                || revision.omeSha256().isBlank()) {
             return false;
         }
         var ome = Path.of(revision.omePath());
+        if (!Files.isRegularFile(ome)) {
+            return false;
+        }
+        if ("ome-dynamic-v1".equals(revision.omeProfile())
+                && revision.packageSha256().isBlank()) {
+            if (ArtifactIntegrityStamp.matchesOme(revision)) {
+                return true;
+            }
+            var verified = revision.omeSha256().equals(sha256(ome));
+            if (verified) {
+                ArtifactIntegrityStamp.write(revision);
+            }
+            return verified;
+        }
         var preparedPackage = Path.of(revision.packagePath());
         var packageIndex = preparedPackage.resolveSibling(
                 preparedPackage.getFileName() + ".index");
-        if (!Files.isRegularFile(ome)
-                || !Files.isRegularFile(preparedPackage)
+        if (!Files.isRegularFile(preparedPackage)
                 || !Files.isRegularFile(packageIndex)) {
             return false;
         }
@@ -1073,7 +1153,9 @@ public final class ConversionService implements AutoCloseable {
                             partial,
                             request.outputWidth(),
                             request.outputHeight(),
-                            request.downsample());
+                            request.downsample(),
+                            OmeDynamicProfile.V1,
+                            OmeDynamicProfile.V1.defaultJpegQuality());
                     finalOmeWritten = true;
                 } else {
                     derivativeEngine.assembleRegions(regions, rendered);
@@ -1111,8 +1193,12 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
             updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
             verifyTiff(partial);
-            derivativeEngine.validateOmeGeometry(
-                    partial, request.outputWidth(), request.outputHeight());
+            derivativeEngine.validateOmeProfile(
+                    partial,
+                    request.outputWidth(),
+                    request.outputHeight(),
+                    OmeDynamicProfile.V1,
+                    OmeDynamicProfile.V1.defaultJpegQuality());
             OutputSizeGuard.requireSuitable(
                     Files.size(partial),
                     dataset.sourceBytes(),
@@ -1135,8 +1221,12 @@ public final class ConversionService implements AutoCloseable {
             } else {
                 try {
                     verifyTiff(output);
-                    derivativeEngine.validateOmeGeometry(
-                            output, request.outputWidth(), request.outputHeight());
+                    derivativeEngine.validateOmeProfile(
+                            output,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            OmeDynamicProfile.V1,
+                            OmeDynamicProfile.V1.defaultJpegQuality());
                 } catch (IOException invalidOme) {
                     var quarantine = outputDirectory.resolve("quarantine");
                     Files.createDirectories(quarantine);
@@ -1164,113 +1254,13 @@ public final class ConversionService implements AutoCloseable {
                 digest = sha256(output);
                 updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
             }
-            if (!derivativeEngine.available()) {
-                repository.save(dataset.withConversion(
-                        DatasetStatus.CONVERSION_READY,
-                        "Validated RGB OME-BigTIFF ready; libvips is required for DZI",
-                        output.toString(),
-                        digest,
-                        dataset.selectedSeries(),
-                        dataset.width(),
-                        dataset.height(),
-                        dataset.downsample(),
-                        dataset.estimatedOutputBytes()));
-                return;
-            }
-            repository.save(dataset.withConversion(
-                    DatasetStatus.GENERATING_DZI,
-                    "Generating optimized Viewer-compatible DZI and thumbnail",
-                    output.toString(),
-                    digest,
-                    dataset.selectedSeries(),
-                    dataset.width(),
-                    dataset.height(),
-                    dataset.downsample(),
-                    dataset.estimatedOutputBytes()));
-            updateProgress(dataset.id(), "GENERATING_DZI", 0, 1);
-            deleteTree(outputDirectory, derivativePartial);
-            var derivativeInfo = derivativeEngine.generateDzi(
-                    output,
-                    derivativePartial,
-                    request.outputWidth(),
-                    request.outputHeight());
-            installDirectory(outputDirectory, derivativePartial, derivative);
-            derivativeInfo = new org.pathlab.forge.derivative.DerivativeInfo(
-                    derivative,
-                    derivativeInfo.bytes(),
-                    derivativeInfo.fileCount(),
-                    derivativeInfo.tileCount(),
-                    derivativeInfo.sha256(),
-                    derivativeInfo.ledger(),
-                    derivativeInfo.jpegQuality(),
-                    derivativeInfo.minimumWindowedSsim(),
-                    derivativeInfo.meanDeltaE00());
-            saveCheckpoint(
-                    checkpoints,
-                    revision,
-                    StageCheckpoint.Stage.DZI_LEDGER_VERIFIED,
-                    derivativeInfo.tileCount(),
-                    derivativeInfo.tileCount());
-            updateProgress(
-                    dataset.id(),
-                    "DZI_LEDGER_VERIFIED",
-                    derivativeInfo.tileCount(),
-                    derivativeInfo.tileCount());
-            artifactRepository.save(revision.ready(digest, ""));
-            repository.save(dataset.withConversion(
-                    DatasetStatus.DZI_READY,
-                    derivativeInfo.tileCount()
-                            + " validated DZI tiles; result is viewable while the upload package builds",
-                    output.toString(),
-                    digest,
-                    dataset.selectedSeries(),
-                    dataset.width(),
-                    dataset.height(),
-                    dataset.downsample(),
-                    dataset.estimatedOutputBytes()));
-            updateProgress(
-                    dataset.id(), "PACKAGING", 0, derivativeInfo.fileCount());
-            var seriesInfo = requireSeriesInfo(dataset.id(), dataset.selectedSeries());
-            var packageInfo = PreparedPackageBuilder.build(
-                    derivativeInfo,
-                    request.outputWidth(),
-                    request.outputHeight(),
-                    new PackageMetadata(
-                            revision.id(),
-                            revision.configurationRevision(),
-                            revision.sourceFingerprint(),
-                            dataset.selectedSeries(),
-                            request.cropX(),
-                            request.cropY(),
-                            request.cropWidth(),
-                            request.cropHeight(),
-                            request.downsample(),
-                            seriesInfo.physicalSizeX(),
-                            seriesInfo.physicalSizeY(),
-                            seriesInfo.physicalUnit(),
-                            "0.1.0-rc"),
-                    outputDirectory.resolve("slide.plslide"));
-            saveCheckpoint(
-                    checkpoints,
-                    revision,
-                    StageCheckpoint.Stage.PACKAGE_COMMITTED,
-                    derivativeInfo.fileCount(),
-                    derivativeInfo.fileCount());
-            updateProgress(
-                    dataset.id(),
-                    "PACKAGE_COMMITTED",
-                    derivativeInfo.fileCount(),
-                    derivativeInfo.fileCount());
-            deleteTree(outputDirectory, derivative);
-            var readyRevision = revision.ready(digest, packageInfo.sha256());
+            var readyRevision = revision.ready(digest, "");
             artifactRepository.save(readyRevision);
             ArtifactIntegrityStamp.write(readyRevision);
             repository.save(dataset.withConversion(
-                    DatasetStatus.PACKAGE_READY,
-                    derivativeInfo.tileCount() + " DZI tiles · "
-                            + derivativeInfo.fileCount() + " files · "
-                            + derivativeInfo.bytes() + " derivative bytes · "
-                            + packageInfo.bytes() + " package bytes; viewer and upload package ready",
+                    DatasetStatus.CONVERSION_READY,
+                    Files.size(output)
+                            + " OME-TIFF bytes; direct Viewer upload ready without a DZI copy",
                     output.toString(),
                     digest,
                     dataset.selectedSeries(),
