@@ -32,6 +32,11 @@ public interface ConversionEngine {
         throw new IOException("This conversion engine does not support direct tiles");
     }
 
+    default byte[] seriesThumbnail(Path source, int seriesIndex, int maxDimension)
+            throws IOException {
+        throw new IOException("This conversion engine does not support series thumbnails");
+    }
+
     default void convert(ConversionRequest request, Path output) throws IOException {
         if (!request.isFullSeries() || request.downsample() != 1.0) {
             throw new IOException("This conversion engine does not support crop or downsample");

@@ -69,8 +69,32 @@ public final class BioFormatsEngine implements ConversionEngine {
     @Override
     public List<SeriesInfo> inspect(Path source) throws IOException {
         requireAvailable();
-        var topLevel = inspectMetadata(source, true);
-        var flattened = inspectMetadata(source, false);
+        var executor = Executors.newFixedThreadPool(2, runnable -> {
+            var thread = new Thread(runnable, "pathlab-bioformats-metadata");
+            thread.setDaemon(true);
+            return thread;
+        });
+        List<SeriesInfo> topLevel;
+        List<SeriesInfo> flattened;
+        try {
+            var topLevelFuture = executor.submit(() -> inspectMetadata(source, true));
+            var flattenedFuture = executor.submit(() -> inspectMetadata(source, false));
+            try {
+                topLevel = topLevelFuture.get();
+                flattened = flattenedFuture.get();
+            } catch (ExecutionException error) {
+                var cause = error.getCause();
+                if (cause instanceof IOException io) {
+                    throw io;
+                }
+                throw new IOException("Bio-Formats inspection failed", cause);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Bio-Formats inspection was interrupted", error);
+            }
+        } finally {
+            executor.shutdownNow();
+        }
         var matched = new ArrayList<MatchedTop>();
         for (var top : topLevel) {
             var full = flattened.stream()
@@ -110,8 +134,6 @@ public final class BioFormatsEngine implements ConversionEngine {
                             List.copyOf(resolutions)));
         }
         flattenedSeries.put(source.toAbsolutePath().normalize(), Map.copyOf(mapping));
-        directReaders.computeIfAbsent(
-                source.toAbsolutePath().normalize(), this::openDirectReaderUnchecked);
         return topLevel.stream()
                 .map(item -> item.withResolutionCount(
                         mapping.get(item.index()).resolutions().size()))
@@ -363,6 +385,36 @@ public final class BioFormatsEngine implements ConversionEngine {
         return encodeJpeg(image, 0.92f);
     }
 
+    @Override
+    public byte[] seriesThumbnail(Path source, int seriesIndex, int maxDimension)
+            throws IOException {
+        if (maxDimension < 96 || maxDimension > 1024) {
+            throw new IllegalArgumentException("Thumbnail bound is invalid");
+        }
+        var reader = directReader(source);
+        var selected = reader.series(seriesIndex);
+        var resolution = selected.resolutions().stream()
+                .min(java.util.Comparator.comparingLong(
+                        item -> (long) item.width() * item.height()))
+                .orElseThrow(() -> new IOException("Series has no readable resolutions"));
+        var image = reader.read(
+                seriesIndex,
+                resolution.readerIndex(),
+                0,
+                0,
+                resolution.width(),
+                resolution.height());
+        var scale = Math.min(
+                1.0,
+                (double) maxDimension / Math.max(image.getWidth(), image.getHeight()));
+        var width = Math.max(1, (int) Math.round(image.getWidth() * scale));
+        var height = Math.max(1, (int) Math.round(image.getHeight() * scale));
+        if (width != image.getWidth() || height != image.getHeight()) {
+            image = resize(image, width, height);
+        }
+        return encodeJpeg(image, 0.88f);
+    }
+
     private FlatSeries requireSeries(Path source, int seriesIndex) throws IOException {
         var sourceKey = source.toAbsolutePath().normalize();
         var selected = flattenedSeries.getOrDefault(sourceKey, Map.of()).get(seriesIndex);
@@ -501,14 +553,6 @@ public final class BioFormatsEngine implements ConversionEngine {
             return raced == null ? opened : raced;
         } catch (ReflectiveOperationException error) {
             throw new IOException("Bio-Formats direct viewer could not open the slide", error);
-        }
-    }
-
-    private DirectReader openDirectReaderUnchecked(Path source) {
-        try {
-            return new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), source);
-        } catch (ReflectiveOperationException | IOException error) {
-            throw new IllegalStateException("Bio-Formats direct viewer initialization failed", error);
         }
     }
 

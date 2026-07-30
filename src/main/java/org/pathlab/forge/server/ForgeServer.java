@@ -222,6 +222,9 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/series".length()));
+            } else if (path.matches("/api/datasets/[^/]+/series/\\d+/thumbnail")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                seriesThumbnail(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/estimate")
                     && "GET".equals(exchange.getRequestMethod())) {
                 estimateDataset(
@@ -607,6 +610,33 @@ public final class ForgeServer implements AutoCloseable {
                 200,
                 "application/json",
                 seriesJson(conversionService.series(id)));
+    }
+
+    private void seriesThumbnail(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var matcher = java.util.regex.Pattern
+                .compile("/api/datasets/([^/]+)/series/(\\d+)/thumbnail")
+                .matcher(path);
+        if (!matcher.matches()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"not_found\"}");
+            return;
+        }
+        try {
+            var bytes = conversionService.seriesThumbnail(
+                    matcher.group(1), Integer.parseInt(matcher.group(2)));
+            exchange.getResponseHeaders().set("Cache-Control", "private, max-age=31536000");
+            respond(exchange, 200, "image/jpeg", bytes);
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"series_not_found\"}");
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"source_changed\",\"detail\":" + json(error.getMessage()) + "}");
+        }
     }
 
     private void selectSeries(HttpExchange exchange, String id) throws IOException {

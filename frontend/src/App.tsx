@@ -908,19 +908,42 @@ function ExportInspector({
         <button className="forge-primary" type="button" onClick={onInspect}>Inspect image series</button>
       ) : (
         <form className="forge-export-form" onSubmit={submit}>
-          <label>Image series
-            <select
-              name="series"
-              value={draft.series}
-              disabled={seriesLoading}
-              onChange={(event) => void updateSeries(event.target.value)}
-            >
-              {series.filter((item) => item.rgbPlane).map((item) => (
-                <option key={item.index} value={item.index}>{item.name || `Series ${item.index}`} · {item.width} × {item.height}</option>
-              ))}
-            </select>
-            {seriesLoading ? <small role="status">Loading selected series preview…</small> : null}
-          </label>
+          <fieldset className="forge-series-picker">
+            <legend>Image series</legend>
+            <div role="list" aria-label="Image series">
+              {series.filter((item) => item.rgbPlane).map((item) => {
+                const active = item.index === Number(draft.series)
+                const name = item.name || `Series ${item.index}`
+                return (
+                  <button
+                    key={item.index}
+                    type="button"
+                    className={active ? 'active' : ''}
+                    aria-pressed={active}
+                    aria-label={`${name}, ${item.width} by ${item.height} pixels`}
+                    disabled={seriesLoading}
+                    onClick={() => void updateSeries(String(item.index))}
+                  >
+                    <span className="forge-series-thumbnail" aria-hidden="true">
+                      <img
+                        src={`/api/datasets/${encodeURIComponent(dataset.id)}/series/${item.index}/thumbnail?v=${encodeURIComponent(dataset.sourceFingerprint.slice(0, 24))}`}
+                        alt=""
+                        loading="lazy"
+                        onError={(event) => { event.currentTarget.hidden = true }}
+                      />
+                      <span>{item.index + 1}</span>
+                    </span>
+                    <span className="forge-series-copy">
+                      <strong>{name}</strong>
+                      <small>{item.width.toLocaleString()} × {item.height.toLocaleString()}</small>
+                      <small>{item.resolutionCount} pyramid {item.resolutionCount === 1 ? 'level' : 'levels'}</small>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {seriesLoading ? <small role="status">Opening selected series in the viewer…</small> : null}
+          </fieldset>
           <div className="forge-crop-grid">
             {[
               ['x', 'X', dataset.cropX],

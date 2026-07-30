@@ -35,6 +35,7 @@ public final class ConversionService implements AutoCloseable {
     private final DerivativeEngine derivativeEngine;
     private final Path managedRoot;
     private final ArtifactRevisionRepository artifactRepository;
+    private final SeriesMetadataCache seriesMetadataCache;
     private final Map<String, List<SeriesInfo>> inspectedSeries = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> activeConversions = new ConcurrentHashMap<>();
     private final java.util.Set<Path> cleanedPreviewRoots =
@@ -59,6 +60,7 @@ public final class ConversionService implements AutoCloseable {
         this.derivativeEngine = derivativeEngine;
         this.managedRoot = managedRoot.toAbsolutePath().normalize();
         this.artifactRepository = new ArtifactRevisionRepository(this.managedRoot);
+        this.seriesMetadataCache = new SeriesMetadataCache(this.managedRoot);
     }
 
     public ConversionEngine engine() {
@@ -334,6 +336,13 @@ public final class ConversionService implements AutoCloseable {
 
     public List<SeriesInfo> inspect(String id) throws IOException {
         var dataset = requireDataset(id);
+        verifySourceFingerprint(dataset);
+        var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
+        if (cached.isPresent()) {
+            inspectedSeries.put(id, cached.get());
+            updateInspectedDataset(dataset, cached.get(), true);
+            return cached.get();
+        }
         var inspecting = dataset.withConversion(
                 DatasetStatus.INSPECTING,
                 "Reading bounded image metadata with Bio-Formats",
@@ -348,39 +357,8 @@ public final class ConversionService implements AutoCloseable {
         try {
             var series = engine.inspect(Path.of(dataset.sourcePath()));
             inspectedSeries.put(id, series);
-            var previouslySelected = series.stream()
-                    .filter(item -> item.index() == dataset.selectedSeries())
-                    .filter(SeriesInfo::isRgbPlane)
-                    .findFirst();
-            var selected = previouslySelected.orElseGet(() -> series.stream()
-                    .filter(SeriesInfo::isRgbPlane)
-                    .max(Comparator.comparingLong(
-                            item -> (long) item.width() * (long) item.height()))
-                    .orElse(series.get(0)));
-            var preserveConfiguration = previouslySelected.isPresent()
-                    && dataset.cropWidth() > 0
-                    && dataset.cropHeight() > 0
-                    && (long) dataset.cropX() + dataset.cropWidth() <= selected.width()
-                    && (long) dataset.cropY() + dataset.cropHeight() <= selected.height();
-            var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
-            var cropX = preserveConfiguration ? dataset.cropX() : 0;
-            var cropY = preserveConfiguration ? dataset.cropY() : 0;
-            var cropWidth = preserveConfiguration ? dataset.cropWidth() : selected.width();
-            var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
-            var ready = inspecting.withExportConfiguration(
-                    DatasetStatus.READY_TO_CONVERT,
-                    series.size() + " image series found; select a series and export",
-                    selected.index(),
-                    selected.width(),
-                    selected.height(),
-                    downsample,
-                    OutputSizeEstimator.rgbPyramidUpperBound(
-                            cropWidth, cropHeight, downsample),
-                    cropX,
-                    cropY,
-                    cropWidth,
-                    cropHeight);
-            repository.save(ready);
+            seriesMetadataCache.save(id, dataset.sourceFingerprint(), series);
+            updateInspectedDataset(dataset, series, false);
             return series;
         } catch (IOException | RuntimeException error) {
             repository.save(inspecting.withConversion(
@@ -412,9 +390,74 @@ public final class ConversionService implements AutoCloseable {
             return List.of();
         }
         verifySourceFingerprint(dataset);
+        var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
+        if (cached.isPresent()) {
+            inspectedSeries.put(id, cached.get());
+            return cached.get();
+        }
         var restored = engine.inspect(Path.of(dataset.sourcePath()));
+        seriesMetadataCache.save(id, dataset.sourceFingerprint(), restored);
         inspectedSeries.put(id, restored);
         return restored;
+    }
+
+    public synchronized byte[] seriesThumbnail(String id, int seriesIndex) throws IOException {
+        var dataset = requireDataset(id);
+        verifySourceFingerprint(dataset);
+        var item = restoreSeries(id, dataset).stream()
+                .filter(series -> series.index() == seriesIndex)
+                .filter(SeriesInfo::isRgbPlane)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Image series was not found"));
+        var file = seriesMetadataCache.thumbnailFile(
+                id, dataset.sourceFingerprint(), item.index());
+        if (Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                && !Files.isSymbolicLink(file)) {
+            return Files.readAllBytes(file);
+        }
+        var bytes = engine.seriesThumbnail(Path.of(dataset.sourcePath()), item.index(), 320);
+        Files.createDirectories(file.getParent());
+        var partial = file.resolveSibling(file.getFileName() + ".partial");
+        Files.write(partial, bytes);
+        atomicReplace(partial, file);
+        return bytes;
+    }
+
+    private void updateInspectedDataset(
+            LocalDataset dataset, List<SeriesInfo> series, boolean cacheHit) throws IOException {
+        var previouslySelected = series.stream()
+                .filter(item -> item.index() == dataset.selectedSeries())
+                .filter(SeriesInfo::isRgbPlane)
+                .findFirst();
+        var selected = previouslySelected.orElseGet(() -> series.stream()
+                .filter(SeriesInfo::isRgbPlane)
+                .max(Comparator.comparingLong(
+                        item -> (long) item.width() * (long) item.height()))
+                .orElse(series.get(0)));
+        var preserveConfiguration = previouslySelected.isPresent()
+                && dataset.cropWidth() > 0
+                && dataset.cropHeight() > 0
+                && (long) dataset.cropX() + dataset.cropWidth() <= selected.width()
+                && (long) dataset.cropY() + dataset.cropHeight() <= selected.height();
+        var cropX = preserveConfiguration ? dataset.cropX() : 0;
+        var cropY = preserveConfiguration ? dataset.cropY() : 0;
+        var cropWidth = preserveConfiguration ? dataset.cropWidth() : selected.width();
+        var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
+        var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
+        repository.save(dataset.withExportConfiguration(
+                DatasetStatus.READY_TO_CONVERT,
+                cacheHit
+                        ? series.size() + " image series loaded instantly from verified cache"
+                        : series.size() + " image series found; thumbnails are ready on demand",
+                selected.index(),
+                selected.width(),
+                selected.height(),
+                downsample,
+                OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight));
     }
 
     public LocalDataset selectSeries(String id, int seriesIndex, double downsample)
