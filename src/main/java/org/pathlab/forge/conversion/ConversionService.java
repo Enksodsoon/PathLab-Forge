@@ -926,19 +926,13 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private static void verifySourceFingerprint(LocalDataset dataset) throws IOException {
-        if (dataset.sourceFingerprint().isBlank()) {
+        if (dataset.sourceFingerprint().isBlank() || dataset.sourceInventory().isBlank()) {
             throw new IllegalStateException("Reinspect the source before conversion");
         }
-        try {
-            var current = dataset.format() == DatasetFormat.VSI
-                    ? DatasetSourceInventory.forVsi(Path.of(dataset.sourcePath()))
-                    : DatasetSourceInventory.singleFile(Path.of(dataset.sourcePath()));
-            if (!dataset.sourceFingerprint().equals(current.fingerprint())) {
-                throw new IllegalStateException(
-                        "Source or companion files changed; reinspect before conversion");
-            }
-        } catch (org.pathlab.forge.library.DatasetInspectionException error) {
-            throw new IllegalStateException(error.getMessage(), error);
+        if (!DatasetSourceInventory.matchesSnapshot(
+                Path.of(dataset.sourcePath()), dataset.sourceInventory())) {
+            throw new IllegalStateException(
+                    "Source or companion files changed; reinspect before conversion");
         }
     }
 
