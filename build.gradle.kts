@@ -1,6 +1,8 @@
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.testing.Test
 import org.gradle.jvm.tasks.Jar
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 plugins {
     application
@@ -90,4 +92,31 @@ tasks.withType<Test>().configureEach {
 tasks.withType<Jar>().configureEach {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
+}
+
+val installVersionedRuntime = tasks.register<Sync>("installVersionedRuntime") {
+    dependsOn(tasks.installDist)
+    val localAppData = providers.environmentVariable("LOCALAPPDATA")
+        .orElse("${System.getProperty("user.home")}/AppData/Local")
+    val runtimeVersion = providers.provider {
+        System.getenv("PATHLAB_FORGE_RUNTIME_VERSION")
+            ?.takeIf { it.matches(Regex("[A-Za-z0-9._-]+")) }
+            ?: project.version.toString()
+    }
+    from(layout.buildDirectory.dir("install/${project.name}"))
+    into(localAppData.zip(runtimeVersion) { root, release ->
+        file("$root/PathLab Forge/runtime/app/$release")
+    })
+    doLast {
+        val pointer = file("${localAppData.get()}/PathLab Forge/runtime/current.txt")
+        pointer.parentFile.mkdirs()
+        val partial = file("${pointer.absolutePath}.partial")
+        partial.writeText(runtimeVersion.get() + System.lineSeparator())
+        Files.move(
+            partial.toPath(),
+            pointer.toPath(),
+            StandardCopyOption.REPLACE_EXISTING,
+            StandardCopyOption.ATOMIC_MOVE)
+        logger.lifecycle("Installed PathLab Forge runtime ${runtimeVersion.get()} at ${destinationDir}")
+    }
 }

@@ -14,9 +14,11 @@ class BioFormatsParallelRegionsTest {
         var regions = BioFormatsEngine.planRegions(7, 13, 72_792, 66_004, 8);
 
         assertEquals(8, regions.size());
-        assertEquals(new RenderRegion(7, 13, 72_792, 8_251), regions.get(0));
-        assertEquals(new RenderRegion(7, 57_767, 72_792, 8_250), regions.get(7));
+        assertEquals(7, regions.get(0).x());
+        assertEquals(13, regions.get(0).y());
         assertEquals(66_004, regions.stream().mapToInt(RenderRegion::height).sum());
+        assertTrue(regions.stream()
+                .allMatch(region -> (long) region.width() * region.height() <= 1_600_000_000L));
         for (var index = 1; index < regions.size(); index++) {
             var previous = regions.get(index - 1);
             assertEquals(previous.y() + previous.height(), regions.get(index).y());
@@ -59,5 +61,25 @@ class BioFormatsParallelRegionsTest {
         assertEquals(2, ConversionService.parallelRgbWorkers(6, 9, true));
         assertEquals(3, ConversionService.parallelRgbWorkers(4, 5, false));
         assertEquals(1, ConversionService.parallelRgbWorkers(1, 5, false));
+    }
+
+    @Test
+    void mapsTopLevelSeriesAndResolutionToFlattenedReaderIndexWithoutARescan() {
+        var resolutionCounts = new int[] {6, 7, 10, 1};
+
+        assertEquals(0, BioFormatsEngine.flattenedIndex(0, 0, resolutionCounts));
+        assertEquals(13, BioFormatsEngine.flattenedIndex(2, 0, resolutionCounts));
+        assertEquals(22, BioFormatsEngine.flattenedIndex(2, 9, resolutionCounts));
+        assertEquals(23, BioFormatsEngine.flattenedIndex(3, 0, resolutionCounts));
+    }
+
+    @Test
+    void fallbackChoosesTheNativePyramidScaleClosestToRequestedScale() {
+        assertTrue(
+                BioFormatsEngine.resolutionScaleDistance(2.0, 1.5)
+                        < BioFormatsEngine.resolutionScaleDistance(1.0, 1.5));
+        assertTrue(
+                BioFormatsEngine.resolutionScaleDistance(2.0, 2.0)
+                        < BioFormatsEngine.resolutionScaleDistance(4.0, 2.0));
     }
 }

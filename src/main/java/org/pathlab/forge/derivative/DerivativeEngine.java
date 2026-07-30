@@ -26,9 +26,23 @@ public interface DerivativeEngine {
         return false;
     }
 
+    default void validateOmeGeometry(Path omeTiff, int width, int height) throws IOException {
+        // Engines without a metadata reader retain the signature and DZI geometry checks.
+    }
+
     default void assembleRegionsFinal(
             List<Path> regions, Path pyramidalOme, int width, int height) throws IOException {
         throw new IOException("Direct final OME assembly is unavailable");
+    }
+
+    default void assembleRegionsFinal(
+            List<Path> regions,
+            Path pyramidalOme,
+            int width,
+            int height,
+            double downsample)
+            throws IOException {
+        assembleRegionsFinal(regions, pyramidalOme, width, height);
     }
 
     void optimizeOme(Path renderedOme, Path pyramidalOme, int width, int height)

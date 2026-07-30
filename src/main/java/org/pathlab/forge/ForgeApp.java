@@ -10,6 +10,7 @@ import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.runtime.DataRootLock;
 import org.pathlab.forge.runtime.ForgeCommandLine;
+import org.pathlab.forge.benchmark.ForgeBenchmark;
 
 public final class ForgeApp {
     private ForgeApp() {}
@@ -27,6 +28,19 @@ public final class ForgeApp {
             try (var repository = new SqliteDatasetRepository(
                     paths.repositoryFile(),
                     paths.dataRoot().resolve("library.properties"))) {
+                if (command.benchmarkSource() != null) {
+                    var reportPath = command.performanceReport() == null
+                            ? paths.dataRoot().resolve("performance-report.json")
+                            : command.performanceReport();
+                    var report =
+                            ForgeBenchmark.run(command.benchmarkSource(), paths, repository, reportPath);
+                    System.out.print(report.toJson());
+                    if (!report.hardGatesPassed()) {
+                        throw new IllegalStateException(
+                                "Benchmark hard gates failed: " + report.failure());
+                    }
+                    return;
+                }
                 if (command.importSource() != null) {
                     var dataset = new DatasetInspector().inspect(command.importSource());
                     if (repository.findBySourcePath(dataset.sourcePath()).isEmpty()) {

@@ -47,9 +47,9 @@ final class ForgeLibraryApiTest {
             var selected = write(client, server, csrf, "/api/datasets/select", "POST");
             assertEquals(200, selected.statusCode());
             assertTrue(selected.body().contains("case.ome.tif"));
-            assertTrue(selected.body().contains("\"status\":\"READY\""));
+            assertTrue(selected.body().contains("\"status\":\"VERIFYING_SOURCE\""));
             assertTrue(selected.body().contains("\"workspaceRevision\":"));
-            assertTrue(selected.body().contains("\"verificationState\":\"VERIFIED\""));
+            assertTrue(selected.body().contains("\"verificationState\":\"PENDING\""));
             assertTrue(selected.body().contains("\"completedUnits\":"));
             assertTrue(selected.body().contains("\"peakWorkingSetBytes\":"));
             assertTrue(selected.body().contains("\"resourceProfile\":\"8gb-6core\""));

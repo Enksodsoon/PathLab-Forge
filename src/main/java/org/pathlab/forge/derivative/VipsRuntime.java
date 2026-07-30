@@ -116,8 +116,37 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     @Override
+    public void validateOmeGeometry(Path omeTiff, int width, int height) throws IOException {
+        var header = executable.resolveSibling(
+                java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
+        var actualWidth = Integer.parseInt(runCommand(
+                        List.of(header.toString(), "-f", "width", omeTiff.toString()))
+                .strip());
+        var actualHeight = Integer.parseInt(runCommand(
+                        List.of(header.toString(), "-f", "height", omeTiff.toString()))
+                .strip());
+        if (actualWidth != width || actualHeight != height) {
+            throw new IOException(
+                    "OME geometry mismatch: expected "
+                            + width + "x" + height
+                            + " but found " + actualWidth + "x" + actualHeight);
+        }
+    }
+
+    @Override
     public void assembleRegionsFinal(
             List<Path> regions, Path pyramidalOme, int width, int height) throws IOException {
+        assembleRegionsFinal(regions, pyramidalOme, width, height, 1.0);
+    }
+
+    @Override
+    public void assembleRegionsFinal(
+            List<Path> regions,
+            Path pyramidalOme,
+            int width,
+            int height,
+            double downsample)
+            throws IOException {
         requireAvailable();
         if (regions.size() < 2 || width < 1 || height < 1) {
             throw new IllegalArgumentException("Direct final OME geometry is invalid");
@@ -125,15 +154,67 @@ public final class VipsRuntime implements DerivativeEngine {
         for (var region : regions) {
             requireNonempty(region, "rendered RGB region");
         }
-        run(List.of(
-                "arrayjoin",
-                serializeImageArray(regions),
-                pyramidalOme + "[pyramid,tile,tile-width=512,tile-height=512,"
-                        + "compression=jpeg,Q=" + omeJpegQuality(width, height)
-                        + ",bigtiff,subifd]",
-                "--across",
-                "1"));
-        requireNonempty(pyramidalOme, "final pyramidal OME-TIFF");
+        var prepared = regions;
+        var resizedRoot = pyramidalOme.resolveSibling("resized-regions.partial");
+        try {
+            if (downsample != 1.0) {
+                deleteTree(resizedRoot);
+                Files.createDirectories(resizedRoot);
+                var resized = new ArrayList<Path>(regions.size());
+                var uniformHeight = Math.toIntExact(
+                        ((long) height + regions.size() - 1) / regions.size());
+                for (var index = 0; index < regions.size(); index++) {
+                    var output = resizedRoot.resolve("region-%02d.tif".formatted(index));
+                    run(List.of(
+                            "thumbnail",
+                            regions.get(index).toString(),
+                            output + "[tile,tile-width=512,tile-height=512,"
+                                    + "compression=jpeg,Q=95,bigtiff,properties=false]",
+                            Integer.toString(width),
+                            "--height",
+                            Integer.toString(uniformHeight),
+                            "--size",
+                            "force"));
+                    resized.add(output);
+                }
+                prepared = List.copyOf(resized);
+            }
+            if (downsample == 1.0) {
+                run(List.of(
+                        "arrayjoin",
+                        serializeImageArray(prepared),
+                        pyramidalOme + "[pyramid,tile,tile-width=512,tile-height=512,"
+                                + "compression=jpeg,Q=" + omeJpegQuality(width, height)
+                                + ",bigtiff,subifd]",
+                        "--across",
+                        "1"));
+            } else {
+                var joined = resizedRoot.resolve("joined.tif");
+                run(List.of(
+                        "arrayjoin",
+                        serializeImageArray(prepared),
+                        joined + "[tile,tile-width=512,tile-height=512,"
+                                + "compression=jpeg,Q=95,bigtiff,properties=false]",
+                        "--across",
+                        "1"));
+                for (var item : prepared) {
+                    Files.deleteIfExists(item);
+                }
+                run(List.of(
+                        "crop",
+                        joined.toString(),
+                        pyramidalOme + "[pyramid,tile,tile-width=512,tile-height=512,"
+                                + "compression=jpeg,Q=" + omeJpegQuality(width, height)
+                                + ",bigtiff,subifd]",
+                        "0",
+                        "0",
+                        Integer.toString(width),
+                        Integer.toString(height)));
+            }
+            requireNonempty(pyramidalOme, "final pyramidal OME-TIFF");
+        } finally {
+            deleteTree(resizedRoot);
+        }
     }
 
     static String serializeImageArray(List<Path> paths) {
@@ -165,7 +246,10 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     static int omeJpegQuality(int width, int height) {
-        var quality = Integer.getInteger("pathlab.forge.ome.jpegQuality", 93);
+        var configured = System.getProperty("pathlab.forge.ome.jpegQuality");
+        var quality = configured == null
+                ? (long) width * height >= 1_000_000_000L ? 75 : 93
+                : Integer.parseInt(configured);
         if (!List.of(75, 80, 85, 90, 93).contains(quality)) {
             throw new IllegalArgumentException(
                     "OME JPEG quality must be one of 75, 80, 85, 90 or 93");
@@ -189,7 +273,7 @@ public final class VipsRuntime implements DerivativeEngine {
                 "--overlap",
                 "1",
                 "--suffix",
-                ".jpg[Q=95,strip,optimize_coding]",
+                ".jpg[Q=95,strip]",
                 "--depth",
                 "onepixel",
                 "--region-shrink",
@@ -199,7 +283,7 @@ public final class VipsRuntime implements DerivativeEngine {
         run(List.of(
                 "thumbnail",
                 omeTiff.toString(),
-                outputRoot.resolve("thumbnail.jpg[Q=82,strip,optimize_coding]").toString(),
+                outputRoot.resolve("thumbnail.jpg[Q=82,strip]").toString(),
                 "640",
                 "--size",
                 "down"));
@@ -207,13 +291,18 @@ public final class VipsRuntime implements DerivativeEngine {
         return DziValidator.validate(outputRoot, width, height);
     }
 
-    private void run(List<String> arguments) throws IOException {
+    private String run(List<String> arguments) throws IOException {
         var command = commandLine(executable, arguments);
+        return runCommand(command);
+    }
+
+    private String runCommand(List<String> command) throws IOException {
         var builder = new ProcessBuilder(command).redirectErrorStream(true);
         var currentPath = builder.environment().getOrDefault("PATH", "");
         builder.environment().put(
                 "PATH", executable.getParent() + java.io.File.pathSeparator + currentPath);
-        var process = builder.start();
+        var process = org.pathlab.forge.runtime.ChildProcessContainment.global()
+                .register(builder.start());
         var output = new ByteArrayOutputStream();
         var reader = new Thread(
                 () -> copyBounded(process.getInputStream(), output, process),
@@ -230,10 +319,22 @@ public final class VipsRuntime implements DerivativeEngine {
                 throw new IOException("libvips operation failed: " + tail(
                         output.toString(StandardCharsets.UTF_8)));
             }
+            return output.toString(StandardCharsets.UTF_8);
         } catch (InterruptedException error) {
             process.destroyForcibly();
             Thread.currentThread().interrupt();
             throw new IOException("libvips operation was interrupted", error);
+        }
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
         }
     }
 

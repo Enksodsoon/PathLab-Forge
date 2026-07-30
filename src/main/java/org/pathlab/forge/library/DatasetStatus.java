@@ -4,6 +4,7 @@ public enum DatasetStatus {
     READY,
     NEEDS_COMPANIONS,
     READER_REQUIRED,
+    VERIFYING_SOURCE,
     INSPECTING,
     READY_TO_CONVERT,
     CONVERTING,

@@ -33,6 +33,7 @@ import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.LocalDataset;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
+import org.pathlab.forge.library.SourceVerificationService;
 import org.pathlab.forge.model.BatchId;
 import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
@@ -53,6 +54,7 @@ public final class ForgeServer implements AutoCloseable {
     private final DatasetPicker picker;
     private final DatasetInspector inspector = new DatasetInspector();
     private final DatasetPreparationService preparationService;
+    private final SourceVerificationService sourceVerificationService;
     private final ConversionService conversionService;
     private final AnnotationRepository annotationRepository;
     private final ViewerPairingService viewerPairingService;
@@ -76,6 +78,7 @@ public final class ForgeServer implements AutoCloseable {
         this.repository = repository;
         this.picker = picker;
         preparationService = new DatasetPreparationService(repository, managedRoot);
+        sourceVerificationService = new SourceVerificationService(repository);
         conversionService =
                 new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
         annotationRepository = new AnnotationRepository(managedRoot);
@@ -623,7 +626,12 @@ public final class ForgeServer implements AutoCloseable {
             try {
                 var normalized = selected.toAbsolutePath().normalize().toString();
                 if (repository.findBySourcePath(normalized).isEmpty()) {
-                    repository.save(inspector.inspect(selected));
+                    var pending = inspector.inspectFast(selected);
+                    repository.save(pending);
+                    if (pending.status()
+                            == org.pathlab.forge.library.DatasetStatus.VERIFYING_SOURCE) {
+                        sourceVerificationService.verifyAsync(pending);
+                    }
                 }
             } catch (DatasetInspectionException error) {
                 respond(
@@ -654,7 +662,12 @@ public final class ForgeServer implements AutoCloseable {
         try {
             var selected = java.nio.file.Path.of(rawPath).toAbsolutePath().normalize();
             if (repository.findBySourcePath(selected.toString()).isEmpty()) {
-                repository.save(inspector.inspect(selected));
+                var pending = inspector.inspectFast(selected);
+                repository.save(pending);
+                if (pending.status()
+                        == org.pathlab.forge.library.DatasetStatus.VERIFYING_SOURCE) {
+                    sourceVerificationService.verifyAsync(pending);
+                }
             }
             respond(exchange, 200, "application/json", datasetsJson(repository.list()));
         } catch (DatasetInspectionException | IllegalArgumentException error) {
@@ -688,6 +701,7 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
+            sourceVerificationService.await(id);
             respond(
                     exchange,
                     200,
@@ -817,7 +831,13 @@ public final class ForgeServer implements AutoCloseable {
                             + ",\"fileUpperBytes\":" + estimate.upperBytes()
                             + ",\"workspaceBytes\":"
                             + org.pathlab.forge.conversion.OutputSizeEstimator
-                                    .rgbPyramidUpperBound(width, height, downsample)
+                                    .managedPeakWorkspace(
+                                            width,
+                                            height,
+                                            downsample,
+                                            dataset.sourceBytes(),
+                                            dataset.format()
+                                                    == org.pathlab.forge.library.DatasetFormat.OME_TIFF)
                             + "}");
         } catch (IllegalArgumentException error) {
             respond(
@@ -1476,6 +1496,7 @@ public final class ForgeServer implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
+        sourceVerificationService.close();
         conversionService.close();
         viewerPairingService.close();
         executor.shutdownNow();
