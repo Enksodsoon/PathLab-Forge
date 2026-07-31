@@ -15,13 +15,19 @@ public record PackageMetadata(
         double physicalSizeX,
         double physicalSizeY,
         String physicalUnit,
+        String sizeReferenceKind,
         String producerVersion) {
     public PackageMetadata {
         artifactRevisionId = requireText(artifactRevisionId, "artifactRevisionId");
         configurationRevision = requireText(configurationRevision, "configurationRevision");
         sourceFingerprint = requireText(sourceFingerprint, "sourceFingerprint");
         physicalUnit = Objects.requireNonNullElse(physicalUnit, "");
+        sizeReferenceKind = requireText(sizeReferenceKind, "sizeReferenceKind");
         producerVersion = requireText(producerVersion, "producerVersion");
+        if (!sizeReferenceKind.equals("actual-staging-ome")
+                && !sizeReferenceKind.equals("estimated-staging-ome")) {
+            throw new IllegalArgumentException("Prepared-package size reference is invalid");
+        }
         if (series < 0
                 || cropX < 0
                 || cropY < 0

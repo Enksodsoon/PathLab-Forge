@@ -1494,6 +1494,8 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"maximumRoiMeanDeltaE00\":" + manifestDouble(manifest, "maximumRoiMeanDeltaE00")
                 + ",\"minimumEdgeDetailRetention\":" + manifestDouble(manifest, "minimumEdgeDetailRetention")
                 + ",\"encoderProfile\":" + json(manifestString(manifest, "encoderProfile"))
+                + ",\"sizeReferenceKind\":"
+                + json(manifestString(manifest, "sizeReferenceKind"))
                 + ",\"series\":" + manifestLong(manifest, "series")
                 + ",\"cropX\":" + manifestLong(manifest, "x")
                 + ",\"cropY\":" + manifestLong(manifest, "y")

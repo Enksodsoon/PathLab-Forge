@@ -52,6 +52,7 @@ final class PreparedPackageBuilderTest {
                 0.25,
                 0.25,
                 "µm",
+                "actual-staging-ome",
                 "test");
         var firstInfo = PreparedPackageBuilder.build(derivative, 1, 1, metadata, first);
         var secondInfo = PreparedPackageBuilder.build(derivative, 1, 1, metadata, second);

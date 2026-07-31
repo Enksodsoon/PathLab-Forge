@@ -46,6 +46,21 @@ public interface DerivativeEngine {
         assembleRegionsFinal(regions, pyramidalOme, width, height);
     }
 
+    default boolean supportsDirectDziFromRegions() {
+        return false;
+    }
+
+    default DerivativeInfo generateDziFromRegions(
+            List<Path> regions,
+            Path outputRoot,
+            int width,
+            int height,
+            double downsample,
+            Consumer<DerivativeProgress> progress)
+            throws IOException {
+        throw new IOException("Direct DZI region rendering is unavailable");
+    }
+
     void optimizeOme(Path renderedOme, Path pyramidalOme, int width, int height)
             throws IOException;
 

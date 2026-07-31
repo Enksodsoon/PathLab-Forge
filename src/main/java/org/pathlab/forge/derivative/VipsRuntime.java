@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -383,6 +384,296 @@ public final class VipsRuntime implements DerivativeEngine {
                 selection.encoderProfile());
     }
 
+    @Override
+    public boolean supportsDirectDziFromRegions() {
+        return true;
+    }
+
+    @Override
+    public DerivativeInfo generateDziFromRegions(
+            List<Path> regions,
+            Path outputRoot,
+            int width,
+            int height,
+            double downsample,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
+        requireAvailable();
+        if (regions.size() < 2
+                || width < 1
+                || height < 1
+                || !Double.isFinite(downsample)
+                || downsample <= 0) {
+            throw new IllegalArgumentException("Direct DZI region geometry is invalid");
+        }
+        for (var region : regions) {
+            requireNonempty(region, "rendered RGB region");
+        }
+        Files.createDirectories(outputRoot);
+        var preparedRoot = outputRoot.resolve("direct-regions");
+        var qualityRoot = outputRoot.resolve("direct-quality");
+        try {
+            progress.accept(new DerivativeProgress(
+                    "DIRECT_DZI_PREPARING", 0, regions.size()));
+            var prepared = prepareDirectRegions(
+                    regions,
+                    preparedRoot,
+                    width,
+                    height,
+                    downsample,
+                    completed -> progress.accept(new DerivativeProgress(
+                            "DIRECT_DZI_PREPARING", completed, regions.size())));
+            var selection = selectDziQualityFromRegions(
+                    prepared, qualityRoot, width, height, progress);
+            var expectedTiles = DziValidator.expectedTileCount(width, height);
+            progress.accept(new DerivativeProgress("DZI_TILES", 0, expectedTiles));
+            runWithProgress(
+                    List.of(
+                            "arrayjoin",
+                            serializeImageArray(prepared.paths()),
+                            outputRoot.resolve("slide.dz")
+                                    + directDziSaveOptions(
+                                            selection.quality(),
+                                            selection.encoderProfile()),
+                            "--across",
+                            "1"),
+                    percent -> progress.accept(new DerivativeProgress(
+                            "DZI_TILES",
+                            Math.min(
+                                    expectedTiles,
+                                    Math.round(expectedTiles * percent / 100.0)),
+                            expectedTiles)));
+            createDirectThumbnail(prepared, outputRoot.resolve("thumbnail.jpg"));
+            deleteTree(preparedRoot);
+            deleteTree(qualityRoot);
+            Files.deleteIfExists(
+                    outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
+            var validationUnits = Math.addExact(Math.multiplyExact(expectedTiles, 2), 2);
+            progress.accept(new DerivativeProgress(
+                    "DZI_VALIDATING", 0, validationUnits));
+            var validated = DziValidator.validate(
+                    outputRoot,
+                    width,
+                    height,
+                    (completed, total) -> progress.accept(
+                            new DerivativeProgress("DZI_VALIDATING", completed, total)));
+            return new DerivativeInfo(
+                    validated.root(),
+                    validated.bytes(),
+                    validated.fileCount(),
+                    validated.tileCount(),
+                    validated.sha256(),
+                    validated.ledger(),
+                    selection.quality(),
+                    selection.minimumWindowedSsim(),
+                    selection.meanDeltaE00(),
+                    selection.minimumEdgeDetailRetention(),
+                    selection.encoderProfile());
+        } finally {
+            deleteTree(preparedRoot);
+            deleteTree(qualityRoot);
+            for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
+                Files.deleteIfExists(
+                        qualityRoot.resolve("quality-candidate-" + quality + ".jpg"));
+            }
+        }
+    }
+
+    private PreparedRegions prepareDirectRegions(
+            List<Path> regions,
+            Path preparedRoot,
+            int width,
+            int height,
+            double downsample,
+            java.util.function.IntConsumer progress)
+            throws IOException {
+        deleteTree(preparedRoot);
+        Files.createDirectories(preparedRoot);
+        var sourceHeights = new ArrayList<Integer>(regions.size());
+        for (var region : regions) {
+            sourceHeights.add(imageDimension(region, "height"));
+        }
+        if (downsample == 1.0) {
+            progress.accept(regions.size());
+            return new PreparedRegions(List.copyOf(regions), List.copyOf(sourceHeights));
+        }
+        var targetHeights = targetRegionHeights(sourceHeights, height);
+        var prepared = new ArrayList<Path>(regions.size());
+        for (var index = 0; index < regions.size(); index++) {
+            var output = preparedRoot.resolve("region-%02d.tif".formatted(index));
+            run(List.of(
+                    "thumbnail",
+                    regions.get(index).toString(),
+                    output + "[tile,tile-width=512,tile-height=512,"
+                            + "compression=jpeg,Q=95,bigtiff,properties=false]",
+                    Integer.toString(width),
+                    "--height",
+                    Integer.toString(targetHeights.get(index)),
+                    "--size",
+                    "force"));
+            prepared.add(output);
+            progress.accept(index + 1);
+        }
+        if (targetHeights.stream().mapToInt(Integer::intValue).sum() != height) {
+            throw new IOException("Direct DZI regions do not match the target height");
+        }
+        if (targetHeights.stream().distinct().count() != 1) {
+            throw new IOException(
+                    "Direct DZI requires uniformly aligned region heights");
+        }
+        return new PreparedRegions(List.copyOf(prepared), List.copyOf(targetHeights));
+    }
+
+    private AdaptiveJpegQualitySelector.Selection selectDziQualityFromRegions(
+            PreparedRegions prepared,
+            Path qualityRoot,
+            int width,
+            int height,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
+        deleteTree(qualityRoot);
+        Files.createDirectories(qualityRoot);
+        var overviewRoot = qualityRoot.resolve("overview-regions");
+        var roiRoot = qualityRoot.resolve("quality-rois");
+        var overview = qualityRoot.resolve("quality-overview.png");
+        var probe = qualityRoot.resolve("quality-probe.png");
+        Files.createDirectories(overviewRoot);
+        Files.createDirectories(roiRoot);
+        progress.accept(new DerivativeProgress(
+                "QUALITY_OVERVIEW", 0, prepared.paths().size()));
+        var overviewRegions = new ArrayList<Path>(prepared.paths().size());
+        for (var index = 0; index < prepared.paths().size(); index++) {
+            var output = overviewRoot.resolve("region-%02d.png".formatted(index));
+            run(List.of(
+                    "thumbnail",
+                    prepared.paths().get(index).toString(),
+                    output.toString(),
+                    "1024",
+                    "--size",
+                    "down"));
+            overviewRegions.add(output);
+            progress.accept(new DerivativeProgress(
+                    "QUALITY_OVERVIEW", index + 1, prepared.paths().size()));
+        }
+        run(List.of(
+                "arrayjoin",
+                serializeImageArray(overviewRegions),
+                overview.toString(),
+                "--across",
+                "1"));
+        var planned = AdaptiveJpegQualitySelector.planNativeRois(
+                overview, width, height);
+        var groupedRois = new LinkedHashMap<Integer, List<AdaptiveJpegQualitySelector.Roi>>();
+        var groupedOutputs = new LinkedHashMap<Integer, List<Path>>();
+        var regionTops = regionTops(prepared.heights());
+        for (var index = 0; index < planned.size(); index++) {
+            var roi = planned.get(index);
+            var regionIndex = containingRegion(
+                    roi.y() + roi.height() / 2, regionTops, prepared.heights());
+            var localY = Math.max(
+                    0,
+                    Math.min(
+                            prepared.heights().get(regionIndex) - roi.height(),
+                            roi.y() - regionTops.get(regionIndex)));
+            groupedRois.computeIfAbsent(regionIndex, ignored -> new ArrayList<>())
+                    .add(new AdaptiveJpegQualitySelector.Roi(
+                            roi.x(), localY, roi.width(), roi.height()));
+            groupedOutputs.computeIfAbsent(regionIndex, ignored -> new ArrayList<>())
+                    .add(roiRoot.resolve("roi-%02d.png".formatted(index)));
+        }
+        var extracted = new java.util.concurrent.atomic.AtomicInteger();
+        progress.accept(new DerivativeProgress("QUALITY_ROIS", 0, planned.size()));
+        for (var entry : groupedRois.entrySet()) {
+            var outputs = groupedOutputs.get(entry.getKey());
+            extractQualityRois(
+                    prepared.paths().get(entry.getKey()),
+                    entry.getValue(),
+                    outputs,
+                    completed -> progress.accept(new DerivativeProgress(
+                            "QUALITY_ROIS",
+                            Math.min(
+                                    planned.size(),
+                                    extracted.get() + completed),
+                            planned.size())));
+            extracted.addAndGet(outputs.size());
+        }
+        var roiFiles = new ArrayList<Path>(planned.size());
+        for (var index = 0; index < planned.size(); index++) {
+            roiFiles.add(roiRoot.resolve("roi-%02d.png".formatted(index)));
+        }
+        run(List.of(
+                "arrayjoin",
+                serializeImageArray(roiFiles),
+                probe.toString(),
+                "--across",
+                "8"));
+        return selectDziQualityFromProbe(probe, qualityRoot, progress);
+    }
+
+    private void createDirectThumbnail(PreparedRegions prepared, Path output)
+            throws IOException {
+        var root = output.resolveSibling("thumbnail-regions.partial");
+        var overview = output.resolveSibling("thumbnail-overview.partial.png");
+        try {
+            deleteTree(root);
+            Files.createDirectories(root);
+            var thumbnails = new ArrayList<Path>(prepared.paths().size());
+            for (var index = 0; index < prepared.paths().size(); index++) {
+                var thumbnail = root.resolve("region-%02d.png".formatted(index));
+                run(List.of(
+                        "thumbnail",
+                        prepared.paths().get(index).toString(),
+                        thumbnail.toString(),
+                        "640",
+                        "--size",
+                        "down"));
+                thumbnails.add(thumbnail);
+            }
+            run(List.of(
+                    "arrayjoin",
+                    serializeImageArray(thumbnails),
+                    overview.toString(),
+                    "--across",
+                    "1"));
+            run(List.of(
+                    "thumbnail",
+                    overview.toString(),
+                    output + "[Q=82,strip]",
+                    "640",
+                    "--size",
+                    "down"));
+        } finally {
+            Files.deleteIfExists(overview);
+            deleteTree(root);
+        }
+    }
+
+    private static String directDziSaveOptions(int quality, String encoderProfile) {
+        return "[container=fs,layout=dz,tile-size=512,overlap=1,"
+                + "depth=onepixel,region-shrink=mean,skip-blanks=-1,suffix="
+                + jpegSuffix(quality, encoderProfile) + "]";
+    }
+
+    private static List<Integer> regionTops(List<Integer> heights) {
+        var tops = new ArrayList<Integer>(heights.size());
+        var top = 0;
+        for (var height : heights) {
+            tops.add(top);
+            top = Math.addExact(top, height);
+        }
+        return List.copyOf(tops);
+    }
+
+    private static int containingRegion(
+            int y, List<Integer> tops, List<Integer> heights) {
+        for (var index = 0; index < heights.size(); index++) {
+            if (y < tops.get(index) + heights.get(index)) {
+                return index;
+            }
+        }
+        return heights.size() - 1;
+    }
+
     AdaptiveJpegQualitySelector.Selection selectDziQuality(
             Path omeTiff, Path outputRoot, int width, int height) throws IOException {
         return selectDziQuality(
@@ -431,48 +722,7 @@ public final class VipsRuntime implements DerivativeEngine {
                     probe.toString(),
                     "--across",
                     "8"));
-            var candidateProgress = new java.util.concurrent.atomic.AtomicInteger();
-            var encoderProfile = "compact-420-trellis";
-            ProfileCandidate fourTwenty = null;
-            IOException fourTwentyFailure = null;
-            try {
-                fourTwenty = evaluatedProfileIncrementally(
-                        probe, outputRoot, encoderProfile, candidateProgress, progress);
-            } catch (IOException enhancedFailure) {
-                encoderProfile = "compact-420-optimized";
-                try {
-                    fourTwenty = evaluatedProfileIncrementally(
-                            probe,
-                            outputRoot,
-                            encoderProfile,
-                            candidateProgress,
-                            progress);
-                } catch (IOException optimizedQualityFailure) {
-                    if (!isQualityGateFailure(optimizedQualityFailure)) {
-                        optimizedQualityFailure.addSuppressed(enhancedFailure);
-                        throw optimizedQualityFailure;
-                    }
-                    fourTwentyFailure = optimizedQualityFailure;
-                }
-            }
-            encoderProfile = "compact-444-quality-rescue";
-            ProfileCandidate fourFourFour;
-            try {
-                fourFourFour = evaluatedProfileIncrementally(
-                        probe, outputRoot, encoderProfile, candidateProgress, progress);
-            } catch (IOException fourFourFourFailure) {
-                if (!isQualityGateFailure(fourFourFourFailure) || fourTwenty == null) {
-                    if (fourTwentyFailure != null) {
-                        fourFourFourFailure.addSuppressed(fourTwentyFailure);
-                    }
-                    throw fourFourFourFailure;
-                }
-                return fourTwenty.selection();
-            }
-            if (fourTwenty == null) {
-                return fourFourFour.selection();
-            }
-            return preferSmallerProfile(fourTwenty, fourFourFour).selection();
+            return selectDziQualityFromProbe(probe, outputRoot, progress);
         } finally {
             Files.deleteIfExists(overview);
             Files.deleteIfExists(probe);
@@ -482,6 +732,55 @@ public final class VipsRuntime implements DerivativeEngine {
                         outputRoot.resolve("quality-candidate-" + quality + ".jpg"));
             }
         }
+    }
+
+    private AdaptiveJpegQualitySelector.Selection selectDziQualityFromProbe(
+            Path probe,
+            Path outputRoot,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
+        var candidateProgress = new java.util.concurrent.atomic.AtomicInteger();
+        var encoderProfile = "compact-420-trellis";
+        ProfileCandidate fourTwenty = null;
+        IOException fourTwentyFailure = null;
+        try {
+            fourTwenty = evaluatedProfileIncrementally(
+                    probe, outputRoot, encoderProfile, candidateProgress, progress);
+        } catch (IOException enhancedFailure) {
+            encoderProfile = "compact-420-optimized";
+            try {
+                fourTwenty = evaluatedProfileIncrementally(
+                        probe,
+                        outputRoot,
+                        encoderProfile,
+                        candidateProgress,
+                        progress);
+            } catch (IOException optimizedQualityFailure) {
+                if (!isQualityGateFailure(optimizedQualityFailure)) {
+                    optimizedQualityFailure.addSuppressed(enhancedFailure);
+                    throw optimizedQualityFailure;
+                }
+                fourTwentyFailure = optimizedQualityFailure;
+            }
+        }
+        encoderProfile = "compact-444-quality-rescue";
+        ProfileCandidate fourFourFour;
+        try {
+            fourFourFour = evaluatedProfileIncrementally(
+                    probe, outputRoot, encoderProfile, candidateProgress, progress);
+        } catch (IOException fourFourFourFailure) {
+            if (!isQualityGateFailure(fourFourFourFailure) || fourTwenty == null) {
+                if (fourTwentyFailure != null) {
+                    fourFourFourFailure.addSuppressed(fourTwentyFailure);
+                }
+                throw fourFourFourFailure;
+            }
+            return fourTwenty.selection();
+        }
+        if (fourTwenty == null) {
+            return fourFourFour.selection();
+        }
+        return preferSmallerProfile(fourTwenty, fourFourFour).selection();
     }
 
     private void extractQualityRois(
@@ -710,6 +1009,8 @@ public final class VipsRuntime implements DerivativeEngine {
 
     private record ProfileCandidate(
             AdaptiveJpegQualitySelector.Selection selection, long candidateBytes) {}
+
+    private record PreparedRegions(List<Path> paths, List<Integer> heights) {}
 
     private String run(List<String> arguments) throws IOException {
         var command = commandLine(executable, arguments);

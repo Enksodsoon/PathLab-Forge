@@ -1061,6 +1061,7 @@ public final class ConversionService implements AutoCloseable {
         var derivativePartial = outputDirectory.resolve("derivative.partial");
         var derivative = outputDirectory.resolve("derivative");
         Path regionRoot = null;
+        List<Path> directDziRegions = null;
         var checkpoints = new StageCheckpointStore(outputDirectory);
         try {
             boolean finalOmeWritten = false;
@@ -1082,16 +1083,18 @@ public final class ConversionService implements AutoCloseable {
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
             var request = request(dataset);
-            String digest;
+            var useDirectDzi = useDirectDziFromRegions(dataset, request);
+            String digest = "";
             var resumeOme = existingCheckpoint != null
+                    && !useDirectDzi
                     && existingCheckpoint.configurationRevision()
                             .equals(revision.configurationRevision())
                     && existingCheckpoint.stage().ordinal()
                             >= StageCheckpoint.Stage.OME_VERIFIED.ordinal()
                     && Files.isRegularFile(output);
             if (!resumeOme) {
-            if (quPathRuntime.supports(dataset.format())) {
-                repository.save(dataset.withConversion(
+                if (!useDirectDzi && quPathRuntime.supports(dataset.format())) {
+                    repository.save(dataset.withConversion(
                         DatasetStatus.OPTIMIZING_OME,
                         "Writing the final OME pyramid directly from bounded source tiles",
                         dataset.outputPath(),
@@ -1101,15 +1104,15 @@ public final class ConversionService implements AutoCloseable {
                         dataset.height(),
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
-                updateProgress(dataset.id(), "DIRECT_OME", 0, 1);
-                var projectedBytes = OutputSizeEstimator.compressedOmeTiff(
+                    updateProgress(dataset.id(), "DIRECT_OME", 0, 1);
+                    var projectedBytes = OutputSizeEstimator.compressedOmeTiff(
                                 dataset.cropWidth(),
                                 dataset.cropHeight(),
                                 dataset.downsample(),
                                 dataset.sourceBytes(),
                                 false)
                         .expectedBytes();
-                quPathRuntime.writePyramidalOme(
+                    quPathRuntime.writePyramidalOme(
                         request,
                         partial,
                         bytes -> updateProgress(
@@ -1117,11 +1120,11 @@ public final class ConversionService implements AutoCloseable {
                                 "DIRECT_OME",
                                 Math.min(bytes, projectedBytes),
                                 projectedBytes));
-                finalOmeWritten = true;
-            } else if (dataset.format() == DatasetFormat.OME_TIFF
-                    && derivativeEngine.supportsOmeRendering()) {
-                derivativeEngine.renderOme(request, rendered);
-            } else if (useParallelRgb(dataset, request)) {
+                    finalOmeWritten = true;
+                } else if (dataset.format() == DatasetFormat.OME_TIFF
+                        && derivativeEngine.supportsOmeRendering()) {
+                    derivativeEngine.renderOme(request, rendered);
+                } else if (useParallelRgb(dataset, request)) {
                 regionRoot = outputDirectory.resolve("regions.partial");
                 List<Path> regions;
                 if (existingCheckpoint != null
@@ -1178,7 +1181,9 @@ public final class ConversionService implements AutoCloseable {
                         dataset.id(), "REGIONS_VERIFIED", regions.size(), regions.size());
                 repository.save(dataset.withConversion(
                         DatasetStatus.CONVERTING,
-                        useDirectFinalOme(request)
+                        useDirectDzi
+                                ? "Parallel RGB decode complete; generating DZI directly"
+                                : useDirectFinalOme(request)
                                 ? "Parallel RGB decode complete; writing final OME pyramid"
                                 : "Parallel RGB decode complete; assembling exact slide geometry",
                         dataset.outputPath(),
@@ -1188,8 +1193,12 @@ public final class ConversionService implements AutoCloseable {
                         dataset.height(),
                         dataset.downsample(),
                         dataset.estimatedOutputBytes()));
-                updateProgress(dataset.id(), "ASSEMBLING_OME", 0, 1);
-                if (useDirectFinalOme(request)) {
+                if (useDirectDzi) {
+                    directDziRegions = regions;
+                    updateProgress(
+                            dataset.id(), "DIRECT_DZI_SOURCE_READY", regions.size(), regions.size());
+                } else if (useDirectFinalOme(request)) {
+                    updateProgress(dataset.id(), "ASSEMBLING_OME", 0, 1);
                     derivativeEngine.assembleRegionsFinal(
                             regions,
                             partial,
@@ -1198,12 +1207,15 @@ public final class ConversionService implements AutoCloseable {
                             request.downsample());
                     finalOmeWritten = true;
                 } else {
+                    updateProgress(dataset.id(), "ASSEMBLING_OME", 0, 1);
                     derivativeEngine.assembleRegions(regions, rendered);
                 }
-            } else {
-                engine.convert(request, rendered);
-            }
-            if (derivativeEngine.available() && !finalOmeWritten) {
+                } else {
+                    engine.convert(request, rendered);
+                }
+                if (useDirectDzi) {
+                    digest = revision.sourceFingerprint();
+                } else if (derivativeEngine.available() && !finalOmeWritten) {
                 repository.save(dataset.withConversion(
                         DatasetStatus.OPTIMIZING_OME,
                         "Rendered RGB complete; compressing the tiled OME-BigTIFF pyramid",
@@ -1218,10 +1230,11 @@ public final class ConversionService implements AutoCloseable {
                 derivativeEngine.optimizeOme(
                         rendered, partial, request.outputWidth(), request.outputHeight());
                 Files.deleteIfExists(rendered);
-            } else if (!finalOmeWritten) {
-                Files.move(rendered, partial, StandardCopyOption.REPLACE_EXISTING);
-            }
-            repository.save(dataset.withConversion(
+                } else if (!finalOmeWritten) {
+                    Files.move(rendered, partial, StandardCopyOption.REPLACE_EXISTING);
+                }
+                if (!useDirectDzi) {
+                    repository.save(dataset.withConversion(
                     DatasetStatus.VALIDATING,
                     "Validating rendered-RGB size, TIFF signature and SHA-256",
                     dataset.outputPath(),
@@ -1231,29 +1244,30 @@ public final class ConversionService implements AutoCloseable {
                     dataset.height(),
                     dataset.downsample(),
                     dataset.estimatedOutputBytes()));
-            updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
-            verifyTiff(partial);
-            derivativeEngine.validateOmeGeometry(
-                    partial, request.outputWidth(), request.outputHeight());
-            OutputSizeGuard.requireSuitable(
-                    Files.size(partial),
-                    dataset.sourceBytes(),
-                    request.outputWidth(),
-                    request.outputHeight(),
-                    request.downsample());
-            digest = sha256(partial);
-            atomicReplace(partial, output);
-            saveCheckpoint(
-                    checkpoints,
-                    revision,
-                    StageCheckpoint.Stage.OME_VERIFIED,
-                    1,
-                    1);
-            updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
-            if (regionRoot != null) {
-                deleteTree(outputDirectory, regionRoot);
-                regionRoot = null;
-            }
+                updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
+                verifyTiff(partial);
+                derivativeEngine.validateOmeGeometry(
+                        partial, request.outputWidth(), request.outputHeight());
+                OutputSizeGuard.requireSuitable(
+                        Files.size(partial),
+                        dataset.sourceBytes(),
+                        request.outputWidth(),
+                        request.outputHeight(),
+                        request.downsample());
+                digest = sha256(partial);
+                atomicReplace(partial, output);
+                saveCheckpoint(
+                        checkpoints,
+                        revision,
+                        StageCheckpoint.Stage.OME_VERIFIED,
+                        1,
+                        1);
+                updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
+                    if (regionRoot != null) {
+                        deleteTree(outputDirectory, regionRoot);
+                        regionRoot = null;
+                    }
+                }
             } else {
                 try {
                     verifyTiff(output);
@@ -1311,17 +1325,93 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
             updateProgress(dataset.id(), "GENERATING_DZI", 0, 1);
             deleteTree(outputDirectory, derivativePartial);
-            var derivativeInfo = derivativeEngine.generateDzi(
-                    output,
-                    derivativePartial,
-                    request.outputWidth(),
-                    request.outputHeight(),
-                    derivativeProgress -> updateProgress(
-                            dataset.id(),
-                            derivativeProgress.stage(),
-                            derivativeProgress.completedUnits(),
-                            derivativeProgress.totalUnits()));
+            org.pathlab.forge.derivative.DerivativeInfo derivativeInfo;
+            if (useDirectDzi) {
+                if (directDziRegions == null || directDziRegions.size() < 2) {
+                    throw new IOException("Direct DZI region checkpoint is incomplete");
+                }
+                try {
+                    derivativeInfo = derivativeEngine.generateDziFromRegions(
+                            directDziRegions,
+                            derivativePartial,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            request.downsample(),
+                            derivativeProgress -> updateProgress(
+                                    dataset.id(),
+                                    derivativeProgress.stage(),
+                                    derivativeProgress.completedUnits(),
+                                    derivativeProgress.totalUnits()));
+                } catch (IOException directFailure) {
+                    System.err.println(
+                            "PathLab Forge: direct DZI path unavailable; using staging OME fallback: "
+                                    + concise(directFailure.getMessage()));
+                    useDirectDzi = false;
+                    deleteTree(outputDirectory, derivativePartial);
+                    repository.save(dataset.withConversion(
+                            DatasetStatus.OPTIMIZING_OME,
+                            "Direct DZI was unavailable; safely falling back to staging OME",
+                            dataset.outputPath(),
+                            dataset.sha256(),
+                            dataset.selectedSeries(),
+                            dataset.width(),
+                            dataset.height(),
+                            dataset.downsample(),
+                            dataset.estimatedOutputBytes()));
+                    updateProgress(dataset.id(), "DIRECT_DZI_FALLBACK", 0, 1);
+                    derivativeEngine.assembleRegionsFinal(
+                            directDziRegions,
+                            partial,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            request.downsample());
+                    verifyTiff(partial);
+                    derivativeEngine.validateOmeGeometry(
+                            partial, request.outputWidth(), request.outputHeight());
+                    OutputSizeGuard.requireSuitable(
+                            Files.size(partial),
+                            dataset.sourceBytes(),
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            request.downsample());
+                    digest = sha256(partial);
+                    atomicReplace(partial, output);
+                    saveCheckpoint(
+                            checkpoints,
+                            revision,
+                            StageCheckpoint.Stage.OME_VERIFIED,
+                            1,
+                            1);
+                    updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
+                    deleteTree(outputDirectory, derivativePartial);
+                    derivativeInfo = derivativeEngine.generateDzi(
+                            output,
+                            derivativePartial,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            derivativeProgress -> updateProgress(
+                                    dataset.id(),
+                                    derivativeProgress.stage(),
+                                    derivativeProgress.completedUnits(),
+                                    derivativeProgress.totalUnits()));
+                }
+            } else {
+                derivativeInfo = derivativeEngine.generateDzi(
+                        output,
+                        derivativePartial,
+                        request.outputWidth(),
+                        request.outputHeight(),
+                        derivativeProgress -> updateProgress(
+                                dataset.id(),
+                                derivativeProgress.stage(),
+                                derivativeProgress.completedUnits(),
+                                derivativeProgress.totalUnits()));
+            }
             installDirectory(outputDirectory, derivativePartial, derivative);
+            if (regionRoot != null) {
+                deleteTree(outputDirectory, regionRoot);
+                regionRoot = null;
+            }
             derivativeInfo = new org.pathlab.forge.derivative.DerivativeInfo(
                     derivative,
                     derivativeInfo.bytes(),
@@ -1373,8 +1463,19 @@ public final class ConversionService implements AutoCloseable {
                             seriesInfo.physicalSizeX(),
                             seriesInfo.physicalSizeY(),
                             seriesInfo.physicalUnit(),
+                            useDirectDzi
+                                    ? "estimated-staging-ome"
+                                    : "actual-staging-ome",
                             "0.1.0-rc");
-            var stagingOmeBytes = Files.size(output);
+            var stagingOmeBytes = useDirectDzi
+                    ? OutputSizeEstimator.compressedOmeTiff(
+                                    dataset.cropWidth(),
+                                    dataset.cropHeight(),
+                                    dataset.downsample(),
+                                    dataset.sourceBytes(),
+                                    false)
+                            .expectedBytes()
+                    : Files.size(output);
             var predictedPackageBytes = PreparedPackageBuilder.predictBytes(
                     derivativeInfo,
                     request.outputWidth(),
@@ -1416,7 +1517,9 @@ public final class ConversionService implements AutoCloseable {
                             + packageInfo.bytes() + " package bytes · "
                             + String.format(
                                     java.util.Locale.ROOT,
-                                    "%.1f%% of staging OME",
+                                    useDirectDzi
+                                            ? "%.1f%% of estimated OME reference"
+                                            : "%.1f%% of staging OME",
                                     packageInfo.bytes() * 100.0 / stagingOmeBytes)
                             + (exceedsSizeReference
                                     ? "; exceeds the 1.25x size reference; review before approval"
@@ -1559,6 +1662,15 @@ public final class ConversionService implements AutoCloseable {
                                 "pathlab.forge.directFinalDownsample")
                         || Boolean.getBoolean(
                                 "pathlab.forge.experimentalNativeFallback"));
+    }
+
+    private boolean useDirectDziFromRegions(
+            LocalDataset dataset, ConversionRequest request) {
+        return Boolean.parseBoolean(
+                        System.getProperty(
+                                "pathlab.forge.directDzi.enabled", "false"))
+                && derivativeEngine.supportsDirectDziFromRegions()
+                && useParallelRgb(dataset, request);
     }
 
     private boolean useParallelRgb(LocalDataset dataset, ConversionRequest request) {
