@@ -52,6 +52,7 @@ class ArtifactReuseTest {
                 request.outputWidth(),
                 request.outputHeight(),
                 0,
+                "Test conversion",
                 "");
 
         assertTrue(ConversionService.isReusableArtifact(dataset, request, revision));

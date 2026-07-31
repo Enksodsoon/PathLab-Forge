@@ -18,6 +18,7 @@ public record ArtifactRevision(
         int outputWidth,
         int outputHeight,
         long approvedAt,
+        String name,
         String failure) {
     public ArtifactRevision {
         id = requireText(id, "id");
@@ -31,6 +32,7 @@ public record ArtifactRevision(
         packagePath = requireText(packagePath, "packagePath");
         omeSha256 = Objects.requireNonNull(omeSha256, "omeSha256");
         packageSha256 = Objects.requireNonNull(packageSha256, "packageSha256");
+        name = validateName(name);
         failure = Objects.requireNonNull(failure, "failure");
         if (createdAt <= 0 || outputWidth <= 0 || outputHeight <= 0 || approvedAt < 0) {
             throw new IllegalArgumentException("Artifact revision metadata is invalid");
@@ -89,7 +91,38 @@ public record ArtifactRevision(
                 outputWidth,
                 outputHeight,
                 nextApprovedAt,
+                name,
                 nextFailure);
+    }
+
+    public ArtifactRevision renamed(String nextName) {
+        return new ArtifactRevision(
+                id,
+                datasetId,
+                configurationRevision,
+                sourceFingerprint,
+                createdAt,
+                status,
+                format,
+                omePath,
+                derivativePath,
+                packagePath,
+                omeSha256,
+                packageSha256,
+                outputWidth,
+                outputHeight,
+                approvedAt,
+                nextName,
+                failure);
+    }
+
+    private static String validateName(String value) {
+        var normalized = requireText(value, "name");
+        if (normalized.length() > 80
+                || normalized.chars().anyMatch(character -> Character.isISOControl(character))) {
+            throw new IllegalArgumentException("Conversion name must be 1 to 80 visible characters");
+        }
+        return normalized;
     }
 
     private static String requireText(String value, String name) {

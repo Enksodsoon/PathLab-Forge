@@ -40,6 +40,7 @@ export function App() {
   const [selectedId, setSelectedId] = useState('')
   const [seriesByDataset, setSeriesByDataset] = useState<Record<string, SeriesInfo[]>>({})
   const [artifactByDataset, setArtifactByDataset] = useState<Record<string, ArtifactRevision[]>>({})
+  const [viewingRevisionByDataset, setViewingRevisionByDataset] = useState<Record<string, string>>({})
   const [navigatorOpen, setNavigatorOpen] = useState(
     () => typeof window === 'undefined' || window.innerWidth > 960,
   )
@@ -67,6 +68,10 @@ export function App() {
   const selectedSeries = selected ? seriesByDataset[selected.id] ?? [] : []
   const revisions = selected ? artifactByDataset[selected.id] ?? [] : []
   const currentRevision = revisions.find((revision) => revision.id === selected?.currentArtifactRevision)
+  const viewingRevision = selected
+    ? revisions.find((revision) => revision.id === viewingRevisionByDataset[selected.id])
+      ?? currentRevision
+    : undefined
 
   useEffect(() => {
     if (!selected || selected.width <= 0 || selected.height <= 0) {
@@ -134,6 +139,14 @@ export function App() {
       void api.artifacts(selected.id).then((result) => {
         if (!cancelled) {
           setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
+          setViewingRevisionByDataset((current) => ({
+            ...current,
+            [selected.id]: result.revisions.some(
+              (revision) => revision.id === current[selected.id] && revision.packageBytes > 0,
+            )
+              ? current[selected.id]
+              : result.currentRevision,
+          }))
         }
       }).catch(() => undefined)
     }
@@ -260,6 +273,45 @@ export function App() {
       setNotice('Exact artifact revision approved for Viewer upload')
     } catch (nextError) {
       setError(message(nextError))
+    }
+  }
+
+  const viewRevision = (revisionId: string) => {
+    if (!selected) return
+    setViewingRevisionByDataset((current) => ({ ...current, [selected.id]: revisionId }))
+    setCropEditing(false)
+    window.location.hash = 'dzi-viewer'
+    setNotice('Opening saved conversion from History')
+  }
+
+  const renameRevision = async (revisionId: string, name: string) => {
+    if (!selected) return
+    try {
+      await api.renameArtifact(selected.id, revisionId, name)
+      const result = await api.artifacts(selected.id)
+      setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
+      setNotice('Conversion name saved')
+    } catch (nextError) {
+      setError(message(nextError))
+      throw nextError
+    }
+  }
+
+  const deleteRevision = async (revisionId: string) => {
+    if (!selected) return
+    try {
+      const updated = await api.deleteArtifact(selected.id, revisionId)
+      const result = await api.artifacts(selected.id)
+      setDatasets((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
+      setViewingRevisionByDataset((current) => ({
+        ...current,
+        [selected.id]: result.currentRevision,
+      }))
+      setNotice('Saved conversion permanently deleted')
+    } catch (nextError) {
+      setError(message(nextError))
+      throw nextError
     }
   }
 
@@ -402,7 +454,7 @@ export function App() {
           stage={(
             <ViewerStage
               dataset={selected}
-              revision={currentRevision}
+              revision={viewingRevision}
               importing={importing}
               cropBox={cropDraft}
               cropEditing={cropEditing}
@@ -445,6 +497,10 @@ export function App() {
               onUpload={uploadApproved}
               onRemove={() => selected && setRemoveTarget(selected)}
               onDeleteAnnotation={deleteLocalAnnotation}
+              viewingRevisionId={viewingRevision?.id || ''}
+              onViewRevision={viewRevision}
+              onRenameRevision={renameRevision}
+              onDeleteRevision={deleteRevision}
             />
           )}
           queue={(
@@ -697,7 +753,7 @@ function ViewerStage({
   const converting = Boolean(dataset && CONVERSION_STATUSES.has(dataset.status))
   const inspecting = dataset?.status === 'INSPECTING'
   const tileSource = showingConvertedResult && !cropEditing && dataset && revision
-    ? `/api/datasets/${encodeURIComponent(dataset.id)}/derivative/slide.dzi?revision=${encodeURIComponent(revision.id)}`
+    ? api.artifactDziUrl(dataset.id, revision.id)
     : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
       ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
       : ''
@@ -705,7 +761,7 @@ function ViewerStage({
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
       <header className="forge-viewer-header">
         <div>
-          <strong>{dataset?.displayName || 'PathLab Forge viewer'}</strong>
+          <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
           <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Direct source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
         <button
@@ -734,9 +790,15 @@ function ViewerStage({
           annotations={annotations}
           sourceWidth={dataset?.width || 1}
           sourceHeight={dataset?.height || 1}
-          cropX={revision && ['READY', 'APPROVED'].includes(revision.status) ? dataset?.cropX || 0 : 0}
-          cropY={revision && ['READY', 'APPROVED'].includes(revision.status) ? dataset?.cropY || 0 : 0}
-          downsample={revision && ['READY', 'APPROVED'].includes(revision.status) ? dataset?.downsample || 1 : 0}
+          cropX={revision && ['READY', 'APPROVED'].includes(revision.status)
+            ? revision.cropX ?? dataset?.cropX ?? 0
+            : 0}
+          cropY={revision && ['READY', 'APPROVED'].includes(revision.status)
+            ? revision.cropY ?? dataset?.cropY ?? 0
+            : 0}
+          downsample={revision && ['READY', 'APPROVED'].includes(revision.status)
+            ? revision.downsample ?? dataset?.downsample ?? 1
+            : 0}
           onCreate={onCreateAnnotation}
           onReady={onViewer}
         />
@@ -822,6 +884,10 @@ function Inspector({
   onUpload,
   onRemove,
   onDeleteAnnotation,
+  viewingRevisionId,
+  onViewRevision,
+  onRenameRevision,
+  onDeleteRevision,
 }: {
   dataset?: Dataset
   series: SeriesInfo[]
@@ -844,6 +910,10 @@ function Inspector({
   onUpload: () => void
   onRemove: () => void
   onDeleteAnnotation: (annotationId: string) => void
+  viewingRevisionId: string
+  onViewRevision: (revisionId: string) => void
+  onRenameRevision: (revisionId: string, name: string) => Promise<void>
+  onDeleteRevision: (revisionId: string) => Promise<void>
 }) {
   const [section, setSection] = useState<'export' | 'annotations' | 'history'>('export')
   if (!dataset) return <div className="forge-inspector-empty">Slide details appear here.</div>
@@ -911,19 +981,217 @@ function Inspector({
         </section>
       ) : null}
       {section === 'history' ? (
-        <section className="forge-inspector-section">
-          <div className="forge-section-heading"><h3>Artifact revisions</h3><span>{revisions.length}</span></div>
-          {revisions.length ? revisions.map((revision) => (
-            <article className="forge-revision" key={revision.id}>
-              <strong>{revision.outputWidth.toLocaleString()} × {revision.outputHeight.toLocaleString()}</strong>
-              <span>{revision.status.toLowerCase()} · {new Date(revision.createdAt).toLocaleString()}</span>
-              {revision.failure ? <span role="alert">{revision.failure}</span> : null}
-              <code>{revision.id.slice(0, 12)}</code>
-            </article>
-          )) : <p className="forge-help">No conversion artifacts yet.</p>}
-        </section>
+        <RevisionHistory
+          dataset={dataset}
+          revisions={revisions}
+          viewingRevisionId={viewingRevisionId}
+          onView={onViewRevision}
+          onRename={onRenameRevision}
+          onDelete={onDeleteRevision}
+          onApprove={onApprove}
+        />
       ) : null}
     </div>
+  )
+}
+
+function RevisionHistory({
+  dataset,
+  revisions,
+  viewingRevisionId,
+  onView,
+  onRename,
+  onDelete,
+  onApprove,
+}: {
+  dataset: Dataset
+  revisions: ArtifactRevision[]
+  viewingRevisionId: string
+  onView: (revisionId: string) => void
+  onRename: (revisionId: string, name: string) => Promise<void>
+  onDelete: (revisionId: string) => Promise<void>
+  onApprove: () => void
+}) {
+  const [renamingId, setRenamingId] = useState('')
+  const [renameValue, setRenameValue] = useState('')
+  const [deletingId, setDeletingId] = useState('')
+  const [expandedId, setExpandedId] = useState('')
+
+  return (
+    <section className="forge-inspector-section forge-history" aria-label="Conversion history">
+      <div className="forge-history-heading">
+        <div>
+          <span>Saved locally</span>
+          <h3>Conversion history</h3>
+        </div>
+        <strong>{revisions.length}</strong>
+      </div>
+      <p className="forge-help">
+        Each completed conversion keeps its own package and viewer. Rename useful versions,
+        compare them here, or delete versions you no longer need.
+      </p>
+      {revisions.length ? (
+        <div className="forge-history-list">
+          {revisions.map((revision, index) => {
+            const filesAvailable = revision.packageBytes > 0
+              && ['READY', 'APPROVED'].includes(revision.status)
+            const isCurrent = revision.id === dataset.currentArtifactRevision
+            const isViewing = revision.id === viewingRevisionId
+            const isApproved = revision.id === dataset.approvedArtifactRevision
+              || revision.status === 'APPROVED'
+            const displayName = revision.name || `Conversion ${revisions.length - index}`
+            const renaming = renamingId === revision.id
+            const deleting = deletingId === revision.id
+            const expanded = expandedId === revision.id
+            return (
+              <article
+                className={[
+                  'forge-history-card',
+                  isViewing ? 'viewing' : '',
+                  filesAvailable ? '' : 'unavailable',
+                ].filter(Boolean).join(' ')}
+                key={revision.id}
+              >
+                <div className="forge-history-rail" aria-hidden="true"><i /></div>
+                <div className="forge-history-card-body">
+                  <header>
+                    <div>
+                      {renaming ? (
+                        <label className="forge-history-rename">
+                          Conversion name
+                          <input
+                            value={renameValue}
+                            maxLength={80}
+                            autoFocus
+                            onChange={(event) => setRenameValue(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Escape') setRenamingId('')
+                            }}
+                          />
+                        </label>
+                      ) : (
+                        <strong>{displayName}</strong>
+                      )}
+                      <small>{new Date(revision.createdAt).toLocaleString()}</small>
+                    </div>
+                    <div className="forge-history-badges">
+                      {isCurrent ? <span>Current</span> : null}
+                      {isViewing ? <span>Viewing</span> : null}
+                      {isApproved ? <span>Approved</span> : null}
+                      {!filesAvailable ? <span>Files unavailable</span> : null}
+                    </div>
+                  </header>
+                  {renaming ? (
+                    <div className="forge-history-inline-actions">
+                      <button
+                        className="forge-primary"
+                        type="button"
+                        disabled={!renameValue.trim()}
+                        onClick={() => {
+                          void onRename(revision.id, renameValue.trim())
+                            .then(() => setRenamingId(''))
+                            .catch(() => undefined)
+                        }}
+                      >
+                        Save name
+                      </button>
+                      <button type="button" onClick={() => setRenamingId('')}>Cancel</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="forge-history-metrics">
+                        <span><b>{revision.outputWidth.toLocaleString()} × {revision.outputHeight.toLocaleString()}</b> pixels</span>
+                        <span><b>{revision.packageBytes ? formatBytes(revision.packageBytes) : 'No package'}</b> stored</span>
+                        {revision.jpegQuality > 0 ? <span><b>Q{revision.jpegQuality}</b> JPEG</span> : null}
+                      </div>
+                      <div className="forge-history-actions">
+                        <button
+                          className={isViewing ? 'active' : ''}
+                          type="button"
+                          disabled={!filesAvailable}
+                          onClick={() => onView(revision.id)}
+                        >
+                          {isViewing ? 'Viewing now' : 'View slide'}
+                        </button>
+                        {filesAvailable ? (
+                          <a href={api.artifactPackageUrl(dataset.id, revision.id)}>
+                            Download
+                          </a>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRenamingId(revision.id)
+                            setRenameValue(displayName)
+                          }}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          aria-expanded={expanded}
+                          onClick={() => setExpandedId(expanded ? '' : revision.id)}
+                        >
+                          {expanded ? 'Hide details' : 'Details'}
+                        </button>
+                        <button
+                          className="danger"
+                          type="button"
+                          onClick={() => setDeletingId(revision.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  {expanded ? (
+                    <dl className="forge-history-details">
+                      <div><dt>Status</dt><dd>{revision.status.toLowerCase()}</dd></div>
+                      <div><dt>SSIM</dt><dd>{revision.minimumWindowedSsim.toFixed(4)}</dd></div>
+                      <div><dt>Max ΔE00</dt><dd>{revision.maximumRoiMeanDeltaE00.toFixed(2)}</dd></div>
+                      <div><dt>Edge retention</dt><dd>{(revision.minimumEdgeDetailRetention * 100).toFixed(1)}%</dd></div>
+                      <div><dt>Encoder</dt><dd>{revision.encoderProfile || 'Legacy'}</dd></div>
+                      <div><dt>Revision</dt><dd><code>{revision.id}</code></dd></div>
+                    </dl>
+                  ) : null}
+                  {isCurrent && revision.status === 'READY' && !isApproved ? (
+                    <button className="forge-approve" type="button" onClick={onApprove}>
+                      <CheckCircle /> Approve for Viewer upload
+                    </button>
+                  ) : null}
+                  {revision.failure ? <p className="forge-field-error" role="alert">{revision.failure}</p> : null}
+                  {deleting ? (
+                    <div className="forge-history-delete" role="alert">
+                      <strong>Delete “{displayName}” permanently?</strong>
+                      <p>The saved package and viewer tiles for this conversion will be removed. The source slide is not deleted.</p>
+                      <div>
+                        <button
+                          className="forge-danger"
+                          type="button"
+                          onClick={() => {
+                            void onDelete(revision.id)
+                              .then(() => setDeletingId(''))
+                              .catch(() => undefined)
+                          }}
+                        >
+                          Delete conversion
+                        </button>
+                        <button type="button" onClick={() => setDeletingId('')}>Keep it</button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="forge-history-empty">
+          <strong>No saved conversions yet</strong>
+          <span>Complete a conversion and it will appear here automatically.</span>
+        </div>
+      )}
+    </section>
   )
 }
 

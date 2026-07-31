@@ -316,6 +316,18 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/approve")
                     && "POST".equals(exchange.getRequestMethod())) {
                 approveArtifact(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/rename")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                renameArtifact(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/derivative/.+")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                artifactDerivativeResource(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/package")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                artifactPackageResource(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+")
+                    && "DELETE".equals(exchange.getRequestMethod())) {
+                deleteArtifact(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/derivative/.+")
                     && "GET".equals(exchange.getRequestMethod())) {
                 derivativeResource(exchange, path);
@@ -950,6 +962,132 @@ public final class ForgeServer implements AutoCloseable {
         }
     }
 
+    private void renameArtifact(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var identifiers = artifactIdentifiers(path, "/rename");
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    artifactRevisionJson(conversionService.renameRevision(
+                            identifiers[0],
+                            identifiers[1],
+                            queryValue(exchange, "name", ""))));
+        } catch (IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"invalid_artifact_name\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void deleteArtifact(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var identifiers = artifactIdentifiers(path, "");
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    datasetJson(conversionService.deleteRevision(
+                            identifiers[0], identifiers[1])));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"artifact_not_found\"}");
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"artifact_not_deletable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void artifactDerivativeResource(HttpExchange exchange, String path)
+            throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var remainder = path.substring("/api/datasets/".length());
+        var artifactSeparator = remainder.indexOf("/artifacts/");
+        var derivativeSeparator = remainder.indexOf("/derivative/");
+        var datasetId = remainder.substring(0, artifactSeparator);
+        var revisionId = remainder.substring(
+                artifactSeparator + "/artifacts/".length(), derivativeSeparator);
+        var relative = remainder.substring(derivativeSeparator + "/derivative/".length());
+        if (!relative.matches("slide\\.dzi|thumbnail\\.jpg|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
+            respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+            return;
+        }
+        try {
+            if (immutableNotModified(exchange, revisionId + "|" + relative)) {
+                return;
+            }
+            var type = relative.endsWith(".dzi")
+                    ? "application/xml; charset=utf-8"
+                    : "image/jpeg";
+            respond(
+                    exchange,
+                    200,
+                    type,
+                    conversionService.derivativeEntry(datasetId, revisionId, relative));
+        } catch (IllegalArgumentException | IllegalStateException
+                | java.nio.file.NoSuchFileException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"artifact_not_found\"}");
+        }
+    }
+
+    private void artifactPackageResource(HttpExchange exchange, String path)
+            throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var identifiers = artifactIdentifiers(path, "/package");
+        try {
+            var revision = conversionService.revisions(identifiers[0]).stream()
+                    .filter(item -> item.id().equals(identifiers[1]))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Artifact revision was not found"));
+            var file = conversionService
+                    .revisionArtifacts(identifiers[0], identifiers[1])
+                    .packagePath();
+            if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(file)) {
+                respond(exchange, 404, "application/json", "{\"error\":\"package_not_found\"}");
+                return;
+            }
+            exchange.getResponseHeaders().set(
+                    "Content-Disposition",
+                    "attachment; filename=\"" + safeFilename(revision.name()) + ".plslide\"");
+            respondFile(exchange, "application/x-tar", file);
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"artifact_not_found\"}");
+        }
+    }
+
+    private static String[] artifactIdentifiers(String path, String suffix) {
+        var remainder = path.substring("/api/datasets/".length());
+        var separator = remainder.indexOf("/artifacts/");
+        var datasetId = remainder.substring(0, separator);
+        var revisionId = remainder.substring(
+                separator + "/artifacts/".length(),
+                suffix.isEmpty() ? remainder.length() : remainder.length() - suffix.length());
+        return new String[] {datasetId, revisionId};
+    }
+
+    private static String safeFilename(String value) {
+        var sanitized = value.replaceAll("[^A-Za-z0-9._ -]", "_").strip();
+        return sanitized.isBlank() ? "slide" : sanitized;
+    }
+
     private void derivativeResource(HttpExchange exchange, String path) throws IOException {
         if (!requireAuthenticated(exchange)) {
             return;
@@ -1336,6 +1474,7 @@ public final class ForgeServer implements AutoCloseable {
             org.pathlab.forge.conversion.ArtifactRevision revision) {
         var manifest = packageManifest(revision.packagePath());
         return "{\"id\":" + json(revision.id())
+                + ",\"name\":" + json(revision.name())
                 + ",\"configurationRevision\":" + json(revision.configurationRevision())
                 + ",\"sourceFingerprint\":" + json(revision.sourceFingerprint())
                 + ",\"createdAt\":" + revision.createdAt()
@@ -1353,6 +1492,12 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"maximumRoiMeanDeltaE00\":" + manifestDouble(manifest, "maximumRoiMeanDeltaE00")
                 + ",\"minimumEdgeDetailRetention\":" + manifestDouble(manifest, "minimumEdgeDetailRetention")
                 + ",\"encoderProfile\":" + json(manifestString(manifest, "encoderProfile"))
+                + ",\"series\":" + manifestLong(manifest, "series")
+                + ",\"cropX\":" + manifestLong(manifest, "x")
+                + ",\"cropY\":" + manifestLong(manifest, "y")
+                + ",\"cropWidth\":" + manifestLong(manifest, "width")
+                + ",\"cropHeight\":" + manifestLong(manifest, "height")
+                + ",\"downsample\":" + manifestDouble(manifest, "downsample")
                 + ",\"packageSha256\":" + json(revision.packageSha256())
                 + ",\"outputWidth\":" + revision.outputWidth()
                 + ",\"outputHeight\":" + revision.outputHeight()
