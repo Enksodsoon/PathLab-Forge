@@ -1219,7 +1219,18 @@ public final class VipsRuntime implements DerivativeEngine {
         // encoders operate on independent tiles. Ten workers was the highest
         // byte-identical throughput win on the 12-thread reference workstation;
         // the 8 GB / 6-core profile remains bounded at five.
-        var defaultConcurrency = Math.min(10, profile.vipsConcurrency());
+        var logicalProcessors =
+                org.pathlab.forge.runtime.RuntimeProfile.configuredLogicalProcessors();
+        var concurrentJobs = logicalProcessors >= 12
+                        && profile.processTreeLimitBytes() >= 16L * 1024 * 1024 * 1024
+                ? 2
+                : 1;
+        var reservedCpu = logicalProcessors <= 6
+                ? profile.vipsConcurrency()
+                : Math.max(1, logicalProcessors - 2);
+        var defaultConcurrency = Math.min(
+                10,
+                Math.min(profile.vipsConcurrency(), Math.max(1, reservedCpu / concurrentJobs)));
         var concurrency = Integer.getInteger(
                 "pathlab.forge.vips.concurrency", defaultConcurrency);
         concurrency = Math.max(1, Math.min(concurrency, profile.vipsConcurrency()));

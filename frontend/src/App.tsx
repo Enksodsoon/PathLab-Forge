@@ -29,10 +29,14 @@ import type {
 } from './api'
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
+import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
-const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
+const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
+const CANCELLABLE_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCES', ...CONVERSION_STATUSES])
+const QUEUEABLE_STATUSES = new Set(['READY', 'READY_TO_CONVERT', 'CONVERSION_READY', 'FAILED', 'CANCELLED'])
+const NO_ANNOTATIONS: AnnotationRecord[] = []
 
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
@@ -47,7 +51,13 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [railExpanded, setRailExpanded] = useState(false)
   const [activeTool, setActiveTool] = useState('pan')
-  const [cropDraft, setCropDraft] = useState<CropBox>()
+  const [cropDrafts, setCropDrafts] = useState<Record<string, CropBox>>(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem('pathlab-forge-crop-drafts-v1') || '{}')
+    } catch {
+      return {}
+    }
+  })
   const [cropEditing, setCropEditing] = useState(false)
   const [viewer, setViewer] = useState<OpenSeadragon.Viewer | null>(null)
   const [notice, setNotice] = useState('Loading local workspace…')
@@ -65,25 +75,42 @@ export function App() {
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
 
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
+  const cropDraft = selected ? cropDrafts[selected.id] : undefined
+  const setCropDraft = useCallback((crop?: CropBox) => {
+    if (!selected) return
+    setCropDrafts((current) => {
+      if (!crop) {
+        const next = { ...current }
+        delete next[selected.id]
+        return next
+      }
+      return { ...current, [selected.id]: crop }
+    })
+  }, [selected?.id])
   const selectedSeries = selected ? seriesByDataset[selected.id] ?? [] : []
   const revisions = selected ? artifactByDataset[selected.id] ?? [] : []
   const currentRevision = revisions.find((revision) => revision.id === selected?.currentArtifactRevision)
   const viewingRevision = selected
     ? revisions.find((revision) => revision.id === viewingRevisionByDataset[selected.id])
     : undefined
+  const selectedAnnotations = selected
+    ? annotationsByDataset[selected.id] ?? NO_ANNOTATIONS
+    : NO_ANNOTATIONS
 
   useEffect(() => {
     if (!selected || selected.width <= 0 || selected.height <= 0) {
-      setCropDraft(undefined)
       setCropEditing(false)
       return
     }
-    setCropDraft({
-      x: selected.cropX,
-      y: selected.cropY,
-      width: selected.cropWidth || selected.width,
-      height: selected.cropHeight || selected.height,
-    })
+    setCropDrafts((current) => current[selected.id] ? current : ({
+      ...current,
+      [selected.id]: {
+        x: selected.cropX,
+        y: selected.cropY,
+        width: selected.cropWidth || selected.width,
+        height: selected.cropHeight || selected.height,
+      },
+    }))
     setCropEditing(false)
   }, [
     selected?.id,
@@ -95,6 +122,10 @@ export function App() {
     selected?.width,
     selected?.height,
   ])
+
+  useEffect(() => {
+    window.localStorage.setItem('pathlab-forge-crop-drafts-v1', JSON.stringify(cropDrafts))
+  }, [cropDrafts])
 
   const refresh = useCallback(async () => {
     try {
@@ -201,6 +232,21 @@ export function App() {
     }
   }
 
+  const handleProjectImport = async (path?: string) => {
+    setImporting(true)
+    try {
+      const next = await api.importProjectFolder(path)
+      finishImport(next)
+      setNotice(next.project
+        ? `${next.project.imported} slides imported from project folder${next.project.failed ? ` · ${next.project.failed}` : ''}`
+        : 'Project folder selection closed')
+    } catch (nextError) {
+      setError(message(nextError))
+    } finally {
+      setImporting(false)
+    }
+  }
+
   const removeDataset = async () => {
     if (!removeTarget) return
     try {
@@ -259,6 +305,21 @@ export function App() {
     } catch (nextError) {
       setError(message(nextError))
     }
+  }
+
+  const queueReadySlides = async () => {
+    const candidates = datasets.filter((item) => QUEUEABLE_STATUSES.has(item.status))
+    if (!candidates.length) return
+    setNotice(`Preparing ${candidates.length} slides for the adaptive queue…`)
+    for (const candidate of candidates) {
+      try {
+        if (candidate.selectedSeries < 0) await api.inspectDataset(candidate.id)
+        await api.convert(candidate.id)
+      } catch (nextError) {
+        setError(`${candidate.displayName}: ${message(nextError)}`)
+      }
+    }
+    await refresh()
   }
 
   const approveCurrent = async () => {
@@ -362,7 +423,7 @@ export function App() {
     }
   }
 
-  const createLocalAnnotation = async (geometry: string) => {
+  const createLocalAnnotation = useCallback(async (geometry: string) => {
     if (!selected || cropEditing || ['pan', 'select', 'marquee'].includes(activeTool)) return
     try {
       const created = await api.createAnnotation(selected.id, {
@@ -378,7 +439,7 @@ export function App() {
     } catch (nextError) {
       setError(message(nextError))
     }
-  }
+  }, [activeTool, cropEditing, selected?.id])
 
   const deleteLocalAnnotation = async (annotationId: string) => {
     if (!selected) return
@@ -466,7 +527,7 @@ export function App() {
               cropBox={cropDraft}
               cropEditing={cropEditing}
               onCropChange={setCropDraft}
-              annotations={selected ? annotationsByDataset[selected.id] || [] : []}
+              annotations={selectedAnnotations}
               activeTool={activeTool}
               viewer={viewer}
               onViewer={setViewer}
@@ -480,7 +541,7 @@ export function App() {
               dataset={selected}
               series={selectedSeries}
               revisions={revisions}
-              annotations={selected ? annotationsByDataset[selected.id] || [] : []}
+              annotations={selectedAnnotations}
               activeTool={activeTool}
               cropDraft={cropDraft}
               cropEditing={cropEditing}
@@ -517,6 +578,7 @@ export function App() {
               notice={error || notice}
               isError={Boolean(error)}
               onClearError={() => setError('')}
+              onQueueReady={() => void queueReadySlides()}
             />
           )}
         />
@@ -526,7 +588,9 @@ export function App() {
           path={importPath}
           onPath={setImportPath}
           onChoose={() => void handleNativeImport()}
+          onChooseFolder={() => void handleProjectImport()}
           onImport={() => void handlePathImport()}
+          onImportFolder={() => void handleProjectImport(importPath)}
           onClose={() => setImportOpen(false)}
         />
       ) : null}
@@ -578,22 +642,27 @@ function ImportDialog({
   path,
   onPath,
   onChoose,
+  onChooseFolder,
   onImport,
+  onImportFolder,
   onClose,
 }: {
   path: string
   onPath: (value: string) => void
   onChoose: () => void
+  onChooseFolder: () => void
   onImport: () => void
+  onImportFolder: () => void
   onClose: () => void
 }) {
   return (
     <div className="forge-dialog-backdrop">
       <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-import-title">
-        <span>Local pathology dataset</span>
-        <h2 id="forge-import-title">Import slide</h2>
-        <p>Select one OME-TIFF or VSI file. Forge finds the matching ETS companion tree automatically.</p>
-        <button className="forge-primary" type="button" onClick={onChoose}>Choose file…</button>
+        <span>Local pathology project</span>
+        <h2 id="forge-import-title">Import slides</h2>
+        <p>Select several OME-TIFF/VSI files, or recursively discover a project folder. VSI companion ETS files are grouped automatically.</p>
+        <button className="forge-primary" type="button" onClick={onChoose}>Choose slide files…</button>
+        <button type="button" onClick={onChooseFolder}>Choose project folder…</button>
         <div className="forge-dialog-divider"><span>or enter its full local path</span></div>
         <label>
           Local slide path
@@ -604,7 +673,10 @@ function ImportDialog({
             placeholder="C:\path\slide.vsi"
           />
         </label>
-        <button type="button" disabled={!path.trim()} onClick={onImport}>Import this path</button>
+        <div className="forge-dialog-actions">
+          <button type="button" disabled={!path.trim()} onClick={onImport}>Import this path</button>
+          <button type="button" disabled={!path.trim()} onClick={onImportFolder}>Import folder path</button>
+        </div>
         <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
       </section>
     </div>
@@ -768,9 +840,13 @@ function ViewerStage({
         'CONVERSION_READY',
         'READY',
         'APPROVED',
+        'FAILED',
+        'CANCELLED',
+        'QUEUED',
+        'WAITING_RESOURCES',
         ...CONVERSION_STATUSES,
       ].includes(dataset.status)
-      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
+      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}&preview=${DIRECT_PREVIEW_VERSION}`
       : ''
   return (
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
@@ -1647,7 +1723,7 @@ function ExportInspector({
         </div>
       ) : null}
       <div className="forge-action-stack">
-        {ACTIVE_STATUSES.has(dataset.status)
+        {CANCELLABLE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>Convert current revision</button>}
         {current?.status === 'READY'
@@ -1671,20 +1747,30 @@ function QueueDock({
   notice,
   isError,
   onClearError,
+  onQueueReady,
 }: {
   datasets: Dataset[]
   notice: string
   isError: boolean
   onClearError: () => void
+  onQueueReady: () => void
 }) {
   const active = datasets.filter((dataset) => ACTIVE_STATUSES.has(dataset.status))
-  const converting = active.find((dataset) => CONVERSION_STATUSES.has(dataset.status))
+  const convertingSlides = active.filter((dataset) => CONVERSION_STATUSES.has(dataset.status))
+  const converting = convertingSlides[0]
+  const queued = active.filter((dataset) => ['QUEUED', 'WAITING_RESOURCES'].includes(dataset.status))
+  const ready = datasets.filter((dataset) => QUEUEABLE_STATUSES.has(dataset.status))
   const phase = converting ? conversionPhase(converting) : undefined
   return (
     <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
       <span className="forge-queue-mark" />
-      <strong>{active.length ? `${active.length} active` : 'Queue ready'}</strong>
+      <strong>{active.length
+        ? `${convertingSlides.length ? `Converting ${convertingSlides.length}` : 'Starting'} · ${queued.length} queued`
+        : 'Queue ready'}</strong>
       <span>{notice}</span>
+      {ready.length ? (
+        <button type="button" onClick={onQueueReady}>Queue {ready.length} ready slide{ready.length === 1 ? '' : 's'}</button>
+      ) : null}
       {converting && phase ? (
         <label className="forge-queue-progress">
           <span>
@@ -1788,6 +1874,8 @@ function statusLabel(status: string) {
     VERIFYING_SOURCE: 'Verifying source',
     INSPECTING: 'Inspecting',
     READY_TO_CONVERT: 'Ready to convert',
+    QUEUED: 'Queued',
+    WAITING_RESOURCES: 'Waiting for resources',
     CONVERTING: 'Converting locally',
     OPTIMIZING_OME: 'Rendering staging image',
     VALIDATING: 'Verifying staging image',

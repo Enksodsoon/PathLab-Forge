@@ -1,26 +1,38 @@
-# Active Task — Ultra-Fast Stable Local Pipeline
+# Active Task — Project Batch Queue and Persistent Crop Workspace
 
-Supersedes completed F1.1 bootstrap scope by explicit product-owner approval.
+Supersedes the completed conversion-speed tuning wave by explicit product-owner approval.
 
 ## Goal
 
-Rebuild import → inspect → render → OME/DZI → `.plslide` for:
+Make Forge practical for project-scale conversion:
 
-- package-ready at or below 3m30s on reference slide;
-- process-tree RAM at or below 5.5 GB on Windows 11, 8 GB RAM, 6 cores;
-- exact geometry/calibration and hard image-quality gates;
-- crash-safe checkpoint resume;
-- retained artifact at or below 1.6 GB and peak workspace at or below 3.5 GB.
+- import multiple slides or recursively scan one project folder;
+- group VSI sources with their ETS companions and isolate incomplete datasets;
+- persist a batch queue across restart;
+- run more than one conversion only when CPU, RAM, disk and source-volume capacity permit;
+- queue automatically under load instead of rejecting conversion requests;
+- retain each slide's draft and saved crop rectangle while the crop controls are closed,
+  while switching slides, and after application restart.
+
+## Scheduling contract
+
+- `Auto` is the default mode.
+- The 8 GB / 6-core minimum runs one heavy conversion.
+- Higher-spec systems may run up to two conversions in this milestone.
+- Admission uses bounded memory and workspace reservations and never launches unlimited workers.
+- Jobs that cannot start remain queued with an actionable wait reason.
+- A queued job owns an immutable series/crop/downsample configuration snapshot.
+- Cancellation, retry and restart affect one job without deleting completed packages.
 
 ## Ordered work
 
-1. Single-owner data root, SQLite WAL migration, runtime profile, telemetry.
-2. Snapshot/digest separation, persisted inspection, bounded ReaderSession, ETags.
-3. Maximum-five-worker exporter and direct final pyramidal OME assembly.
-4. Single-pass ledger, canonical package/index, package-backed DZI, safe cleanup.
-5. Checkpoints, child-tree containment, RAM/disk governor, fault injection.
-6. Reference benchmark and deterministic tile-engine fallback if any hard gate fails.
-7. Windows 8 GB/6-core certification, quality gates, soak, evidence report.
+1. Persist batch-job records in SQLite and per-slide crop drafts in the local app profile.
+2. Add multi-file and recursive folder discovery with complete VSI/ETS grouping.
+3. Replace direct conversion rejection with an adaptive persistent scheduler.
+4. Add the compact project/queue workflow and bulk actions to the React shell.
+5. Keep saved and draft crop overlays visible per slide outside crop-edit mode.
+6. Verify minimum-profile serialization, higher-profile concurrency, overload queuing,
+   restart recovery, crop persistence and real project-folder discovery.
 
-Viewer upload, merge, deployment, licensed runtime redistribution, and legacy payload
-deletion remain out of scope.
+Viewer deployment, Viewer database changes, publication behavior and automatic public sharing
+remain out of scope.

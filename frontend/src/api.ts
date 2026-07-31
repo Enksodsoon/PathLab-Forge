@@ -157,7 +157,19 @@ export async function capabilities() {
     vsiConversion: boolean
     dziGeneration: boolean
     downsamples: number[]
+    activeConversions?: number
+    queuedConversions?: number
+    maximumConcurrentConversions?: number
+    projectFolderImport?: boolean
   }>('/api/capabilities')
+}
+
+export async function importProjectFolder(path?: string) {
+  const query = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : ''
+  return request<{ datasets: Dataset[]; project?: { root: string; imported: number; failed: string } }>(
+    `/api/v2/desktop/projects/import-folder${query}`,
+    { method: 'POST' },
+  )
 }
 
 export async function chooseDatasets() {

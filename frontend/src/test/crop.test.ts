@@ -44,7 +44,7 @@ describe('crop geometry', () => {
     const partial = { x: 100, y: 100, width: 400, height: 300 }
 
     expect(shouldShowCropOverlay(false, full, 1000, 900)).toBe(false)
-    expect(shouldShowCropOverlay(false, partial, 1000, 900)).toBe(false)
+    expect(shouldShowCropOverlay(false, partial, 1000, 900)).toBe(true)
     expect(shouldShowCropOverlay(true, full, 1000, 900)).toBe(false)
     expect(shouldShowCropOverlay(true, partial, 1000, 900)).toBe(true)
   })

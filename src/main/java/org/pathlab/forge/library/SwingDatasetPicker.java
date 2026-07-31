@@ -16,18 +16,28 @@ import javax.swing.filechooser.FileFilter;
 public final class SwingDatasetPicker implements DatasetPicker {
     @Override
     public List<Path> select() throws IOException {
+        return select(false);
+    }
+
+    @Override
+    public Path selectFolder() throws IOException {
+        var selected = select(true);
+        return selected.isEmpty() ? null : selected.get(0);
+    }
+
+    private List<Path> select(boolean folder) throws IOException {
         if (java.awt.GraphicsEnvironment.isHeadless()) {
             throw new IOException("Native file selection is unavailable in headless mode.");
         }
         if (SwingUtilities.isEventDispatchThread()) {
-            return selectOnEventThread();
+            return selectOnEventThread(folder);
         }
         var selected = new AtomicReference<List<Path>>(List.of());
         var failure = new AtomicReference<IOException>();
         try {
             SwingUtilities.invokeAndWait(() -> {
                 try {
-                    selected.set(selectOnEventThread());
+                    selected.set(selectOnEventThread(folder));
                 } catch (IOException error) {
                     failure.set(error);
                 }
@@ -44,7 +54,7 @@ public final class SwingDatasetPicker implements DatasetPicker {
         return selected.get();
     }
 
-    private static List<Path> selectOnEventThread() throws IOException {
+    private static List<Path> selectOnEventThread(boolean folder) throws IOException {
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (ReflectiveOperationException | javax.swing.UnsupportedLookAndFeelException ignored) {
@@ -58,11 +68,11 @@ public final class SwingDatasetPicker implements DatasetPicker {
         owner.setVisible(true);
         try {
             var chooser = new JFileChooser();
-            chooser.setDialogTitle("Add pathology datasets");
-            chooser.setMultiSelectionEnabled(true);
-            chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-            chooser.setAcceptAllFileFilterUsed(false);
-            chooser.setFileFilter(new FileFilter() {
+            chooser.setDialogTitle(folder ? "Import PathLab project folder" : "Add pathology datasets");
+            chooser.setMultiSelectionEnabled(!folder);
+            chooser.setFileSelectionMode(folder ? JFileChooser.DIRECTORIES_ONLY : JFileChooser.FILES_ONLY);
+            chooser.setAcceptAllFileFilterUsed(folder);
+            if (!folder) chooser.setFileFilter(new FileFilter() {
                 @Override
                 public boolean accept(File file) {
                     return file.isDirectory() || supported(file.getName());

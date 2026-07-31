@@ -26,6 +26,40 @@ final class ForgeLibraryApiTest {
     Path tempDirectory;
 
     @Test
+    void importsAProjectFolderRecursivelyAndIsolatesIncompleteVsiFiles() throws Exception {
+        var project = Files.createDirectories(tempDirectory.resolve("project/nested"));
+        Files.write(project.resolve("one.ome.tif"), new byte[] {'I', 'I', 42, 0, 1});
+        Files.write(tempDirectory.resolve("project/incomplete.vsi"), new byte[] {1, 2, 3});
+        Files.write(project.resolve("ignore.ets"), new byte[] {4, 5});
+        var repository = new PropertiesDatasetRepository(tempDirectory.resolve("project.properties"));
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+
+        try (var server = ForgeServer.start(repository, List::of, tempDirectory.resolve("managed-project"))) {
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var csrf = session.headers().firstValue("x-forge-csrf").orElseThrow();
+            var result = write(
+                    client,
+                    server,
+                    csrf,
+                    "/api/v2/desktop/projects/import-folder?path="
+                            + java.net.URLEncoder.encode(
+                                    tempDirectory.resolve("project").toString(),
+                                    java.nio.charset.StandardCharsets.UTF_8),
+                    "POST");
+
+            assertEquals(200, result.statusCode());
+            assertEquals(2, repository.list().size());
+            assertTrue(result.body().contains("\"imported\":2"));
+            assertTrue(result.body().contains("NEEDS_COMPANIONS"));
+        }
+    }
+
+    @Test
     void selectsPersistsPreparesAndRemovesDataset() throws Exception {
         var source = tempDirectory.resolve("case.ome.tif");
         Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});

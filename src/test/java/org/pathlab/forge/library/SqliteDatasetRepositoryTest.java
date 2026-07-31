@@ -67,4 +67,21 @@ final class SqliteDatasetRepositoryTest {
                     recovered.detail());
         }
     }
+
+    @Test
+    void persistsConversionQueueOrderAndConfigurationSnapshot() throws Exception {
+        var database = temporaryDirectory.resolve("forge.db");
+        var legacy = temporaryDirectory.resolve("library.properties");
+        var queued = new ConversionQueueEntry(
+                "dataset-1", 7, "config-abc", 1234L, "Waiting for memory");
+
+        try (var repository = new SqliteDatasetRepository(database, legacy)) {
+            repository.saveQueueEntry(queued);
+        }
+        try (var repository = new SqliteDatasetRepository(database, legacy)) {
+            assertEquals(java.util.List.of(queued), repository.listQueueEntries());
+            repository.deleteQueueEntry("dataset-1");
+            assertEquals(java.util.List.of(), repository.listQueueEntries());
+        }
+    }
 }

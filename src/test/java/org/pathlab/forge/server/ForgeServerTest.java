@@ -21,6 +21,12 @@ final class ForgeServerTest {
     Path temp;
 
     @Test
+    void reservesHttpWorkersForAppApisWhileTwoTilesAreDecoded() {
+        assertEquals(6, ForgeServer.recommendedHttpWorkers(6));
+        assertEquals(12, ForgeServer.recommendedHttpWorkers(24));
+    }
+
+    @Test
     void bootstrapsOneTimeSessionAndServesPathLabShell() throws Exception {
         var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         var client = HttpClient.newBuilder()
