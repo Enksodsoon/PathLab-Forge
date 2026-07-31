@@ -70,7 +70,6 @@ export function App() {
   const currentRevision = revisions.find((revision) => revision.id === selected?.currentArtifactRevision)
   const viewingRevision = selected
     ? revisions.find((revision) => revision.id === viewingRevisionByDataset[selected.id])
-      ?? currentRevision
     : undefined
 
   useEffect(() => {
@@ -135,21 +134,19 @@ export function App() {
         setAnnotationsByDataset((current) => ({ ...current, [selected.id]: items }))
       }
     }).catch(() => undefined)
-    if (selected.currentArtifactRevision) {
-      void api.artifacts(selected.id).then((result) => {
-        if (!cancelled) {
-          setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
-          setViewingRevisionByDataset((current) => ({
-            ...current,
-            [selected.id]: result.revisions.some(
-              (revision) => revision.id === current[selected.id] && revision.packageBytes > 0,
-            )
-              ? current[selected.id]
-              : result.currentRevision,
-          }))
-        }
-      }).catch(() => undefined)
-    }
+    void api.artifacts(selected.id).then((result) => {
+      if (!cancelled) {
+        setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
+        setViewingRevisionByDataset((current) => ({
+          ...current,
+          [selected.id]: result.revisions.some(
+            (revision) => revision.id === current[selected.id] && revision.packageBytes > 0,
+          )
+            ? current[selected.id]
+            : '',
+        }))
+      }
+    }).catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -284,6 +281,14 @@ export function App() {
     setNotice('Opening saved conversion from History')
   }
 
+  const viewSource = () => {
+    if (!selected) return
+    setViewingRevisionByDataset((current) => ({ ...current, [selected.id]: '' }))
+    setCropEditing(false)
+    window.location.hash = 'dzi-viewer'
+    setNotice('Opening the original source slide')
+  }
+
   const renameRevision = async (revisionId: string, name: string) => {
     if (!selected) return
     try {
@@ -306,7 +311,9 @@ export function App() {
       setArtifactByDataset((current) => ({ ...current, [selected.id]: result.revisions }))
       setViewingRevisionByDataset((current) => ({
         ...current,
-        [selected.id]: result.currentRevision,
+        [selected.id]: current[selected.id] === revisionId
+          ? ''
+          : current[selected.id] || '',
       }))
       setNotice('Saved conversion permanently deleted')
     } catch (nextError) {
@@ -499,6 +506,7 @@ export function App() {
               onDeleteAnnotation={deleteLocalAnnotation}
               viewingRevisionId={viewingRevision?.id || ''}
               onViewRevision={viewRevision}
+              onViewSource={viewSource}
               onRenameRevision={renameRevision}
               onDeleteRevision={deleteRevision}
             />
@@ -754,7 +762,14 @@ function ViewerStage({
   const inspecting = dataset?.status === 'INSPECTING'
   const tileSource = showingConvertedResult && !cropEditing && dataset && revision
     ? api.artifactDziUrl(dataset.id, revision.id)
-    : dataset && dataset.selectedSeries >= 0 && ['READY_TO_CONVERT', 'PACKAGE_READY', 'CONVERSION_READY'].includes(dataset.status)
+    : dataset && dataset.selectedSeries >= 0 && [
+        'READY_TO_CONVERT',
+        'PACKAGE_READY',
+        'CONVERSION_READY',
+        'READY',
+        'APPROVED',
+        ...CONVERSION_STATUSES,
+      ].includes(dataset.status)
       ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
       : ''
   return (
@@ -818,10 +833,10 @@ function ViewerStage({
         <ConversionProgress dataset={dataset} revision={revision} />
       ) : null}
       <div className="forge-viewer-tools" aria-label="Viewer controls">
-        <button type="button" aria-label="Zoom out" disabled={!viewer} onClick={() => viewer?.viewport.zoomBy(.67)}><MagnifyingGlassMinus /></button>
-        <button type="button" aria-label="Home" disabled={!viewer} onClick={() => viewer?.viewport.goHome()}><House /></button>
-        <button type="button" aria-label="Zoom in" disabled={!viewer} onClick={() => viewer?.viewport.zoomBy(1.5)}><MagnifyingGlassPlus /></button>
-        <button type="button" aria-label="Full screen" disabled={!viewer} onClick={() => viewer?.setFullScreen(!viewer.isFullPage())}><ArrowsOut /></button>
+        <button type="button" aria-label="Zoom out" disabled={!viewer || converting} onClick={() => viewer?.viewport.zoomBy(.67)}><MagnifyingGlassMinus /></button>
+        <button type="button" aria-label="Home" disabled={!viewer || converting} onClick={() => viewer?.viewport.goHome()}><House /></button>
+        <button type="button" aria-label="Zoom in" disabled={!viewer || converting} onClick={() => viewer?.viewport.zoomBy(1.5)}><MagnifyingGlassPlus /></button>
+        <button type="button" aria-label="Full screen" disabled={!viewer || converting} onClick={() => viewer?.setFullScreen(!viewer.isFullPage())}><ArrowsOut /></button>
       </div>
     </section>
   )
@@ -914,6 +929,7 @@ function Inspector({
   onDeleteAnnotation,
   viewingRevisionId,
   onViewRevision,
+  onViewSource,
   onRenameRevision,
   onDeleteRevision,
 }: {
@@ -940,6 +956,7 @@ function Inspector({
   onDeleteAnnotation: (annotationId: string) => void
   viewingRevisionId: string
   onViewRevision: (revisionId: string) => void
+  onViewSource: () => void
   onRenameRevision: (revisionId: string, name: string) => Promise<void>
   onDeleteRevision: (revisionId: string) => Promise<void>
 }) {
@@ -986,6 +1003,8 @@ function Inspector({
           onUpload={onUpload}
           onRemove={onRemove}
           onViewRevision={onViewRevision}
+          onViewSource={onViewSource}
+          viewingRevisionId={viewingRevisionId}
         />
       ) : null}
       {section === 'annotations' ? (
@@ -1242,6 +1261,8 @@ function ExportInspector({
   onUpload,
   onRemove,
   onViewRevision,
+  onViewSource,
+  viewingRevisionId,
 }: {
   dataset: Dataset
   series: SeriesInfo[]
@@ -1260,6 +1281,8 @@ function ExportInspector({
   onUpload: () => void
   onRemove: () => void
   onViewRevision: (revisionId: string) => void
+  onViewSource: () => void
+  viewingRevisionId: string
 }) {
   const configurationDraft = () => ({
     series: String(dataset.selectedSeries),
@@ -1432,6 +1455,15 @@ function ExportInspector({
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
+      {viewingRevisionId ? (
+        <a
+          className="forge-primary"
+          href="#dzi-viewer"
+          onClick={onViewSource}
+        >
+          View original slide
+        </a>
+      ) : null}
       {packagedCurrent ? (
         <section className="forge-result-card" aria-label="Converted slide result">
           <div>
@@ -1444,7 +1476,7 @@ function ExportInspector({
             </small>
           </div>
           <a
-            className="forge-primary"
+            className={viewingRevisionId === packagedCurrent.id ? 'forge-primary' : 'forge-download'}
             href="#dzi-viewer"
             onClick={() => onViewRevision(packagedCurrent.id)}
           >
