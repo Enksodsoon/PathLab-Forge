@@ -15,13 +15,14 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
 
 final class AdaptiveJpegQualitySelector {
-    static final double MINIMUM_SSIM = 0.985;
-    static final double MAXIMUM_MEAN_DELTA_E00 = 1.5;
+    static final double MINIMUM_SSIM = 0.970;
+    static final double MAXIMUM_MEAN_DELTA_E00 = 2.5;
+    static final double MINIMUM_EDGE_DETAIL_RETENTION = 0.90;
     private static final int ROI_COLUMNS = 8;
-    private static final int ROI_ROWS = 4;
+    private static final int ROI_ROWS = 8;
     private static final int ROI_SIZE = 256;
     private static final int WINDOW = 8;
-    static final List<Integer> QUALITIES = List.of(85, 90, 95, 100);
+    static final List<Integer> QUALITIES = List.of(65, 70, 75, 80);
 
     private AdaptiveJpegQualitySelector() {}
 
@@ -68,20 +69,20 @@ final class AdaptiveJpegQualitySelector {
                 candidates.stream()
                         .sorted(Comparator.comparingDouble(RoiCandidate::mean))
                         .toList(),
-                8);
+                16);
         addRanked(
                 selected,
                 candidates.stream()
                         .sorted(Comparator.comparingDouble(RoiCandidate::mean).reversed())
                         .toList(),
-                16);
+                32);
         addRanked(
                 selected,
                 candidates.stream()
                         .sorted(Comparator.comparingDouble(RoiCandidate::variance).reversed())
                         .toList(),
-                24);
-        for (var index = 0; index < 16 && selected.size() < 32; index++) {
+                48);
+        for (var index = 0; index < 32 && selected.size() < 64; index++) {
             var seamX = Math.max(
                     512L,
                     Math.min(
@@ -90,11 +91,11 @@ final class AdaptiveJpegQualitySelector {
             var centerY = Math.round(((index % 8) + 0.5) * fullHeight / 8.0);
             add(selected, centeredRoi(seamX, centerY, fullWidth, fullHeight));
         }
-        addRanked(selected, candidates, 32);
-        if (selected.size() < 32) {
-            throw new IOException("Could not derive 32 distinct native quality ROIs");
+        addRanked(selected, candidates, 64);
+        if (selected.size() < 64) {
+            throw new IOException("Could not derive 64 distinct native quality ROIs");
         }
-        return selected.values().stream().limit(32).toList();
+        return selected.values().stream().limit(64).toList();
     }
 
     private static void addRanked(
@@ -139,7 +140,8 @@ final class AdaptiveJpegQualitySelector {
                     .toList();
             last = evaluate(quality, regions, candidates);
             if (last.minimumWindowedSsim() >= MINIMUM_SSIM
-                    && last.meanDeltaE00() <= MAXIMUM_MEAN_DELTA_E00) {
+                    && last.meanDeltaE00() <= MAXIMUM_MEAN_DELTA_E00
+                    && last.minimumEdgeDetailRetention() >= MINIMUM_EDGE_DETAIL_RETENTION) {
                 return last;
             }
         }
@@ -164,25 +166,57 @@ final class AdaptiveJpegQualitySelector {
             }
             last = evaluate(quality, regions, regions(candidate));
             if (last.minimumWindowedSsim() >= MINIMUM_SSIM
-                    && last.meanDeltaE00() <= MAXIMUM_MEAN_DELTA_E00) {
+                    && last.meanDeltaE00() <= MAXIMUM_MEAN_DELTA_E00
+                    && last.minimumEdgeDetailRetention() >= MINIMUM_EDGE_DETAIL_RETENTION) {
                 return last;
             }
         }
         return requirePassing(last);
     }
 
+    static Selection selectCandidate(
+            Path boundedProbe, Path encodedCandidate, int quality, String encoderProfile)
+            throws IOException {
+        var reference = ImageIO.read(boundedProbe.toFile());
+        var candidate = ImageIO.read(encodedCandidate.toFile());
+        if (reference == null
+                || candidate == null
+                || candidate.getWidth() != reference.getWidth()
+                || candidate.getHeight() != reference.getHeight()) {
+            throw new IOException("DZI quality candidate could not be decoded");
+        }
+        var selection = evaluate(quality, regions(reference), regions(candidate))
+                .withEncoderProfile(encoderProfile);
+        if (selection.minimumWindowedSsim() >= MINIMUM_SSIM
+                && selection.meanDeltaE00() <= MAXIMUM_MEAN_DELTA_E00
+                && selection.minimumEdgeDetailRetention() >= MINIMUM_EDGE_DETAIL_RETENTION) {
+            return selection;
+        }
+        return requirePassing(selection);
+    }
+
     private static Selection evaluate(
             int quality, List<BufferedImage> references, List<BufferedImage> candidates) {
         var minimumSsim = 1.0;
-        var totalMeanDeltaE = 0.0;
+        var maximumMeanDeltaE = 0.0;
+        var minimumEdgeDetailRetention = 1.0;
         for (var index = 0; index < references.size(); index++) {
             minimumSsim = Math.min(
                     minimumSsim,
                     windowedSsim(references.get(index), candidates.get(index)));
-            totalMeanDeltaE += meanDeltaE00(references.get(index), candidates.get(index));
+            maximumMeanDeltaE = Math.max(
+                    maximumMeanDeltaE,
+                    meanDeltaE00(references.get(index), candidates.get(index)));
+            minimumEdgeDetailRetention = Math.min(
+                    minimumEdgeDetailRetention,
+                    edgeDetailRetention(references.get(index), candidates.get(index)));
         }
         return new Selection(
-                quality, minimumSsim, totalMeanDeltaE / references.size());
+                quality,
+                minimumSsim,
+                maximumMeanDeltaE,
+                minimumEdgeDetailRetention,
+                "compact-baseline");
     }
 
     private static Selection requirePassing(Selection last) throws IOException {
@@ -191,11 +225,12 @@ final class AdaptiveJpegQualitySelector {
         }
         throw new IOException(
                 ("DZI JPEG quality gate failed at Q%d: minimum windowed SSIM %.6f; "
-                                + "mean Delta E00 %.6f")
+                                + "maximum ROI mean Delta E00 %.6f; minimum edge retention %.6f")
                         .formatted(
                                 last.quality(),
                                 last.minimumWindowedSsim(),
-                                last.meanDeltaE00()));
+                                last.meanDeltaE00(),
+                                last.minimumEdgeDetailRetention()));
     }
 
     private static List<BufferedImage> regions(BufferedImage image) {
@@ -308,6 +343,29 @@ final class AdaptiveJpegQualitySelector {
         return total / ((long) reference.getWidth() * reference.getHeight());
     }
 
+    static double edgeDetailRetention(BufferedImage reference, BufferedImage candidate) {
+        requireSameGeometry(reference, candidate);
+        var referenceEnergy = gradientEnergy(reference);
+        if (referenceEnergy < 1e-6) {
+            return 1.0;
+        }
+        return Math.min(1.0, gradientEnergy(candidate) / referenceEnergy);
+    }
+
+    private static double gradientEnergy(BufferedImage image) {
+        var total = 0.0;
+        for (var y = 1; y < image.getHeight() - 1; y++) {
+            for (var x = 1; x < image.getWidth() - 1; x++) {
+                var gx = luminance(image.getRGB(x + 1, y))
+                        - luminance(image.getRGB(x - 1, y));
+                var gy = luminance(image.getRGB(x, y + 1))
+                        - luminance(image.getRGB(x, y - 1));
+                total += Math.hypot(gx, gy);
+            }
+        }
+        return total;
+    }
+
     private static void requireSameGeometry(BufferedImage left, BufferedImage right) {
         if (left.getWidth() != right.getWidth() || left.getHeight() != right.getHeight()) {
             throw new IllegalArgumentException("Quality images must have identical geometry");
@@ -406,7 +464,34 @@ final class AdaptiveJpegQualitySelector {
         return degrees < 0 ? degrees + 360 : degrees;
     }
 
-    record Selection(int quality, double minimumWindowedSsim, double meanDeltaE00) {}
+    record Selection(
+            int quality,
+            double minimumWindowedSsim,
+            double meanDeltaE00,
+            double minimumEdgeDetailRetention,
+            String encoderProfile) {
+        Selection(
+                int quality,
+                double minimumWindowedSsim,
+                double meanDeltaE00,
+                double minimumEdgeDetailRetention) {
+            this(
+                    quality,
+                    minimumWindowedSsim,
+                    meanDeltaE00,
+                    minimumEdgeDetailRetention,
+                    "compact-baseline");
+        }
+
+        Selection withEncoderProfile(String profile) {
+            return new Selection(
+                    quality,
+                    minimumWindowedSsim,
+                    meanDeltaE00,
+                    minimumEdgeDetailRetention,
+                    profile);
+        }
+    }
 
     record Roi(int x, int y, int width, int height) {}
 

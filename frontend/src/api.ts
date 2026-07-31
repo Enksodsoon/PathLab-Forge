@@ -53,6 +53,7 @@ export interface SeriesInfo {
 export interface ArtifactRevision {
   id: string
   status: 'CONVERTING' | 'READY' | 'APPROVED' | 'FAILED'
+  format?: 'LEGACY_OME' | 'PREPARED_DZI_V2'
   createdAt: number
   outputWidth: number
   outputHeight: number
@@ -60,6 +61,13 @@ export interface ArtifactRevision {
   packagePath: string
   omeSha256: string
   omeBytes: number
+  dziBytes: number
+  packageBytes: number
+  jpegQuality: number
+  minimumWindowedSsim: number
+  maximumRoiMeanDeltaE00: number
+  minimumEdgeDetailRetention: number
+  encoderProfile: string
   packageSha256: string
   failure: string
 }

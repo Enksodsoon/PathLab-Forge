@@ -702,7 +702,7 @@ function ViewerStage({
       ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}`
       : ''
   return (
-    <section className="forge-stage" aria-label="Whole-slide viewer">
+    <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
       <header className="forge-viewer-header">
         <div>
           <strong>{dataset?.displayName || 'PathLab Forge viewer'}</strong>
@@ -779,7 +779,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
   const elapsed = useElapsed(revision?.createdAt)
   return (
     <div className="forge-conversion-progress" aria-live="polite">
-      <span className="forge-conversion-kicker">Preparing converted result</span>
+      <span className="forge-conversion-kicker">Preparing compact DZI</span>
       <strong>{phase.label}</strong>
       <p>{dataset.detail}</p>
       <progress aria-label="Conversion progress" max="100" value={phase.percent} />
@@ -788,14 +788,14 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
         <span>{phase.percent}%</span>
       </div>
       <ol aria-label="Conversion stages">
-        {['Rendered RGB', 'Compress OME-TIFF', 'Validate OME-TIFF', 'Viewer tiles', 'Package'].map((label, index) => (
+        {['Rendering', 'Selecting compact quality', 'Generating DZI', 'Quality check', 'Packaging'].map((label, index) => (
           <li className={index + 1 < phase.step ? 'complete' : index + 1 === phase.step ? 'active' : ''} key={label}>
             <i />
             <span>{label}</span>
           </li>
         ))}
       </ol>
-      <small>Elapsed {elapsed} · Full-slide exports run at the fastest verified source-reader profile. The result opens automatically after validation.</small>
+      <small>Elapsed {elapsed} · Quality is selected from 64 tissue regions before verified packaging replaces temporary staging files.</small>
     </div>
   )
 }
@@ -1215,12 +1215,23 @@ function ExportInspector({
           <div className="forge-output-summary">
             <span>Projected output</span>
             <strong>{projectedWidth.toLocaleString()} × {projectedHeight.toLocaleString()}</strong>
-            {draftMatchesSaved && current && ['READY', 'APPROVED'].includes(current.status) && current.omeBytes > 0 ? (
-              <b>OME-TIFF file {formatBytes(current.omeBytes)} · measured</b>
+            {draftMatchesSaved && current && ['READY', 'APPROVED'].includes(current.status) && current.packageBytes > 0 ? (
+              <>
+                <b>Compact DZI package {formatBytes(current.packageBytes)}</b>
+                <small>
+                  Compared with {formatBytes(current.omeBytes)} staging OME ·{' '}
+                  {(current.packageBytes * 100 / current.omeBytes).toFixed(1)}% · Q{current.jpegQuality}
+                </small>
+                <small>
+                  Quality passed · SSIM {current.minimumWindowedSsim.toFixed(4)}
+                  {' · '}max ΔE00 {current.maximumRoiMeanDeltaE00.toFixed(2)}
+                  {' · '}edge {(current.minimumEdgeDetailRetention * 100).toFixed(1)}%
+                </small>
+              </>
             ) : displayedEstimate ? (
               <>
                 <b>
-                  Estimated OME-TIFF ≈ {formatBytes(displayedEstimate.fileBytes)}
+                  Estimated temporary staging ≈ {formatBytes(displayedEstimate.fileBytes)}
                   {estimateIsLive ? ' · live' : ''}
                 </b>
                 <small>
@@ -1230,7 +1241,7 @@ function ExportInspector({
                 </small>
               </>
             ) : (
-              <b role="status">Calculating OME-TIFF estimate…</b>
+              <b role="status">Calculating staging estimate…</b>
             )}
             <small>
               Peak conversion workspace ≤ {displayedEstimate
@@ -1255,6 +1266,13 @@ function ExportInspector({
           : dataset.detail}
       </p>
       {series.length ? <p className="forge-help" role="status">{dataset.detail}</p> : null}
+      {dataset.status === 'FAILED' && dataset.detail.includes('DZI_SIZE_QUALITY_CONFLICT') ? (
+        <div className="forge-compact-conflict" role="alert">
+          <strong>Compact DZI could not meet the 1.25× size limit</strong>
+          <p>{dataset.detail}</p>
+          <p>Your current crop is preserved. Change the crop or downsample, then retry conversion.</p>
+        </div>
+      ) : null}
       <div className="forge-action-stack">
         {ACTIVE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
@@ -1262,13 +1280,16 @@ function ExportInspector({
         {current?.status === 'READY'
           && dataset.status === 'PACKAGE_READY'
           && dataset.approvedArtifactRevision !== current.id
-          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve exact result</button>
+          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve compact DZI</button>
+          : null}
+        {current && ['READY', 'APPROVED'].includes(current.status)
+          ? <a className="forge-download" href="#dzi-viewer">Open DZI viewer</a>
           : null}
         {dataset.approvedArtifactRevision
-          ? <button type="button" onClick={onUpload}>Upload approved revision</button>
+          ? <button type="button" onClick={onUpload}>Upload to Viewer</button>
           : null}
-        {current?.status === 'READY'
-          ? <a className="forge-download" href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}>Export .plslide package</a>
+        {current && ['READY', 'APPROVED'].includes(current.status)
+          ? <a className="forge-download" href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}>Download package</a>
           : null}
         {!ACTIVE_STATUSES.has(dataset.status)
           ? <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove from library</button>
@@ -1311,11 +1332,11 @@ function QueueDock({
 
 function conversionPhase(dataset: Dataset) {
   const phase = ({
-    CONVERTING: { step: 1, percent: 15, label: 'Exporting rendered RGB' },
-    OPTIMIZING_OME: { step: 2, percent: 42, label: 'Compressing OME-TIFF pyramid' },
-    VALIDATING: { step: 3, percent: 60, label: 'Validating OME-TIFF' },
-    GENERATING_DZI: { step: 4, percent: 78, label: 'Generating viewer tiles' },
-    DZI_READY: { step: 5, percent: 93, label: 'Result viewable · building upload package' },
+    CONVERTING: { step: 1, percent: 15, label: 'Rendering selected area' },
+    OPTIMIZING_OME: { step: 1, percent: 42, label: 'Rendering temporary staging pyramid' },
+    VALIDATING: { step: 1, percent: 60, label: 'Verifying rendered staging image' },
+    GENERATING_DZI: { step: 2, percent: 72, label: 'Selecting compact JPEG quality' },
+    DZI_READY: { step: 5, percent: 93, label: 'Quality passed · packaging compact DZI' },
   } as Record<string, { step: number; percent: number; label: string }>)[dataset.status]
     || { step: 1, percent: 0, label: 'Preparing conversion' }
   const unitProgress = (dataset.totalUnits || 0) > 0
@@ -1324,14 +1345,14 @@ function conversionPhase(dataset: Dataset) {
   const measuredStage = ({
     SOURCE_VERIFIED: { base: 5, span: 0, label: 'Source verified · preparing RGB regions' },
     REGIONS_RENDERING: { base: 5, span: 30, label: 'Rendering RGB regions' },
-    REGIONS_VERIFIED: { base: 35, span: 0, label: 'RGB regions verified · assembling OME-TIFF' },
+    REGIONS_VERIFIED: { base: 35, span: 0, label: 'RGB regions verified · assembling staging image' },
     ASSEMBLING_OME: { base: 35, span: 0, label: 'Assembling exact slide geometry' },
-    DIRECT_OME: { base: 5, span: 50, label: 'Writing fast OME-TIFF pyramid' },
-    OPTIMIZING_OME: { base: 45, span: 0, label: 'Compressing OME-TIFF pyramid' },
-    VALIDATING_OME: { base: 58, span: 7, label: 'Validating OME-TIFF' },
-    OME_VERIFIED: { base: 65, span: 0, label: 'OME-TIFF verified' },
-    GENERATING_DZI: { base: 65, span: 25, label: 'Generating viewer tiles' },
-    DZI_LEDGER_VERIFIED: { base: 90, span: 0, label: 'Viewer tiles verified · building package' },
+    DIRECT_OME: { base: 5, span: 50, label: 'Rendering temporary staging pyramid' },
+    OPTIMIZING_OME: { base: 45, span: 0, label: 'Rendering temporary staging pyramid' },
+    VALIDATING_OME: { base: 58, span: 7, label: 'Verifying rendered staging image' },
+    OME_VERIFIED: { base: 65, span: 0, label: 'Selecting compact JPEG quality' },
+    GENERATING_DZI: { base: 65, span: 25, label: 'Generating compact DZI' },
+    DZI_LEDGER_VERIFIED: { base: 90, span: 0, label: 'Quality check passed · packaging' },
     PACKAGE_COMMITTED: { base: 100, span: 0, label: 'Package committed' },
   } as Record<string, { base: number; span: number; label: string }>)[dataset.stage || '']
   if (measuredStage) {
@@ -1353,12 +1374,12 @@ function statusLabel(status: string) {
     INSPECTING: 'Inspecting',
     READY_TO_CONVERT: 'Ready to convert',
     CONVERTING: 'Converting locally',
-    OPTIMIZING_OME: 'Compressing OME-TIFF',
-    VALIDATING: 'Validating OME-TIFF',
-    GENERATING_DZI: 'Generating viewer tiles',
+    OPTIMIZING_OME: 'Rendering staging image',
+    VALIDATING: 'Verifying staging image',
+    GENERATING_DZI: 'Generating compact DZI',
     DZI_READY: 'Packaging',
     PACKAGE_READY: 'Review result',
-    CONVERSION_READY: 'OME-TIFF ready',
+    CONVERSION_READY: 'Staging image ready',
     CANCELLED: 'Cancelled',
     LOCAL_COPY_READY: 'Managed copy ready',
     FAILED: 'Failed',

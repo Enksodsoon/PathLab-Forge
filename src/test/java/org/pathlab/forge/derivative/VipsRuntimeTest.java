@@ -2,6 +2,7 @@ package org.pathlab.forge.derivative;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -41,6 +42,23 @@ class VipsRuntimeTest {
         assertEquals("--vips-cache-max-files=192", command.get(3));
         assertEquals("--vips-cache-max=128", command.get(4));
         assertEquals(List.of("dzsave", "input.tif", "output"), command.subList(5, 8));
+    }
+
+    @Test
+    void usesCompactNonProgressiveFourTwentyJpegEncoderProfile() {
+        var suffix = VipsRuntime.compactJpegSuffix(75);
+
+        assertTrue(suffix.contains("subsample-mode=on"));
+        assertTrue(suffix.contains("optimize-coding=true"));
+        assertTrue(suffix.contains("trellis-quant=true"));
+        assertTrue(suffix.contains("overshoot-deringing=true"));
+        assertTrue(suffix.contains("interlace=false"));
+        assertTrue(suffix.contains("strip"));
+        var fallback = VipsRuntime.jpegSuffix(75, "compact-420-optimized");
+        assertTrue(fallback.contains("optimize-coding=true"));
+        assertTrue(!fallback.contains("trellis-quant"));
+        var rescue = VipsRuntime.jpegSuffix(80, "compact-444-quality-rescue");
+        assertTrue(rescue.contains("subsample-mode=off"));
     }
 
     @Test

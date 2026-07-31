@@ -11,10 +11,12 @@ public record DerivativeInfo(
         java.util.List<FileLedgerEntry> ledger,
         int jpegQuality,
         double minimumWindowedSsim,
-        double meanDeltaE00) {
+        double meanDeltaE00,
+        double minimumEdgeDetailRetention,
+        String encoderProfile) {
     public DerivativeInfo(
             Path root, long bytes, int fileCount, int tileCount, String sha256) {
-        this(root, bytes, fileCount, tileCount, sha256, java.util.List.of(), 95, 1.0, 0.0);
+        this(root, bytes, fileCount, tileCount, sha256, java.util.List.of(), 75, 1.0, 0.0, 1.0, "compact-baseline");
     }
 
     public DerivativeInfo(
@@ -24,17 +26,22 @@ public record DerivativeInfo(
             int tileCount,
             String sha256,
             java.util.List<FileLedgerEntry> ledger) {
-        this(root, bytes, fileCount, tileCount, sha256, ledger, 95, 1.0, 0.0);
+        this(root, bytes, fileCount, tileCount, sha256, ledger, 75, 1.0, 0.0, 1.0, "compact-baseline");
     }
 
     public DerivativeInfo {
         ledger = java.util.List.copyOf(ledger);
-        if (!java.util.List.of(85, 90, 95, 100).contains(jpegQuality)
+        if (!java.util.List.of(65, 70, 75, 80).contains(jpegQuality)
                 || !Double.isFinite(minimumWindowedSsim)
                 || minimumWindowedSsim < 0
                 || minimumWindowedSsim > 1
                 || !Double.isFinite(meanDeltaE00)
-                || meanDeltaE00 < 0) {
+                || meanDeltaE00 < 0
+                || !Double.isFinite(minimumEdgeDetailRetention)
+                || minimumEdgeDetailRetention < 0
+                || minimumEdgeDetailRetention > 1
+                || encoderProfile == null
+                || encoderProfile.isBlank()) {
             throw new IllegalArgumentException("Derivative quality evidence is invalid");
         }
     }

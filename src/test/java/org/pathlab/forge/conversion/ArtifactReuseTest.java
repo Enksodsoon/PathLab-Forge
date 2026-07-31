@@ -43,6 +43,7 @@ class ArtifactReuseTest {
                 dataset.sourceFingerprint(),
                 System.currentTimeMillis(),
                 ArtifactRevisionStatus.READY,
+                ArtifactRevisionFormat.PREPARED_DZI_V2,
                 ome.toString(),
                 derivative.toString(),
                 preparedPackage.toString(),
@@ -59,7 +60,10 @@ class ArtifactReuseTest {
         Files.writeString(root.resolve("artifact.integrity.properties"), "omeSize=invalid");
         assertTrue(ConversionService.isReusableArtifact(dataset, request, revision));
 
-        Files.writeString(ome, "mutated");
+        Files.delete(ome);
+        assertTrue(ConversionService.isReusableArtifact(dataset, request, revision));
+
+        Files.writeString(preparedPackage, "mutated");
         assertFalse(ConversionService.isReusableArtifact(dataset, request, revision));
     }
 

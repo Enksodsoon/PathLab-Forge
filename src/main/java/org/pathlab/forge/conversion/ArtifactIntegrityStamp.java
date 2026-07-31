@@ -24,7 +24,8 @@ public final class ArtifactIntegrityStamp {
         try {
             return revision.omeSha256().equals(values.getProperty("omeSha256"))
                     && revision.packageSha256().equals(values.getProperty("packageSha256"))
-                    && unchanged(Path.of(revision.omePath()), values, "ome")
+                    && (!Files.exists(Path.of(revision.omePath()))
+                            || unchanged(Path.of(revision.omePath()), values, "ome"))
                     && unchanged(Path.of(revision.packagePath()), values, "package")
                     && unchanged(packageIndex(revision), values, "index");
         } catch (IllegalArgumentException ignored) {
@@ -36,13 +37,16 @@ public final class ArtifactIntegrityStamp {
         var ome = Path.of(revision.omePath());
         var preparedPackage = Path.of(revision.packagePath());
         var index = packageIndex(revision);
-        requireFile(ome);
         requireFile(preparedPackage);
         requireFile(index);
         var values = new Properties();
         values.setProperty("omeSha256", revision.omeSha256());
         values.setProperty("packageSha256", revision.packageSha256());
-        record(values, "ome", ome);
+        if (Files.isRegularFile(ome)) {
+            record(values, "ome", ome);
+        } else {
+            values.setProperty("omeDeletedAfterVerification", "true");
+        }
         record(values, "package", preparedPackage);
         record(values, "index", index);
         var file = stampFile(revision);

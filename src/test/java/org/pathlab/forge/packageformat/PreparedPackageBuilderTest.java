@@ -8,9 +8,13 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pathlab.forge.derivative.DerivativeInfo;
+import org.pathlab.forge.derivative.FileLedgerEntry;
 
 final class PreparedPackageBuilderTest {
     @TempDir
@@ -51,16 +55,46 @@ final class PreparedPackageBuilderTest {
                 "test");
         var firstInfo = PreparedPackageBuilder.build(derivative, 1, 1, metadata, first);
         var secondInfo = PreparedPackageBuilder.build(derivative, 1, 1, metadata, second);
+        var ledger = Files.walk(derivative)
+                .filter(Files::isRegularFile)
+                .sorted()
+                .map(path -> {
+                    try {
+                        var relative =
+                                derivative.relativize(path).toString().replace('\\', '/');
+                        var jpeg = relative.endsWith(".jpg");
+                        return new FileLedgerEntry(
+                                relative,
+                                Files.size(path),
+                                sha256(path),
+                                jpeg,
+                                jpeg,
+                                jpeg ? 1 : 0,
+                                jpeg ? 1 : 0);
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                })
+                .toList();
+        var derivativeInfo = new DerivativeInfo(
+                derivative, firstInfo.derivativeBytes(), ledger.size(), 3, "a".repeat(64),
+                ledger, 75, 1.0, 0.0, 1.0, "compact-baseline");
 
         assertArrayEquals(Files.readAllBytes(first), Files.readAllBytes(second));
         assertEquals(firstInfo.sha256(), secondInfo.sha256());
+        assertEquals(
+                firstInfo.bytes(),
+                PreparedPackageBuilder.predictBytes(derivativeInfo, 1, 1, metadata, 0));
         assertEquals(5, firstInfo.derivativeFileCount());
         var listing = tarEntry(first, "manifest.json");
         assertTrue(listing.contains("\"schema\":\"pathlab-prepared-slide/v2\""));
         assertTrue(listing.contains("\"sourceFingerprint\":\"source-fingerprint\""));
         assertTrue(listing.contains("\"scale\":0.6666666666666666"));
         assertTrue(listing.contains("\"format\":\"ndjson-v1\""));
-        assertTrue(listing.contains("\"quality\":95"));
+        assertTrue(listing.contains("\"quality\":75"));
+        assertTrue(listing.contains("\"selector\":\"quality-gated-v2-64-roi\""));
+        assertTrue(listing.contains("\"minimumEdgeDetailRetention\":1.0"));
+        assertTrue(listing.contains("\"predictedPackageBytes\":" + firstInfo.bytes()));
         assertEquals(64, tarEntry(first, "manifest.sha256").length());
         var inventory = tarEntry(first, "inventory.ndjson");
         assertEquals(5, inventory.lines().count());
@@ -110,5 +144,10 @@ final class PreparedPackageBuilderTest {
 
     private static void writeJpeg(Path path) throws Exception {
         ImageIO.write(new BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB), "jpg", path.toFile());
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
     }
 }

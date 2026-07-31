@@ -123,22 +123,31 @@ derivative/thumbnail.jpg
 
 The NDJSON inventory contains one canonical path, size and SHA-256 per derivative.
 `manifest.json` records its format, path, hash, file count and derivative bytes.
-Existing v2 packages that use `files[]` remain accepted. The standardized
-OME-TIFF remains local.
+Existing v2 packages that use `files[]` remain accepted. For new prepared-v2
+revisions the standardized OME-TIFF is temporary staging and is deleted only
+after package hash, ledger, index and integrity stamp verification.
 
 Required output contract:
 
 ```text
 DZI tile size: 512
 DZI overlap: 1
-DZI JPEG quality: adaptively selected Q85, Q90, Q95 or Q100
+DZI JPEG quality: adaptively selected Q65, Q70, Q75 or Q80
+DZI JPEG profile: optimized non-progressive 4:2:0 with trellis and deringing
+DZI rescue profile: optimized non-progressive 4:4:4 at Q80 only when 4:2:0 cannot pass
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
 Thumbnail filename: thumbnail.jpg
 ```
 
-Forge evaluates 32 deterministic ROIs and chooses the smallest quality for which
-every ROI has windowed SSIM at least 0.985 and mean Delta E00 is at most 1.5.
+Forge evaluates 64 deterministic native-resolution ROIs and chooses the smallest
+quality for which minimum windowed SSIM is at least 0.970, every ROI mean
+Delta E00 is at most 2.5, and edge-detail retention passes. If all 4:2:0
+candidates fail, Q80 may use the recorded 4:4:4 quality-rescue profile rather
+than weaken the quality gate. The manifest records the selected quality, encoder
+profile, metrics, staging/DZI/package bytes, exact predicted TAR bytes and ratios.
+Packages above 1.25 times staging OME size fail with
+`DZI_SIZE_QUALITY_CONFLICT`; 1.10 times is the reference target.
 Viewer validates one streaming TAR pass, including archive and payload hashes,
 JPEG signatures, DZI geometry, declared counts and bytes. Output remains private
 until the entire archive, including physical EOF, has passed.
