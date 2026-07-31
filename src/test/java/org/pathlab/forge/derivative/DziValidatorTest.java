@@ -83,6 +83,31 @@ final class DziValidatorTest {
         assertEquals("Derivative preview is blank or near-blank", error.getMessage());
     }
 
+    @Test
+    void rejectsATileWhoseJpegEndMarkerWasTruncatedDuringGeneration() throws Exception {
+        Files.writeString(
+                temporaryDirectory.resolve("slide.dzi"),
+                """
+                <Image xmlns="http://schemas.microsoft.com/deepzoom/2008"
+                  Format="jpg" Overlap="1" TileSize="512">
+                  <Size Height="1" Width="1"/>
+                </Image>
+                """);
+        var level = Files.createDirectories(
+                temporaryDirectory.resolve("slide_files").resolve("0"));
+        var tile = level.resolve("0_0.jpg");
+        writeJpeg(tile, 1, 1);
+        var bytes = Files.readAllBytes(tile);
+        Files.write(tile, java.util.Arrays.copyOf(bytes, bytes.length - 2));
+        writeJpeg(temporaryDirectory.resolve("thumbnail.jpg"), 1, 1);
+
+        var error = assertThrows(
+                java.io.IOException.class,
+                () -> DziValidator.validate(temporaryDirectory, 1, 1));
+
+        assertEquals("Invalid JPEG signature", error.getMessage());
+    }
+
     private static void writeJpeg(Path path, int width, int height) throws Exception {
         writeJpeg(path, width, height, 0);
     }

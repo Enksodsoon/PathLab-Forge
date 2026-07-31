@@ -47,13 +47,31 @@ public record RuntimeProfile(
     }
 
     public static RuntimeProfile system() {
-        var processors = Integer.getInteger(
-                "pathlab.forge.runtime.processors",
-                Runtime.getRuntime().availableProcessors());
+        var processors = configuredLogicalProcessors();
         var memoryBytes = Long.getLong(
                 "pathlab.forge.runtime.memoryBytes",
                 totalPhysicalMemory());
         return adaptive(processors, memoryBytes);
+    }
+
+    public static int configuredLogicalProcessors() {
+        return Integer.getInteger(
+                "pathlab.forge.runtime.processors",
+                Runtime.getRuntime().availableProcessors());
+    }
+
+    /**
+     * Returns a throughput-oriented worker count instead of treating every SMT
+     * thread as an independent image decoder.
+     */
+    public static int effectiveCpuParallelism(int logicalProcessors) {
+        if (logicalProcessors < 1) {
+            throw new IllegalArgumentException("Detected CPU capacity is invalid");
+        }
+        if (logicalProcessors <= 6) {
+            return Math.max(1, logicalProcessors - 1);
+        }
+        return Math.max(5, logicalProcessors / 2);
     }
 
     public static RuntimeProfile adaptive(int logicalProcessors, long physicalMemoryBytes) {

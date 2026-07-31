@@ -61,7 +61,7 @@ class BioFormatsParallelRegionsTest {
         assertEquals(2, ConversionService.parallelRgbWorkers(6, 9, true));
         assertEquals(3, ConversionService.parallelRgbWorkers(4, 5, false));
         assertEquals(1, ConversionService.parallelRgbWorkers(1, 5, false));
-        assertEquals(8, ConversionService.parallelRgbWorkers(12, 11, false, 8));
+        assertEquals(6, ConversionService.parallelRgbWorkers(12, 11, false, 8));
     }
 
     @Test
