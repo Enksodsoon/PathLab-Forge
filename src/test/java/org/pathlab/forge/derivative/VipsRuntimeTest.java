@@ -57,8 +57,25 @@ class VipsRuntimeTest {
         var fallback = VipsRuntime.jpegSuffix(75, "compact-420-optimized");
         assertTrue(fallback.contains("optimize-coding=true"));
         assertTrue(!fallback.contains("trellis-quant"));
-        var rescue = VipsRuntime.jpegSuffix(80, "compact-444-quality-rescue");
+        var rescue = VipsRuntime.jpegSuffix(95, "compact-444-quality-rescue");
+        assertTrue(rescue.contains("Q=95"));
         assertTrue(rescue.contains("subsample-mode=off"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> VipsRuntime.jpegSuffix(100, "compact-444-quality-rescue"));
+    }
+
+    @Test
+    void choosesSmallerQualityCompliantProfileInsteadOfFirstPassingProfile() {
+        var q95FourTwenty = new AdaptiveJpegQualitySelector.Selection(
+                95, 0.973, 1.6, 0.91, "compact-420-trellis");
+        var q80FourFourFour = new AdaptiveJpegQualitySelector.Selection(
+                80, 0.971, 2.0, 0.92, "compact-444-quality-rescue");
+
+        var selected = VipsRuntime.preferSmallerProfile(
+                q95FourTwenty, 900_000, q80FourFourFour, 600_000);
+
+        assertEquals(q80FourFourFour, selected);
     }
 
     @Test

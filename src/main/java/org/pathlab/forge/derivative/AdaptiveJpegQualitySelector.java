@@ -22,7 +22,7 @@ final class AdaptiveJpegQualitySelector {
     private static final int ROI_ROWS = 8;
     private static final int ROI_SIZE = 256;
     private static final int WINDOW = 8;
-    static final List<Integer> QUALITIES = List.of(65, 70, 75, 80);
+    static final List<Integer> QUALITIES = List.of(65, 70, 75, 80, 85, 90, 95);
 
     private AdaptiveJpegQualitySelector() {}
 

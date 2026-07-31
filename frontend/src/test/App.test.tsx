@@ -830,6 +830,7 @@ test('replaces the estimate with compact DZI size and quality evidence after con
   expect(await screen.findByText('Compact DZI package 801.0 KB')).toBeVisible()
   expect(screen.getByText(/Compared with 854.3 KB staging OME · 93.8% · Q70/)).toBeVisible()
   expect(screen.getByText(/Quality passed · SSIM 0.9742 · max ΔE00 2.18 · edge 92.0%/)).toBeVisible()
+  expect(screen.queryByText(/Size warning:/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Estimated temporary staging ≈/)).not.toBeInTheDocument()
   expect(screen.getByText('Peak conversion workspace ≤ 4.5 MB')).toBeVisible()
 

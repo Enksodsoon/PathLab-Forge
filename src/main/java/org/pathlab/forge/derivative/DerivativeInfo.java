@@ -31,7 +31,7 @@ public record DerivativeInfo(
 
     public DerivativeInfo {
         ledger = java.util.List.copyOf(ledger);
-        if (!java.util.List.of(65, 70, 75, 80).contains(jpegQuality)
+        if (!AdaptiveJpegQualitySelector.QUALITIES.contains(jpegQuality)
                 || !Double.isFinite(minimumWindowedSsim)
                 || minimumWindowedSsim < 0
                 || minimumWindowedSsim > 1

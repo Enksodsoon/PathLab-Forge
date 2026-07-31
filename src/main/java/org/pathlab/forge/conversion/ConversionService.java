@@ -464,10 +464,26 @@ public final class ConversionService implements AutoCloseable {
     public List<SeriesInfo> inspect(String id) throws IOException {
         var dataset = requireDataset(id);
         verifySourceFingerprint(dataset);
+        var preservePackagedResult = hasReviewableCurrentArtifact(dataset);
+        if (preservePackagedResult && dataset.status() != DatasetStatus.PACKAGE_READY) {
+            dataset = dataset.withConversion(
+                    DatasetStatus.PACKAGE_READY,
+                    "Validated compact DZI package ready; review before approval",
+                    dataset.outputPath(),
+                    dataset.sha256(),
+                    dataset.selectedSeries(),
+                    dataset.width(),
+                    dataset.height(),
+                    dataset.downsample(),
+                    dataset.estimatedOutputBytes());
+            repository.save(dataset);
+        }
         var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
         if (cached.isPresent()) {
             inspectedSeries.put(id, cached.get());
-            updateInspectedDataset(dataset, cached.get(), true);
+            if (!preservePackagedResult) {
+                updateInspectedDataset(dataset, cached.get(), true);
+            }
             return cached.get();
         }
         var inspecting = dataset.withConversion(
@@ -480,26 +496,46 @@ public final class ConversionService implements AutoCloseable {
                 dataset.height(),
                 dataset.downsample(),
                 dataset.estimatedOutputBytes());
-        repository.save(inspecting);
+        if (!preservePackagedResult) {
+            repository.save(inspecting);
+        }
         try {
             var series = engine.inspect(Path.of(dataset.sourcePath()));
             inspectedSeries.put(id, series);
             seriesMetadataCache.save(id, dataset.sourceFingerprint(), series);
-            updateInspectedDataset(dataset, series, false);
+            if (!preservePackagedResult) {
+                updateInspectedDataset(dataset, series, false);
+            }
             return series;
         } catch (IOException | RuntimeException error) {
-            repository.save(inspecting.withConversion(
-                    DatasetStatus.FAILED,
-                    concise(error.getMessage()),
-                    "",
-                    "",
-                    -1,
-                    0,
-                    0,
-                    1,
-                    0));
+            if (!preservePackagedResult) {
+                repository.save(inspecting.withConversion(
+                        DatasetStatus.FAILED,
+                        concise(error.getMessage()),
+                        "",
+                        "",
+                        -1,
+                        0,
+                        0,
+                        1,
+                        0));
+            }
             throw error;
         }
+    }
+
+    private boolean hasReviewableCurrentArtifact(LocalDataset dataset) throws IOException {
+        if (dataset.currentArtifactRevision().isBlank()) {
+            return false;
+        }
+        var revision = artifactRepository
+                .find(dataset.id(), dataset.currentArtifactRevision())
+                .orElse(null);
+        return revision != null
+                && revision.configurationRevision().equals(dataset.configurationRevision())
+                && (revision.status() == ArtifactRevisionStatus.READY
+                        || revision.status() == ArtifactRevisionStatus.APPROVED)
+                && Files.isRegularFile(Path.of(revision.packagePath()));
     }
 
     public List<SeriesInfo> inspectWhileVerifying(String id) throws IOException {
@@ -1253,17 +1289,8 @@ public final class ConversionService implements AutoCloseable {
                     request.outputHeight(),
                     packageMetadata,
                     stagingOmeBytes);
-            if (predictedPackageBytes > Math.floor(stagingOmeBytes * 1.25d)) {
-                throw new IOException(
-                        "DZI_SIZE_QUALITY_CONFLICT: quality-compliant package is "
-                                + predictedPackageBytes + " bytes ("
-                                + String.format(
-                                        java.util.Locale.ROOT,
-                                        "%.3fx",
-                                        (double) predictedPackageBytes / stagingOmeBytes)
-                                + ") and exceeds the 1.25x hard limit; preserve the crop and "
-                                + "retry after changing crop or downsample");
-            }
+            var exceedsSizeReference =
+                    predictedPackageBytes > Math.floor(stagingOmeBytes * 1.25d);
             var packageInfo = PreparedPackageBuilder.build(
                     derivativeInfo,
                     request.outputWidth(),
@@ -1297,7 +1324,9 @@ public final class ConversionService implements AutoCloseable {
                                     java.util.Locale.ROOT,
                                     "%.1f%% of staging OME",
                                     packageInfo.bytes() * 100.0 / stagingOmeBytes)
-                            + "; compact DZI package ready",
+                            + (exceedsSizeReference
+                                    ? "; exceeds the 1.25x size reference; review before approval"
+                                    : "; compact DZI package ready"),
                     packageInfo.path().toString(),
                     digest,
                     dataset.selectedSeries(),
