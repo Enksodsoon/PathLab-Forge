@@ -265,9 +265,11 @@ export function App() {
   const inspect = async () => {
     if (!selected) return
     try {
-      setDatasets((current) => current.map((item) => item.id === selected.id
-        ? { ...item, status: 'INSPECTING', detail: 'Opening the slide reader and native pyramid' }
-        : item))
+      if (selected.selectedSeries < 0) {
+        setDatasets((current) => current.map((item) => item.id === selected.id
+          ? { ...item, status: 'INSPECTING', detail: 'Opening the slide reader and native pyramid' }
+          : item))
+      }
       setNotice('Inspecting image series and native pyramid…')
       const result = await api.inspectDataset(selected.id)
       setSeriesByDataset((current) => ({ ...current, [selected.id]: result }))
@@ -1502,6 +1504,9 @@ function ExportInspector({
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
     if (!next) return
+    if (next.index === dataset.selectedSeries) {
+      return
+    }
     const nextConfiguration = {
       series: next.index,
       downsample: parsed.downsample > 0 ? parsed.downsample : 1,

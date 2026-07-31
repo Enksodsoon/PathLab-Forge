@@ -46,3 +46,5 @@ reused across restarts, and served as static tiles. Production package quality s
 unchanged and the viewer cache is never approved or uploaded.
 The cache identity is the source fingerprint plus selected image series; crop, downsample,
 conversion status and artifact-history edits must not rebuild the original-source viewer.
+Opening verified image-series metadata and clicking the already-selected series must preserve
+the mounted viewer, viewport, crop draft and tile source without a configuration request.
