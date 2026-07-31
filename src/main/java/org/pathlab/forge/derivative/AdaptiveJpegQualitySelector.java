@@ -197,19 +197,24 @@ final class AdaptiveJpegQualitySelector {
 
     private static Selection evaluate(
             int quality, List<BufferedImage> references, List<BufferedImage> candidates) {
+        if (references.size() != candidates.size()) {
+            throw new IllegalArgumentException("Quality ROI sets must have identical sizes");
+        }
+        var scores = java.util.stream.IntStream.range(0, references.size())
+                .parallel()
+                .mapToObj(index -> new RoiScore(
+                        windowedSsim(references.get(index), candidates.get(index)),
+                        meanDeltaE00(references.get(index), candidates.get(index)),
+                        edgeDetailRetention(references.get(index), candidates.get(index))))
+                .toList();
         var minimumSsim = 1.0;
         var maximumMeanDeltaE = 0.0;
         var minimumEdgeDetailRetention = 1.0;
-        for (var index = 0; index < references.size(); index++) {
-            minimumSsim = Math.min(
-                    minimumSsim,
-                    windowedSsim(references.get(index), candidates.get(index)));
-            maximumMeanDeltaE = Math.max(
-                    maximumMeanDeltaE,
-                    meanDeltaE00(references.get(index), candidates.get(index)));
+        for (var score : scores) {
+            minimumSsim = Math.min(minimumSsim, score.windowedSsim());
+            maximumMeanDeltaE = Math.max(maximumMeanDeltaE, score.meanDeltaE00());
             minimumEdgeDetailRetention = Math.min(
-                    minimumEdgeDetailRetention,
-                    edgeDetailRetention(references.get(index), candidates.get(index)));
+                    minimumEdgeDetailRetention, score.edgeDetailRetention());
         }
         return new Selection(
                 quality,
@@ -496,6 +501,9 @@ final class AdaptiveJpegQualitySelector {
     record Roi(int x, int y, int width, int height) {}
 
     private record RoiCandidate(Roi roi, double mean, double variance) {}
+
+    private record RoiScore(
+            double windowedSsim, double meanDeltaE00, double edgeDetailRetention) {}
 
     private record Lab(double l, double a, double b) {}
 }

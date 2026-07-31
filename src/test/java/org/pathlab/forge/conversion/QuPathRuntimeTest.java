@@ -31,7 +31,7 @@ class QuPathRuntimeTest {
         assertTrue(command.contains("-XX:ActiveProcessorCount=6"));
         assertTrue(command.contains("-Xmx4g"));
         assertTrue(command.contains("--compression=UNCOMPRESSED"));
-        assertTrue(command.contains("--pyramid-scale=4"));
+        assertTrue(command.contains("--pyramid-scale=65536"));
         assertTrue(command.contains("--series=2"));
         assertTrue(command.contains("--crop=69790,23372,11336,11040"));
     }
@@ -48,7 +48,7 @@ class QuPathRuntimeTest {
                 Path.of("export.partial.ome.tif"));
 
         assertTrue(command.contains("--compression=JPEG"));
-        assertTrue(command.contains("--pyramid-scale=4"));
+        assertTrue(command.contains("--pyramid-scale=65536"));
     }
 
     @Test
