@@ -40,7 +40,7 @@ public final class DziValidator {
         var thumbnail = normalized.resolve("thumbnail.jpg");
         var tileRoot = normalized.resolve("slide_files");
         requireRegular(dzi);
-        requireJpeg(thumbnail);
+        requireRegular(thumbnail);
         if (!Files.isDirectory(tileRoot, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("DZI tile directory is missing");
         }
@@ -72,7 +72,7 @@ public final class DziValidator {
             for (var row = 0; row < rows; row++) {
                 for (var column = 0; column < columns; column++) {
                     var tile = directory.resolve(column + "_" + row + ".jpg");
-                    requireJpeg(tile);
+                    requireRegular(tile);
                     if (sampleTile(column, row, columns, rows)) {
                         var image = ImageIO.read(tile.toFile());
                         if (image == null
@@ -126,8 +126,8 @@ public final class DziValidator {
                 bytes = Math.addExact(bytes, size);
                 digest.update(relative.getBytes(StandardCharsets.UTF_8));
                 digest.update((byte) 0);
-                var fileHash = hash(path, digest);
                 var jpeg = relative.endsWith(".jpg");
+                var fileHash = hashAndValidate(path, digest, jpeg);
                 var imageDimensions = dimensions.getOrDefault(relative, Dimensions.NONE);
                 ledger.add(new FileLedgerEntry(
                         relative,
@@ -174,15 +174,42 @@ public final class DziValidator {
         return count;
     }
 
-    private static String hash(Path path, MessageDigest aggregate) throws IOException {
+    private static String hashAndValidate(
+            Path path, MessageDigest aggregate, boolean jpeg) throws IOException {
         var fileDigest = sha256Digest();
+        var size = Files.size(path);
+        if (jpeg && size < 4) {
+            throw new IOException("JPEG is too short");
+        }
+        var first = new byte[2];
+        var firstCount = 0;
+        var penultimate = -1;
+        var last = -1;
         try (InputStream input = Files.newInputStream(path)) {
             var buffer = new byte[1024 * 1024];
             int read;
             while ((read = input.read(buffer)) != -1) {
                 aggregate.update(buffer, 0, read);
                 fileDigest.update(buffer, 0, read);
+                for (var index = 0; index < read && firstCount < first.length; index++) {
+                    first[firstCount++] = buffer[index];
+                }
+                if (read == 1) {
+                    penultimate = last;
+                    last = buffer[0] & 0xff;
+                } else if (read >= 2) {
+                    penultimate = buffer[read - 2] & 0xff;
+                    last = buffer[read - 1] & 0xff;
+                }
             }
+        }
+        if (jpeg
+                && (firstCount < 2
+                        || (first[0] & 0xff) != 0xff
+                        || (first[1] & 0xff) != 0xd8
+                        || penultimate != 0xff
+                        || last != 0xd9)) {
+            throw new IOException("Invalid JPEG signature");
         }
         return HexFormat.of().formatHex(fileDigest.digest());
     }
@@ -222,27 +249,6 @@ public final class DziValidator {
         if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
                 || Files.isSymbolicLink(path)) {
             throw new IOException("Required derivative file is missing");
-        }
-    }
-
-    private static void requireJpeg(Path path) throws IOException {
-        requireRegular(path);
-        if (Files.size(path) < 4) {
-            throw new IOException("JPEG is too short");
-        }
-        try (InputStream input = Files.newInputStream(path)) {
-            if (input.read() != 0xff || input.read() != 0xd8) {
-                throw new IOException("Invalid JPEG signature");
-            }
-        }
-        try (var channel = Files.newByteChannel(path)) {
-            var tail = java.nio.ByteBuffer.allocate(2);
-            channel.position(Files.size(path) - 2);
-            channel.read(tail);
-            tail.flip();
-            if ((tail.get() & 0xff) != 0xff || (tail.get() & 0xff) != 0xd9) {
-                throw new IOException("JPEG end marker is missing");
-            }
         }
     }
 

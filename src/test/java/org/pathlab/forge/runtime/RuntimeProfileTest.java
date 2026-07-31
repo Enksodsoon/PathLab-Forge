@@ -31,4 +31,11 @@ final class RuntimeProfileTest {
         assertTrue(profile.vipsCacheBytes() > RuntimeProfile.target().vipsCacheBytes());
         assertTrue(profile.processTreeLimitBytes() > RuntimeProfile.target().processTreeLimitBytes());
     }
+
+    @Test
+    void doesNotTreatHyperthreadsAsIndependentWholeSlideDecoders() {
+        assertEquals(5, RuntimeProfile.effectiveCpuParallelism(6));
+        assertEquals(6, RuntimeProfile.effectiveCpuParallelism(12));
+        assertEquals(12, RuntimeProfile.effectiveCpuParallelism(24));
+    }
 }

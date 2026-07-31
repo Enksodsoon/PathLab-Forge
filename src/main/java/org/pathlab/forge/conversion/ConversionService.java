@@ -1607,7 +1607,10 @@ public final class ConversionService implements AutoCloseable {
             int configuredWorkers,
             boolean slowSource,
             int profileWorkers) {
-        var processorLimit = Math.max(1, availableProcessors - 1);
+        var processorLimit = Math.min(
+                Math.max(1, availableProcessors - 1),
+                org.pathlab.forge.runtime.RuntimeProfile.effectiveCpuParallelism(
+                        availableProcessors));
         var profileLimit = slowSource ? 2 : Math.max(1, profileWorkers);
         return Math.max(1, Math.min(Math.min(configuredWorkers, profileLimit), processorLimit));
     }
