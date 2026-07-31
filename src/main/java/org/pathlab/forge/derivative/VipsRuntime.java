@@ -739,6 +739,17 @@ public final class VipsRuntime implements DerivativeEngine {
             Path outputRoot,
             java.util.function.Consumer<DerivativeProgress> progress)
             throws IOException {
+        if (parallelQualityProfiles()) {
+            return selectDziQualityProfilesInParallel(probe, outputRoot, progress);
+        }
+        return selectDziQualityProfilesSequentially(probe, outputRoot, progress);
+    }
+
+    private AdaptiveJpegQualitySelector.Selection selectDziQualityProfilesSequentially(
+            Path probe,
+            Path outputRoot,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
         var candidateProgress = new java.util.concurrent.atomic.AtomicInteger();
         var encoderProfile = "compact-420-trellis";
         ProfileCandidate fourTwenty = null;
@@ -781,6 +792,132 @@ public final class VipsRuntime implements DerivativeEngine {
             return fourFourFour.selection();
         }
         return preferSmallerProfile(fourTwenty, fourFourFour).selection();
+    }
+
+    private AdaptiveJpegQualitySelector.Selection selectDziQualityProfilesInParallel(
+            Path probe,
+            Path outputRoot,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
+        var candidateProgress = new java.util.concurrent.atomic.AtomicInteger();
+        var progressLock = new Object();
+        java.util.function.Consumer<DerivativeProgress> serializedProgress = item -> {
+            synchronized (progressLock) {
+                progress.accept(item);
+            }
+        };
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(
+                2,
+                runnable -> {
+                    var thread = new Thread(runnable, "pathlab-quality-profile");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        try {
+            var fourTwentyFuture = executor.submit(() -> evaluateFourTwentyProfile(
+                    probe, outputRoot, candidateProgress, serializedProgress));
+            var fourFourFourFuture = executor.submit(() -> evaluateProfileOutcome(
+                    probe,
+                    outputRoot,
+                    "compact-444-quality-rescue",
+                    candidateProgress,
+                    serializedProgress));
+            ProfileOutcome fourTwenty;
+            ProfileOutcome fourFourFour;
+            try {
+                fourTwenty = fourTwentyFuture.get();
+                fourFourFour = fourFourFourFuture.get();
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new IOException("DZI quality selection was interrupted", error);
+            } catch (java.util.concurrent.ExecutionException error) {
+                var cause = error.getCause();
+                if (cause instanceof IOException io) {
+                    throw io;
+                }
+                throw new IOException("Parallel DZI quality selection failed", cause);
+            }
+            return chooseProfileOutcome(fourTwenty, fourFourFour);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private ProfileOutcome evaluateFourTwentyProfile(
+            Path probe,
+            Path outputRoot,
+            java.util.concurrent.atomic.AtomicInteger completed,
+            java.util.function.Consumer<DerivativeProgress> progress) {
+        try {
+            return new ProfileOutcome(
+                    evaluatedProfileIncrementally(
+                            probe,
+                            outputRoot,
+                            "compact-420-trellis",
+                            completed,
+                            progress),
+                    null);
+        } catch (IOException enhancedFailure) {
+            try {
+                return new ProfileOutcome(
+                        evaluatedProfileIncrementally(
+                                probe,
+                                outputRoot,
+                                "compact-420-optimized",
+                                completed,
+                                progress),
+                        null);
+            } catch (IOException optimizedFailure) {
+                optimizedFailure.addSuppressed(enhancedFailure);
+                return new ProfileOutcome(null, optimizedFailure);
+            }
+        }
+    }
+
+    private ProfileOutcome evaluateProfileOutcome(
+            Path probe,
+            Path outputRoot,
+            String encoderProfile,
+            java.util.concurrent.atomic.AtomicInteger completed,
+            java.util.function.Consumer<DerivativeProgress> progress) {
+        try {
+            return new ProfileOutcome(
+                    evaluatedProfileIncrementally(
+                            probe, outputRoot, encoderProfile, completed, progress),
+                    null);
+        } catch (IOException failure) {
+            return new ProfileOutcome(null, failure);
+        }
+    }
+
+    private static AdaptiveJpegQualitySelector.Selection chooseProfileOutcome(
+            ProfileOutcome fourTwenty, ProfileOutcome fourFourFour) throws IOException {
+        if (fourFourFour.candidate() == null) {
+            if (!isQualityGateFailure(fourFourFour.failure())
+                    || fourTwenty.candidate() == null) {
+                if (fourTwenty.failure() != null) {
+                    fourFourFour.failure().addSuppressed(fourTwenty.failure());
+                }
+                throw fourFourFour.failure();
+            }
+            return fourTwenty.candidate().selection();
+        }
+        if (fourTwenty.candidate() == null) {
+            if (fourTwenty.failure() != null
+                    && !isQualityGateFailure(fourTwenty.failure())) {
+                throw fourTwenty.failure();
+            }
+            return fourFourFour.candidate().selection();
+        }
+        return preferSmallerProfile(
+                        fourTwenty.candidate(), fourFourFour.candidate())
+                .selection();
+    }
+
+    static boolean parallelQualityProfiles() {
+        return org.pathlab.forge.runtime.RuntimeProfile.system()
+                        .maxConversionWorkers()
+                >= 8;
     }
 
     private void extractQualityRois(
@@ -954,7 +1091,8 @@ public final class VipsRuntime implements DerivativeEngine {
             throws IOException {
         IOException lastQualityFailure = null;
         for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
-            var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
+            var candidate = outputRoot.resolve(
+                    "quality-candidate-" + encoderProfile + "-" + quality + ".jpg");
             try {
                 run(List.of(
                         "copy",
@@ -1009,6 +1147,8 @@ public final class VipsRuntime implements DerivativeEngine {
 
     private record ProfileCandidate(
             AdaptiveJpegQualitySelector.Selection selection, long candidateBytes) {}
+
+    private record ProfileOutcome(ProfileCandidate candidate, IOException failure) {}
 
     private record PreparedRegions(List<Path> paths, List<Integer> heights) {}
 
@@ -1075,10 +1215,11 @@ public final class VipsRuntime implements DerivativeEngine {
 
     static List<String> commandLine(Path executable, List<String> arguments) {
         var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
-        var defaultConcurrency = Math.min(
-                profile.vipsConcurrency(),
-                org.pathlab.forge.runtime.RuntimeProfile.effectiveCpuParallelism(
-                        org.pathlab.forge.runtime.RuntimeProfile.configuredLogicalProcessors()));
+        // libvips scales beyond the reader-oriented worker limit because its JPEG
+        // encoders operate on independent tiles. Ten workers was the highest
+        // byte-identical throughput win on the 12-thread reference workstation;
+        // the 8 GB / 6-core profile remains bounded at five.
+        var defaultConcurrency = Math.min(10, profile.vipsConcurrency());
         var concurrency = Integer.getInteger(
                 "pathlab.forge.vips.concurrency", defaultConcurrency);
         concurrency = Math.max(1, Math.min(concurrency, profile.vipsConcurrency()));

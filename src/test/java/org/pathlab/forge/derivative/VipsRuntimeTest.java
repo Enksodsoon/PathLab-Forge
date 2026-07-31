@@ -45,6 +45,27 @@ class VipsRuntimeTest {
     }
 
     @Test
+    void scalesIndependentTileEncodingOnHigherSpecHardware() {
+        var previousProcessors = System.getProperty("pathlab.forge.runtime.processors");
+        var previousMemory = System.getProperty("pathlab.forge.runtime.memoryBytes");
+        try {
+            System.setProperty("pathlab.forge.runtime.processors", "12");
+            System.setProperty(
+                    "pathlab.forge.runtime.memoryBytes",
+                    Long.toString(32L * 1024 * 1024 * 1024));
+
+            var command = VipsRuntime.commandLine(
+                    Path.of("vips.exe"), List.of("dzsave", "input.tif", "output"));
+
+            assertEquals("--vips-concurrency=10", command.get(1));
+            assertTrue(VipsRuntime.parallelQualityProfiles());
+        } finally {
+            restoreProperty("pathlab.forge.runtime.processors", previousProcessors);
+            restoreProperty("pathlab.forge.runtime.memoryBytes", previousMemory);
+        }
+    }
+
+    @Test
     void boundsEachParallelQualityProbeToOneVipsThreadAndASharedCacheSlice() {
         var command = VipsRuntime.probeCommandLine(
                 Path.of("vips.exe"),
@@ -55,6 +76,14 @@ class VipsRuntimeTest {
         assertEquals("--vips-cache-max-memory=214748364", command.get(2));
         assertEquals("--vips-cache-max-files=32", command.get(3));
         assertEquals("crop", command.get(5));
+    }
+
+    private static void restoreProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
+        }
     }
 
     @Test

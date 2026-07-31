@@ -11,6 +11,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 
@@ -102,45 +103,57 @@ public final class DziValidator {
 
         long fileCount = 0;
         long bytes = 0;
-        var digest = sha256Digest();
         var ledger = new ArrayList<FileLedgerEntry>();
         var thumbnailDimensions = verifyPreviewContent(thumbnail, width, height);
         dimensions.put("thumbnail.jpg", thumbnailDimensions);
+        List<Path> files;
         try (var paths = Files.walk(normalized)) {
-            for (var path : paths.sorted().toList()) {
-                if (path.equals(normalized) || Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-                    continue;
-                }
-                if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
-                        || Files.isSymbolicLink(path)) {
-                    throw new IOException("Derivative contains a link or special file");
-                }
-                var relative = normalized.relativize(path).toString().replace('\\', '/');
-                if (!relative.equals("slide.dzi")
-                        && !relative.equals("thumbnail.jpg")
-                        && !relative.matches("slide_files/\\d+/\\d+_\\d+\\.jpg")) {
-                    throw new IOException("Unexpected derivative file: " + relative);
-                }
-                fileCount++;
-                var size = Files.size(path);
-                bytes = Math.addExact(bytes, size);
-                digest.update(relative.getBytes(StandardCharsets.UTF_8));
-                digest.update((byte) 0);
-                var jpeg = relative.endsWith(".jpg");
-                var fileHash = hashAndValidate(path, digest, jpeg);
-                var imageDimensions = dimensions.getOrDefault(relative, Dimensions.NONE);
-                ledger.add(new FileLedgerEntry(
-                        relative,
-                        size,
-                        fileHash,
-                        jpeg,
-                        jpeg,
-                        imageDimensions.width(),
-                        imageDimensions.height()));
-                var completed = Math.addExact(tileCount, fileCount);
-                if (fileCount % 128 == 0 || fileCount == tileCount + 2) {
-                    progress.accept(completed, totalValidationUnits);
-                }
+            files = paths.filter(path -> !path.equals(normalized))
+                    .filter(path -> !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))
+                    .sorted()
+                    .toList();
+        }
+        for (var path : files) {
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(path)) {
+                throw new IOException("Derivative contains a link or special file");
+            }
+            var relative = normalized.relativize(path).toString().replace('\\', '/');
+            if (!relative.equals("slide.dzi")
+                    && !relative.equals("thumbnail.jpg")
+                    && !relative.matches("slide_files/\\d+/\\d+_\\d+\\.jpg")) {
+                throw new IOException("Unexpected derivative file: " + relative);
+            }
+        }
+        var validations = validateFiles(files);
+        var digest = sha256Digest();
+        for (var index = 0; index < files.size(); index++) {
+            var path = files.get(index);
+            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(path)) {
+                throw new IOException("Derivative contains a link or special file");
+            }
+            var relative = normalized.relativize(path).toString().replace('\\', '/');
+            fileCount++;
+            var validation = validations.get(index);
+            var size = validation.bytes();
+            bytes = Math.addExact(bytes, size);
+            digest.update(relative.getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) 0);
+            digest.update(validation.sha256().getBytes(StandardCharsets.US_ASCII));
+            var jpeg = relative.endsWith(".jpg");
+            var imageDimensions = dimensions.getOrDefault(relative, Dimensions.NONE);
+            ledger.add(new FileLedgerEntry(
+                    relative,
+                    size,
+                    validation.sha256(),
+                    jpeg,
+                    jpeg,
+                    imageDimensions.width(),
+                    imageDimensions.height()));
+            var completed = Math.addExact(tileCount, fileCount);
+            if (fileCount % 128 == 0 || fileCount == tileCount + 2) {
+                progress.accept(completed, totalValidationUnits);
             }
         }
         if (fileCount != tileCount + 2) {
@@ -174,8 +187,48 @@ public final class DziValidator {
         return count;
     }
 
-    private static String hashAndValidate(
-            Path path, MessageDigest aggregate, boolean jpeg) throws IOException {
+    private static List<FileValidation> validateFiles(List<Path> paths) throws IOException {
+        var workers = Math.max(
+                1,
+                Math.min(
+                        10,
+                        org.pathlab.forge.runtime.RuntimeProfile.system()
+                                .maxConversionWorkers()));
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(
+                Math.min(workers, Math.max(1, paths.size())),
+                runnable -> {
+                    var thread = new Thread(runnable, "pathlab-dzi-validator");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        try {
+            var futures = new ArrayList<java.util.concurrent.Future<FileValidation>>();
+            for (var path : paths) {
+                futures.add(executor.submit(
+                        () -> hashAndValidate(path, path.toString().endsWith(".jpg"))));
+            }
+            var validated = new ArrayList<FileValidation>(paths.size());
+            for (var future : futures) {
+                try {
+                    validated.add(future.get());
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("DZI validation was interrupted", error);
+                } catch (java.util.concurrent.ExecutionException error) {
+                    var cause = error.getCause();
+                    if (cause instanceof IOException io) {
+                        throw io;
+                    }
+                    throw new IOException("Parallel DZI validation failed", cause);
+                }
+            }
+            return List.copyOf(validated);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static FileValidation hashAndValidate(Path path, boolean jpeg) throws IOException {
         var fileDigest = sha256Digest();
         var size = Files.size(path);
         if (jpeg && size < 4) {
@@ -185,12 +238,13 @@ public final class DziValidator {
         var firstCount = 0;
         var penultimate = -1;
         var last = -1;
+        long bytes = 0;
         try (InputStream input = Files.newInputStream(path)) {
             var buffer = new byte[1024 * 1024];
             int read;
             while ((read = input.read(buffer)) != -1) {
-                aggregate.update(buffer, 0, read);
                 fileDigest.update(buffer, 0, read);
+                bytes = Math.addExact(bytes, read);
                 for (var index = 0; index < read && firstCount < first.length; index++) {
                     first[firstCount++] = buffer[index];
                 }
@@ -211,7 +265,10 @@ public final class DziValidator {
                         || last != 0xd9)) {
             throw new IOException("Invalid JPEG signature");
         }
-        return HexFormat.of().formatHex(fileDigest.digest());
+        if (bytes != size) {
+            throw new IOException("Derivative file changed during validation: " + path);
+        }
+        return new FileValidation(size, HexFormat.of().formatHex(fileDigest.digest()));
     }
 
     private static boolean sampleTile(
@@ -298,4 +355,6 @@ public final class DziValidator {
     private record Dimensions(int width, int height) {
         private static final Dimensions NONE = new Dimensions(0, 0);
     }
+
+    private record FileValidation(long bytes, String sha256) {}
 }
