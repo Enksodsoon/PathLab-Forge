@@ -65,7 +65,11 @@ vi.mock('../api', () => ({
   })),
   convert: vi.fn(),
   cancel: vi.fn(),
-  artifacts: vi.fn(),
+  artifacts: vi.fn(async () => ({
+    currentRevision: '',
+    approvedRevision: '',
+    revisions: [],
+  })),
   renameArtifact: vi.fn(),
   deleteArtifact: vi.fn(),
   artifactPackageUrl: (id: string, revision: string) =>
@@ -623,7 +627,10 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect(screen.getByText('2 of 10 source regions')).toBeVisible()
   expect(screen.getByText('12c · 32gb')).toBeVisible()
   expect(screen.getByText(/Elapsed 14s · about 28s left in this phase/)).toBeVisible()
-  expect(screen.queryByTestId('forge-osd')).not.toBeInTheDocument()
+  expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/converting-slide/preview/slide.dzi?revision=conversion-configuration',
+  )
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
   expect(screen.getByRole('progressbar', {
     name: 'Converting slide.vsi conversion progress',
@@ -690,7 +697,7 @@ test('refreshes annotations and artifacts only for the selected active slide', a
   expect(api.artifacts).not.toHaveBeenCalledWith('active-two')
 })
 
-test('opens the converted viewer while the upload package is still building', async () => {
+test('keeps the original viewer visible while the upload package is still building', async () => {
   const packaging: api.Dataset = {
     id: 'packaging-slide',
     displayName: 'Packaging slide.vsi',
@@ -754,7 +761,7 @@ test('opens the converted viewer while the upload package is still building', as
 
   expect(await screen.findByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
-    expect.stringContaining('/artifacts/packaging-artifact/derivative/slide.dzi'),
+    '/api/datasets/packaging-slide/preview/slide.dzi?revision=packaging-configuration',
   )
   expect(screen.getAllByText('Quality passed · packaging compact DZI')).toHaveLength(2)
   expect(screen.queryByRole('button', { name: 'Approve compact DZI' })).not.toBeInTheDocument()
@@ -836,6 +843,22 @@ test('views, renames, downloads, and deletes saved conversions from History', as
   vi.mocked(api.deleteArtifact).mockResolvedValue(dataset)
 
   render(<App />)
+
+  const mainViewer = await screen.findByTestId('forge-osd')
+  expect(mainViewer).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/history-slide/preview/slide.dzi?revision=history-configuration',
+  )
+  fireEvent.click(await screen.findByRole('link', { name: 'View converted slide' }))
+  expect(mainViewer).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/history-slide/artifacts/history-latest/derivative/slide.dzi',
+  )
+  fireEvent.click(screen.getByRole('link', { name: 'View original slide' }))
+  expect(mainViewer).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/history-slide/preview/slide.dzi?revision=history-configuration',
+  )
 
   fireEvent.click(await screen.findByRole('tab', { name: 'History' }))
   const history = screen.getByRole('region', { name: 'Conversion history' })
