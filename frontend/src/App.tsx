@@ -67,7 +67,7 @@ export function App() {
   const [importPath, setImportPath] = useState('')
   const [removeTarget, setRemoveTarget] = useState<Dataset>()
   const [pairingOpen, setPairingOpen] = useState(false)
-  const [viewerUrl, setViewerUrl] = useState('http://127.0.0.1:8000')
+  const [viewerUrl, setViewerUrl] = useState('http://127.0.0.1:5173')
   const [pairing, setPairing] = useState<ViewerPairing>()
   const [connection, setConnection] = useState<ViewerConnection>()
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
@@ -145,7 +145,10 @@ export function App() {
         setCapabilities(initialCapabilities)
         setSelectedId(initialDatasets[0]?.id || '')
         setNotice(initialDatasets.length ? 'Local workspace restored' : 'Choose a slide to begin')
-        void api.getViewerConnection().then(setConnection).catch(() => undefined)
+        void api.getViewerConnection().then((next) => {
+          setConnection(next)
+          if (next.viewerUrl) setViewerUrl(next.viewerUrl)
+        }).catch(() => undefined)
         void refresh()
       })
       .catch((nextError) => setError(message(nextError)))
@@ -394,7 +397,7 @@ export function App() {
       setPairing(next)
       setNotice(`Approve Viewer code ${next.userCode}`)
     } catch (nextError) {
-      setError(message(nextError))
+      setError(viewerConnectionMessage(nextError))
     }
   }
 
@@ -402,11 +405,25 @@ export function App() {
     try {
       const next = await api.exchangeViewerPairing()
       setConnection(next)
+      setViewerUrl(next.viewerUrl)
       setPairing(undefined)
       setPairingOpen(false)
       setNotice('PathLab Viewer connected with a revocable desktop credential')
     } catch (nextError) {
-      setError(message(nextError))
+      setError(viewerConnectionMessage(nextError))
+    }
+  }
+
+  const disconnectViewer = async () => {
+    try {
+      await api.revokeViewerConnection()
+      setConnection(undefined)
+      setPairing(undefined)
+      setViewerUpload(undefined)
+      setPairingOpen(false)
+      setNotice('PathLab Viewer disconnected and the desktop credential was revoked')
+    } catch (nextError) {
+      setError(viewerConnectionMessage(nextError))
     }
   }
 
@@ -489,7 +506,7 @@ export function App() {
       onSignOut={connect}
       uploadLabel={selected?.approvedArtifactRevision ? 'Upload' : 'Import'}
       accountLabel={connection?.connected ? connection.deviceName : 'Viewer account'}
-      signOutLabel="Disconnect"
+      signOutLabel={connection?.connected ? 'Disconnect' : 'Connect Viewer'}
     />
   )
 
@@ -607,9 +624,11 @@ export function App() {
         <ViewerPairingDialog
           viewerUrl={viewerUrl}
           pairing={pairing}
+          connection={connection}
           onViewerUrl={setViewerUrl}
           onStart={() => void beginPairing()}
           onComplete={() => void completePairing()}
+          onDisconnect={() => void disconnectViewer()}
           onClose={() => setPairingOpen(false)}
         />
       ) : null}
@@ -688,26 +707,52 @@ function ImportDialog({
 function ViewerPairingDialog({
   viewerUrl,
   pairing,
+  connection,
   onViewerUrl,
   onStart,
   onComplete,
+  onDisconnect,
   onClose,
 }: {
   viewerUrl: string
   pairing?: ViewerPairing
+  connection?: ViewerConnection
   onViewerUrl: (value: string) => void
   onStart: () => void
   onComplete: () => void
+  onDisconnect: () => void
   onClose: () => void
 }) {
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
+  const connected = Boolean(connection?.connected)
   return (
     <div className="forge-dialog-backdrop">
       <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-connect-title">
         <span>PathLab Viewer</span>
-        <h2 id="forge-connect-title">Connect to Viewer</h2>
-        <p>A short-lived browser approval creates a revocable Windows Credential Manager entry for this Forge device.</p>
-        {!pairing ? (
+        <h2 id="forge-connect-title">{connected ? 'Viewer connection' : 'Connect to Viewer'}</h2>
+        {connected ? (
           <>
+            <p>This device has a private, revocable Viewer credential.</p>
+            <dl className="forge-connection-details">
+              <div><dt>Viewer URL</dt><dd>{connection?.viewerUrl}</dd></div>
+              <div><dt>Device</dt><dd>{connection?.deviceName}</dd></div>
+              <div><dt>Scopes</dt><dd>{connection?.scopes.map((scope) => <span key={scope}>{scope}</span>)}</dd></div>
+            </dl>
+            {!confirmingDisconnect ? (
+              <button className="forge-danger" type="button" onClick={() => setConfirmingDisconnect(true)}>
+                Disconnect this device
+              </button>
+            ) : (
+              <div role="alert">
+                <p>Viewer uploads stop and this device credential will be revoked.</p>
+                <button className="forge-danger" type="button" onClick={onDisconnect}>Confirm disconnect</button>
+                <button type="button" onClick={() => setConfirmingDisconnect(false)}>Keep connected</button>
+              </div>
+            )}
+          </>
+        ) : !pairing ? (
+          <>
+            <p>A short-lived browser approval creates a revocable Windows Credential Manager entry for this Forge device.</p>
             <label>
               Viewer address
               <input
@@ -1917,4 +1962,25 @@ function formatBytes(bytes: number) {
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : 'Unexpected Forge error'
+}
+
+function viewerConnectionMessage(error: unknown) {
+  const detail = message(error)
+  const normalized = detail.toLowerCase()
+  if (normalized.includes('pairing_pending') || normalized.includes('not approved yet')) {
+    return 'Approval is still pending. Approve the code in Viewer, then try again.'
+  }
+  if (normalized.includes('expired')) {
+    return 'This pairing code expired. Request a new code and approve it in Viewer.'
+  }
+  if (normalized.includes('revoked') || normalized.includes('401')) {
+    return 'The Viewer credential was revoked. Connect this device again.'
+  }
+  if (normalized.includes('url must') || normalized.includes('illegal character')) {
+    return 'Enter a valid HTTPS Viewer URL, or a loopback HTTP address for local testing.'
+  }
+  if (normalized.includes('connection refused') || normalized.includes('unavailable')) {
+    return 'Viewer is unreachable. Start Viewer and confirm its web address, then retry.'
+  }
+  return detail
 }

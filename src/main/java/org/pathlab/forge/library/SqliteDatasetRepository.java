@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 public final class SqliteDatasetRepository implements DatasetRepository, AutoCloseable {
     private static final int SCHEMA_VERSION = 2;
@@ -193,6 +194,15 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
         } catch (SQLException error) {
             throw new IOException("Unable to save Forge dataset", error);
         }
+    }
+
+    @Override
+    public synchronized LocalDataset update(String id, UnaryOperator<LocalDataset> change)
+            throws IOException {
+        var current = find(id).orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
+        var updated = change.apply(current);
+        save(updated);
+        return updated;
     }
 
     private void upsert(LocalDataset dataset) throws SQLException {

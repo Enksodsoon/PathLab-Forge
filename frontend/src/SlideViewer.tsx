@@ -436,11 +436,6 @@ export const SlideViewer = memo(function SlideViewer({
         <div
           ref={cropOverlayRef}
           className={`forge-crop-overlay${cropEditing ? ' editing' : ''}`}
-          style={{
-            left: 0,
-            top: 0,
-            visibility: 'hidden',
-          }}
           data-testid="forge-crop-overlay"
         >
           <span className="forge-crop-label">

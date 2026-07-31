@@ -11,6 +11,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class VipsRuntimeTest {
+    @Test
+    void acceptsAProfileWithoutStoredSubifdsWhenTheFirstFactorFourLevelFitsOneTile() {
+        assertEquals(0, VipsRuntime.expectedStoredSubifds(2048, 1536, OmeDynamicProfile.V1));
+        assertEquals(1, VipsRuntime.expectedStoredSubifds(2049, 1536, OmeDynamicProfile.V1));
+        assertEquals(2, VipsRuntime.expectedStoredSubifds(8193, 4096, OmeDynamicProfile.V1));
+    }
+
     @TempDir
     Path temporaryDirectory;
 
@@ -42,6 +49,20 @@ class VipsRuntimeTest {
         assertEquals("--vips-cache-max-files=192", command.get(3));
         assertEquals("--vips-cache-max=128", command.get(4));
         assertEquals(List.of("dzsave", "input.tif", "output"), command.subList(5, 8));
+    }
+
+    @Test
+    void dynamicOmeOptionsUseTheApprovedTiledJpegProfileAndStripMetadata() throws Exception {
+        var method = java.util.Arrays.stream(VipsRuntime.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("omeTiffOptions"))
+                .findFirst();
+        assertTrue(method.isPresent(), "VipsRuntime must expose dynamic OME save options");
+        method.orElseThrow().setAccessible(true);
+
+        assertEquals(
+                "[pyramid,tile,tile-width=512,tile-height=512,"
+                        + "compression=jpeg,Q=75,bigtiff,subifd,properties=false]",
+                method.orElseThrow().invoke(null, OmeDynamicProfile.V1, 75));
     }
 
     @Test

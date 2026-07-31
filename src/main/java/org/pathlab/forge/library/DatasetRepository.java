@@ -3,6 +3,7 @@ package org.pathlab.forge.library;
 import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.UnaryOperator;
 
 public interface DatasetRepository {
     List<LocalDataset> list();
@@ -12,6 +13,13 @@ public interface DatasetRepository {
     Optional<LocalDataset> findBySourcePath(String sourcePath);
 
     void save(LocalDataset dataset) throws IOException;
+
+    default LocalDataset update(String id, UnaryOperator<LocalDataset> change) throws IOException {
+        var current = find(id).orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
+        var updated = change.apply(current);
+        save(updated);
+        return updated;
+    }
 
     void delete(String id) throws IOException;
 

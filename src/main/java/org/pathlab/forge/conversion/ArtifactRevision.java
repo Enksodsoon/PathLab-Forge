@@ -17,6 +17,8 @@ public record ArtifactRevision(
         String packageSha256,
         int outputWidth,
         int outputHeight,
+        String omeProfile,
+        int omeJpegQuality,
         long approvedAt,
         String name,
         String failure) {
@@ -32,9 +34,15 @@ public record ArtifactRevision(
         packagePath = requireText(packagePath, "packagePath");
         omeSha256 = Objects.requireNonNull(omeSha256, "omeSha256");
         packageSha256 = Objects.requireNonNull(packageSha256, "packageSha256");
+        omeProfile = Objects.requireNonNull(omeProfile, "omeProfile").trim();
         name = validateName(name);
         failure = Objects.requireNonNull(failure, "failure");
-        if (createdAt <= 0 || outputWidth <= 0 || outputHeight <= 0 || approvedAt < 0) {
+        if (createdAt <= 0
+                || outputWidth <= 0
+                || outputHeight <= 0
+                || approvedAt < 0
+                || (omeProfile.isEmpty() && omeJpegQuality != 0)
+                || (!omeProfile.isEmpty() && (omeJpegQuality < 1 || omeJpegQuality > 100))) {
             throw new IllegalArgumentException("Artifact revision metadata is invalid");
         }
     }
@@ -90,6 +98,8 @@ public record ArtifactRevision(
                 nextPackageSha256,
                 outputWidth,
                 outputHeight,
+                omeProfile,
+                omeJpegQuality,
                 nextApprovedAt,
                 name,
                 nextFailure);
@@ -111,6 +121,8 @@ public record ArtifactRevision(
                 packageSha256,
                 outputWidth,
                 outputHeight,
+                omeProfile,
+                omeJpegQuality,
                 approvedAt,
                 nextName,
                 failure);

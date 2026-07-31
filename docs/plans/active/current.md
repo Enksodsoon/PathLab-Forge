@@ -1,50 +1,30 @@
-# Active Task — Project Batch Queue and Persistent Crop Workspace
+# Active Task — Forge ↔ PathLab Viewer Local Connection
 
-Supersedes the completed conversion-speed tuning wave by explicit product-owner approval.
+Approved by the product owner on 2026-07-31. This milestone supersedes the batch/crop task as the single active task while preserving all completed preview-pyramid, queue, crop and conversion behavior from `00f4399`.
 
 ## Goal
 
-Make Forge practical for project-scale conversion:
+Prove a complete, private, local connection from Forge to the PathLab Viewer development stack:
 
-- import multiple slides or recursively scan one project folder;
-- group VSI sources with their ETS companions and isolate incomplete datasets;
-- persist a batch queue across restart;
-- run more than one conversion only when CPU, RAM, disk and source-volume capacity permit;
-- queue automatically under load instead of rejecting conversion requests;
-- retain each slide's draft and saved crop rectangle while the crop controls are closed,
-  while switching slides, and after application restart.
+- repair inspection while background source verification is still running;
+- make pairing, connected-account details and credential revocation one coherent lifecycle;
+- prefer direct OME transport only for a Viewer advertising `ome-dynamic-v1` and an artifact matching the approved integrity/profile;
+- retain prepared-v2 as the compatibility fallback without reconversion;
+- validate pairing, upload, private preview, tile delivery, fallback and disconnect locally.
 
-## Scheduling contract
+## Fixed boundaries
 
-- `Auto` is the default mode.
-- The 8 GB / 6-core minimum runs one heavy conversion.
-- Higher-spec systems may run up to two conversions in this milestone.
-- Admission uses bounded memory and workspace reservations and never launches unlimited workers.
-- Jobs that cannot start remain queued with an actionable wait reason.
-- A queued job owns an immutable series/crop/downsample configuration snapshot.
-- Cancellation, retry and restart affect one job without deleting completed packages.
+- Forge baseline: `codex/forge-ome-preview-pyramid` at `00f4399`.
+- Viewer baseline: `codex/ome-shared-cache-impl` at `e58634f`.
+- `87ccbad` and `5be079c` are implementation references only; their branch is not merged.
+- The Viewer `/api/v1/desktop` interface and database schema remain unchanged.
+- No public upload, automatic publication, push, merge, PR mutation, OCI deployment or production test.
+- A failed upload reuses the existing artifact and upload offset; it never triggers reconversion.
 
 ## Ordered work
 
-1. Persist batch-job records in SQLite and per-slide crop drafts in the local app profile.
-2. Add multi-file and recursive folder discovery with complete VSI/ETS grouping.
-3. Replace direct conversion rejection with an adaptive persistent scheduler.
-4. Add the compact project/queue workflow and bulk actions to the React shell.
-5. Keep saved and draft crop overlays visible per slide outside crop-edit mode.
-6. Verify minimum-profile serialization, higher-profile concurrency, overload queuing,
-   restart recovery, crop persistence and real project-folder discovery.
-
-Viewer deployment, Viewer database changes, publication behavior and automatic public sharing
-remain out of scope.
-
-## OME-TIFF viewer repair
-
-The source viewer must never decode a large single-resolution OME region on an HTTP thread.
-On first open, Forge builds one disposable, fixed-Q85 local DZI in a short Windows-safe cache
-path and exposes explicit preparing/failed state. The completed pyramid is atomically published,
-reused across restarts, and served as static tiles. Production package quality selection remains
-unchanged and the viewer cache is never approved or uploaded.
-The cache identity is the source fingerprint plus selected image series; crop, downsample,
-conversion status and artifact-history edits must not rebuild the original-source viewer.
-Opening verified image-series metadata and clicking the already-selected series must preserve
-the mounted viewer, viewport, crop draft and tile source without a configuration request.
+1. Add deterministic red/green regressions for inspect-before-digest and digest-before-inspect, then merge verification results into the latest dataset state atomically.
+2. Make the connection dialog state-aware, default local pairing to `http://127.0.0.1:5173`, and revoke the desktop credential before clearing local state.
+3. Port capability selection, approved direct OME profile validation, prepared fallback and same-process resumable retry.
+4. Add Viewer web tests for pairing-code validation, approval, and sign-in-required behavior.
+5. Run focused and complete Forge/Viewer checks plus isolated local browser acceptance; restore any pre-existing Forge runtime.

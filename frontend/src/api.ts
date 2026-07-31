@@ -110,6 +110,7 @@ export interface ViewerUpload {
   uploadedBytes: number
   totalBytes: number
   viewerSlideId: string
+  uploadMode: 'OME_DYNAMIC' | 'PREPARED_V2' | ''
   detail: string
 }
 

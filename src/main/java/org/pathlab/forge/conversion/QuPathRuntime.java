@@ -15,18 +15,18 @@ import java.util.function.LongConsumer;
 import java.util.stream.Stream;
 import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.runtime.ChildProcessContainment;
+import org.pathlab.forge.derivative.OmeDynamicProfile;
 
 final class QuPathRuntime {
     static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 250_000_000L;
     static final long STANDARD_SECONDS_BUDGET_PIXELS = 80_000_000L;
-    static final int STAGING_PYRAMID_SCALE = 65_536;
-    private static final long UNCOMPRESSED_PIXEL_LIMIT = 200_000_000L;
+    static final int STAGING_PYRAMID_SCALE = OmeDynamicProfile.V1.pyramidFactor();
     private static final Duration EXPORT_STALL_TIMEOUT = Duration.ofMinutes(2);
     private static final Duration EXPORT_ABSOLUTE_TIMEOUT = Duration.ofHours(24);
     private final Path javaExecutable;
     private final Path appDirectory;
 
-    private QuPathRuntime(Path javaExecutable, Path appDirectory) {
+    QuPathRuntime(Path javaExecutable, Path appDirectory) {
         this.javaExecutable = javaExecutable;
         this.appDirectory = appDirectory;
     }
@@ -55,7 +55,8 @@ final class QuPathRuntime {
     }
 
     boolean supports(DatasetFormat format) {
-        return available() && format == DatasetFormat.VSI;
+        return available()
+                && (format == DatasetFormat.VSI || format == DatasetFormat.OME_TIFF);
     }
 
     void writePyramidalOme(ConversionRequest request, Path output) throws IOException {
@@ -177,18 +178,12 @@ final class QuPathRuntime {
                 "--downsample=" + request.downsample(),
                 "--crop=" + request.cropX() + "," + request.cropY() + ","
                         + request.cropWidth() + "," + request.cropHeight(),
-                "--compression=" + compression(request),
-                "--tile-size=512",
+                "--compression=JPEG",
+                "--tile-size=" + OmeDynamicProfile.V1.tileSize(),
                 "--pyramid-scale=" + STAGING_PYRAMID_SCALE,
                 "--overwrite",
                 request.source().toString(),
                 output.toString());
-    }
-
-    private static String compression(ConversionRequest request) {
-        var pixels = Math.multiplyExact(
-                (long) request.outputWidth(), request.outputHeight());
-        return pixels <= UNCOMPRESSED_PIXEL_LIMIT ? "UNCOMPRESSED" : "JPEG";
     }
 
     private static Path configuredJava() {

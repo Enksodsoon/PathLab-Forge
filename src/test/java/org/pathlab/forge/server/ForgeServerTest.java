@@ -61,7 +61,11 @@ final class ForgeServerTest {
             assertTrue(app.body().contains("Forge"));
             assertTrue(app.body().contains("<div id=\"root\"></div>"));
             assertTrue(app.body().contains("src=\"/assets/app.js\""));
-            assertTrue(app.headers().firstValue("content-security-policy").isPresent());
+            var contentSecurityPolicy = app.headers()
+                    .firstValue("content-security-policy")
+                    .orElseThrow();
+            assertTrue(contentSecurityPolicy.contains("script-src 'self'"));
+            assertTrue(contentSecurityPolicy.contains("style-src 'self' 'unsafe-inline'"));
 
             var script = client.send(
                     HttpRequest.newBuilder(server.baseUri().resolve("/assets/app.js")).GET().build(),

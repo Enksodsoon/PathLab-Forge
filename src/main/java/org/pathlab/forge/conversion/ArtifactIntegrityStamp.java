@@ -33,6 +33,26 @@ public final class ArtifactIntegrityStamp {
         }
     }
 
+    public static boolean matchesOme(ArtifactRevision revision) throws IOException {
+        var file = stampFile(revision);
+        if (!Files.isRegularFile(file)) {
+            return false;
+        }
+        var values = new Properties();
+        try (var input = Files.newInputStream(file)) {
+            values.load(input);
+        }
+        try {
+            return revision.omeSha256().equals(values.getProperty("omeSha256"))
+                    && revision.omeProfile().equals(values.getProperty("omeProfile", ""))
+                    && revision.omeJpegQuality()
+                            == Integer.parseInt(values.getProperty("omeJpegQuality", "0"))
+                    && unchanged(Path.of(revision.omePath()), values, "ome");
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
+    }
+
     static void write(ArtifactRevision revision) throws IOException {
         var ome = Path.of(revision.omePath());
         var preparedPackage = Path.of(revision.packagePath());
@@ -42,6 +62,8 @@ public final class ArtifactIntegrityStamp {
         var values = new Properties();
         values.setProperty("omeSha256", revision.omeSha256());
         values.setProperty("packageSha256", revision.packageSha256());
+        values.setProperty("omeProfile", revision.omeProfile());
+        values.setProperty("omeJpegQuality", Integer.toString(revision.omeJpegQuality()));
         if (Files.isRegularFile(ome)) {
             record(values, "ome", ome);
         } else {

@@ -289,6 +289,13 @@ final class ForgeLibraryApiTest {
                     write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
             assertEquals(200, inspected.statusCode());
             assertTrue(inspected.body().contains("\"name\":\"Tissue\""));
+            for (var attempt = 0; attempt < 100; attempt++) {
+                if (repository.find(dataset.id()).orElseThrow().status()
+                        == org.pathlab.forge.library.DatasetStatus.READY_TO_CONVERT) {
+                    break;
+                }
+                Thread.sleep(20);
+            }
             assertEquals(
                     org.pathlab.forge.library.DatasetStatus.READY_TO_CONVERT,
                     repository.find(dataset.id()).orElseThrow().status());
