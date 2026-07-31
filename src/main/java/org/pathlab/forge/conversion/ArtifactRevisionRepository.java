@@ -47,6 +47,7 @@ public final class ArtifactRevisionRepository {
                 outputWidth,
                 outputHeight,
                 0,
+                defaultName(dataset),
                 "");
         save(revision);
         return revision;
@@ -79,6 +80,9 @@ public final class ArtifactRevisionRepository {
                 Integer.parseInt(properties.getProperty("outputWidth")),
                 Integer.parseInt(properties.getProperty("outputHeight")),
                 Long.parseLong(properties.getProperty("approvedAt", "0")),
+                properties.getProperty(
+                        "name",
+                        "Conversion " + revisionId.substring(0, Math.min(8, revisionId.length()))),
                 properties.getProperty("failure", "")));
     }
 
@@ -114,6 +118,7 @@ public final class ArtifactRevisionRepository {
         properties.setProperty("outputWidth", Integer.toString(revision.outputWidth()));
         properties.setProperty("outputHeight", Integer.toString(revision.outputHeight()));
         properties.setProperty("approvedAt", Long.toString(revision.approvedAt()));
+        properties.setProperty("name", revision.name());
         properties.setProperty("failure", revision.failure());
         var file = root.resolve("revision.properties");
         var partial = root.resolve("revision.properties.partial");
@@ -131,47 +136,14 @@ public final class ArtifactRevisionRepository {
         }
     }
 
-    public CleanupReport cleanupSupersededUnapproved(String datasetId, String currentRevisionId)
-            throws IOException {
-        long deletedFiles = 0;
-        long deletedBytes = 0;
-        for (var revision : list(datasetId)) {
-            if (revision.id().equals(currentRevisionId)
-                    || revision.status() == ArtifactRevisionStatus.APPROVED) {
-                continue;
-            }
-            var root = revisionRoot(datasetId, revision.id());
-            if (!Files.isRegularFile(root.resolve(".ultrafast-owned"))) {
-                continue;
-            }
-            try (var paths = Files.walk(root)) {
-                for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
-                    if (path.equals(root)
-                            || path.equals(root.resolve("revision.properties"))
-                            || path.equals(root.resolve(".ultrafast-owned"))) {
-                        continue;
-                    }
-                    if (Files.isRegularFile(path)) {
-                        deletedBytes = Math.addExact(deletedBytes, Files.size(path));
-                        deletedFiles++;
-                        Files.delete(path);
-                    } else if (Files.isDirectory(path)) {
-                        try (var children = Files.list(path)) {
-                            if (children.findAny().isEmpty()) {
-                                Files.delete(path);
-                            }
-                        }
-                    }
-                }
-            }
+    public void delete(String datasetId, String revisionId) throws IOException {
+        var root = revisionRoot(datasetId, revisionId);
+        if (!Files.isRegularFile(root.resolve(".ultrafast-owned"))) {
+            throw new IllegalStateException("Artifact is not owned by PathLab Forge");
         }
-        return new CleanupReport(deletedFiles, deletedBytes);
-    }
-
-    public record CleanupReport(long deletedFiles, long deletedBytes) {
-        public CleanupReport {
-            if (deletedFiles < 0 || deletedBytes < 0) {
-                throw new IllegalArgumentException("Cleanup counts must not be negative");
+        try (var paths = Files.walk(root)) {
+            for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
             }
         }
     }
@@ -196,5 +168,18 @@ public final class ArtifactRevisionRepository {
             throw new IllegalArgumentException("Dataset identifier escapes managed storage");
         }
         return root;
+    }
+
+    private static String defaultName(LocalDataset dataset) {
+        var base = dataset.displayName()
+                .replaceFirst("(?i)\\.(ome\\.)?tiff?$", "")
+                .replaceFirst("(?i)\\.vsi$", "")
+                .strip();
+        var suffix = " · " + java.time.format.DateTimeFormatter
+                .ofPattern("yyyy-MM-dd HH:mm")
+                .format(java.time.LocalDateTime.now());
+        var label = base.isBlank() ? "Conversion" : base;
+        return label.substring(0, Math.min(label.length(), 80 - suffix.length()))
+                .stripTrailing() + suffix;
     }
 }

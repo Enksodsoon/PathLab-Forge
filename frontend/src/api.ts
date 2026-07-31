@@ -52,6 +52,7 @@ export interface SeriesInfo {
 
 export interface ArtifactRevision {
   id: string
+  name?: string
   status: 'CONVERTING' | 'READY' | 'APPROVED' | 'FAILED'
   format?: 'LEGACY_OME' | 'PREPARED_DZI_V2'
   createdAt: number
@@ -68,6 +69,12 @@ export interface ArtifactRevision {
   maximumRoiMeanDeltaE00: number
   minimumEdgeDetailRetention: number
   encoderProfile: string
+  series?: number
+  cropX?: number
+  cropY?: number
+  cropWidth?: number
+  cropHeight?: number
+  downsample?: number
   packageSha256: string
   failure: string
 }
@@ -231,6 +238,28 @@ export async function approve(id: string, revision: string) {
     `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/approve`,
     { method: 'POST' },
   )
+}
+
+export async function renameArtifact(id: string, revision: string, name: string) {
+  return request<ArtifactRevision>(
+    `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/rename?name=${encodeURIComponent(name)}`,
+    { method: 'POST' },
+  )
+}
+
+export async function deleteArtifact(id: string, revision: string) {
+  return request<Dataset>(
+    `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}`,
+    { method: 'DELETE' },
+  )
+}
+
+export function artifactPackageUrl(id: string, revision: string) {
+  return `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/package`
+}
+
+export function artifactDziUrl(id: string, revision: string) {
+  return `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/derivative/slide.dzi`
 }
 
 export async function getViewerConnection() {

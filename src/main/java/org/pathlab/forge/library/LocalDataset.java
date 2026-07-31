@@ -301,6 +301,43 @@ public record LocalDataset(
                 revisionId);
     }
 
+    public LocalDataset withArtifactPointers(
+            DatasetStatus nextStatus,
+            String nextDetail,
+            String nextOutputPath,
+            String nextSha256,
+            String nextCurrentRevision,
+            String nextApprovedRevision) {
+        if (!nextApprovedRevision.isBlank()
+                && !nextApprovedRevision.equals(nextCurrentRevision)) {
+            throw new IllegalArgumentException("Approved artifact must be the current artifact");
+        }
+        return new LocalDataset(
+                id,
+                displayName,
+                sourcePath,
+                sourceBytes,
+                format,
+                nextStatus,
+                nextDetail,
+                nextOutputPath,
+                nextSha256,
+                selectedSeries,
+                width,
+                height,
+                downsample,
+                estimatedOutputBytes,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight,
+                sourceFingerprint,
+                sourceInventory,
+                configurationRevision,
+                nextCurrentRevision,
+                nextApprovedRevision);
+    }
+
     private static String requireText(String value, String name) {
         var normalized = Objects.requireNonNull(value, name).trim();
         if (normalized.isEmpty()) {

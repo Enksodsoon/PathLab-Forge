@@ -117,11 +117,39 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    public LocalArtifacts revisionArtifacts(String id, String revisionId) {
+        requireDataset(id);
+        try {
+            var revision = artifactRepository
+                    .find(id, revisionId)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Artifact revision was not found"));
+            var derivative = Path.of(revision.derivativePath());
+            return new LocalArtifacts(
+                    Path.of(revision.omePath()),
+                    derivative,
+                    derivative.resolve("slide.dzi"),
+                    derivative.resolve("thumbnail.jpg"),
+                    Path.of(revision.packagePath()));
+        } catch (IOException error) {
+            throw new IllegalStateException("Artifact revisions could not be read", error);
+        }
+    }
+
     public byte[] derivativeEntry(String id, String relative) throws IOException {
+        return derivativeEntry(artifacts(id), relative);
+    }
+
+    public byte[] derivativeEntry(String id, String revisionId, String relative)
+            throws IOException {
+        return derivativeEntry(revisionArtifacts(id, revisionId), relative);
+    }
+
+    private static byte[] derivativeEntry(LocalArtifacts artifacts, String relative)
+            throws IOException {
         if (!relative.matches("slide\\.dzi|thumbnail\\.jpg|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
             throw new IllegalArgumentException("Invalid derivative entry");
         }
-        var artifacts = artifacts(id);
         var loose = artifacts.derivativeRoot()
                 .resolve(relative.replace('/', java.io.File.separatorChar))
                 .normalize();
@@ -152,6 +180,61 @@ public final class ConversionService implements AutoCloseable {
     public List<ArtifactRevision> revisions(String id) throws IOException {
         requireDataset(id);
         return artifactRepository.list(id);
+    }
+
+    public ArtifactRevision renameRevision(String id, String revisionId, String name)
+            throws IOException {
+        requireDataset(id);
+        var revision = artifactRepository
+                .find(id, revisionId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Artifact revision was not found"));
+        var renamed = revision.renamed(name);
+        artifactRepository.save(renamed);
+        return renamed;
+    }
+
+    public LocalDataset deleteRevision(String id, String revisionId) throws IOException {
+        var dataset = requireDataset(id);
+        var revision = artifactRepository
+                .find(id, revisionId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Artifact revision was not found"));
+        if (revision.status() == ArtifactRevisionStatus.CONVERTING
+                && activeConversions.containsKey(id)) {
+            throw new IllegalStateException("Cancel the active conversion before deleting it");
+        }
+        artifactRepository.delete(id, revisionId);
+        if (!revisionId.equals(dataset.currentArtifactRevision())
+                && !revisionId.equals(dataset.approvedArtifactRevision())) {
+            return dataset;
+        }
+        var replacement = artifactRepository.list(id).stream()
+                .filter(candidate -> candidate.configurationRevision()
+                        .equals(dataset.configurationRevision()))
+                .filter(candidate -> candidate.status() == ArtifactRevisionStatus.READY
+                        || candidate.status() == ArtifactRevisionStatus.APPROVED)
+                .filter(candidate -> Files.isRegularFile(Path.of(candidate.packagePath())))
+                .findFirst();
+        var updated = replacement
+                .map(candidate -> dataset.withArtifactPointers(
+                        DatasetStatus.PACKAGE_READY,
+                        "Saved conversion restored from History",
+                        candidate.packagePath(),
+                        candidate.omeSha256(),
+                        candidate.id(),
+                        candidate.status() == ArtifactRevisionStatus.APPROVED
+                                ? candidate.id()
+                                : ""))
+                .orElseGet(() -> dataset.withArtifactPointers(
+                        DatasetStatus.READY_TO_CONVERT,
+                        "Conversion deleted; the source settings are preserved",
+                        "",
+                        "",
+                        "",
+                        ""));
+        repository.save(updated);
+        return updated;
     }
 
     public ArtifactRevision approvedRevision(String id) throws IOException {
@@ -1334,7 +1417,6 @@ public final class ConversionService implements AutoCloseable {
                     dataset.height(),
                     dataset.downsample(),
                     dataset.estimatedOutputBytes()));
-            artifactRepository.cleanupSupersededUnapproved(dataset.id(), revision.id());
         } catch (Exception error) {
             var failure = concise(error.getMessage());
             var wasCancelled = cancelled.remove(dataset.id());

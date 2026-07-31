@@ -66,6 +66,12 @@ vi.mock('../api', () => ({
   convert: vi.fn(),
   cancel: vi.fn(),
   artifacts: vi.fn(),
+  renameArtifact: vi.fn(),
+  deleteArtifact: vi.fn(),
+  artifactPackageUrl: (id: string, revision: string) =>
+    `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/package`,
+  artifactDziUrl: (id: string, revision: string) =>
+    `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/derivative/slide.dzi`,
   approve: vi.fn(),
   annotations: vi.fn(async () => []),
   createAnnotation: vi.fn(),
@@ -743,10 +749,122 @@ test('opens the converted viewer while the upload package is still building', as
 
   expect(await screen.findByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
-    expect.stringContaining('/derivative/slide.dzi?revision=packaging-artifact'),
+    expect.stringContaining('/artifacts/packaging-artifact/derivative/slide.dzi'),
   )
   expect(screen.getByText('Quality passed · packaging compact DZI')).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Approve compact DZI' })).not.toBeInTheDocument()
+})
+
+test('views, renames, downloads, and deletes saved conversions from History', async () => {
+  const dataset: api.Dataset = {
+    id: 'history-slide',
+    displayName: 'History slide.vsi',
+    sourceBytes: 1_500_000_000,
+    format: 'VSI',
+    status: 'READY',
+    detail: 'Conversion validated',
+    outputPath: '',
+    sha256: 'ome-hash',
+    selectedSeries: 0,
+    width: 16_000,
+    height: 12_000,
+    downsample: 2,
+    estimatedOutputBytes: 500_000_000,
+    projectedFileBytes: 100_000_000,
+    projectedFileLowerBytes: 80_000_000,
+    projectedFileUpperBytes: 150_000_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 16_000,
+    cropHeight: 12_000,
+    sourceFingerprint: 'history-source',
+    configurationRevision: 'history-configuration',
+    currentArtifactRevision: 'history-latest',
+    approvedArtifactRevision: '',
+  }
+  const latest: api.ArtifactRevision = {
+    id: 'history-latest',
+    name: 'Whole slide · 2×',
+    status: 'READY',
+    createdAt: Date.now(),
+    outputWidth: 8_000,
+    outputHeight: 6_000,
+    omePath: '',
+    packagePath: 'C:\\exports\\latest.plslide',
+    omeSha256: 'latest-ome',
+    omeBytes: 110_000_000,
+    dziBytes: 92_000_000,
+    packageBytes: 94_000_000,
+    jpegQuality: 70,
+    minimumWindowedSsim: 0.976,
+    maximumRoiMeanDeltaE00: 2.1,
+    minimumEdgeDetailRetention: 0.94,
+    encoderProfile: 'compact-420-trellis',
+    packageSha256: 'latest-package',
+    failure: '',
+  }
+  const older: api.ArtifactRevision = {
+    ...latest,
+    id: 'history-older',
+    name: 'Tumour crop · 4×',
+    createdAt: Date.now() - 60_000,
+    outputWidth: 4_000,
+    outputHeight: 3_000,
+    packagePath: 'C:\\exports\\older.plslide',
+    packageBytes: 31_000_000,
+    packageSha256: 'older-package',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[dataset], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 1.5, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([dataset])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: latest.id,
+    approvedRevision: '',
+    revisions: [latest, older],
+  })
+  vi.mocked(api.renameArtifact).mockResolvedValue({ ...older, name: 'Review region' })
+  vi.mocked(api.deleteArtifact).mockResolvedValue(dataset)
+
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('tab', { name: 'History' }))
+  const history = screen.getByRole('region', { name: 'Conversion history' })
+  expect(within(history).getByText('Whole slide · 2×')).toBeVisible()
+  expect(within(history).getByText('Tumour crop · 4×')).toBeVisible()
+
+  const olderCard = within(history).getByText('Tumour crop · 4×').closest('article')!
+  expect(within(olderCard).getByRole('link', { name: 'Download' })).toHaveAttribute(
+    'href',
+    '/api/datasets/history-slide/artifacts/history-older/package',
+  )
+  fireEvent.click(within(olderCard).getByRole('button', { name: 'View slide' }))
+  expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/history-slide/artifacts/history-older/derivative/slide.dzi',
+  )
+
+  fireEvent.click(within(olderCard).getByRole('button', { name: 'Rename' }))
+  fireEvent.change(within(olderCard).getByRole('textbox', { name: 'Conversion name' }), {
+    target: { value: 'Review region' },
+  })
+  fireEvent.click(within(olderCard).getByRole('button', { name: 'Save name' }))
+  await waitFor(() => expect(api.renameArtifact).toHaveBeenCalledWith(
+    dataset.id,
+    older.id,
+    'Review region',
+  ))
+
+  fireEvent.click(within(olderCard).getByRole('button', { name: 'Delete' }))
+  expect(within(olderCard).getByRole('alert')).toHaveTextContent(
+    'The source slide is not deleted.',
+  )
+  fireEvent.click(within(olderCard).getByRole('button', { name: 'Delete conversion' }))
+  await waitFor(() => expect(api.deleteArtifact).toHaveBeenCalledWith(dataset.id, older.id))
 })
 
 test('replaces the estimate with compact DZI size and quality evidence after conversion', async () => {
