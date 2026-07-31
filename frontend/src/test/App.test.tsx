@@ -826,6 +826,13 @@ test('replaces the estimate with compact DZI size and quality evidence after con
 
   render(<App />)
 
+  const resultCard = await screen.findByRole('region', { name: 'Converted slide result' })
+  expect(within(resultCard).getByText('801.0 KB')).toBeVisible()
+  expect(within(resultCard).getByRole('link', { name: 'View converted slide' }))
+    .toHaveAttribute('href', '#dzi-viewer')
+  expect(within(resultCard).getByRole('link', { name: 'Download 801.0 KB package' }))
+    .toHaveAttribute('href', '/api/datasets/measured-slide/package')
+
   fireEvent.click(await screen.findByRole('button', { name: 'Inspect image series' }))
   expect(await screen.findByText('Compact DZI package 801.0 KB')).toBeVisible()
   expect(screen.getByText(/Compared with 854.3 KB staging OME · 93.8% · Q70/)).toBeVisible()

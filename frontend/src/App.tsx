@@ -140,7 +140,7 @@ export function App() {
     return () => {
       cancelled = true
     }
-  }, [selected?.id, selected?.currentArtifactRevision])
+  }, [selected?.id, selected?.currentArtifactRevision, selected?.status])
 
   const finishImport = (next: { datasets: Dataset[] }) => {
     const imported = next.datasets.find((item) => !datasets.some((current) => current.id === item.id))
@@ -1091,6 +1091,11 @@ function ExportInspector({
   const cropAreaPercent = selected && draftValid
     ? Math.min(100, parsed.width * parsed.height / (selected.width * selected.height) * 100)
     : 0
+  const packagedCurrent = current
+    && ['READY', 'APPROVED'].includes(current.status)
+    && current.packageBytes > 0
+    ? current
+    : undefined
 
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
@@ -1128,6 +1133,26 @@ function ExportInspector({
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
+      {packagedCurrent ? (
+        <section className="forge-result-card" aria-label="Converted slide result">
+          <div>
+            <span>Converted DZI package</span>
+            <strong>{formatBytes(packagedCurrent.packageBytes)}</strong>
+            <small>
+              {packagedCurrent.outputWidth.toLocaleString()} × {packagedCurrent.outputHeight.toLocaleString()}
+              {' · '}JPEG Q{packagedCurrent.jpegQuality}
+              {' · '}{packagedCurrent.status === 'APPROVED' ? 'Approved' : 'Ready for review'}
+            </small>
+          </div>
+          <a className="forge-primary" href="#dzi-viewer">View converted slide</a>
+          <a
+            className="forge-download"
+            href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}
+          >
+            Download {formatBytes(packagedCurrent.packageBytes)} package
+          </a>
+        </section>
+      ) : null}
       {!series.length ? (
         <button
           className="forge-primary"
@@ -1289,14 +1314,8 @@ function ExportInspector({
           && dataset.approvedArtifactRevision !== current.id
           ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve compact DZI</button>
           : null}
-        {current && ['READY', 'APPROVED'].includes(current.status)
-          ? <a className="forge-download" href="#dzi-viewer">Open DZI viewer</a>
-          : null}
         {dataset.approvedArtifactRevision
           ? <button type="button" onClick={onUpload}>Upload to Viewer</button>
-          : null}
-        {current && ['READY', 'APPROVED'].includes(current.status)
-          ? <a className="forge-download" href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}>Download package</a>
           : null}
         {!ACTIVE_STATUSES.has(dataset.status)
           ? <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove from library</button>
