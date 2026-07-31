@@ -1358,6 +1358,10 @@ function ExportInspector({
     : null
   const displayedEstimate = draftMatchesSaved ? savedEstimate : draftEstimate ?? liveEstimate
   const estimateIsLive = !draftMatchesSaved && !draftEstimate
+  const sizeReferenceEstimated = current?.sizeReferenceKind === 'estimated-staging-ome'
+  const sizeReferenceLabel = sizeReferenceEstimated
+    ? 'estimated OME reference'
+    : 'staging OME'
 
   useEffect(() => {
     if (!draftValid || draftMatchesSaved) {
@@ -1581,7 +1585,7 @@ function ExportInspector({
               <>
                 <b>Compact DZI package {formatBytes(current.packageBytes)}</b>
                 <small>
-                  Compared with {formatBytes(current.omeBytes)} staging OME ·{' '}
+                  Compared with {formatBytes(current.omeBytes)} {sizeReferenceLabel} ·{' '}
                   {(current.packageBytes * 100 / current.omeBytes).toFixed(1)}% · Q{current.jpegQuality}
                 </small>
                 <small>
@@ -1592,7 +1596,7 @@ function ExportInspector({
                 {current.packageBytes > current.omeBytes * 1.25 ? (
                   <small className="forge-field-error" role="status">
                     Size warning: this quality-compliant package is{' '}
-                    {(current.packageBytes / current.omeBytes).toFixed(3)}× staging OME.
+                    {(current.packageBytes / current.omeBytes).toFixed(3)}× {sizeReferenceLabel}.
                     Review it before approval; the selected crop and downsample were preserved.
                   </small>
                 ) : null}
@@ -1714,6 +1718,9 @@ function conversionPhase(dataset: Dataset) {
     SOURCE_VERIFIED: { step: 1, base: 5, span: 0, label: 'Source verified · preparing RGB regions' },
     REGIONS_RENDERING: { step: 1, base: 5, span: 30, label: 'Reading source regions in parallel' },
     REGIONS_VERIFIED: { step: 1, base: 35, span: 0, label: 'RGB regions verified · assembling staging image' },
+    DIRECT_DZI_SOURCE_READY: { step: 1, base: 35, span: 0, label: 'Source regions ready · bypassing temporary OME' },
+    DIRECT_DZI_PREPARING: { step: 1, base: 35, span: 25, label: 'Globally aligning regions for direct DZI' },
+    DIRECT_DZI_FALLBACK: { step: 1, base: 35, span: 0, label: 'Using safe staging fallback' },
     ASSEMBLING_OME: { step: 1, base: 35, span: 0, label: 'Assembling exact slide geometry' },
     DIRECT_OME: { step: 1, base: 5, span: 50, label: 'Rendering temporary staging pyramid' },
     OPTIMIZING_OME: { step: 1, base: 45, span: 0, label: 'Rendering temporary staging pyramid' },
@@ -1752,6 +1759,7 @@ function conversionCounter(dataset: Dataset) {
     DZI_VALIDATING: 'tile checks',
     PACKAGING: 'package files',
     REGIONS_RENDERING: 'source regions',
+    DIRECT_DZI_PREPARING: 'aligned regions',
   } as Record<string, string>)[dataset.stage || ''] || 'work units'
   return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`
 }

@@ -71,6 +71,7 @@ export interface ArtifactRevision {
   maximumRoiMeanDeltaE00: number
   minimumEdgeDetailRetention: number
   encoderProfile: string
+  sizeReferenceKind?: string
   series?: number
   cropX?: number
   cropY?: number

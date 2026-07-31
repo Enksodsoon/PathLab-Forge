@@ -396,6 +396,8 @@ public final class PreparedPackageBuilder {
                 + ",\"maximumRoiMeanDeltaE00\":" + meanDeltaE00
                 + ",\"minimumEdgeDetailRetention\":" + minimumEdgeDetailRetention + "},"
                 + "\"stagingOmeBytes\":" + stagingOmeBytes
+                + ",\"sizeReferenceKind\":\""
+                + escape(metadata.sizeReferenceKind()) + "\""
                 + ",\"predictedPackageBytes\":" + predictedPackageBytes
                 + ",\"packageToOmeRatio\":"
                 + (stagingOmeBytes > 0 ? (double) predictedPackageBytes / stagingOmeBytes : 0.0)
