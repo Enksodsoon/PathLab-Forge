@@ -31,6 +31,7 @@ import org.pathlab.forge.library.DatasetPreparationService;
 import org.pathlab.forge.library.DatasetRepository;
 import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.LocalDataset;
+import org.pathlab.forge.library.ProjectFolderScanner;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
 import org.pathlab.forge.library.SourceVerificationService;
@@ -180,7 +181,10 @@ public final class ForgeServer implements AutoCloseable {
             throws IOException {
         var address = new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
         var httpServer = HttpServer.create(address, 32);
-        var executor = Executors.newFixedThreadPool(4, runnable -> {
+        var executor = Executors.newFixedThreadPool(
+                recommendedHttpWorkers(
+                        org.pathlab.forge.runtime.RuntimeProfile.configuredLogicalProcessors()),
+                runnable -> {
             var thread = new Thread(runnable, "pathlab-forge-http");
             thread.setDaemon(true);
             return thread;
@@ -199,6 +203,13 @@ public final class ForgeServer implements AutoCloseable {
         httpServer.setExecutor(executor);
         httpServer.start();
         return forgeServer;
+    }
+
+    static int recommendedHttpWorkers(int logicalProcessors) {
+        if (logicalProcessors < 1) {
+            throw new IllegalArgumentException("Detected CPU capacity is invalid");
+        }
+        return Math.max(6, Math.min(12, logicalProcessors));
     }
 
     public URI baseUri() {
@@ -265,6 +276,9 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/datasets/import".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 importDataset(exchange);
+            } else if ("/api/v2/desktop/projects/import-folder".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                importProjectFolder(exchange);
             } else if (path.matches("/api/datasets/[^/]+/prepare")
                     && "POST".equals(exchange.getRequestMethod())) {
                 prepareDataset(exchange, path.substring("/api/datasets/".length(), path.length() - "/prepare".length()));
@@ -612,7 +626,11 @@ public final class ForgeServer implements AutoCloseable {
                         + conversionService.derivativeEngine().available()
                         + ",\"derivativeRuntime\":"
                         + json(conversionService.derivativeEngine().description())
-                        + ",\"activeConversions\":1,\"downsamples\":[1,1.5,2,4,8,16,32]}");
+                        + ",\"activeConversions\":" + conversionService.activeConversionCount()
+                        + ",\"queuedConversions\":" + conversionService.queuedConversionCount()
+                        + ",\"maximumConcurrentConversions\":"
+                        + conversionService.maximumConcurrentConversions()
+                        + ",\"projectFolderImport\":true,\"downsamples\":[1,1.5,2,4,8,16,32]}");
     }
 
     private void listDatasets(HttpExchange exchange) throws IOException {
@@ -688,6 +706,47 @@ public final class ForgeServer implements AutoCloseable {
                     422,
                     "application/json",
                     "{\"error\":\"import_failed\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void importProjectFolder(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            var rawPath = queryValue(exchange, "path", "").trim();
+            var folder = rawPath.isEmpty() ? picker.selectFolder() : Path.of(rawPath);
+            if (folder == null) {
+                respond(exchange, 200, "application/json", datasetsJson(repository.list()));
+                return;
+            }
+            var imported = 0;
+            var failed = new java.util.ArrayList<String>();
+            for (var slide : ProjectFolderScanner.findSlides(folder)) {
+                try {
+                    var normalized = slide.toAbsolutePath().normalize().toString();
+                    if (repository.findBySourcePath(normalized).isEmpty()) {
+                        var pending = inspector.inspectFast(slide);
+                        repository.save(pending);
+                        imported++;
+                        if (pending.status()
+                                == org.pathlab.forge.library.DatasetStatus.VERIFYING_SOURCE) {
+                            sourceVerificationService.verifyAsync(pending);
+                        }
+                    }
+                } catch (DatasetInspectionException error) {
+                    failed.add(slide.getFileName() + ": " + error.getMessage());
+                }
+            }
+            var body = datasetsJson(repository.list());
+            body = body.substring(0, body.length() - 1)
+                    + ",\"project\":{\"root\":" + json(folder.toAbsolutePath().normalize().toString())
+                    + ",\"imported\":" + imported + ",\"failed\":" + json(String.join("; ", failed))
+                    + "}}";
+            respond(exchange, 200, "application/json", body);
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"project_import_failed\",\"detail\":" + json(error.getMessage()) + "}");
         }
     }
 
@@ -1180,7 +1239,8 @@ public final class ForgeServer implements AutoCloseable {
                 () -> new IllegalArgumentException("Dataset was not found"));
         if (immutableNotModified(
                 exchange,
-                dataset.sourceFingerprint() + "|" + dataset.selectedSeries() + "|" + relative)) {
+                "responsive-v2|" + dataset.sourceFingerprint() + "|"
+                        + dataset.selectedSeries() + "|" + relative)) {
             return;
         }
         var source = conversionService.directPreview(id);

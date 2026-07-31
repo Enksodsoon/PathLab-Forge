@@ -45,7 +45,7 @@ class VipsRuntimeTest {
     }
 
     @Test
-    void scalesIndependentTileEncodingOnHigherSpecHardware() {
+    void reservesCpuForTheViewerWhenHigherSpecHardwareRunsTwoJobs() {
         var previousProcessors = System.getProperty("pathlab.forge.runtime.processors");
         var previousMemory = System.getProperty("pathlab.forge.runtime.memoryBytes");
         try {
@@ -57,7 +57,7 @@ class VipsRuntimeTest {
             var command = VipsRuntime.commandLine(
                     Path.of("vips.exe"), List.of("dzsave", "input.tif", "output"));
 
-            assertEquals("--vips-concurrency=10", command.get(1));
+            assertEquals("--vips-concurrency=5", command.get(1));
             assertTrue(VipsRuntime.parallelQualityProfiles());
         } finally {
             restoreProperty("pathlab.forge.runtime.processors", previousProcessors);

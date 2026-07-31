@@ -51,6 +51,10 @@ vi.mock('../api', () => ({
   capabilities: vi.fn(),
   chooseDatasets: vi.fn(),
   importDataset: vi.fn(),
+  importProjectFolder: vi.fn(async () => ({
+    datasets: [],
+    project: { root: 'C:\\cases', imported: 0, failed: '' },
+  })),
   deleteDataset: vi.fn(),
   inspectDataset: vi.fn(),
   series: vi.fn(async () => []),
@@ -397,6 +401,16 @@ test('offers a reliable local-path import when the native picker is unavailable'
   await waitFor(() => expect(screen.queryByText('Opening slide')).not.toBeInTheDocument())
 })
 
+test('offers recursive project-folder import from the same compact dialog', async () => {
+  render(<App />)
+
+  const libraryHeader = (await screen.findByText('Local workspace')).closest('header')
+  fireEvent.click(within(libraryHeader!).getByRole('button', { name: 'Import' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Choose project folder…' }))
+
+  await waitFor(() => expect(api.importProjectFolder).toHaveBeenCalledWith(undefined))
+})
+
 test('removes a slide from the library only after an explicit preservation warning', async () => {
   const dataset: api.Dataset = {
     id: 'removable-slide',
@@ -629,7 +643,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect(screen.getByText(/Elapsed 14s · about 28s left in this phase/)).toBeVisible()
   expect(screen.getByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
-    '/api/datasets/converting-slide/preview/slide.dzi?revision=conversion-configuration',
+    '/api/datasets/converting-slide/preview/slide.dzi?revision=conversion-configuration&preview=responsive-v2',
   )
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
   expect(screen.getByRole('progressbar', {
@@ -761,7 +775,7 @@ test('keeps the original viewer visible while the upload package is still buildi
 
   expect(await screen.findByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
-    '/api/datasets/packaging-slide/preview/slide.dzi?revision=packaging-configuration',
+    '/api/datasets/packaging-slide/preview/slide.dzi?revision=packaging-configuration&preview=responsive-v2',
   )
   expect(screen.getAllByText('Quality passed · packaging compact DZI')).toHaveLength(2)
   expect(screen.queryByRole('button', { name: 'Approve compact DZI' })).not.toBeInTheDocument()
@@ -847,7 +861,7 @@ test('views, renames, downloads, and deletes saved conversions from History', as
   const mainViewer = await screen.findByTestId('forge-osd')
   expect(mainViewer).toHaveAttribute(
     'data-tile-source',
-    '/api/datasets/history-slide/preview/slide.dzi?revision=history-configuration',
+    '/api/datasets/history-slide/preview/slide.dzi?revision=history-configuration&preview=responsive-v2',
   )
   fireEvent.click(await screen.findByRole('link', { name: 'View converted slide' }))
   expect(mainViewer).toHaveAttribute(
@@ -857,7 +871,7 @@ test('views, renames, downloads, and deletes saved conversions from History', as
   fireEvent.click(screen.getByRole('link', { name: 'View original slide' }))
   expect(mainViewer).toHaveAttribute(
     'data-tile-source',
-    '/api/datasets/history-slide/preview/slide.dzi?revision=history-configuration',
+    '/api/datasets/history-slide/preview/slide.dzi?revision=history-configuration&preview=responsive-v2',
   )
 
   fireEvent.click(await screen.findByRole('tab', { name: 'History' }))
@@ -1042,4 +1056,8 @@ test('shows one actionable size quality conflict without changing the crop', asy
   expect(within(panel).getByText('Compact DZI could not meet the 1.25× size limit')).toBeVisible()
   expect(within(panel).getByText(/Your current crop is preserved/)).toBeVisible()
   expect(screen.getByRole('button', { name: 'Convert current revision' })).toBeVisible()
+  expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/compact-conflict/preview/slide.dzi?revision=conflict-config&preview=responsive-v2',
+  )
 })

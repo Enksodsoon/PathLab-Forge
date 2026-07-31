@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Optional;
 
 public final class SqliteDatasetRepository implements DatasetRepository, AutoCloseable {
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
     private final Connection connection;
 
     public SqliteDatasetRepository(Path database, Path legacyProperties) throws IOException {
@@ -76,8 +76,16 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                       workspace_revision INTEGER NOT NULL DEFAULT 1
                     )""");
             statement.execute("""
+                    CREATE TABLE IF NOT EXISTS conversion_queue (
+                      dataset_id TEXT PRIMARY KEY,
+                      queue_position INTEGER NOT NULL UNIQUE,
+                      configuration_revision TEXT NOT NULL,
+                      created_at INTEGER NOT NULL,
+                      wait_reason TEXT NOT NULL
+                    )""");
+            statement.execute("""
                     INSERT INTO forge_meta(key, value) VALUES ('schema_version', '%d')
-                    ON CONFLICT(key) DO NOTHING
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """.formatted(SCHEMA_VERSION));
         }
     }
@@ -278,11 +286,66 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
 
     @Override
     public synchronized void delete(String id) throws IOException {
-        try (var statement = connection.prepareStatement("DELETE FROM datasets WHERE id=?")) {
+        try (var queue = connection.prepareStatement("DELETE FROM conversion_queue WHERE dataset_id=?");
+                var statement = connection.prepareStatement("DELETE FROM datasets WHERE id=?")) {
+            queue.setString(1, id);
+            queue.executeUpdate();
             statement.setString(1, id);
             statement.executeUpdate();
         } catch (SQLException error) {
             throw new IOException("Unable to delete Forge dataset", error);
+        }
+    }
+
+    @Override
+    public synchronized List<ConversionQueueEntry> listQueueEntries() {
+        try (var statement = connection.prepareStatement(
+                        "SELECT * FROM conversion_queue ORDER BY queue_position");
+                var rows = statement.executeQuery()) {
+            var entries = new ArrayList<ConversionQueueEntry>();
+            while (rows.next()) {
+                entries.add(new ConversionQueueEntry(
+                        rows.getString("dataset_id"),
+                        rows.getLong("queue_position"),
+                        rows.getString("configuration_revision"),
+                        rows.getLong("created_at"),
+                        rows.getString("wait_reason")));
+            }
+            return List.copyOf(entries);
+        } catch (SQLException error) {
+            throw new IllegalStateException("Unable to read conversion queue", error);
+        }
+    }
+
+    @Override
+    public synchronized void saveQueueEntry(ConversionQueueEntry entry) throws IOException {
+        try (var statement = connection.prepareStatement("""
+                INSERT INTO conversion_queue VALUES (?,?,?,?,?)
+                ON CONFLICT(dataset_id) DO UPDATE SET
+                  queue_position=excluded.queue_position,
+                  configuration_revision=excluded.configuration_revision,
+                  created_at=excluded.created_at,
+                  wait_reason=excluded.wait_reason
+                """)) {
+            statement.setString(1, entry.datasetId());
+            statement.setLong(2, entry.position());
+            statement.setString(3, entry.configurationRevision());
+            statement.setLong(4, entry.createdAt());
+            statement.setString(5, entry.waitReason());
+            statement.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to save conversion queue", error);
+        }
+    }
+
+    @Override
+    public synchronized void deleteQueueEntry(String datasetId) throws IOException {
+        try (var statement = connection.prepareStatement(
+                "DELETE FROM conversion_queue WHERE dataset_id=?")) {
+            statement.setString(1, datasetId);
+            statement.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to update conversion queue", error);
         }
     }
 

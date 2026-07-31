@@ -19,6 +19,7 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
     private static final String PREFIX = "dataset.";
     private final Path storePath;
     private final Map<String, LocalDataset> datasets = new LinkedHashMap<>();
+    private final Map<String, ConversionQueueEntry> queue = new LinkedHashMap<>();
 
     public PropertiesDatasetRepository(Path storePath) throws IOException {
         this.storePath = storePath.toAbsolutePath().normalize();
@@ -43,6 +44,23 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
         return datasets.values().stream()
                 .filter(dataset -> dataset.sourcePath().equals(sourcePath))
                 .findFirst();
+    }
+
+    @Override
+    public synchronized List<ConversionQueueEntry> listQueueEntries() {
+        return queue.values().stream()
+                .sorted(Comparator.comparingLong(ConversionQueueEntry::position))
+                .toList();
+    }
+
+    @Override
+    public synchronized void saveQueueEntry(ConversionQueueEntry entry) {
+        queue.put(entry.datasetId(), entry);
+    }
+
+    @Override
+    public synchronized void deleteQueueEntry(String datasetId) {
+        queue.remove(datasetId);
     }
 
     @Override

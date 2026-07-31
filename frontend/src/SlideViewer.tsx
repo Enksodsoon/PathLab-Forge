@@ -1,5 +1,5 @@
 import OpenSeadragon from 'openseadragon'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import type { AnnotationRecord } from './api'
@@ -11,7 +11,11 @@ import {
   type CropBox,
   type CropHandle,
 } from './crop'
-import { MAX_ZOOM_PIXEL_RATIO } from './viewerConfig'
+import {
+  MAX_ZOOM_PIXEL_RATIO,
+  PREVIEW_IMAGE_LOADER_LIMIT,
+  PREVIEW_MAX_TILE_CACHE,
+} from './viewerConfig'
 
 interface ViewerPointerEvent {
   position: OpenSeadragon.Point
@@ -23,13 +27,6 @@ type GestureViewer = OpenSeadragon.Viewer & {
   gestureSettingsTouch: { dragToPan: boolean }
 }
 
-interface CropScreenBox {
-  left: number
-  top: number
-  width: number
-  height: number
-}
-
 interface CropPointerGesture {
   kind: 'move' | 'resize'
   handle?: CropHandle
@@ -37,7 +34,7 @@ interface CropPointerGesture {
   initial: CropBox
 }
 
-export function SlideViewer({
+export const SlideViewer = memo(function SlideViewer({
   tileSource,
   activeTool = 'pan',
   cropBox,
@@ -67,12 +64,12 @@ export function SlideViewer({
   onReady?: (viewer: OpenSeadragon.Viewer | null) => void
 }) {
   const elementRef = useRef<HTMLDivElement>(null)
+  const cropOverlayRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
   const cropGestureRef = useRef<CropPointerGesture | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [cropScreen, setCropScreen] = useState<CropScreenBox>()
 
   const sourcePointFromPixel = (position: OpenSeadragon.Point) => {
     const viewer = viewerRef.current
@@ -109,8 +106,12 @@ export function SlideViewer({
       tileSources: tileSource,
       showNavigator: true,
       navigatorPosition: 'BOTTOM_RIGHT',
-      animationTime: 0.35,
-      blendTime: 0.1,
+      animationTime: 0.18,
+      blendTime: 0,
+      immediateRender: true,
+      imageLoaderLimit: PREVIEW_IMAGE_LOADER_LIMIT,
+      maxImageCacheCount: PREVIEW_MAX_TILE_CACHE,
+      maxTilesPerFrame: 2,
       maxZoomPixelRatio: MAX_ZOOM_PIXEL_RATIO,
       zoomPerClick: 1.8,
       zoomPerScroll: 1.35,
@@ -203,12 +204,15 @@ export function SlideViewer({
 
   useEffect(() => {
     const viewer = viewerRef.current
-    if (!viewer || !cropBox) {
-      setCropScreen(undefined)
-      return
-    }
+    const overlay = cropOverlayRef.current
+    if (!viewer || !cropBox || !overlay) return
+    let frame = 0
     const projectCrop = () => {
-      if (!viewer.world.getItemCount()) return
+      frame = 0
+      if (!viewer.world.getItemCount()) {
+        overlay.style.visibility = 'hidden'
+        return
+      }
       const content = viewer.world.getItemAt(0)?.getContentSize()
       const contentWidth = Math.max(1, content?.x || sourceWidth)
       const contentHeight = Math.max(1, content?.y || sourceHeight)
@@ -232,21 +236,23 @@ export function SlideViewer({
         viewer.viewport.imageToViewportCoordinates(imageRight, imageBottom),
         true,
       )
-      setCropScreen({
-        left: topLeft.x,
-        top: topLeft.y,
-        width: Math.max(1, bottomRight.x - topLeft.x),
-        height: Math.max(1, bottomRight.y - topLeft.y),
-      })
+      overlay.style.transform = `translate3d(${topLeft.x}px, ${topLeft.y}px, 0)`
+      overlay.style.width = `${Math.max(1, bottomRight.x - topLeft.x)}px`
+      overlay.style.height = `${Math.max(1, bottomRight.y - topLeft.y)}px`
+      overlay.style.visibility = 'visible'
     }
-    projectCrop()
-    viewer.addHandler('open', projectCrop)
-    viewer.addHandler('animation', projectCrop)
-    viewer.addHandler('resize', projectCrop)
+    const scheduleProjection = () => {
+      if (!frame) frame = window.requestAnimationFrame(projectCrop)
+    }
+    scheduleProjection()
+    viewer.addHandler('open', scheduleProjection)
+    viewer.addHandler('animation', scheduleProjection)
+    viewer.addHandler('resize', scheduleProjection)
     return () => {
-      viewer.removeHandler('open', projectCrop)
-      viewer.removeHandler('animation', projectCrop)
-      viewer.removeHandler('resize', projectCrop)
+      if (frame) window.cancelAnimationFrame(frame)
+      viewer.removeHandler('open', scheduleProjection)
+      viewer.removeHandler('animation', scheduleProjection)
+      viewer.removeHandler('resize', scheduleProjection)
     }
   }, [
     cropBox,
@@ -361,7 +367,6 @@ export function SlideViewer({
 
   const showCrop = Boolean(
     cropBox
-    && cropScreen
     && shouldShowCropOverlay(cropEditing, cropBox, sourceWidth, sourceHeight),
   )
   const cropHandleLabels: Record<CropHandle, string> = {
@@ -378,14 +383,14 @@ export function SlideViewer({
   return (
     <div className="forge-osd-shell">
       <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
-      {showCrop && cropBox && cropScreen ? (
+      {showCrop && cropBox ? (
         <div
+          ref={cropOverlayRef}
           className={`forge-crop-overlay${cropEditing ? ' editing' : ''}`}
           style={{
-            left: cropScreen.left,
-            top: cropScreen.top,
-            width: cropScreen.width,
-            height: cropScreen.height,
+            left: 0,
+            top: 0,
+            visibility: 'hidden',
           }}
           data-testid="forge-crop-overlay"
         >
@@ -429,7 +434,7 @@ export function SlideViewer({
       {loadError ? <div className="forge-preview-error" role="alert">{loadError}</div> : null}
     </div>
   )
-}
+})
 
 function pointText(point: OpenSeadragon.Point) {
   return `${round(point.x)},${round(point.y)}`

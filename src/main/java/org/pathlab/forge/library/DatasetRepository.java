@@ -14,4 +14,12 @@ public interface DatasetRepository {
     void save(LocalDataset dataset) throws IOException;
 
     void delete(String id) throws IOException;
+
+    default List<ConversionQueueEntry> listQueueEntries() {
+        return List.of();
+    }
+
+    default void saveQueueEntry(ConversionQueueEntry entry) throws IOException {}
+
+    default void deleteQueueEntry(String datasetId) throws IOException {}
 }

@@ -489,7 +489,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         if (image.getWidth() != outputWidth || image.getHeight() != outputHeight) {
             image = resize(image, outputWidth, outputHeight);
         }
-        return encodeJpeg(image, 0.92f);
+        return encodeJpeg(image, 0.85f);
     }
 
     @Override

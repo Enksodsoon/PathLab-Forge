@@ -17,6 +17,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.pathlab.forge.library.DatasetRepository;
+import org.pathlab.forge.library.ConversionQueueEntry;
 import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.library.DatasetSourceInventory;
 import org.pathlab.forge.library.DatasetStatus;
@@ -50,11 +51,8 @@ public final class ConversionService implements AutoCloseable {
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> cancelled =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private final ExecutorService conversionExecutor = Executors.newSingleThreadExecutor(runnable -> {
-        var thread = new Thread(runnable, "pathlab-forge-conversion");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ExecutorService conversionExecutor;
+    private final int maximumConcurrentConversions;
     private final java.util.concurrent.ScheduledExecutorService memorySampler =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 var thread = new Thread(runnable, "pathlab-memory-sampler");
@@ -74,11 +72,45 @@ public final class ConversionService implements AutoCloseable {
         this.artifactRepository = new ArtifactRevisionRepository(this.managedRoot);
         this.seriesMetadataCache = new SeriesMetadataCache(this.managedRoot);
         this.quPathRuntime = QuPathRuntime.discover();
+        maximumConcurrentConversions = recommendedConcurrentConversions(
+                org.pathlab.forge.runtime.RuntimeProfile.configuredLogicalProcessors(),
+                org.pathlab.forge.runtime.RuntimeProfile.system().processTreeLimitBytes());
+        conversionExecutor = Executors.newFixedThreadPool(
+                maximumConcurrentConversions,
+                runnable -> {
+                    var thread = new Thread(runnable, "pathlab-forge-conversion");
+                    thread.setDaemon(true);
+                    return thread;
+                });
         memorySampler.scheduleAtFixedRate(
                 this::sampleActiveMemory,
                 0,
                 200,
                 java.util.concurrent.TimeUnit.MILLISECONDS);
+        memorySampler.scheduleWithFixedDelay(
+                this::dispatchQueuedSafely,
+                100,
+                500,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    public int maximumConcurrentConversions() {
+        return maximumConcurrentConversions;
+    }
+
+    public int activeConversionCount() {
+        return (int) activeConversions.values().stream().filter(future -> !future.isDone()).count();
+    }
+
+    public int queuedConversionCount() {
+        return (int) repository.listQueueEntries().stream()
+                .filter(entry -> !activeConversions.containsKey(entry.datasetId()))
+                .count();
+    }
+
+    static int recommendedConcurrentConversions(int logicalProcessors, long processTreeLimitBytes) {
+        var gib = 1024L * 1024 * 1024;
+        return logicalProcessors >= 12 && processTreeLimitBytes >= 16 * gib ? 2 : 1;
     }
 
     public ConversionEngine engine() {
@@ -736,6 +768,12 @@ public final class ConversionService implements AutoCloseable {
             int cropHeight)
             throws IOException {
         var dataset = requireDataset(id);
+        if (dataset.status() == DatasetStatus.QUEUED
+                || dataset.status() == DatasetStatus.WAITING_RESOURCES
+                || activeConversions.containsKey(id)) {
+            throw new IllegalStateException(
+                    "Cancel the queued conversion before changing its locked settings");
+        }
         if (dataset.sourceFingerprint().isBlank()) {
             throw new IllegalStateException(
                     "Source verification must complete before export configuration");
@@ -775,17 +813,15 @@ public final class ConversionService implements AutoCloseable {
 
     public LocalDataset start(String id) throws IOException {
         var dataset = requireDataset(id);
-        if (dataset.status() == DatasetStatus.CONVERTING
+        if (dataset.status() == DatasetStatus.QUEUED
+                || dataset.status() == DatasetStatus.WAITING_RESOURCES
+                || dataset.status() == DatasetStatus.CONVERTING
                 || dataset.status() == DatasetStatus.OPTIMIZING_OME
                 || dataset.status() == DatasetStatus.VALIDATING) {
             return dataset;
         }
         if (dataset.selectedSeries() < 0) {
             throw new IllegalStateException("Inspect and select an image series first");
-        }
-        if (activeConversions.entrySet().stream()
-                .anyMatch(item -> !item.getKey().equals(id) && !item.getValue().isDone())) {
-            throw new IllegalStateException("Another conversion is already active");
         }
         verifySourceFingerprint(dataset);
         var request = request(dataset);
@@ -864,6 +900,85 @@ public final class ConversionService implements AutoCloseable {
             QuPathRuntime.requireSecondsBudget(
                     request, quPathRuntime.supports(dataset.format()));
         }
+        var nextPosition = repository.listQueueEntries().stream()
+                        .mapToLong(ConversionQueueEntry::position)
+                        .max()
+                        .orElse(0L)
+                + 1;
+        repository.saveQueueEntry(new ConversionQueueEntry(
+                dataset.id(),
+                nextPosition,
+                dataset.configurationRevision(),
+                System.currentTimeMillis(),
+                "Waiting for an available conversion slot"));
+        var queued = dataset.withPreparation(
+                DatasetStatus.QUEUED,
+                "Queued #" + nextPosition + " · settings snapshot locked",
+                dataset.outputPath(),
+                dataset.sha256());
+        repository.save(queued);
+        progress.put(
+                dataset.id(),
+                new ConversionProgress(
+                        "QUEUED",
+                        0,
+                        1,
+                        System.currentTimeMillis(),
+                        currentWorkingSet(),
+                        org.pathlab.forge.runtime.RuntimeProfile.system().name(),
+                        "adaptive scheduler"));
+        dispatchQueuedSafely();
+        return repository.find(id).orElse(queued);
+    }
+
+    private synchronized void dispatchQueuedSafely() {
+        try {
+            dispatchQueued();
+        } catch (IOException | RuntimeException ignored) {
+            // The next bounded scheduler pass retries persisted queue admission.
+        }
+    }
+
+    private void dispatchQueued() throws IOException {
+        while (activeConversionCount() < maximumConcurrentConversions) {
+            var entry = repository.listQueueEntries().stream()
+                    .filter(item -> !activeConversions.containsKey(item.datasetId()))
+                    .findFirst()
+                    .orElse(null);
+            if (entry == null) {
+                return;
+            }
+            var queued = repository.find(entry.datasetId()).orElse(null);
+            if (queued == null) {
+                repository.deleteQueueEntry(entry.datasetId());
+                continue;
+            }
+            if (!queued.configurationRevision().equals(entry.configurationRevision())) {
+                repository.deleteQueueEntry(entry.datasetId());
+                repository.save(queued.withPreparation(
+                        DatasetStatus.READY_TO_CONVERT,
+                        "Queue settings changed; review and queue this slide again",
+                        queued.outputPath(),
+                        queued.sha256()));
+                continue;
+            }
+            try {
+                launchQueued(queued);
+            } catch (IllegalStateException resourceWait) {
+                var waiting = entry.withWaitReason(concise(resourceWait.getMessage()));
+                repository.saveQueueEntry(waiting);
+                repository.save(queued.withPreparation(
+                        DatasetStatus.WAITING_RESOURCES,
+                        "Waiting safely: " + waiting.waitReason(),
+                        queued.outputPath(),
+                        queued.sha256()));
+                return;
+            }
+        }
+    }
+
+    private void launchQueued(LocalDataset dataset) throws IOException {
+        var request = request(dataset);
         org.pathlab.forge.runtime.ResourceGovernor.system().requireConversionStart();
         Files.createDirectories(managedRoot);
         var peakWorkspace = OutputSizeEstimator.managedPeakWorkspace(
@@ -898,7 +1013,7 @@ public final class ConversionService implements AutoCloseable {
                 revision.id());
         repository.save(converting);
         progress.put(
-                id,
+                dataset.id(),
                 new ConversionProgress(
                         "SOURCE_VERIFIED",
                         1,
@@ -907,9 +1022,10 @@ public final class ConversionService implements AutoCloseable {
                         currentWorkingSet(),
                         org.pathlab.forge.runtime.RuntimeProfile.system().name(),
                         resumable.isPresent() ? "verified checkpoint" : ""));
-        cancelled.remove(id);
-        activeConversions.put(id, conversionExecutor.submit(() -> convert(converting)));
-        return converting;
+        cancelled.remove(dataset.id());
+        activeConversions.put(
+                dataset.id(), conversionExecutor.submit(() -> convert(converting)));
+        // The queue row remains durable until conversion succeeds, fails, or is cancelled.
     }
 
     private java.util.Optional<ArtifactRevision> resumableRevision(LocalDataset dataset)
@@ -995,6 +1111,7 @@ public final class ConversionService implements AutoCloseable {
     public LocalDataset cancel(String id) throws IOException {
         var dataset = requireDataset(id);
         cancelled.add(id);
+        repository.deleteQueueEntry(id);
         var future = activeConversions.get(id);
         if (future != null) {
             future.cancel(true);
@@ -1579,6 +1696,12 @@ public final class ConversionService implements AutoCloseable {
                 }
             }
             activeConversions.remove(dataset.id());
+            try {
+                repository.deleteQueueEntry(dataset.id());
+            } catch (IOException ignored) {
+                // A persisted completed row is harmless and is cleared on the next scheduler pass.
+            }
+            dispatchQueuedSafely();
         }
     }
 
@@ -1698,15 +1821,19 @@ public final class ConversionService implements AutoCloseable {
 
     private static int parallelRgbWorkers(Path source) {
         var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
+        var logicalProcessors =
+                org.pathlab.forge.runtime.RuntimeProfile.configuredLogicalProcessors();
+        var conversionSlots = recommendedConcurrentConversions(
+                logicalProcessors, profile.processTreeLimitBytes());
         var configured = Integer.getInteger(
                 "pathlab.forge.rgb.workers", profile.maxConversionWorkers());
         var slowSource = Boolean.getBoolean("pathlab.forge.source.slow")
                 || source.toString().startsWith("\\\\");
         return parallelRgbWorkers(
-                Runtime.getRuntime().availableProcessors(),
+                logicalProcessors,
                 configured,
                 slowSource,
-                profile.maxConversionWorkers());
+                Math.max(1, profile.maxConversionWorkers() / conversionSlots));
     }
 
     static int parallelRgbWorkers(

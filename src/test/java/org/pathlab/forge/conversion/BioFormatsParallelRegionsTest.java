@@ -10,6 +10,14 @@ import org.pathlab.forge.library.DatasetFormat;
 
 class BioFormatsParallelRegionsTest {
     @Test
+    void onlyEnablesTwoHeavyJobsWhenHardwareHasUsefulHeadroom() {
+        var gib = 1024L * 1024 * 1024;
+        assertEquals(1, ConversionService.recommendedConcurrentConversions(8, 16 * gib));
+        assertEquals(1, ConversionService.recommendedConcurrentConversions(12, 12 * gib));
+        assertEquals(2, ConversionService.recommendedConcurrentConversions(12, 16 * gib));
+    }
+
+    @Test
     void splitsTheSelectedCropIntoOrderedGapFreeHorizontalRegions() {
         var regions = BioFormatsEngine.planRegions(7, 13, 72_792, 66_004, 8);
 
