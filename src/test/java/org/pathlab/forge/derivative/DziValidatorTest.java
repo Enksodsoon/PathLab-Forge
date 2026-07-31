@@ -30,6 +30,7 @@ final class DziValidatorTest {
         writeJpeg(temporaryDirectory.resolve("thumbnail.jpg"), 1, 1);
 
         var result = DziValidator.validate(temporaryDirectory, 1, 1);
+        var repeated = DziValidator.validate(temporaryDirectory, 1, 1);
 
         assertEquals(1, result.tileCount());
         assertEquals(3, result.fileCount());
@@ -41,6 +42,8 @@ final class DziValidatorTest {
         assertEquals(1, tile.width());
         assertEquals(1, tile.height());
         assertEquals(64, tile.sha256().length());
+        assertEquals(result.sha256(), repeated.sha256());
+        assertEquals(result.ledger(), repeated.ledger());
     }
 
     @Test
