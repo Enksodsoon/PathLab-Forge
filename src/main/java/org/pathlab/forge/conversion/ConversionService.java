@@ -28,7 +28,9 @@ import org.pathlab.forge.packageformat.PackageMetadata;
 
 public final class ConversionService implements AutoCloseable {
     private static final int PREVIEW_DOWNSAMPLE = 2;
-    private static final String PREVIEW_CACHE_VERSION = "efficient-rgb-2x-v4";
+    // Keep this path deliberately short: Windows libvips archive output still
+    // encounters MAX_PATH while creating slide_files/<level> directories.
+    private static final String PREVIEW_CACHE_VERSION = "pv5";
     private static final long PARALLEL_RGB_MINIMUM_PIXELS = 250_000_000L;
     private static final int MAX_READER_SESSIONS = 2;
     private static final long READER_SESSION_BYTES = 256L * 1024 * 1024;
@@ -44,6 +46,8 @@ public final class ConversionService implements AutoCloseable {
     private final Map<String, DirectTileSource> directSources = new ConcurrentHashMap<>();
     private final Map<String, Path> readerSourcePaths = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> activeConversions = new ConcurrentHashMap<>();
+    private final Map<String, Future<?>> activePreviewBuilds = new ConcurrentHashMap<>();
+    private final Map<String, String> previewBuildErrors = new ConcurrentHashMap<>();
     private final Map<String, ConversionProgress> progress = new ConcurrentHashMap<>();
     private final java.util.Set<Path> cleanedPreviewRoots =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -288,7 +292,7 @@ public final class ConversionService implements AutoCloseable {
         return revision;
     }
 
-    public synchronized LocalPreview preview(String id) throws IOException {
+    public LocalPreview preview(String id) throws IOException {
         var dataset = requireDataset(id);
         if (dataset.selectedSeries() < 0) {
             throw new IllegalStateException("Inspect and select an image series before preview");
@@ -315,21 +319,24 @@ public final class ConversionService implements AutoCloseable {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         "Selected image series is no longer available"));
-        Files.createDirectories(previewRoot);
+        Files.createDirectories(previewRoot.getParent());
         var targetWidth = Math.max(1, divideRoundUp(series.width(), PREVIEW_DOWNSAMPLE));
         var targetHeight = Math.max(1, divideRoundUp(series.height(), PREVIEW_DOWNSAMPLE));
         var estimatedPyramidBytes =
                 OutputSizeEstimator.rgbPyramidUpperBound(targetWidth, targetHeight, 1);
         var estimatedPeakBytes = Math.multiplyExact(estimatedPyramidBytes, 2);
         DiskPreflight.requireCapacity(
-                Files.getFileStore(previewRoot).getUsableSpace(), estimatedPeakBytes);
+                Files.getFileStore(previewRoot.getParent()).getUsableSpace(), estimatedPeakBytes);
+        var workingRoot = previewRoot.resolveSibling(
+                "b-" + java.util.UUID.randomUUID().toString().substring(0, 8));
+        Files.createDirectories(workingRoot);
         PreviewSource source;
         Path temporaryOme = null;
         if (dataset.format() == DatasetFormat.OME_TIFF) {
             source = new PreviewSource(
                     Path.of(dataset.sourcePath()), series.width(), series.height());
         } else {
-            temporaryOme = previewRoot.resolve("source-preview.ome.tif");
+            temporaryOme = workingRoot.resolve("source-preview.ome.tif");
             source = engine.renderPreview(
                     Path.of(dataset.sourcePath()),
                     dataset.selectedSeries(),
@@ -337,16 +344,28 @@ public final class ConversionService implements AutoCloseable {
                     Math.max(targetWidth, targetHeight));
         }
         try {
-            derivativeEngine.generateDzi(
-                    source.path(), previewRoot, source.width(), source.height());
+            derivativeEngine.generateViewerDzi(
+                    source.path(), workingRoot, source.width(), source.height());
+        } catch (IOException | RuntimeException failure) {
+            deleteTree(workingRoot);
+            throw failure;
         } finally {
             if (temporaryOme != null) {
                 Files.deleteIfExists(temporaryOme);
             }
         }
         Files.writeString(
-                previewRoot.resolve("preview-dimensions.txt"),
+                workingRoot.resolve("preview-dimensions.txt"),
                 source.width() + "," + source.height());
+        try {
+            Files.move(workingRoot, previewRoot, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(workingRoot, previewRoot);
+        } finally {
+            if (Files.exists(workingRoot)) {
+                deleteTree(workingRoot);
+            }
+        }
         cleanupObsoletePreviews(id, previewRoot);
         return new LocalPreview(
                 previewRoot,
@@ -375,6 +394,37 @@ public final class ConversionService implements AutoCloseable {
                 dataset.width(),
                 dataset.height()));
     }
+
+    public synchronized PreviewBuildState ensurePreviewAsync(String id) throws IOException {
+        var cached = cachedPreview(id);
+        if (cached.isPresent()) {
+            return new PreviewBuildState("READY", "");
+        }
+        var dataset = requireDataset(id);
+        if (dataset.format() != DatasetFormat.OME_TIFF) {
+            return new PreviewBuildState("DIRECT", "");
+        }
+        var key = readerSessionKey(dataset);
+        var existing = activePreviewBuilds.get(key);
+        if (existing != null && !existing.isDone()) {
+            return new PreviewBuildState("BUILDING", "");
+        }
+        var error = previewBuildErrors.get(key);
+        if (error != null) {
+            return new PreviewBuildState("FAILED", error);
+        }
+        var future = conversionExecutor.submit(() -> {
+            try {
+                preview(id);
+            } catch (Exception failure) {
+                previewBuildErrors.put(key, concise(failure.getMessage()));
+            }
+        });
+        activePreviewBuilds.put(key, future);
+        return new PreviewBuildState("BUILDING", "");
+    }
+
+    public record PreviewBuildState(String status, String detail) {}
 
     public boolean supportsDirectPreview() {
         return engine.supportsDirectTiles();
@@ -475,7 +525,8 @@ public final class ConversionService implements AutoCloseable {
                 .resolve(id)
                 .resolve("previews")
                 .resolve(PREVIEW_CACHE_VERSION)
-                .resolve(dataset.configurationRevision())
+                .resolve(dataset.configurationRevision().substring(
+                        0, Math.min(16, dataset.configurationRevision().length())))
                 .normalize();
         if (!root.startsWith(managedRoot.resolve(id).normalize())) {
             throw new IllegalStateException("Preview path escapes managed storage");
@@ -2008,6 +2059,7 @@ public final class ConversionService implements AutoCloseable {
 
     @Override
     public void close() {
+        activePreviewBuilds.values().forEach(future -> future.cancel(true));
         conversionExecutor.shutdownNow();
         memorySampler.shutdownNow();
         for (var key : List.copyOf(readerSessions.keySet())) {

@@ -320,6 +320,71 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     @Override
+    public DerivativeInfo generateViewerDzi(
+            Path omeTiff, Path outputRoot, int width, int height) throws IOException {
+        requireAvailable();
+        Files.createDirectories(outputRoot);
+        run(List.of(
+                "dzsave",
+                omeTiff.toString(),
+                outputRoot.resolve("slide").toString(),
+                "--layout",
+                "dz",
+                "--tile-size",
+                "512",
+                "--overlap",
+                "1",
+                "--suffix",
+                compactJpegSuffix(85),
+                "--depth",
+                "onepixel",
+                "--region-shrink",
+                "mean",
+                "--skip-blanks",
+                "-1"));
+        run(List.of(
+                "thumbnail",
+                omeTiff.toString(),
+                outputRoot.resolve("thumbnail.jpg[Q=82,strip]").toString(),
+                "640",
+                "--size",
+                "down"));
+        Files.deleteIfExists(outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
+        var expectedTiles = DziValidator.expectedTileCount(width, height);
+        int tileCount;
+        int fileCount;
+        long bytes;
+        try (var paths = Files.walk(outputRoot)) {
+            var files = paths.filter(Files::isRegularFile).toList();
+            fileCount = files.size();
+            tileCount = (int) files.stream()
+                    .filter(path -> path.getFileName().toString().endsWith(".jpg"))
+                    .filter(path -> !path.getFileName().toString().equals("thumbnail.jpg"))
+                    .count();
+            bytes = 0;
+            for (var file : files) {
+                bytes = Math.addExact(bytes, Files.size(file));
+            }
+        }
+        if (!Files.isRegularFile(outputRoot.resolve("slide.dzi")) || tileCount != expectedTiles) {
+            throw new IOException("Viewer pyramid is incomplete: expected "
+                    + expectedTiles + " tiles but found " + tileCount);
+        }
+        return new DerivativeInfo(
+                outputRoot,
+                bytes,
+                fileCount,
+                tileCount,
+                "viewer-cache",
+                java.util.List.of(),
+                85,
+                1.0,
+                0.0,
+                1.0,
+                "viewer-cache-420-optimized");
+    }
+
+    @Override
     public DerivativeInfo generateDzi(
             Path omeTiff,
             Path outputRoot,

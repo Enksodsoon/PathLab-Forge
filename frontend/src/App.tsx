@@ -853,7 +853,7 @@ function ViewerStage({
       <header className="forge-viewer-header">
         <div>
           <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
-          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Direct source viewer'}` : 'Choose a local slide from the panel'}</span>
+          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
         <button
           type="button"

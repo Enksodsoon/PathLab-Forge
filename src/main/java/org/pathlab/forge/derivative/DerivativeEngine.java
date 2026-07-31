@@ -67,6 +67,16 @@ public interface DerivativeEngine {
     DerivativeInfo generateDzi(Path omeTiff, Path outputRoot, int width, int height)
             throws IOException;
 
+    /**
+     * Builds a disposable local-viewer pyramid. Production packages still use
+     * {@link #generateDzi}; viewer caches may skip the expensive adaptive
+     * quality search because they are never uploaded or approved artifacts.
+     */
+    default DerivativeInfo generateViewerDzi(
+            Path omeTiff, Path outputRoot, int width, int height) throws IOException {
+        return generateDzi(omeTiff, outputRoot, width, height);
+    }
+
     default DerivativeInfo generateDzi(
             Path omeTiff,
             Path outputRoot,
