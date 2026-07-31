@@ -9,6 +9,7 @@ public record ArtifactRevision(
         String sourceFingerprint,
         long createdAt,
         ArtifactRevisionStatus status,
+        ArtifactRevisionFormat format,
         String omePath,
         String derivativePath,
         String packagePath,
@@ -24,6 +25,7 @@ public record ArtifactRevision(
         configurationRevision = requireText(configurationRevision, "configurationRevision");
         sourceFingerprint = Objects.requireNonNull(sourceFingerprint, "sourceFingerprint");
         status = Objects.requireNonNull(status, "status");
+        format = Objects.requireNonNull(format, "format");
         omePath = requireText(omePath, "omePath");
         derivativePath = requireText(derivativePath, "derivativePath");
         packagePath = requireText(packagePath, "packagePath");
@@ -78,6 +80,7 @@ public record ArtifactRevision(
                 sourceFingerprint,
                 createdAt,
                 nextStatus,
+                format,
                 omePath,
                 derivativePath,
                 packagePath,

@@ -1334,21 +1334,83 @@ public final class ForgeServer implements AutoCloseable {
 
     private static String artifactRevisionJson(
             org.pathlab.forge.conversion.ArtifactRevision revision) {
+        var manifest = packageManifest(revision.packagePath());
         return "{\"id\":" + json(revision.id())
                 + ",\"configurationRevision\":" + json(revision.configurationRevision())
                 + ",\"sourceFingerprint\":" + json(revision.sourceFingerprint())
                 + ",\"createdAt\":" + revision.createdAt()
                 + ",\"status\":" + json(revision.status().name())
+                + ",\"format\":" + json(revision.format().name())
                 + ",\"omePath\":" + json(revision.omePath())
                 + ",\"derivativePath\":" + json(revision.derivativePath())
                 + ",\"packagePath\":" + json(revision.packagePath())
                 + ",\"omeSha256\":" + json(revision.omeSha256())
-                + ",\"omeBytes\":" + regularFileSize(revision.omePath())
+                + ",\"omeBytes\":" + manifestLong(manifest, "stagingOmeBytes")
+                + ",\"dziBytes\":" + manifestLong(manifest, "derivativeBytes")
+                + ",\"packageBytes\":" + regularFileSize(revision.packagePath())
+                + ",\"jpegQuality\":" + manifestLong(manifest, "quality")
+                + ",\"minimumWindowedSsim\":" + manifestDouble(manifest, "minimumWindowedSsim")
+                + ",\"maximumRoiMeanDeltaE00\":" + manifestDouble(manifest, "maximumRoiMeanDeltaE00")
+                + ",\"minimumEdgeDetailRetention\":" + manifestDouble(manifest, "minimumEdgeDetailRetention")
+                + ",\"encoderProfile\":" + json(manifestString(manifest, "encoderProfile"))
                 + ",\"packageSha256\":" + json(revision.packageSha256())
                 + ",\"outputWidth\":" + revision.outputWidth()
                 + ",\"outputHeight\":" + revision.outputHeight()
                 + ",\"approvedAt\":" + revision.approvedAt()
                 + ",\"failure\":" + json(revision.failure()) + "}";
+    }
+
+    private static String packageManifest(String value) {
+        try {
+            var path = Path.of(value);
+            if (!Files.isRegularFile(path) || Files.size(path) < 1024) {
+                return "";
+            }
+            try (var channel = java.nio.channels.FileChannel.open(path)) {
+                var header = java.nio.ByteBuffer.allocate(512);
+                channel.read(header);
+                var raw = header.array();
+                var sizeText = new String(
+                                raw, 124, 12, java.nio.charset.StandardCharsets.US_ASCII)
+                        .replace("\0", "")
+                        .trim();
+                var size = Long.parseLong(sizeText, 8);
+                if (size < 2 || size > 256 * 1024) {
+                    return "";
+                }
+                var content = java.nio.ByteBuffer.allocate(Math.toIntExact(size));
+                channel.position(512);
+                while (content.hasRemaining() && channel.read(content) >= 0) {
+                    // bounded manifest entry
+                }
+                return new String(
+                        content.array(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        } catch (IOException | RuntimeException ignored) {
+            return "";
+        }
+    }
+
+    private static long manifestLong(String manifest, String name) {
+        var match = java.util.regex.Pattern.compile(
+                        "\"" + java.util.regex.Pattern.quote(name) + "\"\\s*:\\s*([0-9]+)")
+                .matcher(manifest);
+        return match.find() ? Long.parseLong(match.group(1)) : 0;
+    }
+
+    private static double manifestDouble(String manifest, String name) {
+        var match = java.util.regex.Pattern.compile(
+                        "\"" + java.util.regex.Pattern.quote(name)
+                                + "\"\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)")
+                .matcher(manifest);
+        return match.find() ? Double.parseDouble(match.group(1)) : 0;
+    }
+
+    private static String manifestString(String manifest, String name) {
+        var match = java.util.regex.Pattern.compile(
+                        "\"" + java.util.regex.Pattern.quote(name) + "\"\\s*:\\s*\"([^\"]*)\"")
+                .matcher(manifest);
+        return match.find() ? match.group(1) : "";
     }
 
     private static long regularFileSize(String value) {

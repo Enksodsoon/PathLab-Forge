@@ -38,6 +38,7 @@ public final class ArtifactRevisionRepository {
                 dataset.sourceFingerprint(),
                 System.currentTimeMillis(),
                 ArtifactRevisionStatus.CONVERTING,
+                ArtifactRevisionFormat.PREPARED_DZI_V2,
                 root.resolve("export.ome.tif").toString(),
                 root.resolve("derivative").toString(),
                 root.resolve("slide.plslide").toString(),
@@ -68,6 +69,8 @@ public final class ArtifactRevisionRepository {
                 properties.getProperty("sourceFingerprint", ""),
                 Long.parseLong(properties.getProperty("createdAt")),
                 ArtifactRevisionStatus.valueOf(properties.getProperty("status")),
+                ArtifactRevisionFormat.valueOf(
+                        properties.getProperty("format", "LEGACY_OME")),
                 properties.getProperty("omePath"),
                 properties.getProperty("derivativePath"),
                 properties.getProperty("packagePath"),
@@ -102,6 +105,7 @@ public final class ArtifactRevisionRepository {
         properties.setProperty("sourceFingerprint", revision.sourceFingerprint());
         properties.setProperty("createdAt", Long.toString(revision.createdAt()));
         properties.setProperty("status", revision.status().name());
+        properties.setProperty("format", revision.format().name());
         properties.setProperty("omePath", revision.omePath());
         properties.setProperty("derivativePath", revision.derivativePath());
         properties.setProperty("packagePath", revision.packagePath());

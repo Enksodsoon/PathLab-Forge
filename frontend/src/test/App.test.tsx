@@ -286,19 +286,19 @@ test('updates dimensions and file size live while drawing and reshaping a crop',
   expect(screen.queryByText('Precise crop coordinates')).not.toBeInTheDocument()
   expect(screen.queryAllByRole('spinbutton')).toHaveLength(0)
   await screen.findByText('82,922 × 45,367')
-  expect(screen.getByText(/Estimated OME-TIFF ≈/)).toBeVisible()
+  expect(screen.getByText(/Estimated temporary staging ≈/)).toBeVisible()
   expect(screen.getByText(/Expected range/)).toBeVisible()
   expect(screen.getByText(/Peak conversion workspace ≤/)).toBeVisible()
 
   fireEvent.click(screen.getByRole('button', { name: 'Draw crop on slide' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Test draw crop' }))
   expect(screen.getByText('5,668 × 5,520')).toBeVisible()
-  const drawnEstimate = screen.getByText(/Estimated OME-TIFF ≈/).textContent
+  const drawnEstimate = screen.getByText(/Estimated temporary staging ≈/).textContent
   expect(drawnEstimate).toContain('live')
 
   fireEvent.click(screen.getByRole('button', { name: 'Test reshape crop' }))
   expect(screen.getByText('5,000 × 4,500')).toBeVisible()
-  expect(screen.getByText(/Estimated OME-TIFF ≈/).textContent).not.toBe(drawnEstimate)
+  expect(screen.getByText(/Estimated temporary staging ≈/).textContent).not.toBe(drawnEstimate)
 
   fireEvent.change(screen.getByRole('combobox', { name: 'Downsample' }), { target: { value: '1.5' } })
 
@@ -593,6 +593,13 @@ test('shows conversion progress and keeps viewer controls locked until validatio
       packagePath: '',
       omeSha256: '',
       omeBytes: 0,
+      dziBytes: 0,
+      packageBytes: 0,
+      jpegQuality: 0,
+      minimumWindowedSsim: 0,
+      maximumRoiMeanDeltaE00: 0,
+      minimumEdgeDetailRetention: 0,
+      encoderProfile: '',
       packageSha256: '',
       failure: '',
     }],
@@ -603,7 +610,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect((await screen.findAllByText('Rendering RGB regions'))[0]).toBeVisible()
   expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(11)
   expect(screen.getByText('Step 1 of 5')).toBeVisible()
-  expect(screen.getByText(/Full-slide exports run at the fastest verified source-reader profile/)).toBeVisible()
+  expect(screen.getByText(/Quality is selected from 64 tissue regions/)).toBeVisible()
   expect(screen.getByText(/Elapsed/)).toBeVisible()
   expect(screen.queryByTestId('forge-osd')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
@@ -720,6 +727,13 @@ test('opens the converted viewer while the upload package is still building', as
       packagePath: 'C:\\exports\\slide.plslide',
       omeSha256: 'ome-hash',
       omeBytes: 480_000_000,
+      dziBytes: 390_000_000,
+      packageBytes: 0,
+      jpegQuality: 70,
+      minimumWindowedSsim: 0.975,
+      maximumRoiMeanDeltaE00: 2.1,
+      minimumEdgeDetailRetention: 0.93,
+      encoderProfile: 'compact-420-trellis',
       packageSha256: '',
       failure: '',
     }],
@@ -731,11 +745,11 @@ test('opens the converted viewer while the upload package is still building', as
     'data-tile-source',
     expect.stringContaining('/derivative/slide.dzi?revision=packaging-artifact'),
   )
-  expect(screen.getByText('Result viewable · building upload package')).toBeVisible()
-  expect(screen.queryByRole('button', { name: 'Approve exact result' })).not.toBeInTheDocument()
+  expect(screen.getByText('Quality passed · packaging compact DZI')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Approve compact DZI' })).not.toBeInTheDocument()
 })
 
-test('replaces the estimate with the measured OME-TIFF size after conversion', async () => {
+test('replaces the estimate with compact DZI size and quality evidence after conversion', async () => {
   const ready: api.Dataset = {
     id: 'measured-slide',
     displayName: 'Measured slide.vsi',
@@ -798,6 +812,13 @@ test('replaces the estimate with the measured OME-TIFF size after conversion', a
       packagePath: 'C:\\exports\\prepared.plslide',
       omeSha256: 'ome-hash',
       omeBytes: 874_756,
+      dziBytes: 760_000,
+      packageBytes: 820_224,
+      jpegQuality: 70,
+      minimumWindowedSsim: 0.9742,
+      maximumRoiMeanDeltaE00: 2.18,
+      minimumEdgeDetailRetention: 0.92,
+      encoderProfile: 'compact-420-trellis',
       packageSha256: 'package-hash',
       failure: '',
     }],
@@ -806,19 +827,65 @@ test('replaces the estimate with the measured OME-TIFF size after conversion', a
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'Inspect image series' }))
-  expect(await screen.findByText('OME-TIFF file 854.3 KB · measured')).toBeVisible()
-  expect(screen.queryByText(/Estimated OME-TIFF ≈/)).not.toBeInTheDocument()
+  expect(await screen.findByText('Compact DZI package 801.0 KB')).toBeVisible()
+  expect(screen.getByText(/Compared with 854.3 KB staging OME · 93.8% · Q70/)).toBeVisible()
+  expect(screen.getByText(/Quality passed · SSIM 0.9742 · max ΔE00 2.18 · edge 92.0%/)).toBeVisible()
+  expect(screen.queryByText(/Estimated temporary staging ≈/)).not.toBeInTheDocument()
   expect(screen.getByText('Peak conversion workspace ≤ 4.5 MB')).toBeVisible()
 
   fireEvent.change(screen.getByRole('combobox', { name: 'Downsample' }), {
     target: { value: '4' },
   })
 
-  expect(await screen.findByText('Estimated OME-TIFF ≈ 23.8 MB')).toBeVisible()
-  expect(screen.queryByText(/· measured/)).not.toBeInTheDocument()
+  expect(await screen.findByText('Estimated temporary staging ≈ 23.8 MB')).toBeVisible()
+  expect(screen.queryByText(/Compared with/)).not.toBeInTheDocument()
   expect(api.estimate).toHaveBeenCalledWith(
     'measured-slide',
     { downsample: 4, width: 8_021, height: 9_366 },
     expect.any(AbortSignal),
   )
+})
+
+test('shows one actionable size quality conflict without changing the crop', async () => {
+  const failed: api.Dataset = {
+    id: 'compact-conflict',
+    displayName: 'Conflict.ome.tif',
+    sourceBytes: 100_000_000,
+    format: 'OME_TIFF',
+    status: 'FAILED',
+    detail: 'DZI_SIZE_QUALITY_CONFLICT: package is 1.31x and exceeds the 1.25x hard limit',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: 0,
+    width: 10_000,
+    height: 8_000,
+    downsample: 1,
+    estimatedOutputBytes: 50_000_000,
+    projectedFileBytes: 50_000_000,
+    projectedFileLowerBytes: 25_000_000,
+    projectedFileUpperBytes: 100_000_000,
+    cropX: 100,
+    cropY: 200,
+    cropWidth: 5_000,
+    cropHeight: 4_000,
+    sourceFingerprint: 'conflict-source',
+    configurationRevision: 'conflict-config',
+    currentArtifactRevision: '',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[failed], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([failed])
+
+  render(<App />)
+
+  const panel = await screen.findByRole('alert')
+  expect(within(panel).getByText('Compact DZI could not meet the 1.25× size limit')).toBeVisible()
+  expect(within(panel).getByText(/Your current crop is preserved/)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Convert current revision' })).toBeVisible()
 })

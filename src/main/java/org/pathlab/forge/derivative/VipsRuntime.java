@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.pathlab.forge.conversion.ConversionRequest;
@@ -330,7 +331,7 @@ public final class VipsRuntime implements DerivativeEngine {
                 "--overlap",
                 "1",
                 "--suffix",
-                ".jpg[Q=" + selection.quality() + ",subsample-mode=off,strip]",
+                jpegSuffix(selection.quality(), selection.encoderProfile()),
                 "--depth",
                 "onepixel",
                 "--region-shrink",
@@ -355,7 +356,9 @@ public final class VipsRuntime implements DerivativeEngine {
                 validated.ledger(),
                 selection.quality(),
                 selection.minimumWindowedSsim(),
-                selection.meanDeltaE00());
+                selection.meanDeltaE00(),
+                selection.minimumEdgeDetailRetention(),
+                selection.encoderProfile());
     }
 
     AdaptiveJpegQualitySelector.Selection selectDziQuality(
@@ -398,15 +401,49 @@ public final class VipsRuntime implements DerivativeEngine {
                     probe.toString(),
                     "--across",
                     "8"));
-            for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
-                var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
-                candidates.put(quality, candidate);
-                run(List.of(
-                        "copy",
-                        probe.toString(),
-                        candidate + "[Q=" + quality + ",subsample-mode=off,strip]"));
+            var encoderProfile = "compact-420-trellis";
+            try {
+                encodeQualityCandidates(probe, outputRoot, candidates, true);
+            } catch (IOException unsupportedEnhancedEncoder) {
+                for (var candidate : candidates.values()) {
+                    Files.deleteIfExists(candidate);
+                }
+                candidates.clear();
+                encoderProfile = "compact-420-optimized";
+                encodeQualityCandidates(probe, outputRoot, candidates, false);
             }
-            return AdaptiveJpegQualitySelector.select(probe, candidates);
+            try {
+                return AdaptiveJpegQualitySelector.select(probe, candidates)
+                        .withEncoderProfile(encoderProfile);
+            } catch (IOException enhancedQualityFailure) {
+                if (!encoderProfile.equals("compact-420-trellis")
+                        || !enhancedQualityFailure.getMessage()
+                                .startsWith("DZI JPEG quality gate failed")) {
+                    throw enhancedQualityFailure;
+                }
+                for (var candidate : candidates.values()) {
+                    Files.deleteIfExists(candidate);
+                }
+                candidates.clear();
+                encodeQualityCandidates(probe, outputRoot, candidates, false);
+                try {
+                    return AdaptiveJpegQualitySelector.select(probe, candidates)
+                            .withEncoderProfile("compact-420-optimized");
+                } catch (IOException fourTwentyQualityFailure) {
+                    if (!fourTwentyQualityFailure.getMessage()
+                            .startsWith("DZI JPEG quality gate failed")) {
+                        throw fourTwentyQualityFailure;
+                    }
+                    var rescue = outputRoot.resolve("quality-candidate-80-rescue.jpg");
+                    candidates.put(81, rescue);
+                    run(List.of(
+                            "copy",
+                            probe.toString(),
+                            rescue + jpegSuffix(80, "compact-444-quality-rescue").substring(4)));
+                    return AdaptiveJpegQualitySelector.selectCandidate(
+                            probe, rescue, 80, "compact-444-quality-rescue");
+                }
+            }
         } finally {
             Files.deleteIfExists(overview);
             Files.deleteIfExists(probe);
@@ -414,6 +451,39 @@ public final class VipsRuntime implements DerivativeEngine {
             for (var candidate : candidates.values()) {
                 Files.deleteIfExists(candidate);
             }
+        }
+    }
+
+    static String compactJpegSuffix(int quality) {
+        return jpegSuffix(quality, "compact-420-trellis");
+    }
+
+    static String jpegSuffix(int quality, String encoderProfile) {
+        if (!AdaptiveJpegQualitySelector.QUALITIES.contains(quality)) {
+            throw new IllegalArgumentException("Unsupported compact DZI JPEG quality");
+        }
+        var enhanced = encoderProfile.equals("compact-420-trellis");
+        var subsampling = encoderProfile.equals("compact-444-quality-rescue") ? "off" : "on";
+        return ".jpg[Q=" + quality + ",subsample-mode=" + subsampling
+                + ",optimize-coding=true,"
+                + (enhanced ? "trellis-quant=true,overshoot-deringing=true," : "")
+                + "interlace=false,strip]";
+    }
+
+    private void encodeQualityCandidates(
+            Path probe,
+            Path outputRoot,
+            Map<Integer, Path> candidates,
+            boolean enhanced)
+            throws IOException {
+        var profile = enhanced ? "compact-420-trellis" : "compact-420-optimized";
+        for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
+            var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
+            candidates.put(quality, candidate);
+            run(List.of(
+                    "copy",
+                    probe.toString(),
+                    candidate + jpegSuffix(quality, profile).substring(4)));
         }
     }
 

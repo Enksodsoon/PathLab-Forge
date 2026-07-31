@@ -51,7 +51,7 @@ public final class PreparedPackageBuilder {
                         sha256(path)));
             }
         }
-        return build(root, payloads, width, height, metadata, output, 95, 1.0, 0.0);
+        return build(root, payloads, width, height, metadata, output, 0, 75, 1.0, 0.0, 1.0, "compact-baseline");
     }
 
     public static PackageInfo build(
@@ -61,18 +61,19 @@ public final class PreparedPackageBuilder {
             PackageMetadata metadata,
             Path output)
             throws IOException {
-        if (derivative.ledger().isEmpty()) {
-            throw new IOException("Validated derivative ledger is missing");
-        }
+        return build(derivative, width, height, metadata, output, 0);
+    }
+
+    public static PackageInfo build(
+            DerivativeInfo derivative,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            Path output,
+            long stagingOmeBytes)
+            throws IOException {
         var root = derivative.root().toAbsolutePath().normalize();
-        var payloads = derivative.ledger().stream()
-                .map(entry -> new Payload(
-                        "derivative/" + entry.path(),
-                        root.resolve(entry.path().replace('/', java.io.File.separatorChar))
-                                .normalize(),
-                        entry.size(),
-                        entry.sha256()))
-                .toList();
+        var payloads = payloads(derivative);
         return build(
                 root,
                 payloads,
@@ -80,9 +81,50 @@ public final class PreparedPackageBuilder {
                 height,
                 metadata,
                 output,
+                stagingOmeBytes,
                 derivative.jpegQuality(),
                 derivative.minimumWindowedSsim(),
-                derivative.meanDeltaE00());
+                derivative.meanDeltaE00(),
+                derivative.minimumEdgeDetailRetention(),
+                derivative.encoderProfile());
+    }
+
+    public static long predictBytes(
+            DerivativeInfo derivative,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            long stagingOmeBytes)
+            throws IOException {
+        var payloads = payloads(derivative).stream()
+                .sorted(java.util.Comparator.comparing(Payload::name))
+                .toList();
+        return packageBytes(
+                payloads,
+                width,
+                height,
+                metadata,
+                stagingOmeBytes,
+                derivative.jpegQuality(),
+                derivative.minimumWindowedSsim(),
+                derivative.meanDeltaE00(),
+                derivative.minimumEdgeDetailRetention(),
+                derivative.encoderProfile());
+    }
+
+    private static List<Payload> payloads(DerivativeInfo derivative) throws IOException {
+        if (derivative.ledger().isEmpty()) {
+            throw new IOException("Validated derivative ledger is missing");
+        }
+        var root = derivative.root().toAbsolutePath().normalize();
+        return derivative.ledger().stream()
+                .map(entry -> new Payload(
+                        "derivative/" + entry.path(),
+                        root.resolve(entry.path().replace('/', java.io.File.separatorChar))
+                                .normalize(),
+                        entry.size(),
+                        entry.sha256()))
+                .toList();
     }
 
     private static PackageInfo build(
@@ -92,9 +134,12 @@ public final class PreparedPackageBuilder {
             int height,
             PackageMetadata metadata,
             Path output,
+            long stagingOmeBytes,
             int jpegQuality,
             double minimumWindowedSsim,
-            double meanDeltaE00)
+            double meanDeltaE00,
+            double minimumEdgeDetailRetention,
+            String encoderProfile)
             throws IOException {
         payloads = payloads.stream()
                 .sorted(java.util.Comparator.comparing(Payload::name))
@@ -108,6 +153,17 @@ public final class PreparedPackageBuilder {
         var derivativeBytes = payloads.stream()
                 .mapToLong(Payload::bytes)
                 .reduce(0, Math::addExact);
+        var predictedPackageBytes = packageBytes(
+                payloads,
+                width,
+                height,
+                metadata,
+                stagingOmeBytes,
+                jpegQuality,
+                minimumWindowedSsim,
+                meanDeltaE00,
+                minimumEdgeDetailRetention,
+                encoderProfile);
         var manifest = manifest(
                         width,
                         height,
@@ -117,7 +173,11 @@ public final class PreparedPackageBuilder {
                         inventoryHash,
                         jpegQuality,
                         minimumWindowedSsim,
-                        meanDeltaE00)
+                        meanDeltaE00,
+                        minimumEdgeDetailRetention,
+                        encoderProfile,
+                        stagingOmeBytes,
+                        predictedPackageBytes)
                 .getBytes(StandardCharsets.UTF_8);
         var manifestHash = HexFormat.of().formatHex(sha256Digest().digest(manifest))
                 .getBytes(StandardCharsets.US_ASCII);
@@ -175,6 +235,9 @@ public final class PreparedPackageBuilder {
         }
         var entryIndex = new PackageEntryIndex(entries);
         entryIndex.write(output.resolveSibling(output.getFileName() + ".index"));
+        if (Files.size(output) != predictedPackageBytes) {
+            throw new IOException("Predicted TAR size did not match the committed package");
+        }
         return new PackageInfo(
                 output.toAbsolutePath().normalize(),
                 Files.size(output),
@@ -182,6 +245,60 @@ public final class PreparedPackageBuilder {
                 derivativeBytes,
                 payloads.size(),
                 entryIndex);
+    }
+
+    private static long packageBytes(
+            List<Payload> payloads,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            long stagingOmeBytes,
+            int jpegQuality,
+            double minimumWindowedSsim,
+            double meanDeltaE00,
+            double minimumEdgeDetailRetention,
+            String encoderProfile) {
+        var inventory = inventory(payloads).getBytes(StandardCharsets.UTF_8);
+        var inventoryHash = HexFormat.of().formatHex(sha256Digest().digest(inventory));
+        var derivativeBytes = payloads.stream()
+                .mapToLong(Payload::bytes)
+                .reduce(0, Math::addExact);
+        long predicted = 0;
+        for (var iteration = 0; iteration < 8; iteration++) {
+            var manifestBytes = manifest(
+                            width,
+                            height,
+                            metadata,
+                            payloads.size(),
+                            derivativeBytes,
+                            inventoryHash,
+                            jpegQuality,
+                            minimumWindowedSsim,
+                            meanDeltaE00,
+                            minimumEdgeDetailRetention,
+                            encoderProfile,
+                            stagingOmeBytes,
+                            predicted)
+                    .getBytes(StandardCharsets.UTF_8);
+            var next = Math.addExact(
+                    Math.addExact(
+                            Math.addExact(entryBytes(manifestBytes.length), entryBytes(64)),
+                            entryBytes(inventory.length)),
+                    Math.addExact(
+                            payloads.stream()
+                                    .mapToLong(payload -> entryBytes(payload.bytes()))
+                                    .reduce(0, Math::addExact),
+                            BLOCK * 2L));
+            if (next == predicted) {
+                return next;
+            }
+            predicted = next;
+        }
+        return predicted;
+    }
+
+    private static long entryBytes(long payloadBytes) {
+        return Math.addExact(BLOCK, Math.addExact(payloadBytes, (BLOCK - payloadBytes % BLOCK) % BLOCK));
     }
 
     private static void index(
@@ -209,7 +326,11 @@ public final class PreparedPackageBuilder {
             String inventoryHash,
             int jpegQuality,
             double minimumWindowedSsim,
-            double meanDeltaE00) {
+            double meanDeltaE00,
+            double minimumEdgeDetailRetention,
+            String encoderProfile,
+            long stagingOmeBytes,
+            long predictedPackageBytes) {
         return "{\"schema\":\"pathlab-prepared-slide/v2\",\"producer\":{"
                 + "\"name\":\"PathLab Forge\",\"version\":\""
                 + escape(metadata.producerVersion()) + "\"},\"provenance\":{"
@@ -232,10 +353,17 @@ public final class PreparedPackageBuilder {
                 + "\"width\":" + width + ",\"height\":" + height
                 + ",\"tileSize\":512,\"overlap\":1,\"format\":\"jpg\","
                 + "\"encoding\":{\"codec\":\"jpeg\",\"quality\":" + jpegQuality
-                + ",\"selector\":\"quality-gated-v1\","
-                + "\"qualityProfile\":\"pathlab-visual-v1\","
+                + ",\"selector\":\"quality-gated-v2-64-roi\","
+                + "\"qualityProfile\":\"pathlab-compact-visual-v2\","
+                + "\"encoderProfile\":\"" + escape(encoderProfile) + "\","
                 + "\"minimumWindowedSsim\":" + minimumWindowedSsim
-                + ",\"meanDeltaE00\":" + meanDeltaE00 + "}},"
+                + ",\"maximumRoiMeanDeltaE00\":" + meanDeltaE00
+                + ",\"minimumEdgeDetailRetention\":" + minimumEdgeDetailRetention + "},"
+                + "\"stagingOmeBytes\":" + stagingOmeBytes
+                + ",\"predictedPackageBytes\":" + predictedPackageBytes
+                + ",\"packageToOmeRatio\":"
+                + (stagingOmeBytes > 0 ? (double) predictedPackageBytes / stagingOmeBytes : 0.0)
+                + "},"
                 + "\"inventory\":{\"format\":\"ndjson-v1\","
                 + "\"path\":\"inventory.ndjson\",\"sha256\":\"" + inventoryHash + "\","
                 + "\"fileCount\":" + fileCount

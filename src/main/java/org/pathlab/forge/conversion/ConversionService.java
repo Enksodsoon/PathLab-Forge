@@ -449,9 +449,9 @@ public final class ConversionService implements AutoCloseable {
         }
         var ome = Path.of(revision.omePath());
         var packagePath = Path.of(revision.packagePath());
-        if (!Files.isRegularFile(ome)
-                || !Files.isRegularFile(packagePath)
-                || !revision.omeSha256().equals(sha256(ome))
+        if (!Files.isRegularFile(packagePath)
+                || !ArtifactIntegrityStamp.matches(revision)
+                || (Files.exists(ome) && !revision.omeSha256().equals(sha256(ome)))
                 || !revision.packageSha256().equals(sha256(packagePath))) {
             throw new IllegalStateException("Artifact files changed after validation");
         }
@@ -854,15 +854,14 @@ public final class ConversionService implements AutoCloseable {
         var preparedPackage = Path.of(revision.packagePath());
         var packageIndex = preparedPackage.resolveSibling(
                 preparedPackage.getFileName() + ".index");
-        if (!Files.isRegularFile(ome)
-                || !Files.isRegularFile(preparedPackage)
+        if (!Files.isRegularFile(preparedPackage)
                 || !Files.isRegularFile(packageIndex)) {
             return false;
         }
         if (ArtifactIntegrityStamp.matches(revision)) {
             return true;
         }
-        var verified = revision.omeSha256().equals(sha256(ome))
+        var verified = (!Files.exists(ome) || revision.omeSha256().equals(sha256(ome)))
                 && revision.packageSha256().equals(sha256(preparedPackage));
         if (verified) {
             ArtifactIntegrityStamp.write(revision);
@@ -1204,7 +1203,9 @@ public final class ConversionService implements AutoCloseable {
                     derivativeInfo.ledger(),
                     derivativeInfo.jpegQuality(),
                     derivativeInfo.minimumWindowedSsim(),
-                    derivativeInfo.meanDeltaE00());
+                    derivativeInfo.meanDeltaE00(),
+                    derivativeInfo.minimumEdgeDetailRetention(),
+                    derivativeInfo.encoderProfile());
             saveCheckpoint(
                     checkpoints,
                     revision,
@@ -1231,11 +1232,7 @@ public final class ConversionService implements AutoCloseable {
             updateProgress(
                     dataset.id(), "PACKAGING", 0, derivativeInfo.fileCount());
             var seriesInfo = requireSeriesInfo(dataset.id(), dataset.selectedSeries());
-            var packageInfo = PreparedPackageBuilder.build(
-                    derivativeInfo,
-                    request.outputWidth(),
-                    request.outputHeight(),
-                    new PackageMetadata(
+            var packageMetadata = new PackageMetadata(
                             revision.id(),
                             revision.configurationRevision(),
                             revision.sourceFingerprint(),
@@ -1248,8 +1245,32 @@ public final class ConversionService implements AutoCloseable {
                             seriesInfo.physicalSizeX(),
                             seriesInfo.physicalSizeY(),
                             seriesInfo.physicalUnit(),
-                            "0.1.0-rc"),
-                    outputDirectory.resolve("slide.plslide"));
+                            "0.1.0-rc");
+            var stagingOmeBytes = Files.size(output);
+            var predictedPackageBytes = PreparedPackageBuilder.predictBytes(
+                    derivativeInfo,
+                    request.outputWidth(),
+                    request.outputHeight(),
+                    packageMetadata,
+                    stagingOmeBytes);
+            if (predictedPackageBytes > Math.floor(stagingOmeBytes * 1.25d)) {
+                throw new IOException(
+                        "DZI_SIZE_QUALITY_CONFLICT: quality-compliant package is "
+                                + predictedPackageBytes + " bytes ("
+                                + String.format(
+                                        java.util.Locale.ROOT,
+                                        "%.3fx",
+                                        (double) predictedPackageBytes / stagingOmeBytes)
+                                + ") and exceeds the 1.25x hard limit; preserve the crop and "
+                                + "retry after changing crop or downsample");
+            }
+            var packageInfo = PreparedPackageBuilder.build(
+                    derivativeInfo,
+                    request.outputWidth(),
+                    request.outputHeight(),
+                    packageMetadata,
+                    outputDirectory.resolve("slide.plslide"),
+                    stagingOmeBytes);
             saveCheckpoint(
                     checkpoints,
                     revision,
@@ -1261,17 +1282,23 @@ public final class ConversionService implements AutoCloseable {
                     "PACKAGE_COMMITTED",
                     derivativeInfo.fileCount(),
                     derivativeInfo.fileCount());
-            deleteTree(outputDirectory, derivative);
             var readyRevision = revision.ready(digest, packageInfo.sha256());
             artifactRepository.save(readyRevision);
             ArtifactIntegrityStamp.write(readyRevision);
+            Files.deleteIfExists(output);
+            deleteTree(outputDirectory, derivative);
             repository.save(dataset.withConversion(
                     DatasetStatus.PACKAGE_READY,
                     derivativeInfo.tileCount() + " DZI tiles · "
                             + derivativeInfo.fileCount() + " files · "
                             + derivativeInfo.bytes() + " derivative bytes · "
-                            + packageInfo.bytes() + " package bytes; viewer and upload package ready",
-                    output.toString(),
+                            + packageInfo.bytes() + " package bytes · "
+                            + String.format(
+                                    java.util.Locale.ROOT,
+                                    "%.1f%% of staging OME",
+                                    packageInfo.bytes() * 100.0 / stagingOmeBytes)
+                            + "; compact DZI package ready",
+                    packageInfo.path().toString(),
                     digest,
                     dataset.selectedSeries(),
                     dataset.width(),

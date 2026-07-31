@@ -2,15 +2,16 @@
 
 **PathLab Forge** is the local desktop companion for PathLab Viewer.
 
-It opens supported whole-slide image datasets on Windows and macOS, lets the user inspect the correct image series, crop or downsample, renders standardized 8-bit RGB, writes pyramidal OME-TIFF locally, generates PathLab-compatible DZI and thumbnail assets, processes slides in batch, and uploads prepared packages resumably.
+It opens supported whole-slide image datasets on Windows and macOS, lets the user inspect the correct image series, crop or downsample, renders standardized 8-bit RGB through a temporary pyramidal OME-TIFF, generates a compact PathLab-compatible DZI, processes slides in batch, and uploads prepared packages resumably.
 
 PathLab Forge is deliberately separate from `PathLab-Viewer`.
 
 ```text
 PathLab Forge desktop
     -> local WSI read / view / crop / convert
-    -> local OME-TIFF retained by the user
-    -> .plslide with DZI + thumbnail
+    -> temporary local OME-TIFF staging
+    -> verified .plslide with compact DZI + thumbnail
+    -> staging OME and loose DZI removed
     -> HTTPS + tus
 PathLab Viewer server
     -> safe validation / import
@@ -62,8 +63,8 @@ The app provides:
   `PATHLAB_FORGE_BFTOOLS`, or `-Dpathlab.forge.bftools=...`;
 - real VSI/ETS top-level series inspection with dimensions and calibration metadata;
 - explicit 2D RGB series selection and an overflow-safe storage upper-bound estimate;
-- one background conversion at a time for OME-TIFF and VSI to tiled,
-  LZW-compressed, pyramidal OME-BigTIFF;
+- one background conversion at a time for OME-TIFF and VSI through a temporary,
+  tiled pyramidal OME-BigTIFF staging image;
 - flattened-reader mapping that avoids the Bio-Formats 8.5 non-pyramidal `-noflat` writer defect;
 - source-coordinate crop and annotations with 1x, 1.5x, 2x, 4x, and 8x presets;
 - immutable artifact revisions, approval invalidation, cancellation checkpoints,
@@ -92,7 +93,7 @@ local libvips runtime used for streaming derivatives.
 - One active upload by default.
 - The next slide may convert while the prior slide uploads when resources permit.
 - Original proprietary WSI remains local.
-- Standardized OME-TIFF remains local in package v1.
+- Prepared-v2 retains only the verified compact DZI package; legacy OME revisions remain readable.
 - The server receives only manifest, sanitized DZI/JPEG tiles and `thumbnail.jpg`.
 - A prepared slide enters Unfiled or an explicitly selected active folder.
 - Automatic publication and privacy approval are prohibited.

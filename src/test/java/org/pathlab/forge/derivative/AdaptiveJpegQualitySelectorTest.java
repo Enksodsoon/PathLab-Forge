@@ -15,8 +15,8 @@ final class AdaptiveJpegQualitySelectorTest {
     Path temporaryDirectory;
 
     @Test
-    void choosesSmallestCandidateThatPassesThirtyTwoSpatialRegions() throws Exception {
-        var image = new BufferedImage(512, 256, BufferedImage.TYPE_INT_RGB);
+    void choosesSmallestCandidateThatPassesSixtyFourSpatialRegions() throws Exception {
+        var image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_RGB);
         var graphics = image.createGraphics();
         try {
             graphics.setColor(new Color(184, 116, 146));
@@ -29,9 +29,10 @@ final class AdaptiveJpegQualitySelectorTest {
 
         var selection = AdaptiveJpegQualitySelector.select(probe);
 
-        assertEquals(85, selection.quality());
-        assertTrue(selection.minimumWindowedSsim() >= 0.985);
-        assertTrue(selection.meanDeltaE00() <= 1.5);
+        assertEquals(65, selection.quality());
+        assertTrue(selection.minimumWindowedSsim() >= 0.970);
+        assertTrue(selection.meanDeltaE00() <= 2.5);
+        assertTrue(selection.minimumEdgeDetailRetention() >= 0.90);
     }
 
     @Test
@@ -40,10 +41,27 @@ final class AdaptiveJpegQualitySelectorTest {
 
         assertEquals(1.0, AdaptiveJpegQualitySelector.windowedSsim(image, image));
         assertEquals(0.0, AdaptiveJpegQualitySelector.meanDeltaE00(image, image));
+        assertEquals(1.0, AdaptiveJpegQualitySelector.edgeDetailRetention(image, image));
     }
 
     @Test
-    void derivesThirtyTwoBoundedNativeRoisAcrossImageClasses() throws Exception {
+    void edgeGateDetectsSmoothingThatRemovesTissueDetail() {
+        var reference = new BufferedImage(64, 64, BufferedImage.TYPE_INT_RGB);
+        var smoothed = new BufferedImage(64, 64, BufferedImage.TYPE_INT_RGB);
+        for (var y = 0; y < 64; y++) {
+            for (var x = 0; x < 64; x++) {
+                reference.setRGB(x, y, ((x / 2 + y / 2) & 1) == 0
+                        ? Color.BLACK.getRGB()
+                        : Color.WHITE.getRGB());
+                smoothed.setRGB(x, y, new Color(127, 127, 127).getRGB());
+            }
+        }
+
+        assertTrue(AdaptiveJpegQualitySelector.edgeDetailRetention(reference, smoothed) < 0.10);
+    }
+
+    @Test
+    void derivesSixtyFourBoundedNativeRoisAcrossImageClasses() throws Exception {
         var overview = new BufferedImage(128, 128, BufferedImage.TYPE_INT_RGB);
         for (var y = 0; y < overview.getHeight(); y++) {
             for (var x = 0; x < overview.getWidth(); x++) {
@@ -56,8 +74,8 @@ final class AdaptiveJpegQualitySelectorTest {
 
         var rois = AdaptiveJpegQualitySelector.planNativeRois(path, 16_384, 8_192);
 
-        assertEquals(32, rois.size());
-        assertEquals(32, rois.stream().distinct().count());
+        assertEquals(64, rois.size());
+        assertEquals(64, rois.stream().distinct().count());
         assertTrue(rois.stream().allMatch(roi -> roi.x() >= 0
                 && roi.y() >= 0
                 && roi.x() + roi.width() <= 16_384
