@@ -44,3 +44,5 @@ On first open, Forge builds one disposable, fixed-Q85 local DZI in a short Windo
 path and exposes explicit preparing/failed state. The completed pyramid is atomically published,
 reused across restarts, and served as static tiles. Production package quality selection remains
 unchanged and the viewer cache is never approved or uploaded.
+The cache identity is the source fingerprint plus selected image series; crop, downsample,
+conversion status and artifact-history edits must not rebuild the original-source viewer.

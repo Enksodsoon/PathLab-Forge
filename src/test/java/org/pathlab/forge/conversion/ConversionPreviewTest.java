@@ -1,6 +1,7 @@
 package org.pathlab.forge.conversion;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -18,6 +19,54 @@ import org.pathlab.forge.library.PropertiesDatasetRepository;
 final class ConversionPreviewTest {
     @TempDir
     Path tempDirectory;
+
+    @Test
+    void adoptsTheExistingPreviewWhenOnlyTheConversionConfigurationChanged() throws Exception {
+        var source = tempDirectory.resolve("stable-source.ome.tif");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1});
+        var repository = new PropertiesDatasetRepository(tempDirectory.resolve("stable.properties"));
+        var dataset = new DatasetInspector().inspect(source);
+        repository.save(dataset);
+        ConversionEngine engine = new ConversionEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String runtimeDescription() { return "stable preview test"; }
+            @Override public List<SeriesInfo> inspect(Path ignored) {
+                return List.of(new SeriesInfo(
+                        0, "Tissue", 4_000, 2_000, 3, 1, 1, "uint8", 0.25, 0.25, "µm"));
+            }
+            @Override public void convert(Path ignored, int series, Path output) {}
+        };
+        DerivativeEngine derivatives = new DerivativeEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String description() { return "must reuse existing viewer cache"; }
+            @Override public void optimizeOme(Path input, Path output, int width, int height) {}
+            @Override public DerivativeInfo generateDzi(Path input, Path root, int width, int height) {
+                throw new AssertionError("Existing viewer cache must be adopted");
+            }
+            @Override public DerivativeInfo generateViewerDzi(
+                    Path input, Path root, int width, int height) {
+                throw new AssertionError("Existing viewer cache must be adopted");
+            }
+        };
+        var managed = tempDirectory.resolve("managed-stable");
+        try (var service = new ConversionService(repository, engine, derivatives, managed)) {
+            service.inspect(dataset.id());
+        }
+        var configured = repository.find(dataset.id()).orElseThrow();
+        var legacy = Files.createDirectories(managed
+                .resolve(dataset.id()).resolve("previews").resolve("pv5").resolve("old-config"));
+        Files.writeString(legacy.resolve("slide.dzi"), "<Image />");
+        Files.writeString(legacy.resolve("preview-dimensions.txt"), "4000,2000");
+
+        try (var service = new ConversionService(repository, engine, derivatives, managed)) {
+            var preview = service.preview(dataset.id());
+            var expectedIdentity = configured.sourceFingerprint().substring(0, 16) + "-s0";
+            assertEquals(expectedIdentity, preview.root().getFileName().toString());
+            assertTrue(Files.isRegularFile(preview.root().resolve("slide.dzi")));
+            assertTrue(Files.isRegularFile(preview.root().resolve("preview-source.txt")));
+            assertFalse(Files.exists(legacy));
+        }
+    }
 
     @Test
     void requestsResourceBoundedVsiPreviewAndRemovesTheTemporaryOme() throws Exception {
@@ -39,6 +88,7 @@ final class ConversionPreviewTest {
         Files.writeString(obsoletePreview.resolve("slide.dzi"), "<Image />");
         var requestedMaxDimension = new AtomicInteger();
         var derivativeReadTemporaryOme = new AtomicBoolean();
+        var viewerBuilds = new AtomicInteger();
         ConversionEngine engine = new ConversionEngine() {
             @Override
             public boolean available() {
@@ -97,6 +147,7 @@ final class ConversionPreviewTest {
             public DerivativeInfo generateViewerDzi(
                     Path input, Path outputRoot, int width, int height)
                     throws java.io.IOException {
+                viewerBuilds.incrementAndGet();
                 derivativeReadTemporaryOme.set(Files.isRegularFile(input));
                 Files.createDirectories(outputRoot);
                 Files.writeString(outputRoot.resolve("slide.dzi"), "<Image />");
@@ -116,6 +167,12 @@ final class ConversionPreviewTest {
             assertTrue(preview.root().toString().contains("pv5"));
             assertTrue(Files.notExists(preview.root().resolve("source-preview.ome.tif")));
             assertTrue(Files.notExists(obsoletePreview));
+
+            var firstRoot = preview.root();
+            service.selectSeries(dataset.id(), 0, 2.0, 100, 100, 8_000, 4_000);
+            var afterConfigurationChange = service.preview(dataset.id());
+            assertEquals(firstRoot, afterConfigurationChange.root());
+            assertEquals(1, viewerBuilds.get());
         }
 
         var restartInspections = new AtomicInteger();
