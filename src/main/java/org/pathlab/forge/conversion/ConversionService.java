@@ -302,6 +302,9 @@ public final class ConversionService implements AutoCloseable {
             throw new IllegalStateException("Preview path escapes managed storage");
         }
         var descriptor = previewRoot.resolve("slide.dzi");
+        if (!Files.isRegularFile(descriptor)) {
+            adoptCompatibleLegacyPreview(id, dataset, previewRoot);
+        }
         if (Files.isRegularFile(descriptor)) {
             var dimensions =
                     readPreviewDimensions(previewRoot, dataset.width(), dataset.height());
@@ -357,6 +360,9 @@ public final class ConversionService implements AutoCloseable {
         Files.writeString(
                 workingRoot.resolve("preview-dimensions.txt"),
                 source.width() + "," + source.height());
+        Files.writeString(
+                workingRoot.resolve("preview-source.txt"),
+                dataset.sourceFingerprint() + "," + dataset.selectedSeries());
         try {
             Files.move(workingRoot, previewRoot, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException ignored) {
@@ -382,6 +388,9 @@ public final class ConversionService implements AutoCloseable {
             return java.util.Optional.empty();
         }
         var root = previewRoot(id, dataset);
+        if (!Files.isRegularFile(root.resolve("slide.dzi"))) {
+            adoptCompatibleLegacyPreview(id, dataset, root);
+        }
         if (!Files.isRegularFile(root.resolve("slide.dzi"))) {
             return java.util.Optional.empty();
         }
@@ -521,17 +530,78 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private Path previewRoot(String id, LocalDataset dataset) {
+        var fingerprint = dataset.sourceFingerprint();
+        var identity = fingerprint.substring(0, Math.min(16, fingerprint.length()))
+                + "-s" + dataset.selectedSeries();
         var root = managedRoot
                 .resolve(id)
                 .resolve("previews")
                 .resolve(PREVIEW_CACHE_VERSION)
-                .resolve(dataset.configurationRevision().substring(
-                        0, Math.min(16, dataset.configurationRevision().length())))
+                .resolve(identity)
                 .normalize();
         if (!root.startsWith(managedRoot.resolve(id).normalize())) {
             throw new IllegalStateException("Preview path escapes managed storage");
         }
         return root;
+    }
+
+    private void adoptCompatibleLegacyPreview(
+            String id, LocalDataset dataset, Path target) throws IOException {
+        var versionRoot = managedRoot.resolve(id).resolve("previews").resolve(PREVIEW_CACHE_VERSION)
+                .toAbsolutePath().normalize();
+        if (!target.startsWith(versionRoot)
+                || Files.exists(target)
+                || !Files.isDirectory(versionRoot)) {
+            return;
+        }
+        var sourceModified = Files.getLastModifiedTime(Path.of(dataset.sourcePath())).toMillis();
+        Path candidate;
+        try (var children = Files.list(versionRoot)) {
+            candidate = children
+                    .filter(Files::isDirectory)
+                    .filter(path -> !path.getFileName().toString().startsWith("b-"))
+                    .filter(path -> Files.isRegularFile(path.resolve("slide.dzi")))
+                    .filter(path -> legacyPreviewMatches(path, dataset, sourceModified))
+                    .max(Comparator.comparingLong(ConversionService::lastModifiedMillis))
+                    .orElse(null);
+        }
+        if (candidate == null) {
+            return;
+        }
+        try {
+            Files.move(candidate, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(candidate, target);
+        }
+        Files.writeString(
+                target.resolve("preview-source.txt"),
+                dataset.sourceFingerprint() + "," + dataset.selectedSeries());
+    }
+
+    private static boolean legacyPreviewMatches(
+            Path candidate, LocalDataset dataset, long sourceModified) {
+        try {
+            var metadata = candidate.resolve("preview-source.txt");
+            if (Files.isRegularFile(metadata)) {
+                return Files.readString(metadata).strip().equals(
+                        dataset.sourceFingerprint() + "," + dataset.selectedSeries());
+            }
+            var dimensions = readPreviewDimensions(candidate, -1, -1);
+            return dimensions[0] == dataset.width()
+                    && dimensions[1] == dataset.height()
+                    && Files.getLastModifiedTime(candidate.resolve("slide.dzi")).toMillis()
+                            >= sourceModified;
+        } catch (IOException | RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static long lastModifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path.resolve("slide.dzi")).toMillis();
+        } catch (IOException ignored) {
+            return Long.MIN_VALUE;
+        }
     }
 
     private void cleanupObsoletePreviews(String id, Path currentPreview) {
