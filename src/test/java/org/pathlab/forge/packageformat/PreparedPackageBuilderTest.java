@@ -9,6 +9,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
@@ -114,6 +115,82 @@ final class PreparedPackageBuilderTest {
                     Files.readAllBytes(level.resolve("0_0.jpg")),
                     bytes.array());
         }
+    }
+
+    @Test
+    void throttlesPackagingProgressWithoutLosingFinalUpdate() throws Exception {
+        var derivative = Files.createDirectories(temporaryDirectory.resolve("many-tiles"));
+        Files.writeString(
+                derivative.resolve("slide.dzi"),
+                """
+                <Image xmlns="http://schemas.microsoft.com/deepzoom/2008"
+                  Format="jpg" Overlap="1" TileSize="512"><Size Height="1" Width="1"/></Image>
+                """);
+        writeJpeg(derivative.resolve("thumbnail.jpg"));
+        var level = Files.createDirectories(derivative.resolve("slide_files").resolve("8"));
+        for (int index = 0; index < 128; index++) {
+            writeJpeg(level.resolve(index + "_0.jpg"));
+        }
+        var ledger = Files.walk(derivative)
+                .filter(Files::isRegularFile)
+                .sorted()
+                .map(path -> {
+                    try {
+                        var relative =
+                                derivative.relativize(path).toString().replace('\\', '/');
+                        var jpeg = relative.endsWith(".jpg");
+                        return new FileLedgerEntry(
+                                relative,
+                                Files.size(path),
+                                sha256(path),
+                                jpeg,
+                                jpeg,
+                                jpeg ? 1 : 0,
+                                jpeg ? 1 : 0);
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                })
+                .toList();
+        var derivativeInfo = new DerivativeInfo(
+                derivative,
+                ledger.stream().mapToLong(FileLedgerEntry::size).sum(),
+                ledger.size(),
+                1,
+                "a".repeat(64),
+                ledger,
+                75,
+                1.0,
+                0.0,
+                1.0,
+                "compact-baseline");
+        var metadata = new PackageMetadata(
+                "artifact-1",
+                "configuration-1",
+                "source-fingerprint",
+                1,
+                0,
+                0,
+                1,
+                1,
+                1.0,
+                0.25,
+                0.25,
+                "µm",
+                "actual-staging-ome",
+                "test");
+        var updates = new ArrayList<String>();
+
+        PreparedPackageBuilder.build(
+                derivativeInfo,
+                1,
+                1,
+                metadata,
+                temporaryDirectory.resolve("throttled.plslide"),
+                0,
+                (completed, total) -> updates.add(completed + "/" + total));
+
+        assertEquals(java.util.List.of("0/130", "128/130", "130/130"), updates);
     }
 
     private static String tarEntry(Path archive, String expected) throws Exception {

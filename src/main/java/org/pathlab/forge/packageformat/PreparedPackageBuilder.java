@@ -20,6 +20,7 @@ import org.pathlab.forge.derivative.DerivativeInfo;
 
 public final class PreparedPackageBuilder {
     private static final int BLOCK = 512;
+    private static final int PROGRESS_INTERVAL_FILES = 128;
 
     private PreparedPackageBuilder() {}
 
@@ -261,7 +262,11 @@ public final class PreparedPackageBuilder {
                             HexFormat.of().formatHex(payloadDigest.digest()))) {
                         throw new IOException("Ledger payload hash changed: " + payload.name());
                     }
-                    progress.accept(entries.size() - 3, payloads.size());
+                    var completed = entries.size() - 3;
+                    if (completed % PROGRESS_INTERVAL_FILES == 0
+                            || completed == payloads.size()) {
+                        progress.accept(completed, payloads.size());
+                    }
                 }
                 stream.write(new byte[BLOCK * 2]);
             }

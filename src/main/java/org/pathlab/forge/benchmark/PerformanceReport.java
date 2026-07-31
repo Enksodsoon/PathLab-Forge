@@ -6,6 +6,8 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 
 public record PerformanceReport(
@@ -16,16 +18,48 @@ public record PerformanceReport(
         long retainedArtifactBytes,
         long peakWorkspaceBytes,
         boolean hardGatesPassed,
-        String failure) {
+        String failure,
+        Map<String, Long> stageDurationsMs) {
+    public PerformanceReport(
+            String source,
+            String status,
+            long packageReadyMs,
+            long peakProcessTreeBytes,
+            long retainedArtifactBytes,
+            long peakWorkspaceBytes,
+            boolean hardGatesPassed,
+            String failure) {
+        this(
+                source,
+                status,
+                packageReadyMs,
+                peakProcessTreeBytes,
+                retainedArtifactBytes,
+                peakWorkspaceBytes,
+                hardGatesPassed,
+                failure,
+                Map.of());
+    }
+
     public PerformanceReport {
         source = Objects.requireNonNull(source, "source");
         status = Objects.requireNonNull(status, "status");
         failure = Objects.requireNonNull(failure, "failure");
+        stageDurationsMs = Map.copyOf(
+                Objects.requireNonNull(stageDurationsMs, "stageDurationsMs"));
         if (packageReadyMs < 0
                 || peakProcessTreeBytes < 0
                 || retainedArtifactBytes < 0
                 || peakWorkspaceBytes < 0) {
             throw new IllegalArgumentException("Performance measurements cannot be negative");
+        }
+        for (var entry : stageDurationsMs.entrySet()) {
+            if (entry.getKey() == null
+                    || entry.getKey().isBlank()
+                    || entry.getValue() == null
+                    || entry.getValue() < 0) {
+                throw new IllegalArgumentException("Stage duration is invalid");
+            }
         }
     }
 
@@ -57,8 +91,19 @@ public record PerformanceReport(
                 + "\"retainedArtifactBytes\":" + retainedArtifactBytes + ","
                 + "\"peakWorkspaceBytes\":" + peakWorkspaceBytes + ","
                 + "\"hardGatesPassed\":" + hardGatesPassed + ","
-                + "\"failure\":\"" + escape(failure) + "\""
+                + "\"failure\":\"" + escape(failure) + "\","
+                + "\"stageDurationsMs\":" + stageDurationsJson()
                 + "}\n";
+    }
+
+    private String stageDurationsJson() {
+        var ordered = new LinkedHashMap<String, Long>();
+        stageDurationsMs.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> ordered.put(entry.getKey(), entry.getValue()));
+        return ordered.entrySet().stream()
+                .map(entry -> "\"" + escape(entry.getKey()) + "\":" + entry.getValue())
+                .collect(java.util.stream.Collectors.joining(",", "{", "}"));
     }
 
     private static String escape(String value) {

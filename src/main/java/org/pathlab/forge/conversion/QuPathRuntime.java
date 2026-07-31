@@ -19,6 +19,7 @@ import org.pathlab.forge.runtime.ChildProcessContainment;
 final class QuPathRuntime {
     static final long ACCELERATED_SECONDS_BUDGET_PIXELS = 250_000_000L;
     static final long STANDARD_SECONDS_BUDGET_PIXELS = 80_000_000L;
+    static final int STAGING_PYRAMID_SCALE = 65_536;
     private static final long UNCOMPRESSED_PIXEL_LIMIT = 200_000_000L;
     private static final Duration EXPORT_STALL_TIMEOUT = Duration.ofMinutes(2);
     private static final Duration EXPORT_ABSOLUTE_TIMEOUT = Duration.ofHours(24);
@@ -178,7 +179,7 @@ final class QuPathRuntime {
                         + request.cropWidth() + "," + request.cropHeight(),
                 "--compression=" + compression(request),
                 "--tile-size=512",
-                "--pyramid-scale=4",
+                "--pyramid-scale=" + STAGING_PYRAMID_SCALE,
                 "--overwrite",
                 request.source().toString(),
                 output.toString());

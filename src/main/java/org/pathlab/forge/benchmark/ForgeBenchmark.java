@@ -7,6 +7,7 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.pathlab.forge.conversion.BioFormatsEngine;
@@ -37,6 +38,7 @@ public final class ForgeBenchmark {
         String status = "FAILED";
         String failure = "";
         long retained = 0;
+        var stageDurations = new LinkedHashMap<String, Long>();
         try {
             var inspected = new DatasetInspector().inspect(source);
             var dataset = repository.find(inspected.id())
@@ -72,9 +74,26 @@ public final class ForgeBenchmark {
                         crop[2],
                         crop[3]);
                 conversion.start(dataset.id());
+                String observedStage = "";
+                long observedStageStartedAt = 0;
                 while (true) {
                     var current = repository.find(dataset.id())
                             .orElseThrow(() -> new IOException("Benchmark dataset disappeared"));
+                    var conversionProgress = conversion.progress(dataset.id());
+                    if (!conversionProgress.stage().isBlank()
+                            && !conversionProgress.stage().equals(observedStage)) {
+                        if (!observedStage.isBlank() && observedStageStartedAt > 0) {
+                            stageDurations.merge(
+                                    observedStage,
+                                    Math.max(
+                                            0,
+                                            conversionProgress.stageStartedAt()
+                                                    - observedStageStartedAt),
+                                    Math::addExact);
+                        }
+                        observedStage = conversionProgress.stage();
+                        observedStageStartedAt = conversionProgress.stageStartedAt();
+                    }
                     peakProcessTree = Math.max(
                             peakProcessTree, ProcessTreeMemory.workingSetBytes());
                     peakWorkspace = Math.max(
@@ -82,10 +101,20 @@ public final class ForgeBenchmark {
                     if (current.status() == DatasetStatus.PACKAGE_READY) {
                         status = "PACKAGE_READY";
                         retained = retainedBytes(conversion, current.id());
+                        recordFinalStage(
+                                stageDurations,
+                                observedStage,
+                                observedStageStartedAt,
+                                System.currentTimeMillis());
                         break;
                     }
                     if (current.status() == DatasetStatus.FAILED) {
                         failure = current.detail();
+                        recordFinalStage(
+                                stageDurations,
+                                observedStage,
+                                observedStageStartedAt,
+                                System.currentTimeMillis());
                         break;
                     }
                     if (System.currentTimeMillis() - startedAt
@@ -125,9 +154,23 @@ public final class ForgeBenchmark {
                 retained,
                 peakWorkspace,
                 passed,
-                failure);
+                failure,
+                stageDurations);
         report.write(reportPath);
         return report;
+    }
+
+    private static void recordFinalStage(
+            java.util.Map<String, Long> stageDurations,
+            String stage,
+            long stageStartedAt,
+            long completedAt) {
+        if (!stage.isBlank() && stageStartedAt > 0) {
+            stageDurations.merge(
+                    stage,
+                    Math.max(0, completedAt - stageStartedAt),
+                    Math::addExact);
+        }
     }
 
     private static String gateFailure(
