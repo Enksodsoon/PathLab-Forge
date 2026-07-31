@@ -21,6 +21,39 @@ final class SeriesMetadataCacheTest {
     Path temporaryDirectory;
 
     @Test
+    void servesThePreparedOmePreviewThumbnailWithoutReadingTheFullSeries() throws Exception {
+        var source = temporaryDirectory.resolve("prepared.ome.tif");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1});
+        var repository = new PropertiesDatasetRepository(temporaryDirectory.resolve("prepared.properties"));
+        var dataset = new DatasetInspector().inspect(source);
+        repository.save(dataset);
+        var inspections = new AtomicInteger();
+        var unsafeThumbnailReads = new AtomicInteger();
+        var managed = temporaryDirectory.resolve("managed-prepared");
+        var thumbnail = new byte[] {(byte) 0xff, (byte) 0xd8, 9, 8, (byte) 0xff, (byte) 0xd9};
+
+        try (var service = new ConversionService(
+                repository,
+                engine(inspections, unsafeThumbnailReads, new byte[] {1}),
+                unavailableDerivative(),
+                managed)) {
+            service.inspect(dataset.id());
+            var selected = repository.find(dataset.id()).orElseThrow();
+            var preview = Files.createDirectories(managed
+                    .resolve(dataset.id())
+                    .resolve("previews")
+                    .resolve("pv5")
+                    .resolve(selected.sourceFingerprint().substring(0, 16) + "-s0"));
+            Files.writeString(preview.resolve("slide.dzi"), "<Image />");
+            Files.writeString(preview.resolve("preview-dimensions.txt"), "18032,9148");
+            Files.write(preview.resolve("thumbnail.jpg"), thumbnail);
+
+            assertArrayEquals(thumbnail, service.seriesThumbnail(dataset.id(), 0));
+            assertEquals(0, unsafeThumbnailReads.get());
+        }
+    }
+
+    @Test
     void restoresVerifiedSeriesAndThumbnailWithoutReinspection() throws Exception {
         var source = temporaryDirectory.resolve("slide.ome.tif");
         Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});

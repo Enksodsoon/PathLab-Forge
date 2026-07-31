@@ -385,6 +385,23 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     @Override
+    public void generateViewerThumbnail(
+            Path source, int seriesIndex, Path output, int maxDimension) throws IOException {
+        requireAvailable();
+        if (seriesIndex < 0 || maxDimension < 96 || maxDimension > 1024) {
+            throw new IllegalArgumentException("Viewer thumbnail request is invalid");
+        }
+        Files.createDirectories(output.toAbsolutePath().normalize().getParent());
+        run(List.of(
+                "thumbnail",
+                source + "[page=" + seriesIndex + "]",
+                output + "[Q=82,strip]",
+                Integer.toString(maxDimension),
+                "--size",
+                "down"));
+    }
+
+    @Override
     public DerivativeInfo generateDzi(
             Path omeTiff,
             Path outputRoot,

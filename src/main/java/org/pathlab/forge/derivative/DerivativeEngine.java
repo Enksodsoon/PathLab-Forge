@@ -77,6 +77,11 @@ public interface DerivativeEngine {
         return generateDzi(omeTiff, outputRoot, width, height);
     }
 
+    default void generateViewerThumbnail(
+            Path source, int seriesIndex, Path output, int maxDimension) throws IOException {
+        throw new IOException("Bounded viewer thumbnail generation is unavailable");
+    }
+
     default DerivativeInfo generateDzi(
             Path omeTiff,
             Path outputRoot,
