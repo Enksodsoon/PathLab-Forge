@@ -295,6 +295,7 @@ test('updates dimensions and file size live while drawing and reshaping a crop',
   expect(await screen.findByTestId('forge-osd')).toBeVisible()
   expect(api.series).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Inspect image series' }))
+  expect(screen.getByTestId('forge-osd')).toBeVisible()
   await screen.findByRole('button', { name: 'Draw crop on slide' })
   expect(screen.getByRole('button', { name: 'Draw crop on slide' })).toHaveAttribute('aria-pressed', 'false')
   expect(screen.queryByText('Precise crop coordinates')).not.toBeInTheDocument()
@@ -303,6 +304,12 @@ test('updates dimensions and file size live while drawing and reshaping a crop',
   expect(screen.getByText(/Estimated temporary staging ≈/)).toBeVisible()
   expect(screen.getByText(/Expected range/)).toBeVisible()
   expect(screen.getByText(/Peak conversion workspace ≤/)).toBeVisible()
+
+  fireEvent.click(screen.getByRole('button', {
+    name: 'Main series, 165845 by 90735 pixels',
+  }))
+  expect(api.configure).not.toHaveBeenCalled()
+  expect(screen.queryByText('Opening selected series in the viewer…')).not.toBeInTheDocument()
 
   fireEvent.click(screen.getByRole('button', { name: 'Draw crop on slide' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Test draw crop' }))
