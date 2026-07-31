@@ -1227,6 +1227,13 @@ function ExportInspector({
                   {' · '}max ΔE00 {current.maximumRoiMeanDeltaE00.toFixed(2)}
                   {' · '}edge {(current.minimumEdgeDetailRetention * 100).toFixed(1)}%
                 </small>
+                {current.packageBytes > current.omeBytes * 1.25 ? (
+                  <small className="forge-field-error" role="status">
+                    Size warning: this quality-compliant package is{' '}
+                    {(current.packageBytes / current.omeBytes).toFixed(3)}× staging OME.
+                    Review it before approval; the selected crop and downsample were preserved.
+                  </small>
+                ) : null}
               </>
             ) : displayedEstimate ? (
               <>
@@ -1278,7 +1285,7 @@ function ExportInspector({
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>Convert current revision</button>}
         {current?.status === 'READY'
-          && dataset.status === 'PACKAGE_READY'
+          && current.packageBytes > 0
           && dataset.approvedArtifactRevision !== current.id
           ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve compact DZI</button>
           : null}

@@ -15,6 +15,13 @@ final class AdaptiveJpegQualitySelectorTest {
     Path temporaryDirectory;
 
     @Test
+    void escalatesThroughHighQualityCandidatesWithoutChangingResolution() {
+        assertEquals(
+                java.util.List.of(65, 70, 75, 80, 85, 90, 95),
+                AdaptiveJpegQualitySelector.QUALITIES);
+    }
+
+    @Test
     void choosesSmallestCandidateThatPassesSixtyFourSpatialRegions() throws Exception {
         var image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_RGB);
         var graphics = image.createGraphics();

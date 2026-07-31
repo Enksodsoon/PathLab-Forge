@@ -132,9 +132,9 @@ Required output contract:
 ```text
 DZI tile size: 512
 DZI overlap: 1
-DZI JPEG quality: adaptively selected Q65, Q70, Q75 or Q80
+DZI JPEG quality: adaptively selected Q65, Q70, Q75, Q80, Q85, Q90 or Q95
 DZI JPEG profile: optimized non-progressive 4:2:0 with trellis and deringing
-DZI rescue profile: optimized non-progressive 4:4:4 at Q80 only when 4:2:0 cannot pass
+DZI rescue profile: optimized non-progressive 4:4:4 quality ladder when 4:2:0 cannot pass
 Thumbnail longest edge: 640
 Thumbnail JPEG quality: 82
 Thumbnail filename: thumbnail.jpg
@@ -142,12 +142,18 @@ Thumbnail filename: thumbnail.jpg
 
 Forge evaluates 64 deterministic native-resolution ROIs and chooses the smallest
 quality for which minimum windowed SSIM is at least 0.970, every ROI mean
-Delta E00 is at most 2.5, and edge-detail retention passes. If all 4:2:0
-candidates fail, Q80 may use the recorded 4:4:4 quality-rescue profile rather
-than weaken the quality gate. The manifest records the selected quality, encoder
+Delta E00 is at most 2.5, and edge-detail retention passes. If the 4:2:0
+candidates fail, Forge evaluates the same Q65-Q95 ladder with the recorded 4:4:4
+quality-rescue profile rather than weaken the quality gate or silently change the
+requested crop or downsample. When both profiles pass, Forge uses the encoded
+quality probe to choose the smaller compliant profile instead of stopping at the
+first passing profile. The manifest records the selected quality, encoder
 profile, metrics, staging/DZI/package bytes, exact predicted TAR bytes and ratios.
-Packages above 1.25 times staging OME size fail with
-`DZI_SIZE_QUALITY_CONFLICT`; 1.10 times is the reference target.
+1.10 times staging OME is the reference target and 1.25 times is the warning
+boundary. A quality-compliant package above that boundary remains reviewable so
+every supported downsample preset can complete without silently reducing
+resolution or weakening the quality gates; Forge shows the exact ratio before
+approval.
 Viewer validates one streaming TAR pass, including archive and payload hashes,
 JPEG signatures, DZI geometry, declared counts and bytes. Output remains private
 until the entire archive, including physical EOF, has passed.

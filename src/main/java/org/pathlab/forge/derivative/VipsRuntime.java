@@ -403,47 +403,55 @@ public final class VipsRuntime implements DerivativeEngine {
                     "8"));
             var encoderProfile = "compact-420-trellis";
             try {
-                encodeQualityCandidates(probe, outputRoot, candidates, true);
+                encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
             } catch (IOException unsupportedEnhancedEncoder) {
-                for (var candidate : candidates.values()) {
-                    Files.deleteIfExists(candidate);
-                }
-                candidates.clear();
+                clearQualityCandidates(candidates);
                 encoderProfile = "compact-420-optimized";
-                encodeQualityCandidates(probe, outputRoot, candidates, false);
+                encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
             }
+            ProfileCandidate fourTwenty = null;
+            IOException fourTwentyFailure = null;
             try {
-                return AdaptiveJpegQualitySelector.select(probe, candidates)
-                        .withEncoderProfile(encoderProfile);
-            } catch (IOException enhancedQualityFailure) {
-                if (!encoderProfile.equals("compact-420-trellis")
-                        || !enhancedQualityFailure.getMessage()
-                                .startsWith("DZI JPEG quality gate failed")) {
-                    throw enhancedQualityFailure;
+                fourTwenty = evaluatedProfile(probe, candidates, encoderProfile);
+            } catch (IOException initialQualityFailure) {
+                if (!isQualityGateFailure(initialQualityFailure)) {
+                    throw initialQualityFailure;
                 }
-                for (var candidate : candidates.values()) {
-                    Files.deleteIfExists(candidate);
-                }
-                candidates.clear();
-                encodeQualityCandidates(probe, outputRoot, candidates, false);
-                try {
-                    return AdaptiveJpegQualitySelector.select(probe, candidates)
-                            .withEncoderProfile("compact-420-optimized");
-                } catch (IOException fourTwentyQualityFailure) {
-                    if (!fourTwentyQualityFailure.getMessage()
-                            .startsWith("DZI JPEG quality gate failed")) {
-                        throw fourTwentyQualityFailure;
+                if (encoderProfile.equals("compact-420-trellis")) {
+                    clearQualityCandidates(candidates);
+                    encoderProfile = "compact-420-optimized";
+                    encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
+                    try {
+                        fourTwenty = evaluatedProfile(probe, candidates, encoderProfile);
+                    } catch (IOException optimizedQualityFailure) {
+                        if (!isQualityGateFailure(optimizedQualityFailure)) {
+                            throw optimizedQualityFailure;
+                        }
+                        fourTwentyFailure = optimizedQualityFailure;
                     }
-                    var rescue = outputRoot.resolve("quality-candidate-80-rescue.jpg");
-                    candidates.put(81, rescue);
-                    run(List.of(
-                            "copy",
-                            probe.toString(),
-                            rescue + jpegSuffix(80, "compact-444-quality-rescue").substring(4)));
-                    return AdaptiveJpegQualitySelector.selectCandidate(
-                            probe, rescue, 80, "compact-444-quality-rescue");
+                } else {
+                    fourTwentyFailure = initialQualityFailure;
                 }
             }
+            clearQualityCandidates(candidates);
+            encoderProfile = "compact-444-quality-rescue";
+            encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
+            ProfileCandidate fourFourFour;
+            try {
+                fourFourFour = evaluatedProfile(probe, candidates, encoderProfile);
+            } catch (IOException fourFourFourFailure) {
+                if (!isQualityGateFailure(fourFourFourFailure) || fourTwenty == null) {
+                    if (fourTwentyFailure != null) {
+                        fourFourFourFailure.addSuppressed(fourTwentyFailure);
+                    }
+                    throw fourFourFourFailure;
+                }
+                return fourTwenty.selection();
+            }
+            if (fourTwenty == null) {
+                return fourFourFour.selection();
+            }
+            return preferSmallerProfile(fourTwenty, fourFourFour).selection();
         } finally {
             Files.deleteIfExists(overview);
             Files.deleteIfExists(probe);
@@ -474,18 +482,61 @@ public final class VipsRuntime implements DerivativeEngine {
             Path probe,
             Path outputRoot,
             Map<Integer, Path> candidates,
-            boolean enhanced)
+            String encoderProfile)
             throws IOException {
-        var profile = enhanced ? "compact-420-trellis" : "compact-420-optimized";
         for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
             var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
             candidates.put(quality, candidate);
             run(List.of(
                     "copy",
                     probe.toString(),
-                    candidate + jpegSuffix(quality, profile).substring(4)));
+                    candidate + jpegSuffix(quality, encoderProfile).substring(4)));
         }
     }
+
+    private static boolean isQualityGateFailure(IOException error) {
+        return error.getMessage() != null
+                && error.getMessage().startsWith("DZI JPEG quality gate failed");
+    }
+
+    private static ProfileCandidate evaluatedProfile(
+            Path probe, Map<Integer, Path> candidates, String encoderProfile)
+            throws IOException {
+        var selection = AdaptiveJpegQualitySelector.select(probe, candidates)
+                .withEncoderProfile(encoderProfile);
+        return new ProfileCandidate(
+                selection, Files.size(candidates.get(selection.quality())));
+    }
+
+    static AdaptiveJpegQualitySelector.Selection preferSmallerProfile(
+            AdaptiveJpegQualitySelector.Selection first,
+            long firstCandidateBytes,
+            AdaptiveJpegQualitySelector.Selection second,
+            long secondCandidateBytes) {
+        return preferSmallerProfile(
+                        new ProfileCandidate(first, firstCandidateBytes),
+                        new ProfileCandidate(second, secondCandidateBytes))
+                .selection();
+    }
+
+    private static ProfileCandidate preferSmallerProfile(
+            ProfileCandidate first, ProfileCandidate second) {
+        if (first.candidateBytes() != second.candidateBytes()) {
+            return first.candidateBytes() < second.candidateBytes() ? first : second;
+        }
+        return first.selection().quality() <= second.selection().quality() ? first : second;
+    }
+
+    private static void clearQualityCandidates(Map<Integer, Path> candidates)
+            throws IOException {
+        for (var candidate : candidates.values()) {
+            Files.deleteIfExists(candidate);
+        }
+        candidates.clear();
+    }
+
+    private record ProfileCandidate(
+            AdaptiveJpegQualitySelector.Selection selection, long candidateBytes) {}
 
     private String run(List<String> arguments) throws IOException {
         var command = commandLine(executable, arguments);
