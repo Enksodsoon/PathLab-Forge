@@ -26,6 +26,97 @@ final class ForgeLibraryApiTest {
     Path tempDirectory;
 
     @Test
+    void preparesOmeViewerPyramidBeforeServingTilesInsteadOfDirectDecoding() throws Exception {
+        var source = tempDirectory.resolve("single-resolution.ome.tif");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1});
+        var repository = new PropertiesDatasetRepository(tempDirectory.resolve("ome-viewer.properties"));
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        var directReads = new java.util.concurrent.atomic.AtomicInteger();
+        var buildStarted = new java.util.concurrent.CountDownLatch(1);
+        var finishBuild = new java.util.concurrent.CountDownLatch(1);
+        ConversionEngine engine = new ConversionEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String runtimeDescription() { return "OME viewer test"; }
+            @Override public List<SeriesInfo> inspect(Path ignored) {
+                return List.of(new SeriesInfo(0, "Tissue", 1000, 500, 3, 1, 1, "uint8", 0.25, 0.25, "µm"));
+            }
+            @Override public void convert(Path ignored, int series, Path output) {}
+            @Override public boolean supportsDirectTiles() { return true; }
+            @Override public DirectTileSource directTileSource(Path ignored, int series) {
+                return new DirectTileSource(1000, 500, 512);
+            }
+            @Override public byte[] readDirectTile(Path ignored, int series, int level, int x, int y) {
+                directReads.incrementAndGet();
+                return new byte[] {1};
+            }
+        };
+        DerivativeEngine derivatives = new DerivativeEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String description() { return "OME viewer derivative"; }
+            @Override public void optimizeOme(Path input, Path output, int width, int height) {}
+            @Override public DerivativeInfo generateDzi(Path input, Path root, int width, int height) {
+                throw new AssertionError("Viewer cache must not run production DZI selection");
+            }
+            @Override public DerivativeInfo generateViewerDzi(Path input, Path root, int width, int height)
+                    throws java.io.IOException {
+                buildStarted.countDown();
+                try {
+                    if (!finishBuild.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new java.io.IOException("Timed out waiting for viewer test");
+                    }
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.IOException(error);
+                }
+                Files.createDirectories(root.resolve("slide_files/10"));
+                Files.writeString(root.resolve("slide.dzi"), "<Image />");
+                Files.write(root.resolve("slide_files/10/0_0.jpg"), new byte[] {9, 8, 7});
+                return new DerivativeInfo(root, 3, 2, 1, "viewer-cache");
+            }
+        };
+
+        try (var server = ForgeServer.start(
+                repository, () -> List.of(source), tempDirectory.resolve("managed-ome-viewer"), engine, derivatives)) {
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var csrf = session.headers().firstValue("x-forge-csrf").orElseThrow();
+            write(client, server, csrf, "/api/datasets/select", "POST");
+            var dataset = repository.list().get(0);
+            write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
+
+            var preparing = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve(
+                                    "/api/datasets/" + dataset.id() + "/preview/slide.dzi"))
+                            .GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(202, preparing.statusCode());
+            assertEquals("preparing", preparing.headers()
+                    .firstValue("x-pathlab-preview-mode").orElseThrow());
+            assertTrue(buildStarted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, directReads.get());
+
+            finishBuild.countDown();
+            HttpResponse<String> ready = preparing;
+            for (var attempt = 0; attempt < 50 && ready.statusCode() != 200; attempt++) {
+                Thread.sleep(20);
+                ready = client.send(
+                        HttpRequest.newBuilder(server.baseUri().resolve(
+                                        "/api/datasets/" + dataset.id() + "/preview/slide.dzi"))
+                                .GET().build(),
+                        HttpResponse.BodyHandlers.ofString());
+            }
+            assertEquals(200, ready.statusCode());
+            assertEquals("persistent", ready.headers()
+                    .firstValue("x-pathlab-preview-mode").orElseThrow());
+            assertEquals(0, directReads.get());
+        }
+    }
+
+    @Test
     void importsAProjectFolderRecursivelyAndIsolatesIncompleteVsiFiles() throws Exception {
         var project = Files.createDirectories(tempDirectory.resolve("project/nested"));
         Files.write(project.resolve("one.ome.tif"), new byte[] {'I', 'I', 42, 0, 1});

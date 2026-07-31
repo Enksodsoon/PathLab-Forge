@@ -68,8 +68,50 @@ export const SlideViewer = memo(function SlideViewer({
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
   const cropGestureRef = useRef<CropPointerGesture | null>(null)
+  const optimizingRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [sourceEpoch, setSourceEpoch] = useState(0)
+  const [optimizing, setOptimizing] = useState(false)
+
+  useEffect(() => {
+    if (!tileSource.includes('/preview/slide.dzi')) {
+      setOptimizing(false)
+      return
+    }
+    let cancelled = false
+    let timer = 0
+    const inspectMode = async () => {
+      try {
+        const response = await fetch(tileSource, { cache: 'no-store' })
+        if (cancelled) return
+        const mode = response.headers.get('x-pathlab-preview-mode')
+        if (mode === 'preparing') {
+          optimizingRef.current = true
+          setOptimizing(true)
+          timer = window.setTimeout(inspectMode, 1500)
+        } else if (mode === 'failed') {
+          optimizingRef.current = false
+          setOptimizing(false)
+          setLoading(false)
+          setLoadError('Forge could not prepare the reusable OME-TIFF viewer')
+        } else {
+          setOptimizing(false)
+          if (mode === 'persistent' && optimizingRef.current) {
+            optimizingRef.current = false
+            setSourceEpoch((value) => value + 1)
+          }
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(inspectMode, 2500)
+      }
+    }
+    void inspectMode()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [tileSource])
 
   const sourcePointFromPixel = (position: OpenSeadragon.Point) => {
     const viewer = viewerRef.current
@@ -103,7 +145,7 @@ export const SlideViewer = memo(function SlideViewer({
     setLoadError('')
     const viewer = OpenSeadragon({
       element: elementRef.current,
-      tileSources: tileSource,
+      tileSources: `${tileSource}${tileSource.includes('?') ? '&' : '?'}viewerCache=${sourceEpoch}`,
       showNavigator: true,
       navigatorPosition: 'BOTTOM_RIGHT',
       animationTime: 0.18,
@@ -128,6 +170,13 @@ export const SlideViewer = memo(function SlideViewer({
       setLoading(false)
     })
     viewer.addOnceHandler('open-failed', () => {
+      if (tileSource.includes('/preview/slide.dzi')) {
+        optimizingRef.current = true
+        setOptimizing(true)
+        setLoading(false)
+        setLoadError('')
+        return
+      }
       setLoading(false)
       setLoadError('Native-resolution preview could not be opened')
     })
@@ -136,7 +185,7 @@ export const SlideViewer = memo(function SlideViewer({
       viewer.destroy()
       onReady?.(null)
     }
-  }, [onReady, tileSource])
+  }, [onReady, sourceEpoch, tileSource])
 
   useEffect(() => {
     const viewer = viewerRef.current
@@ -429,6 +478,13 @@ export const SlideViewer = memo(function SlideViewer({
           <span aria-hidden="true" />
           <strong>Loading first image</strong>
           <small>Opening a quick overview; full-resolution tiles follow as you zoom.</small>
+        </div>
+      ) : null}
+      {optimizing && !loadError ? (
+        <div className="forge-preview-cache-status" role="status" aria-live="polite">
+          <span aria-hidden="true" />
+          <strong>Optimizing this OME-TIFF for smooth viewing</strong>
+          <small>You can keep using Forge. This reusable local tile pyramid is built only once.</small>
         </div>
       ) : null}
       {loadError ? <div className="forge-preview-error" role="alert">{loadError}</div> : null}

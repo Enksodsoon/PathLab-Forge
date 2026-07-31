@@ -36,3 +36,11 @@ Make Forge practical for project-scale conversion:
 
 Viewer deployment, Viewer database changes, publication behavior and automatic public sharing
 remain out of scope.
+
+## OME-TIFF viewer repair
+
+The source viewer must never decode a large single-resolution OME region on an HTTP thread.
+On first open, Forge builds one disposable, fixed-Q85 local DZI in a short Windows-safe cache
+path and exposes explicit preparing/failed state. The completed pyramid is atomically published,
+reused across restarts, and served as static tiles. Production package quality selection remains
+unchanged and the viewer cache is never approved or uploaded.

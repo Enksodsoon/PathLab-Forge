@@ -90,6 +90,13 @@ final class ConversionPreviewTest {
             public DerivativeInfo generateDzi(
                     Path input, Path outputRoot, int width, int height)
                     throws java.io.IOException {
+                throw new AssertionError("Viewer preparation must skip production quality selection");
+            }
+
+            @Override
+            public DerivativeInfo generateViewerDzi(
+                    Path input, Path outputRoot, int width, int height)
+                    throws java.io.IOException {
                 derivativeReadTemporaryOme.set(Files.isRegularFile(input));
                 Files.createDirectories(outputRoot);
                 Files.writeString(outputRoot.resolve("slide.dzi"), "<Image />");
@@ -106,7 +113,7 @@ final class ConversionPreviewTest {
             assertEquals(9_016, preview.width());
             assertEquals(4_574, preview.height());
             assertTrue(derivativeReadTemporaryOme.get());
-            assertTrue(preview.root().toString().contains("efficient-rgb-2x-v4"));
+            assertTrue(preview.root().toString().contains("pv5"));
             assertTrue(Files.notExists(preview.root().resolve("source-preview.ome.tif")));
             assertTrue(Files.notExists(obsoletePreview));
         }

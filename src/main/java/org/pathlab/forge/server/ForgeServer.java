@@ -1196,11 +1196,51 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
+            var cached = conversionService.cachedPreview(id);
+            if (cached.isPresent()) {
+                exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "persistent");
+                serveCachedPreview(exchange, id, relative, cached.orElseThrow());
+                return;
+            }
+            var state = conversionService.ensurePreviewAsync(id);
+            if (state.status().equals("BUILDING")) {
+                exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "preparing");
+                respond(
+                        exchange,
+                        202,
+                        "application/json",
+                        "{\"status\":\"preparing\",\"detail\":\"Building reusable OME-TIFF viewer pyramid\"}");
+                return;
+            }
+            if (state.status().equals("FAILED")) {
+                exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "failed");
+                respond(
+                        exchange,
+                        409,
+                        "application/json",
+                        "{\"error\":\"preview_failed\",\"detail\":" + json(state.detail()) + "}");
+                return;
+            }
             if (conversionService.supportsDirectPreview()) {
+                exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "direct");
                 serveDirectPreview(exchange, id, relative);
                 return;
             }
             var preview = conversionService.preview(id);
+            serveCachedPreview(exchange, id, relative, preview);
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"preview_not_ready\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void serveCachedPreview(
+            HttpExchange exchange, String id, String relative, org.pathlab.forge.conversion.LocalPreview preview)
+            throws IOException {
+        try {
             var root = preview.root().toAbsolutePath().normalize();
             var file = root.resolve(relative.replace('/', java.io.File.separatorChar)).normalize();
             if (!file.startsWith(root)
