@@ -9,7 +9,15 @@ import org.junit.jupiter.api.Test;
 
 class QuPathRuntimeTest {
     @Test
-    void buildsBoundedSixCoreLosslessDirectWriterCommand() {
+    void usesTheFactorFourWriterForVsiAndOmeTiffSources() {
+        var runtime = new QuPathRuntime(Path.of("java.exe"), Path.of("qupath", "app"));
+
+        assertTrue(runtime.supports(org.pathlab.forge.library.DatasetFormat.VSI));
+        assertTrue(runtime.supports(org.pathlab.forge.library.DatasetFormat.OME_TIFF));
+    }
+
+    @Test
+    void buildsBoundedSixCoreApprovedDynamicOmeWriterCommand() {
         var request = new ConversionRequest(
                 Path.of("slide.vsi"),
                 2,
@@ -30,8 +38,9 @@ class QuPathRuntimeTest {
         assertEquals("java.exe", command.get(0));
         assertTrue(command.contains("-XX:ActiveProcessorCount=6"));
         assertTrue(command.contains("-Xmx4g"));
-        assertTrue(command.contains("--compression=UNCOMPRESSED"));
-        assertTrue(command.contains("--pyramid-scale=65536"));
+        assertTrue(command.contains("--compression=JPEG"));
+        assertTrue(command.contains("--tile-size=512"));
+        assertTrue(command.contains("--pyramid-scale=4"));
         assertTrue(command.contains("--series=2"));
         assertTrue(command.contains("--crop=69790,23372,11336,11040"));
     }
@@ -48,7 +57,7 @@ class QuPathRuntimeTest {
                 Path.of("export.partial.ome.tif"));
 
         assertTrue(command.contains("--compression=JPEG"));
-        assertTrue(command.contains("--pyramid-scale=65536"));
+        assertTrue(command.contains("--pyramid-scale=4"));
     }
 
     @Test

@@ -1560,6 +1560,7 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"uploadedBytes\":" + upload.uploadedBytes()
                 + ",\"totalBytes\":" + upload.totalBytes()
                 + ",\"viewerSlideId\":" + json(upload.viewerSlideId())
+                + ",\"uploadMode\":" + json(upload.uploadMode())
                 + ",\"detail\":" + json(upload.detail()) + "}";
     }
 
@@ -1773,7 +1774,7 @@ public final class ForgeServer implements AutoCloseable {
         var headers = exchange.getResponseHeaders();
         headers.set(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
                         + "script-src 'self'; connect-src 'self'; frame-ancestors 'none'");
         headers.set("X-Content-Type-Options", "nosniff");
         headers.set("Referrer-Policy", "no-referrer");

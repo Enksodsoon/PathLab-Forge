@@ -95,6 +95,10 @@ vi.mock('../api', () => ({
     deviceName: '',
     scopes: [],
   })),
+  exchangeViewerPairing: vi.fn(),
+  revokeViewerConnection: vi.fn(),
+  uploadApprovedArtifact: vi.fn(),
+  getViewerUpload: vi.fn(),
 }))
 
 test('launches directly into the Viewer Canvas Focus shell', async () => {
@@ -135,7 +139,7 @@ test('gives the expanded product rail enough width to show its labels', async ()
   expect(within(rail).getByText('Slide library')).toBeVisible()
   expect(within(rail).getByText('Import')).toBeVisible()
   expect(within(rail).getByText('Viewer account')).toBeVisible()
-  expect(within(rail).getByText('Disconnect')).toBeVisible()
+  expect(within(rail).getByText('Connect Viewer')).toBeVisible()
 })
 
 test('collapses and restores the slide inspector without losing its state', async () => {
@@ -227,6 +231,101 @@ test('shows the short-lived Viewer verification code', async () => {
     'href',
     'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
   )
+})
+
+test('defaults local pairing to the Viewer web origin', async () => {
+  render(<App />)
+
+  await waitFor(() => {
+    expect(api.datasets).toHaveBeenCalled()
+    expect(api.getViewerConnection).toHaveBeenCalled()
+  })
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
+
+  expect(screen.getByRole('textbox', { name: 'Viewer address' })).toHaveValue(
+    'http://127.0.0.1:5173',
+  )
+  expect(screen.getByRole('button', { name: 'Request pairing code' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Disconnect this device' })).not.toBeInTheDocument()
+})
+
+test('shows connected account details and revokes only after confirmation', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValueOnce({
+    connected: true,
+    viewerUrl: 'http://127.0.0.1:5173',
+    deviceName: 'PathLab Forge on Windows',
+    scopes: ['desktop:ingest', 'slides:private:read'],
+  })
+  let finishRevoke!: () => void
+  vi.mocked(api.revokeViewerConnection).mockImplementationOnce(() => new Promise<void>((resolve) => {
+    finishRevoke = resolve
+  }))
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'PathLab Forge on Windows' }))
+  const dialog = screen.getByRole('dialog', { name: 'Viewer connection' })
+  expect(within(dialog).getByText('http://127.0.0.1:5173')).toBeVisible()
+  expect(within(dialog).getByText('PathLab Forge on Windows')).toBeVisible()
+  expect(within(dialog).getByText('desktop:ingest')).toBeVisible()
+  expect(within(dialog).getByText('slides:private:read')).toBeVisible()
+
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect this device' }))
+  expect(api.revokeViewerConnection).not.toHaveBeenCalled()
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm disconnect' }))
+  expect(api.revokeViewerConnection).toHaveBeenCalledTimes(1)
+  expect(within(dialog).getByText('PathLab Forge on Windows')).toBeVisible()
+
+  finishRevoke()
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Viewer connection' }))
+    .not.toBeInTheDocument())
+  expect(screen.getByRole('button', { name: 'Viewer account' })).toBeVisible()
+})
+
+test('keeps pairing retryable and explains pending approval', async () => {
+  vi.mocked(api.exchangeViewerPairing).mockRejectedValueOnce(new Error(
+    'Viewer pairing is not approved yet (409): {"error":"PAIRING_PENDING"}',
+  ))
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
+  await screen.findByText('ABCD-EFGH')
+  fireEvent.click(screen.getByRole('button', { name: 'I approved this device' }))
+
+  expect(await screen.findByText(
+    'Approval is still pending. Approve the code in Viewer, then try again.',
+  )).toBeVisible()
+  expect(screen.getByRole('button', { name: 'I approved this device' })).toBeVisible()
+})
+
+test.each([
+  ['pairing expired', 'This pairing code expired. Request a new code and approve it in Viewer.'],
+  ['credential revoked (401)', 'The Viewer credential was revoked. Connect this device again.'],
+])('explains retryable Viewer exchange failure: %s', async (failure, expected) => {
+  vi.mocked(api.exchangeViewerPairing).mockRejectedValueOnce(new Error(failure))
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
+  await screen.findByText('ABCD-EFGH')
+  fireEvent.click(screen.getByRole('button', { name: 'I approved this device' }))
+
+  expect(await screen.findByText(expected)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'I approved this device' })).toBeVisible()
+})
+
+test.each([
+  ['Viewer URL must use HTTPS', 'Enter a valid HTTPS Viewer URL, or a loopback HTTP address for local testing.'],
+  ['Connection refused', 'Viewer is unreachable. Start Viewer and confirm its web address, then retry.'],
+])('explains retryable Viewer connection failure: %s', async (failure, expected) => {
+  vi.mocked(api.startViewerPairing).mockRejectedValueOnce(new Error(failure))
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
+
+  expect(await screen.findByText(expected)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Request pairing code' })).toBeVisible()
 })
 
 test('updates dimensions and file size live while drawing and reshaping a crop', async () => {

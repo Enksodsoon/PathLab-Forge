@@ -61,14 +61,8 @@ public final class SourceVerificationService implements AutoCloseable {
             if (!snapshot.fingerprint().equals(after.fingerprint())) {
                 throw new IOException("Source changed while content digest was being computed");
             }
-            var current = repository.find(dataset.id()).orElse(dataset);
-            var verified = current.withSourceIdentity(
-                    DatasetInspector.readyStatus(dataset.format(), snapshot),
-                    DatasetInspector.readyDetail(dataset.format(), snapshot),
-                    digest.fingerprint(),
-                    digest.serializedInventory());
-            repository.save(verified);
-            return verified;
+            return repository.update(dataset.id(), current -> mergeVerification(
+                    current, snapshot, digest.fingerprint(), digest.serializedInventory()));
         } catch (IOException | DatasetInspectionException error) {
             try {
                 var current = repository.find(dataset.id()).orElse(dataset);
@@ -85,6 +79,26 @@ public final class SourceVerificationService implements AutoCloseable {
                             ? io
                             : new IOException(error.getMessage(), error));
         }
+    }
+
+    private static LocalDataset mergeVerification(
+            LocalDataset current,
+            SourceSnapshot snapshot,
+            String fingerprint,
+            String inventory) {
+        var verifiedStatus = DatasetInspector.readyStatus(current.format(), snapshot);
+        var verifiedDetail = DatasetInspector.readyDetail(current.format(), snapshot);
+        if (verifiedStatus != DatasetStatus.NEEDS_COMPANIONS
+                && current.status() == DatasetStatus.VERIFYING_SOURCE
+                && current.selectedSeries() >= 0) {
+            verifiedStatus = DatasetStatus.READY_TO_CONVERT;
+            verifiedDetail = "Source content verified; conversion settings are ready";
+        } else if (verifiedStatus != DatasetStatus.NEEDS_COMPANIONS
+                && current.status() != DatasetStatus.VERIFYING_SOURCE) {
+            verifiedStatus = current.status();
+            verifiedDetail = current.detail();
+        }
+        return current.withSourceIdentity(verifiedStatus, verifiedDetail, fingerprint, inventory);
     }
 
     @Override

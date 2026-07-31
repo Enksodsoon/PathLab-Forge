@@ -12,6 +12,7 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.UUID;
 import org.pathlab.forge.library.LocalDataset;
+import org.pathlab.forge.derivative.OmeDynamicProfile;
 
 public final class ArtifactRevisionRepository {
     private final Path managedRoot;
@@ -46,6 +47,8 @@ public final class ArtifactRevisionRepository {
                 "",
                 outputWidth,
                 outputHeight,
+                OmeDynamicProfile.V1.id(),
+                OmeDynamicProfile.V1.defaultJpegQuality(),
                 0,
                 defaultName(dataset),
                 "");
@@ -79,6 +82,8 @@ public final class ArtifactRevisionRepository {
                 properties.getProperty("packageSha256", ""),
                 Integer.parseInt(properties.getProperty("outputWidth")),
                 Integer.parseInt(properties.getProperty("outputHeight")),
+                properties.getProperty("omeProfile", ""),
+                Integer.parseInt(properties.getProperty("omeJpegQuality", "0")),
                 Long.parseLong(properties.getProperty("approvedAt", "0")),
                 properties.getProperty(
                         "name",
@@ -117,6 +122,8 @@ public final class ArtifactRevisionRepository {
         properties.setProperty("packageSha256", revision.packageSha256());
         properties.setProperty("outputWidth", Integer.toString(revision.outputWidth()));
         properties.setProperty("outputHeight", Integer.toString(revision.outputHeight()));
+        properties.setProperty("omeProfile", revision.omeProfile());
+        properties.setProperty("omeJpegQuality", Integer.toString(revision.omeJpegQuality()));
         properties.setProperty("approvedAt", Long.toString(revision.approvedAt()));
         properties.setProperty("name", revision.name());
         properties.setProperty("failure", revision.failure());

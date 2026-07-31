@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.function.UnaryOperator;
 
 public final class PropertiesDatasetRepository implements DatasetRepository {
     private static final String PREFIX = "dataset.";
@@ -67,6 +68,17 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
     public synchronized void save(LocalDataset dataset) throws IOException {
         datasets.put(dataset.id(), dataset);
         persist();
+    }
+
+    @Override
+    public synchronized LocalDataset update(String id, UnaryOperator<LocalDataset> change)
+            throws IOException {
+        var current = Optional.ofNullable(datasets.get(id))
+                .orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
+        var updated = change.apply(current);
+        datasets.put(id, updated);
+        persist();
+        return updated;
     }
 
     @Override

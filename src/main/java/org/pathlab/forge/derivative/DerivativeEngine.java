@@ -31,6 +31,16 @@ public interface DerivativeEngine {
         // Engines without a metadata reader retain the signature and DZI geometry checks.
     }
 
+    default void validateOmeProfile(
+            Path omeTiff,
+            int width,
+            int height,
+            OmeDynamicProfile profile,
+            int jpegQuality)
+            throws IOException {
+        validateOmeGeometry(omeTiff, width, height);
+    }
+
     default void assembleRegionsFinal(
             List<Path> regions, Path pyramidalOme, int width, int height) throws IOException {
         throw new IOException("Direct final OME assembly is unavailable");
@@ -44,6 +54,18 @@ public interface DerivativeEngine {
             double downsample)
             throws IOException {
         assembleRegionsFinal(regions, pyramidalOme, width, height);
+    }
+
+    default void assembleRegionsFinal(
+            List<Path> regions,
+            Path pyramidalOme,
+            int width,
+            int height,
+            double downsample,
+            OmeDynamicProfile profile,
+            int jpegQuality)
+            throws IOException {
+        assembleRegionsFinal(regions, pyramidalOme, width, height, downsample);
     }
 
     default boolean supportsDirectDziFromRegions() {

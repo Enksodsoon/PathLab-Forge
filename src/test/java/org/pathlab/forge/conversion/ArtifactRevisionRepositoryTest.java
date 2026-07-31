@@ -68,6 +68,17 @@ final class ArtifactRevisionRepositoryTest {
         assertTrue(Files.isRegularFile(Path.of(second.packagePath())));
     }
 
+    @Test
+    void recordsTheApprovedDynamicOmeProfileForEveryNewArtifact() throws Exception {
+        var repository = new ArtifactRevisionRepository(temporaryDirectory);
+        var revision = repository.create(configured(3, 1.5), 7_557, 7_360);
+        var properties = Files.readString(
+                Path.of(revision.omePath()).getParent().resolve("revision.properties"));
+
+        assertTrue(properties.contains("omeProfile=ome-dynamic-v1"));
+        assertTrue(properties.contains("omeJpegQuality=75"));
+    }
+
     private static LocalDataset configured(int series, double downsample) {
         return new LocalDataset(
                         "dataset-1",

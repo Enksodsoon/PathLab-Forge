@@ -23,6 +23,7 @@ import org.pathlab.forge.library.DatasetSourceInventory;
 import org.pathlab.forge.library.DatasetStatus;
 import org.pathlab.forge.library.LocalDataset;
 import org.pathlab.forge.derivative.DerivativeEngine;
+import org.pathlab.forge.derivative.OmeDynamicProfile;
 import org.pathlab.forge.packageformat.PreparedPackageBuilder;
 import org.pathlab.forge.packageformat.PackageMetadata;
 
@@ -784,6 +785,7 @@ public final class ConversionService implements AutoCloseable {
         }
         var series = engine.inspect(Path.of(dataset.sourcePath()));
         inspectedSeries.put(id, series);
+        updateInspectedDataset(dataset, series, false, DatasetStatus.VERIFYING_SOURCE);
         return series;
     }
 
@@ -858,6 +860,14 @@ public final class ConversionService implements AutoCloseable {
 
     private void updateInspectedDataset(
             LocalDataset dataset, List<SeriesInfo> series, boolean cacheHit) throws IOException {
+        updateInspectedDataset(dataset, series, cacheHit, DatasetStatus.READY_TO_CONVERT);
+    }
+
+    private void updateInspectedDataset(
+            LocalDataset dataset,
+            List<SeriesInfo> series,
+            boolean cacheHit,
+            DatasetStatus nextStatus) throws IOException {
         var previouslySelected = series.stream()
                 .filter(item -> item.index() == dataset.selectedSeries())
                 .filter(SeriesInfo::isRgbPlane)
@@ -878,8 +888,10 @@ public final class ConversionService implements AutoCloseable {
         var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
         var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
         repository.save(dataset.withExportConfiguration(
-                DatasetStatus.READY_TO_CONVERT,
-                cacheHit
+                nextStatus,
+                nextStatus == DatasetStatus.VERIFYING_SOURCE
+                        ? series.size() + " image series found; source verification is still running"
+                        : cacheHit
                         ? series.size() + " image series loaded instantly from verified cache"
                         : series.size() + " image series found; thumbnails are ready on demand",
                 selected.index(),
@@ -1505,8 +1517,12 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
                 updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
                 verifyTiff(partial);
-                derivativeEngine.validateOmeGeometry(
-                        partial, request.outputWidth(), request.outputHeight());
+                derivativeEngine.validateOmeProfile(
+                        partial,
+                        request.outputWidth(),
+                        request.outputHeight(),
+                        OmeDynamicProfile.V1,
+                        OmeDynamicProfile.V1.defaultJpegQuality());
                 OutputSizeGuard.requireSuitable(
                         Files.size(partial),
                         dataset.sourceBytes(),
@@ -1530,8 +1546,12 @@ public final class ConversionService implements AutoCloseable {
             } else {
                 try {
                     verifyTiff(output);
-                    derivativeEngine.validateOmeGeometry(
-                            output, request.outputWidth(), request.outputHeight());
+                    derivativeEngine.validateOmeProfile(
+                            output,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            OmeDynamicProfile.V1,
+                            OmeDynamicProfile.V1.defaultJpegQuality());
                 } catch (IOException invalidOme) {
                     var quarantine = outputDirectory.resolve("quarantine");
                     Files.createDirectories(quarantine);
@@ -1623,10 +1643,16 @@ public final class ConversionService implements AutoCloseable {
                             partial,
                             request.outputWidth(),
                             request.outputHeight(),
-                            request.downsample());
+                            request.downsample(),
+                            OmeDynamicProfile.V1,
+                            OmeDynamicProfile.V1.defaultJpegQuality());
                     verifyTiff(partial);
-                    derivativeEngine.validateOmeGeometry(
-                            partial, request.outputWidth(), request.outputHeight());
+                    derivativeEngine.validateOmeProfile(
+                            partial,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            OmeDynamicProfile.V1,
+                            OmeDynamicProfile.V1.defaultJpegQuality());
                     OutputSizeGuard.requireSuitable(
                             Files.size(partial),
                             dataset.sourceBytes(),
@@ -1766,7 +1792,6 @@ public final class ConversionService implements AutoCloseable {
             var readyRevision = revision.ready(digest, packageInfo.sha256());
             artifactRepository.save(readyRevision);
             ArtifactIntegrityStamp.write(readyRevision);
-            Files.deleteIfExists(output);
             deleteTree(outputDirectory, derivative);
             repository.save(dataset.withConversion(
                     DatasetStatus.PACKAGE_READY,
