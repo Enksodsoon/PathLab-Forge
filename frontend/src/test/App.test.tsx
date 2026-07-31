@@ -576,6 +576,10 @@ test('shows conversion progress and keeps viewer controls locked until validatio
     stage: 'REGIONS_RENDERING',
     completedUnits: 2,
     totalUnits: 10,
+    elapsedMs: 14_000,
+    estimatedRemainingMs: 28_000,
+    unitsPerSecond: 0.5,
+    resourceProfile: 'adaptive-12c-32gb',
   }
   vi.mocked(api.bootstrap).mockResolvedValue([[converting], {
     conversionRuntime: 'Bio-Formats test',
@@ -613,11 +617,12 @@ test('shows conversion progress and keeps viewer controls locked until validatio
 
   render(<App />)
 
-  expect((await screen.findAllByText('Rendering RGB regions'))[0]).toBeVisible()
+  expect((await screen.findAllByText('Reading source regions in parallel'))[0]).toBeVisible()
   expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(11)
   expect(screen.getByText('Step 1 of 5')).toBeVisible()
-  expect(screen.getByText(/Quality is selected from 64 tissue regions/)).toBeVisible()
-  expect(screen.getByText(/Elapsed/)).toBeVisible()
+  expect(screen.getByText('2 of 10 source regions')).toBeVisible()
+  expect(screen.getByText('12c · 32gb')).toBeVisible()
+  expect(screen.getByText(/Elapsed 14s · about 28s left in this phase/)).toBeVisible()
   expect(screen.queryByTestId('forge-osd')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Zoom in' })).toBeDisabled()
   expect(screen.getByRole('progressbar', {
@@ -751,7 +756,7 @@ test('opens the converted viewer while the upload package is still building', as
     'data-tile-source',
     expect.stringContaining('/artifacts/packaging-artifact/derivative/slide.dzi'),
   )
-  expect(screen.getByText('Quality passed · packaging compact DZI')).toBeVisible()
+  expect(screen.getAllByText('Quality passed · packaging compact DZI')).toHaveLength(2)
   expect(screen.queryByRole('button', { name: 'Approve compact DZI' })).not.toBeInTheDocument()
 })
 

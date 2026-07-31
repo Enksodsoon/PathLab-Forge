@@ -79,6 +79,15 @@ Bio-Formats is not committed or redistributed by this repository. A local runtim
 operator-supplied dependency until redistribution review is complete. The same is true of the
 local libvips runtime used for streaming derivatives.
 
+## Hardware profile
+
+The minimum supported conversion profile is 6 logical CPU cores and 8 GB RAM.
+Forge detects the host at startup and scales the Bio-Formats region pool, libvips
+concurrency, cache, and process-tree limits on higher-specification machines. The
+minimum is a compatibility floor, not a fixed resource cap: a machine with more
+cores and memory receives a larger bounded profile while retaining pause and
+low-memory safety thresholds.
+
 ## Start with Codex
 
 1. Read `CODEX_START_HERE.md`.

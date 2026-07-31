@@ -363,7 +363,8 @@ public final class BioFormatsEngine implements ConversionEngine {
                 partial.toString()));
         var result = run(
                 commandWithHeap(
-                        "640m",
+                        org.pathlab.forge.runtime.RuntimeProfile.system()
+                                .bioFormatsHeapBytes() / (1024 * 1024) + "m",
                         "loci.formats.tools.ImageConverter",
                         arguments),
                 CONVERSION_TIMEOUT,

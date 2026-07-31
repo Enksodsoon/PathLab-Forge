@@ -6,7 +6,7 @@ import java.util.function.LongSupplier;
 
 public final class ResourceGovernor {
     private static final ResourceGovernor SYSTEM =
-            new ResourceGovernor(RuntimeProfile.target(), ResourceGovernor::availableSystemMemory);
+            new ResourceGovernor(RuntimeProfile.system(), ResourceGovernor::availableSystemMemory);
     private final RuntimeProfile profile;
     private final LongSupplier availableBytes;
 
@@ -38,7 +38,9 @@ public final class ResourceGovernor {
         if (decide(available) != Decision.RUN) {
             throw new IllegalStateException(
                     "Conversion paused for memory safety: "
-                            + available + " bytes available; 1310720000 required");
+                            + available + " bytes available; "
+                            + profile.workerStopAvailableBytes() + " required by "
+                            + profile.name());
         }
     }
 

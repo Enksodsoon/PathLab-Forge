@@ -51,7 +51,20 @@ public final class PreparedPackageBuilder {
                         sha256(path)));
             }
         }
-        return build(root, payloads, width, height, metadata, output, 0, 75, 1.0, 0.0, 1.0, "compact-baseline");
+        return build(
+                root,
+                payloads,
+                width,
+                height,
+                metadata,
+                output,
+                0,
+                75,
+                1.0,
+                0.0,
+                1.0,
+                "compact-baseline",
+                (completed, total) -> {});
     }
 
     public static PackageInfo build(
@@ -72,6 +85,25 @@ public final class PreparedPackageBuilder {
             Path output,
             long stagingOmeBytes)
             throws IOException {
+        return build(
+                derivative,
+                width,
+                height,
+                metadata,
+                output,
+                stagingOmeBytes,
+                (completed, total) -> {});
+    }
+
+    public static PackageInfo build(
+            DerivativeInfo derivative,
+            int width,
+            int height,
+            PackageMetadata metadata,
+            Path output,
+            long stagingOmeBytes,
+            java.util.function.BiConsumer<Integer, Integer> progress)
+            throws IOException {
         var root = derivative.root().toAbsolutePath().normalize();
         var payloads = payloads(derivative);
         return build(
@@ -86,7 +118,8 @@ public final class PreparedPackageBuilder {
                 derivative.minimumWindowedSsim(),
                 derivative.meanDeltaE00(),
                 derivative.minimumEdgeDetailRetention(),
-                derivative.encoderProfile());
+                derivative.encoderProfile(),
+                progress);
     }
 
     public static long predictBytes(
@@ -139,7 +172,8 @@ public final class PreparedPackageBuilder {
             double minimumWindowedSsim,
             double meanDeltaE00,
             double minimumEdgeDetailRetention,
-            String encoderProfile)
+            String encoderProfile,
+            java.util.function.BiConsumer<Integer, Integer> progress)
             throws IOException {
         payloads = payloads.stream()
                 .sorted(java.util.Comparator.comparing(Payload::name))
@@ -185,6 +219,7 @@ public final class PreparedPackageBuilder {
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
         var tarDigest = sha256Digest();
         var entries = new LinkedHashMap<String, PackageEntryIndex.Entry>();
+        progress.accept(0, payloads.size());
         try {
             try (var file = Files.newOutputStream(partial);
                     var digest = new DigestOutputStream(file, tarDigest);
@@ -226,6 +261,7 @@ public final class PreparedPackageBuilder {
                             HexFormat.of().formatHex(payloadDigest.digest()))) {
                         throw new IOException("Ledger payload hash changed: " + payload.name());
                     }
+                    progress.accept(entries.size() - 3, payloads.size());
                 }
                 stream.write(new byte[BLOCK * 2]);
             }

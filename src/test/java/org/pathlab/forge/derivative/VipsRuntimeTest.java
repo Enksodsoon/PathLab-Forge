@@ -45,6 +45,37 @@ class VipsRuntimeTest {
     }
 
     @Test
+    void boundsEachParallelQualityProbeToOneVipsThreadAndASharedCacheSlice() {
+        var command = VipsRuntime.probeCommandLine(
+                Path.of("vips.exe"),
+                List.of("crop", "input.tif", "roi.png", "0", "0", "256", "256"),
+                5);
+
+        assertEquals("--vips-concurrency=1", command.get(1));
+        assertEquals("--vips-cache-max-memory=214748364", command.get(2));
+        assertEquals("--vips-cache-max-files=32", command.get(3));
+        assertEquals("crop", command.get(5));
+    }
+
+    @Test
+    void launchesPersistentNativeRoiExtractionInAnIsolatedBoundedJvm() {
+        var first = new AdaptiveJpegQualitySelector.Roi(0, 1, 256, 255);
+        var output = temporaryDirectory.resolve("quality-rois").resolve("roi-00.png");
+
+        var command = VipsRuntime.nativeRoiCommandLine(
+                temporaryDirectory.resolve("vips.exe"),
+                temporaryDirectory.resolve("source.ome.tif"),
+                List.of(first),
+                List.of(output));
+
+        assertTrue(command.get(0).endsWith("java.exe") || command.get(0).endsWith("java"));
+        assertEquals("-Xmx192m", command.get(2));
+        assertEquals(VipsNativeRoiHelper.class.getName(), command.get(5));
+        assertEquals("roi-00.png", command.get(10));
+        assertEquals(List.of("0", "1", "256", "255"), command.subList(11, 15));
+    }
+
+    @Test
     void usesCompactNonProgressiveFourTwentyJpegEncoderProfile() {
         var suffix = VipsRuntime.compactJpegSuffix(75);
 

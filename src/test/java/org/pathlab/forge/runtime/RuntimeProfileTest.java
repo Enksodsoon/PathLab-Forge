@@ -20,4 +20,15 @@ final class RuntimeProfileTest {
         assertTrue(profile.mayLaunchWorker(1_250L * 1024 * 1024));
         assertTrue(profile.mustPause(767L * 1024 * 1024));
     }
+
+    @Test
+    void adaptsConcurrencyAndCacheToHigherSpecHardware() {
+        var profile = RuntimeProfile.adaptive(12, 32L * 1024 * 1024 * 1024);
+
+        assertEquals("adaptive-12c-32gb", profile.name());
+        assertEquals(8, profile.maxConversionWorkers());
+        assertEquals(11, profile.vipsConcurrency());
+        assertTrue(profile.vipsCacheBytes() > RuntimeProfile.target().vipsCacheBytes());
+        assertTrue(profile.processTreeLimitBytes() > RuntimeProfile.target().processTreeLimitBytes());
+    }
 }

@@ -88,6 +88,14 @@ tasks.withType<Test>().configureEach {
     systemProperty("user.country", "US")
     systemProperty("user.timezone", "UTC")
     systemProperty("pathlab.forge.resourceGovernor.enabled", "false")
+    systemProperty(
+        "pathlab.forge.runtime.processors",
+        System.getProperty("pathlab.forge.runtime.processors", "6"))
+    systemProperty(
+        "pathlab.forge.runtime.memoryBytes",
+        System.getProperty(
+            "pathlab.forge.runtime.memoryBytes",
+            (8L * 1024 * 1024 * 1024).toString()))
     listOf(
         "pathlab.forge.test.ome",
         "pathlab.forge.test.ome.width",

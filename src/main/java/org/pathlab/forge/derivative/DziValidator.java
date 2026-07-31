@@ -23,6 +23,15 @@ public final class DziValidator {
     private DziValidator() {}
 
     public static DerivativeInfo validate(Path root, int width, int height) throws IOException {
+        return validate(root, width, height, (completed, total) -> {});
+    }
+
+    public static DerivativeInfo validate(
+            Path root,
+            int width,
+            int height,
+            java.util.function.BiConsumer<Long, Long> progress)
+            throws IOException {
         var normalized = root.toAbsolutePath().normalize();
         if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Derivative directory is missing");
@@ -45,6 +54,9 @@ public final class DziValidator {
         }
 
         var maxLevel = ceilLog2(Math.max(width, height));
+        var expectedTiles = expectedTileCount(width, height);
+        var totalValidationUnits = Math.addExact(Math.multiplyExact(expectedTiles, 2), 2);
+        progress.accept(0L, totalValidationUnits);
         var dimensions = new HashMap<String, Dimensions>();
         long tileCount = 0;
         for (var level = 0; level <= maxLevel; level++) {
@@ -78,6 +90,9 @@ public final class DziValidator {
                                     expectedTileDimension(levelWidth, column, columns),
                                     expectedTileDimension(levelHeight, row, rows)));
                     tileCount++;
+                    if (tileCount % 128 == 0 || tileCount == expectedTiles) {
+                        progress.accept(tileCount, totalValidationUnits);
+                    }
                     if (tileCount > MAX_FILES) {
                         throw new IOException("DZI tile count exceeds the safety limit");
                     }
@@ -122,6 +137,10 @@ public final class DziValidator {
                         jpeg,
                         imageDimensions.width(),
                         imageDimensions.height()));
+                var completed = Math.addExact(tileCount, fileCount);
+                if (fileCount % 128 == 0 || fileCount == tileCount + 2) {
+                    progress.accept(completed, totalValidationUnits);
+                }
             }
         }
         if (fileCount != tileCount + 2) {
@@ -134,6 +153,25 @@ public final class DziValidator {
                 Math.toIntExact(tileCount),
                 HexFormat.of().formatHex(digest.digest()),
                 ledger);
+    }
+
+    public static long expectedTileCount(int width, int height) {
+        if (width < 1 || height < 1) {
+            throw new IllegalArgumentException("DZI geometry is invalid");
+        }
+        var maximumLevel = ceilLog2(Math.max(width, height));
+        long count = 0;
+        for (var level = 0; level <= maximumLevel; level++) {
+            var divisor = 1L << Math.min(62, maximumLevel - level);
+            var levelWidth = Math.max(1, ceilDiv(width, divisor));
+            var levelHeight = Math.max(1, ceilDiv(height, divisor));
+            count = Math.addExact(
+                    count,
+                    Math.multiplyExact(
+                            (long) ceilDiv(levelWidth, TILE_SIZE),
+                            ceilDiv(levelHeight, TILE_SIZE)));
+        }
+        return count;
     }
 
     private static String hash(Path path, MessageDigest aggregate) throws IOException {

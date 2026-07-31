@@ -1407,6 +1407,8 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"completedUnits\":" + progress.completedUnits()
                 + ",\"totalUnits\":" + progress.totalUnits()
                 + ",\"elapsedMs\":" + progress.elapsedMs()
+                + ",\"estimatedRemainingMs\":" + progress.estimatedRemainingMs()
+                + ",\"unitsPerSecond\":" + progress.unitsPerSecond()
                 + ",\"peakWorkingSetBytes\":" + progress.peakWorkingSetBytes()
                 + ",\"resourceProfile\":" + json(progress.resourceProfile())
                 + ",\"cacheHitReason\":" + json(progress.cacheHitReason())

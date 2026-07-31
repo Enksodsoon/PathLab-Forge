@@ -317,10 +317,23 @@ public final class VipsRuntime implements DerivativeEngine {
     @Override
     public DerivativeInfo generateDzi(
             Path omeTiff, Path outputRoot, int width, int height) throws IOException {
+        return generateDzi(omeTiff, outputRoot, width, height, ignored -> {});
+    }
+
+    @Override
+    public DerivativeInfo generateDzi(
+            Path omeTiff,
+            Path outputRoot,
+            int width,
+            int height,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
         requireAvailable();
         Files.createDirectories(outputRoot);
-        var selection = selectDziQuality(omeTiff, outputRoot, width, height);
-        run(List.of(
+        var selection = selectDziQuality(omeTiff, outputRoot, width, height, progress);
+        var expectedTiles = DziValidator.expectedTileCount(width, height);
+        progress.accept(new DerivativeProgress("DZI_TILES", 0, expectedTiles));
+        runWithProgress(List.of(
                 "dzsave",
                 omeTiff.toString(),
                 outputRoot.resolve("slide").toString(),
@@ -337,7 +350,11 @@ public final class VipsRuntime implements DerivativeEngine {
                 "--region-shrink",
                 "mean",
                 "--skip-blanks",
-                "-1"));
+                "-1"),
+                percent -> progress.accept(new DerivativeProgress(
+                        "DZI_TILES",
+                        Math.min(expectedTiles, Math.round(expectedTiles * percent / 100.0)),
+                        expectedTiles)));
         run(List.of(
                 "thumbnail",
                 omeTiff.toString(),
@@ -346,7 +363,14 @@ public final class VipsRuntime implements DerivativeEngine {
                 "--size",
                 "down"));
         Files.deleteIfExists(outputRoot.resolve("slide_files").resolve("vips-properties.xml"));
-        var validated = DziValidator.validate(outputRoot, width, height);
+        var validationUnits = Math.addExact(Math.multiplyExact(expectedTiles, 2), 2);
+        progress.accept(new DerivativeProgress("DZI_VALIDATING", 0, validationUnits));
+        var validated = DziValidator.validate(
+                outputRoot,
+                width,
+                height,
+                (completed, total) -> progress.accept(
+                        new DerivativeProgress("DZI_VALIDATING", completed, total)));
         return new DerivativeInfo(
                 validated.root(),
                 validated.bytes(),
@@ -363,6 +387,17 @@ public final class VipsRuntime implements DerivativeEngine {
 
     AdaptiveJpegQualitySelector.Selection selectDziQuality(
             Path omeTiff, Path outputRoot, int width, int height) throws IOException {
+        return selectDziQuality(
+                omeTiff, outputRoot, width, height, ignored -> {});
+    }
+
+    private AdaptiveJpegQualitySelector.Selection selectDziQuality(
+            Path omeTiff,
+            Path outputRoot,
+            int width,
+            int height,
+            java.util.function.Consumer<DerivativeProgress> progress)
+            throws IOException {
         requireAvailable();
         Files.createDirectories(outputRoot);
         var overview = outputRoot.resolve("quality-overview.png");
@@ -370,6 +405,7 @@ public final class VipsRuntime implements DerivativeEngine {
         var roiRoot = outputRoot.resolve("quality-rois");
         var candidates = new LinkedHashMap<Integer, Path>();
         try {
+            progress.accept(new DerivativeProgress("QUALITY_OVERVIEW", 0, 1));
             run(List.of(
                     "thumbnail",
                     omeTiff.toString(),
@@ -377,24 +413,21 @@ public final class VipsRuntime implements DerivativeEngine {
                     "1024",
                     "--size",
                     "down"));
+            progress.accept(new DerivativeProgress("QUALITY_OVERVIEW", 1, 1));
             deleteTree(roiRoot);
             Files.createDirectories(roiRoot);
             var roiFiles = new ArrayList<Path>();
             var rois = AdaptiveJpegQualitySelector.planNativeRois(
                     overview, width, height);
             for (var index = 0; index < rois.size(); index++) {
-                var roi = rois.get(index);
-                var roiFile = roiRoot.resolve("roi-%02d.png".formatted(index));
-                run(List.of(
-                        "crop",
-                        omeTiff.toString(),
-                        roiFile.toString(),
-                        Integer.toString(roi.x()),
-                        Integer.toString(roi.y()),
-                        Integer.toString(roi.width()),
-                        Integer.toString(roi.height())));
-                roiFiles.add(roiFile);
+                roiFiles.add(roiRoot.resolve("roi-%02d.png".formatted(index)));
             }
+            extractQualityRois(
+                    omeTiff,
+                    rois,
+                    roiFiles,
+                    completed -> progress.accept(new DerivativeProgress(
+                            "QUALITY_ROIS", completed, rois.size())));
             run(List.of(
                     "arrayjoin",
                     serializeImageArray(roiFiles),
@@ -402,12 +435,15 @@ public final class VipsRuntime implements DerivativeEngine {
                     "--across",
                     "8"));
             var encoderProfile = "compact-420-trellis";
+            var candidateProgress = new java.util.concurrent.atomic.AtomicInteger();
             try {
-                encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
+                encodeQualityCandidates(
+                        probe, outputRoot, candidates, encoderProfile, candidateProgress, progress);
             } catch (IOException unsupportedEnhancedEncoder) {
                 clearQualityCandidates(candidates);
                 encoderProfile = "compact-420-optimized";
-                encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
+                encodeQualityCandidates(
+                        probe, outputRoot, candidates, encoderProfile, candidateProgress, progress);
             }
             ProfileCandidate fourTwenty = null;
             IOException fourTwentyFailure = null;
@@ -420,7 +456,13 @@ public final class VipsRuntime implements DerivativeEngine {
                 if (encoderProfile.equals("compact-420-trellis")) {
                     clearQualityCandidates(candidates);
                     encoderProfile = "compact-420-optimized";
-                    encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
+                    encodeQualityCandidates(
+                            probe,
+                            outputRoot,
+                            candidates,
+                            encoderProfile,
+                            candidateProgress,
+                            progress);
                     try {
                         fourTwenty = evaluatedProfile(probe, candidates, encoderProfile);
                     } catch (IOException optimizedQualityFailure) {
@@ -435,7 +477,8 @@ public final class VipsRuntime implements DerivativeEngine {
             }
             clearQualityCandidates(candidates);
             encoderProfile = "compact-444-quality-rescue";
-            encodeQualityCandidates(probe, outputRoot, candidates, encoderProfile);
+            encodeQualityCandidates(
+                    probe, outputRoot, candidates, encoderProfile, candidateProgress, progress);
             ProfileCandidate fourFourFour;
             try {
                 fourFourFour = evaluatedProfile(probe, candidates, encoderProfile);
@@ -462,6 +505,152 @@ public final class VipsRuntime implements DerivativeEngine {
         }
     }
 
+    private void extractQualityRois(
+            Path omeTiff,
+            List<AdaptiveJpegQualitySelector.Roi> rois,
+            List<Path> outputs,
+            java.util.function.IntConsumer progress)
+            throws IOException {
+        if (rois.size() != outputs.size() || rois.isEmpty()) {
+            throw new IllegalArgumentException("Quality ROI extraction plan is invalid");
+        }
+        if (!Boolean.getBoolean("pathlab.forge.quality.native.disabled")) {
+            try {
+                progress.accept(0);
+                runCommand(nativeRoiCommandLine(executable, omeTiff, rois, outputs), progress);
+                for (var output : outputs) {
+                    requireNonempty(output, "native quality ROI");
+                }
+                return;
+            } catch (IOException nativeFailure) {
+                System.err.println(
+                        "PathLab Forge: native quality ROI fast path unavailable; "
+                                + "using safe subprocess fallback: "
+                                + nativeFailure.getMessage());
+                for (var output : outputs) {
+                    Files.deleteIfExists(output);
+                }
+            }
+        }
+        extractQualityRoisFallback(omeTiff, rois, outputs, progress);
+    }
+
+    private void extractQualityRoisFallback(
+            Path omeTiff,
+            List<AdaptiveJpegQualitySelector.Roi> rois,
+            List<Path> outputs,
+            java.util.function.IntConsumer progress)
+            throws IOException {
+        var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
+        var configured = Integer.getInteger(
+                "pathlab.forge.quality.workers",
+                Math.min(5, profile.maxConversionWorkers()));
+        var workers = Math.max(1, Math.min(
+                Math.min(configured, profile.maxConversionWorkers()), rois.size()));
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(
+                workers,
+                runnable -> {
+                    var thread = new Thread(runnable, "pathlab-quality-roi");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        try {
+            progress.accept(0);
+            var completion = new java.util.concurrent.ExecutorCompletionService<Void>(executor);
+            for (var index = 0; index < rois.size(); index++) {
+                var roi = rois.get(index);
+                var output = outputs.get(index);
+                completion.submit(() -> {
+                    runCommand(probeCommandLine(
+                            executable,
+                            List.of(
+                                    "crop",
+                                    omeTiff.toString(),
+                                    output.toString(),
+                                    Integer.toString(roi.x()),
+                                    Integer.toString(roi.y()),
+                                    Integer.toString(roi.width()),
+                                    Integer.toString(roi.height())),
+                            workers));
+                    return null;
+                });
+            }
+            for (var completed = 1; completed <= rois.size(); completed++) {
+                try {
+                    completion.take().get();
+                    progress.accept(completed);
+                } catch (java.util.concurrent.ExecutionException error) {
+                    var cause = error.getCause();
+                    if (cause instanceof IOException io) {
+                        throw io;
+                    }
+                    throw new IOException("Parallel quality ROI extraction failed", cause);
+                }
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Quality ROI extraction was interrupted", error);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    static List<String> nativeRoiCommandLine(
+            Path executable,
+            Path omeTiff,
+            List<AdaptiveJpegQualitySelector.Roi> rois,
+            List<Path> outputs) {
+        if (rois.size() != outputs.size() || rois.isEmpty()) {
+            throw new IllegalArgumentException("Quality ROI extraction plan is invalid");
+        }
+        var javaExecutable = Path.of(
+                System.getProperty("java.home"),
+                "bin",
+                java.io.File.separatorChar == '\\' ? "java.exe" : "java");
+        var command = new ArrayList<String>();
+        command.add(javaExecutable.toString());
+        command.add("-Xms32m");
+        command.add("-Xmx192m");
+        command.add("-cp");
+        command.add(System.getProperty("java.class.path"));
+        command.add(VipsNativeRoiHelper.class.getName());
+        command.add(executable.getParent().toString());
+        command.add(omeTiff.toAbsolutePath().toString());
+        command.add(outputs.get(0).toAbsolutePath().getParent().toString());
+        command.add(Integer.toString(Math.min(
+                5,
+                org.pathlab.forge.runtime.RuntimeProfile.system()
+                        .maxConversionWorkers())));
+        for (var index = 0; index < rois.size(); index++) {
+            var roi = rois.get(index);
+            command.add(outputs.get(index).getFileName().toString());
+            command.add(Integer.toString(roi.x()));
+            command.add(Integer.toString(roi.y()));
+            command.add(Integer.toString(roi.width()));
+            command.add(Integer.toString(roi.height()));
+        }
+        return List.copyOf(command);
+    }
+
+    static List<String> probeCommandLine(
+            Path executable, List<String> arguments, int parallelWorkers) {
+        if (parallelWorkers < 1) {
+            throw new IllegalArgumentException("Quality worker count is invalid");
+        }
+        var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
+        var cacheBytes = Math.max(
+                64L * 1024 * 1024,
+                Math.min(256L * 1024 * 1024, profile.vipsCacheBytes() / parallelWorkers));
+        var command = new ArrayList<String>();
+        command.add(executable.toString());
+        command.add("--vips-concurrency=1");
+        command.add("--vips-cache-max-memory=" + cacheBytes);
+        command.add("--vips-cache-max-files=32");
+        command.add("--vips-cache-max=32");
+        command.addAll(arguments);
+        return List.copyOf(command);
+    }
+
     static String compactJpegSuffix(int quality) {
         return jpegSuffix(quality, "compact-420-trellis");
     }
@@ -482,7 +671,9 @@ public final class VipsRuntime implements DerivativeEngine {
             Path probe,
             Path outputRoot,
             Map<Integer, Path> candidates,
-            String encoderProfile)
+            String encoderProfile,
+            java.util.concurrent.atomic.AtomicInteger completed,
+            java.util.function.Consumer<DerivativeProgress> progress)
             throws IOException {
         for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {
             var candidate = outputRoot.resolve("quality-candidate-" + quality + ".jpg");
@@ -491,6 +682,10 @@ public final class VipsRuntime implements DerivativeEngine {
                     "copy",
                     probe.toString(),
                     candidate + jpegSuffix(quality, encoderProfile).substring(4)));
+            progress.accept(new DerivativeProgress(
+                    "QUALITY_CANDIDATES",
+                    completed.incrementAndGet(),
+                    AdaptiveJpegQualitySelector.QUALITIES.size() * 3L));
         }
     }
 
@@ -543,7 +738,21 @@ public final class VipsRuntime implements DerivativeEngine {
         return runCommand(command);
     }
 
+    private String runWithProgress(
+            List<String> arguments, java.util.function.IntConsumer progress)
+            throws IOException {
+        var command = new ArrayList<>(commandLine(executable, arguments));
+        command.add(5, "--vips-progress");
+        return runCommand(command, progress);
+    }
+
     private String runCommand(List<String> command) throws IOException {
+        return runCommand(command, ignored -> {});
+    }
+
+    private String runCommand(
+            List<String> command, java.util.function.IntConsumer progress)
+            throws IOException {
         var builder = new ProcessBuilder(command).redirectErrorStream(true);
         var currentPath = builder.environment().getOrDefault("PATH", "");
         builder.environment().put(
@@ -552,7 +761,7 @@ public final class VipsRuntime implements DerivativeEngine {
                 .register(builder.start());
         var output = new ByteArrayOutputStream();
         var reader = new Thread(
-                () -> copyBounded(process.getInputStream(), output, process),
+                () -> copyBounded(process.getInputStream(), output, process, progress),
                 "pathlab-vips-output");
         reader.setDaemon(true);
         reader.start();
@@ -586,7 +795,7 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     static List<String> commandLine(Path executable, List<String> arguments) {
-        var profile = org.pathlab.forge.runtime.RuntimeProfile.target();
+        var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
         var command = new ArrayList<String>();
         command.add(executable.toString());
         command.add("--vips-concurrency=" + profile.vipsConcurrency());
@@ -598,9 +807,16 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     private static void copyBounded(
-            InputStream input, ByteArrayOutputStream output, Process process) {
+            InputStream input,
+            ByteArrayOutputStream output,
+            Process process,
+            java.util.function.IntConsumer progress) {
         try (input; output) {
             var buffer = new byte[8192];
+            var progressPattern = java.util.regex.Pattern.compile("(\\d{1,3})% complete");
+            var roiPattern = java.util.regex.Pattern.compile("PATHLAB_ROI=(\\d+)");
+            var progressTail = "";
+            var lastProgress = -1;
             int total = 0;
             int read;
             while ((read = input.read(buffer)) != -1) {
@@ -610,6 +826,21 @@ public final class VipsRuntime implements DerivativeEngine {
                     return;
                 }
                 output.write(buffer, 0, read);
+                var decoded = progressTail
+                        + new String(buffer, 0, read, StandardCharsets.UTF_8);
+                var matcher = progressPattern.matcher(decoded);
+                while (matcher.find()) {
+                    var value = Math.min(100, Integer.parseInt(matcher.group(1)));
+                    if (value > lastProgress) {
+                        progress.accept(value);
+                        lastProgress = value;
+                    }
+                }
+                var roiMatcher = roiPattern.matcher(decoded);
+                while (roiMatcher.find()) {
+                    progress.accept(Integer.parseInt(roiMatcher.group(1)));
+                }
+                progressTail = decoded.substring(Math.max(0, decoded.length() - 64));
             }
         } catch (IOException ignored) {
             process.destroyForcibly();
