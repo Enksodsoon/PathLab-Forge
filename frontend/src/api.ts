@@ -29,6 +29,8 @@ export interface Dataset {
   completedUnits?: number
   totalUnits?: number
   elapsedMs?: number
+  estimatedRemainingMs?: number
+  unitsPerSecond?: number
   peakWorkingSetBytes?: number
   resourceProfile?: string
   cacheHitReason?: string

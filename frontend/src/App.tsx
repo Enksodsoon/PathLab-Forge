@@ -807,8 +807,6 @@ function ViewerStage({
           title="Opening slide"
           detail="Reading the image series and preparing the first visible tile…"
         />
-      ) : converting && dataset ? (
-        <ConversionProgress dataset={dataset} revision={revision} />
       ) : (
         <div className="forge-stage-empty">
           <span className="forge-tissue-mark"><Crosshair /></span>
@@ -816,6 +814,9 @@ function ViewerStage({
           <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import an OME-TIFF or a VSI. The slide panel remains visible so image-series selection and conversion feel like one viewer workflow.'}</p>
         </div>
       )}
+      {converting && dataset ? (
+        <ConversionProgress dataset={dataset} revision={revision} />
+      ) : null}
       <div className="forge-viewer-tools" aria-label="Viewer controls">
         <button type="button" aria-label="Zoom out" disabled={!viewer} onClick={() => viewer?.viewport.zoomBy(.67)}><MagnifyingGlassMinus /></button>
         <button type="button" aria-label="Home" disabled={!viewer} onClick={() => viewer?.viewport.goHome()}><House /></button>
@@ -838,10 +839,33 @@ function PreviewLoading({ title, detail }: { title: string; detail: string }) {
 
 function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?: ArtifactRevision }) {
   const phase = conversionPhase(dataset)
-  const elapsed = useElapsed(revision?.createdAt)
+  const fallbackElapsed = useElapsed(revision?.createdAt)
+  const elapsed = dataset.elapsedMs
+    ? formatDuration(dataset.elapsedMs)
+    : fallbackElapsed
+  const remaining = dataset.estimatedRemainingMs
+    ? formatDuration(dataset.estimatedRemainingMs)
+    : ''
+  const counter = conversionCounter(dataset)
+  const filledTiles = Math.max(1, Math.round(48 * phase.percent / 100))
   return (
     <div className="forge-conversion-progress" aria-live="polite">
-      <span className="forge-conversion-kicker">Preparing compact DZI</span>
+      <div className="forge-conversion-heading">
+        <span className="forge-conversion-kicker">Adaptive compact DZI</span>
+        <span>{dataset.resourceProfile?.replace('adaptive-', '').replaceAll('-', ' · ') || 'minimum-safe profile'}</span>
+      </div>
+      <div className="forge-tile-reader" aria-hidden="true">
+        <div className="forge-tile-reader-grid">
+          {Array.from({ length: 48 }, (_, index) => (
+            <i
+              className={index < filledTiles ? 'read' : index === filledTiles ? 'reading' : ''}
+              key={index}
+            />
+          ))}
+        </div>
+        <span className="forge-tile-reader-beam" />
+        <small>{counter}</small>
+      </div>
       <strong>{phase.label}</strong>
       <p>{dataset.detail}</p>
       <progress aria-label="Conversion progress" max="100" value={phase.percent} />
@@ -857,7 +881,11 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
           </li>
         ))}
       </ol>
-      <small>Elapsed {elapsed} · Quality is selected from 64 tissue regions before verified packaging replaces temporary staging files.</small>
+      <small>
+        Elapsed {elapsed}
+        {remaining ? ` · about ${remaining} left in this phase` : ''}
+        {dataset.unitsPerSecond ? ` · ${formatRate(dataset.unitsPerSecond, dataset.stage)}` : ''}
+      </small>
     </div>
   )
 }
@@ -957,6 +985,7 @@ function Inspector({
           onConnect={onConnect}
           onUpload={onUpload}
           onRemove={onRemove}
+          onViewRevision={onViewRevision}
         />
       ) : null}
       {section === 'annotations' ? (
@@ -1212,6 +1241,7 @@ function ExportInspector({
   onConnect,
   onUpload,
   onRemove,
+  onViewRevision,
 }: {
   dataset: Dataset
   series: SeriesInfo[]
@@ -1229,6 +1259,7 @@ function ExportInspector({
   onConnect: () => void
   onUpload: () => void
   onRemove: () => void
+  onViewRevision: (revisionId: string) => void
 }) {
   const configurationDraft = () => ({
     series: String(dataset.selectedSeries),
@@ -1412,7 +1443,13 @@ function ExportInspector({
               {' · '}{packagedCurrent.status === 'APPROVED' ? 'Approved' : 'Ready for review'}
             </small>
           </div>
-          <a className="forge-primary" href="#dzi-viewer">View converted slide</a>
+          <a
+            className="forge-primary"
+            href="#dzi-viewer"
+            onClick={() => onViewRevision(packagedCurrent.id)}
+          >
+            View converted slide
+          </a>
           <a
             className="forge-download"
             href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}
@@ -1614,7 +1651,12 @@ function QueueDock({
       <span>{notice}</span>
       {converting && phase ? (
         <label className="forge-queue-progress">
-          <span>{phase.label}</span>
+          <span>
+            {phase.label}
+            {converting.estimatedRemainingMs
+              ? ` · ~${formatDuration(converting.estimatedRemainingMs)} left`
+              : ''}
+          </span>
           <progress aria-label={`${converting.displayName} conversion progress`} max="100" value={phase.percent} />
           <strong>{phase.percent}%</strong>
         </label>
@@ -1637,26 +1679,65 @@ function conversionPhase(dataset: Dataset) {
     ? Math.min(1, (dataset.completedUnits || 0) / dataset.totalUnits!)
     : 0
   const measuredStage = ({
-    SOURCE_VERIFIED: { base: 5, span: 0, label: 'Source verified · preparing RGB regions' },
-    REGIONS_RENDERING: { base: 5, span: 30, label: 'Rendering RGB regions' },
-    REGIONS_VERIFIED: { base: 35, span: 0, label: 'RGB regions verified · assembling staging image' },
-    ASSEMBLING_OME: { base: 35, span: 0, label: 'Assembling exact slide geometry' },
-    DIRECT_OME: { base: 5, span: 50, label: 'Rendering temporary staging pyramid' },
-    OPTIMIZING_OME: { base: 45, span: 0, label: 'Rendering temporary staging pyramid' },
-    VALIDATING_OME: { base: 58, span: 7, label: 'Verifying rendered staging image' },
-    OME_VERIFIED: { base: 65, span: 0, label: 'Selecting compact JPEG quality' },
-    GENERATING_DZI: { base: 65, span: 25, label: 'Generating compact DZI' },
-    DZI_LEDGER_VERIFIED: { base: 90, span: 0, label: 'Quality check passed · packaging' },
-    PACKAGE_COMMITTED: { base: 100, span: 0, label: 'Package committed' },
-  } as Record<string, { base: number; span: number; label: string }>)[dataset.stage || '']
+    SOURCE_VERIFIED: { step: 1, base: 5, span: 0, label: 'Source verified · preparing RGB regions' },
+    REGIONS_RENDERING: { step: 1, base: 5, span: 30, label: 'Reading source regions in parallel' },
+    REGIONS_VERIFIED: { step: 1, base: 35, span: 0, label: 'RGB regions verified · assembling staging image' },
+    ASSEMBLING_OME: { step: 1, base: 35, span: 0, label: 'Assembling exact slide geometry' },
+    DIRECT_OME: { step: 1, base: 5, span: 50, label: 'Rendering temporary staging pyramid' },
+    OPTIMIZING_OME: { step: 1, base: 45, span: 0, label: 'Rendering temporary staging pyramid' },
+    VALIDATING_OME: { step: 1, base: 58, span: 7, label: 'Verifying rendered staging image' },
+    OME_VERIFIED: { step: 2, base: 65, span: 0, label: 'Preparing quality samples' },
+    QUALITY_OVERVIEW: { step: 2, base: 65, span: 2, label: 'Mapping representative tissue' },
+    QUALITY_ROIS: { step: 2, base: 67, span: 8, label: 'Reading 64 quality regions in parallel' },
+    QUALITY_CANDIDATES: { step: 2, base: 75, span: 3, label: 'Selecting the smallest quality-safe JPEG' },
+    GENERATING_DZI: { step: 3, base: 78, span: 0, label: 'Starting compact DZI encoder' },
+    DZI_TILES: { step: 3, base: 78, span: 12, label: 'Encoding the Deep Zoom tile pyramid' },
+    DZI_VALIDATING: { step: 4, base: 90, span: 3, label: 'Checking tile geometry and integrity' },
+    DZI_LEDGER_VERIFIED: { step: 5, base: 93, span: 0, label: 'Quality passed · preparing package' },
+    PACKAGING: { step: 5, base: 93, span: 7, label: 'Writing the saved DZI package' },
+    PACKAGE_COMMITTED: { step: 5, base: 100, span: 0, label: 'Package committed' },
+  } as Record<string, { step: number; base: number; span: number; label: string }>)[dataset.stage || '']
   if (measuredStage) {
     return {
       ...phase,
+      step: measuredStage.step,
       percent: Math.round(measuredStage.base + measuredStage.span * unitProgress),
       label: measuredStage.label,
     }
   }
   return phase
+}
+
+function conversionCounter(dataset: Dataset) {
+  const completed = dataset.completedUnits || 0
+  const total = dataset.totalUnits || 0
+  if (!total) return 'Preparing measurable work…'
+  const units = ({
+    QUALITY_OVERVIEW: 'overview',
+    QUALITY_ROIS: 'quality regions',
+    QUALITY_CANDIDATES: 'encoder candidates',
+    DZI_TILES: 'estimated pyramid tiles',
+    DZI_VALIDATING: 'tile checks',
+    PACKAGING: 'package files',
+    REGIONS_RENDERING: 'source regions',
+  } as Record<string, string>)[dataset.stage || ''] || 'work units'
+  return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`
+}
+
+function formatRate(value: number, stage?: string) {
+  const label = stage === 'DZI_TILES'
+    ? 'tiles/s'
+    : stage === 'PACKAGING'
+      ? 'files/s'
+      : 'units/s'
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${label}`
+}
+
+function formatDuration(milliseconds: number) {
+  const seconds = Math.max(1, Math.round(milliseconds / 1_000))
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return minutes ? `${minutes}m ${remainder}s` : `${seconds}s`
 }
 
 function statusLabel(status: string) {

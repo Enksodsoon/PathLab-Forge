@@ -3,6 +3,7 @@ package org.pathlab.forge.derivative;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Consumer;
 import org.pathlab.forge.conversion.ConversionRequest;
 
 public interface DerivativeEngine {
@@ -50,4 +51,17 @@ public interface DerivativeEngine {
 
     DerivativeInfo generateDzi(Path omeTiff, Path outputRoot, int width, int height)
             throws IOException;
+
+    default DerivativeInfo generateDzi(
+            Path omeTiff,
+            Path outputRoot,
+            int width,
+            int height,
+            Consumer<DerivativeProgress> progress)
+            throws IOException {
+        var result = generateDzi(omeTiff, outputRoot, width, height);
+        progress.accept(new DerivativeProgress(
+                "DZI_VALIDATING", result.tileCount(), result.tileCount()));
+        return result;
+    }
 }

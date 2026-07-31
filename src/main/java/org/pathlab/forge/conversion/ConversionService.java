@@ -29,7 +29,6 @@ public final class ConversionService implements AutoCloseable {
     private static final int PREVIEW_DOWNSAMPLE = 2;
     private static final String PREVIEW_CACHE_VERSION = "efficient-rgb-2x-v4";
     private static final long PARALLEL_RGB_MINIMUM_PIXELS = 250_000_000L;
-    private static final int DEFAULT_PARALLEL_RGB_WORKERS = 11;
     private static final int MAX_READER_SESSIONS = 2;
     private static final long READER_SESSION_BYTES = 256L * 1024 * 1024;
     private final DatasetRepository repository;
@@ -91,8 +90,11 @@ public final class ConversionService implements AutoCloseable {
     }
 
     public ConversionProgress progress(String id) {
+        var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
         return progress.getOrDefault(
-                id, new ConversionProgress("", 0, 0, 0, currentWorkingSet(), "8gb-6core", ""));
+                id,
+                new ConversionProgress(
+                        "", 0, 0, 0, currentWorkingSet(), profile.name(), ""));
     }
 
     public LocalArtifacts artifacts(String id) {
@@ -836,7 +838,7 @@ public final class ConversionService implements AutoCloseable {
                             1,
                             System.currentTimeMillis(),
                             currentWorkingSet(),
-                            "8gb-6core",
+                            org.pathlab.forge.runtime.RuntimeProfile.system().name(),
                             "configuration and source fingerprint matched verified artifact"));
             var cached = reusable.id().equals(dataset.currentArtifactRevision())
                     ? dataset.withConversion(
@@ -883,11 +885,13 @@ public final class ConversionService implements AutoCloseable {
                 revision.id().equals(dataset.currentArtifactRevision())
                         ? "Resuming last verified conversion checkpoint"
                         : quPathRuntime.supports(dataset.format())
-                        ? "Direct tiled OME export using the 8 GB / 6-core seconds profile"
+                        ? "Direct tiled OME export using "
+                                + org.pathlab.forge.runtime.RuntimeProfile.system().name()
                         : useParallelRgb(dataset, request)
                         ? "Lightning RGB: decoding "
                                 + parallelRgbWorkers(Path.of(dataset.sourcePath()))
-                                + " image regions in parallel"
+                                + " image regions in parallel with "
+                                + org.pathlab.forge.runtime.RuntimeProfile.system().name()
                         : "Exporting QuPath-style rendered RGB with JPEG compression",
                 "",
                 "",
@@ -901,7 +905,7 @@ public final class ConversionService implements AutoCloseable {
                         1,
                         System.currentTimeMillis(),
                         currentWorkingSet(),
-                        "8gb-6core",
+                        org.pathlab.forge.runtime.RuntimeProfile.system().name(),
                         resumable.isPresent() ? "verified checkpoint" : ""));
         cancelled.remove(id);
         activeConversions.put(id, conversionExecutor.submit(() -> convert(converting)));
@@ -1311,7 +1315,12 @@ public final class ConversionService implements AutoCloseable {
                     output,
                     derivativePartial,
                     request.outputWidth(),
-                    request.outputHeight());
+                    request.outputHeight(),
+                    derivativeProgress -> updateProgress(
+                            dataset.id(),
+                            derivativeProgress.stage(),
+                            derivativeProgress.completedUnits(),
+                            derivativeProgress.totalUnits()));
             installDirectory(outputDirectory, derivativePartial, derivative);
             derivativeInfo = new org.pathlab.forge.derivative.DerivativeInfo(
                     derivative,
@@ -1380,7 +1389,9 @@ public final class ConversionService implements AutoCloseable {
                     request.outputHeight(),
                     packageMetadata,
                     outputDirectory.resolve("slide.plslide"),
-                    stagingOmeBytes);
+                    stagingOmeBytes,
+                    (completed, total) -> updateProgress(
+                            dataset.id(), "PACKAGING", completed, total));
             saveCheckpoint(
                     checkpoints,
                     revision,
@@ -1504,16 +1515,21 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void updateProgress(String id, String stage, long completed, long total) {
-        progress.compute(id, (ignored, current) -> new ConversionProgress(
-                stage,
-                completed,
-                total,
-                current == null ? System.currentTimeMillis() : current.startedAt(),
-                Math.max(
-                        current == null ? 0 : current.peakWorkingSetBytes(),
-                        currentWorkingSet()),
-                "8gb-6core",
-                current == null ? "" : current.cacheHitReason()));
+        progress.compute(id, (ignored, current) -> {
+            var now = System.currentTimeMillis();
+            var sameStage = current != null && current.stage().equals(stage);
+            return new ConversionProgress(
+                    stage,
+                    completed,
+                    total,
+                    current == null ? now : current.startedAt(),
+                    sameStage ? current.stageStartedAt() : now,
+                    Math.max(
+                            current == null ? 0 : current.peakWorkingSetBytes(),
+                            currentWorkingSet()),
+                    org.pathlab.forge.runtime.RuntimeProfile.system().name(),
+                    current == null ? "" : current.cacheHitReason());
+        });
     }
 
     private static long currentWorkingSet() {
@@ -1530,6 +1546,7 @@ public final class ConversionService implements AutoCloseable {
                 current.completedUnits(),
                 current.totalUnits(),
                 current.startedAt(),
+                current.stageStartedAt(),
                 Math.max(current.peakWorkingSetBytes(), workingSet),
                 current.resourceProfile(),
                 current.cacheHitReason()));
@@ -1568,18 +1585,30 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private static int parallelRgbWorkers(Path source) {
+        var profile = org.pathlab.forge.runtime.RuntimeProfile.system();
         var configured = Integer.getInteger(
-                "pathlab.forge.rgb.workers", DEFAULT_PARALLEL_RGB_WORKERS);
+                "pathlab.forge.rgb.workers", profile.maxConversionWorkers());
         var slowSource = Boolean.getBoolean("pathlab.forge.source.slow")
                 || source.toString().startsWith("\\\\");
         return parallelRgbWorkers(
-                Runtime.getRuntime().availableProcessors(), configured, slowSource);
+                Runtime.getRuntime().availableProcessors(),
+                configured,
+                slowSource,
+                profile.maxConversionWorkers());
     }
 
     static int parallelRgbWorkers(
             int availableProcessors, int configuredWorkers, boolean slowSource) {
+        return parallelRgbWorkers(availableProcessors, configuredWorkers, slowSource, 5);
+    }
+
+    static int parallelRgbWorkers(
+            int availableProcessors,
+            int configuredWorkers,
+            boolean slowSource,
+            int profileWorkers) {
         var processorLimit = Math.max(1, availableProcessors - 1);
-        var profileLimit = slowSource ? 2 : 5;
+        var profileLimit = slowSource ? 2 : Math.max(1, profileWorkers);
         return Math.max(1, Math.min(Math.min(configuredWorkers, profileLimit), processorLimit));
     }
 

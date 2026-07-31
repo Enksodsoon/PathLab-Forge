@@ -44,6 +44,12 @@ final class DziValidatorTest {
     }
 
     @Test
+    void predictsTheExactCompletePyramidTileCount() {
+        assertEquals(21_402, DziValidator.expectedTileCount(78_785, 52_837));
+        assertEquals(1, DziValidator.expectedTileCount(1, 1));
+    }
+
+    @Test
     void rejectsRedundantOrMissingDerivativeFiles() throws Exception {
         Files.writeString(temporaryDirectory.resolve("vips-properties.xml"), "redundant");
 
