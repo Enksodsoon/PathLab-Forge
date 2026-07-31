@@ -827,10 +827,31 @@ public final class ConversionService implements AutoCloseable {
                 && !Files.isSymbolicLink(file)) {
             return Files.readAllBytes(file);
         }
-        var bytes = engine.seriesThumbnail(Path.of(dataset.sourcePath()), item.index(), 320);
         Files.createDirectories(file.getParent());
-        var partial = file.resolveSibling(file.getFileName() + ".partial");
-        Files.write(partial, bytes);
+        byte[] bytes;
+        if (dataset.format() == DatasetFormat.OME_TIFF) {
+            var preview = cachedPreview(id);
+            if (preview.isPresent()) {
+                var cachedThumbnail = preview.orElseThrow().root().resolve("thumbnail.jpg");
+                if (Files.isRegularFile(cachedThumbnail, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                        && !Files.isSymbolicLink(cachedThumbnail)) {
+                    bytes = Files.readAllBytes(cachedThumbnail);
+                    var partial = file.resolveSibling(file.getFileName() + ".partial");
+                    Files.write(partial, bytes);
+                    atomicReplace(partial, file);
+                    return bytes;
+                }
+            }
+        }
+        var partial = file.resolveSibling(file.getFileName() + ".partial.jpg");
+        if (dataset.format() == DatasetFormat.OME_TIFF && derivativeEngine.available()) {
+            derivativeEngine.generateViewerThumbnail(
+                    Path.of(dataset.sourcePath()), item.index(), partial, 320);
+            bytes = Files.readAllBytes(partial);
+        } else {
+            bytes = engine.seriesThumbnail(Path.of(dataset.sourcePath()), item.index(), 320);
+            Files.write(partial, bytes);
+        }
         atomicReplace(partial, file);
         return bytes;
     }
