@@ -17,6 +17,7 @@ from .bracs import (
     PreparationError,
     prepare_bracs,
 )
+from .bracs_roi import BracsRoiPreparationConfig, RoiPreparationError, prepare_bracs_roi
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,11 +44,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable the official 547-slide distribution checks for development fixtures",
     )
+    prepare_roi = commands.add_parser(
+        "prepare-bracs-roi",
+        help="validate BRACS ROI PNGs and create patient-safe training manifests",
+    )
+    prepare_roi.add_argument("--raw-root", required=True, type=Path)
+    prepare_roi.add_argument("--summary", required=True, type=Path)
+    prepare_roi.add_argument("--output-root", required=True, type=Path)
+    prepare_roi.add_argument("--minimum-dimension", type=int, default=64)
+    prepare_roi.add_argument("--minimum-file-bytes", type=int, default=1_024)
+    prepare_roi.add_argument("--allow-subset", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "prepare-bracs-roi":
+        try:
+            report = prepare_bracs_roi(
+                BracsRoiPreparationConfig(
+                    raw_root=args.raw_root,
+                    summary_path=args.summary,
+                    output_root=args.output_root,
+                    enforce_official_counts=not args.allow_subset,
+                    minimum_dimension=args.minimum_dimension,
+                    minimum_file_bytes=args.minimum_file_bytes,
+                )
+            )
+        except RoiPreparationError as error:
+            print(f"BRACS ROI preparation failed: {error}", file=sys.stderr)
+            return 2
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
     if args.command != "prepare-bracs":
         raise AssertionError(f"unhandled command: {args.command}")
     official = not args.allow_subset

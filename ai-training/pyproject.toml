@@ -9,11 +9,11 @@ description = "Reproducible public pathology dataset preparation for PathLab Evi
 requires-python = ">=3.11"
 dependencies = [
     "openpyxl>=3.1,<4",
+    "pillow>=10,<13",
 ]
 
 [project.optional-dependencies]
 wsi = [
-    "pillow>=10,<13",
     "tiffslide>=3,<5",
 ]
 

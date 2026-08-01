@@ -18,12 +18,28 @@ Primary references:
 | Split | N | PB | UDH | FEA | ADH | DCIS | IC | WSIs | Patients |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Train | 27 | 120 | 56 | 24 | 28 | 40 | 100 | 395 | 133 |
-| Validation | 10 | 11 | 9 | 6 | 8 | 9 | 12 | 67 | 25 |
-| Test | 7 | 16 | 9 | 11 | 12 | 12 | 20 | 85 | 31 |
+| Validation | 10 | 11 | 9 | 6 | 8 | 9 | 12 | 65 | 25 |
+| Test | 7 | 16 | 9 | 11 | 12 | 12 | 20 | 87 | 31 |
 | Total | 44 | 147 | 74 | 41 | 48 | 61 | 132 | 547 | 189 |
 
 The cleaner treats these values as a fail-closed completeness contract in normal
 full-dataset mode.
+
+## Published ROI distribution used for initial training
+
+The official `BRACS_RoI/latest_version` server inventory contains 4,539 PNGs from
+387 WSIs and 151 patients, totaling 51.75 GiB. Counts are enforced exactly:
+
+| Split | N | PB | UDH | FEA | ADH | DCIS | IC | ROIs | WSIs | Patients |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Train | 357 | 714 | 389 | 624 | 387 | 665 | 521 | 3,657 | 281 | 106 |
+| Validation | 46 | 43 | 46 | 49 | 41 | 40 | 47 | 312 | 37 | 15 |
+| Test | 81 | 79 | 82 | 83 | 79 | 85 | 81 | 570 | 69 | 30 |
+| Total | 484 | 836 | 517 | 756 | 507 | 790 | 649 | 4,539 | 387 | 151 |
+
+`prepare-bracs-roi` validates PNG decoding and dimensions, filename/folder label
+agreement, WSI spreadsheet linkage, exact file hashes, duplicate content, and
+patient-disjoint splits. Its manifest is the initial train-ready contract.
 
 ## Normalized labels
 
@@ -77,7 +93,6 @@ checksum-addressed source.
 
 ## Current handoff status
 
-The implementation and synthetic-fixture validation can be completed without
-access to patient-derived pixels. Real BRACS preparation remains unexecuted until
-the product owner completes official registration and places the authorized raw
-archive and summary spreadsheet outside Git.
+Registration and official ROI download are complete. All 4,539 files passed the
+fail-closed manifest build at `D:\PathLabData\BRACS\prepared\bracs-roi-clean-v1`.
+The raw data remains outside Git at `D:\PathLabData\BRACS\raw`.

@@ -6,7 +6,8 @@ consume validated model artifacts, not Python training dependencies or raw WSIs.
 
 ## BRACS access
 
-BRACS provides 547 labelled `.svs` WSIs from 189 patients and an XLSX summary.
+BRACS provides 547 labelled `.svs` WSIs, 4,539 labelled ROI PNGs and an XLSX
+summary. The current official download page declares CC BY-NC 4.0 use.
 The official download page requires a named account. Register personally at:
 
 - https://www.bracs.icar.cnr.it/registration/
@@ -17,11 +18,11 @@ an external data volume, for example:
 
 ```text
 D:\PathLabData\BRACS\raw\
-  Whole Slide Image Set\
-    Train\...
-    Validation\...
-    Test\...
-  BRACS-summary.xlsx
+  BRACS_RoI\latest_version\
+    train\...
+    val\...
+    test\...
+  BRACS.xlsx
 ```
 
 The exact summary filename may differ. Pass its path explicitly.
@@ -39,7 +40,25 @@ The `wsi` extra installs `tiffslide` for bounded decoding and tissue QC. Real
 training preparation must use decoded QC; header-only mode exists solely for
 small deterministic tests.
 
-## Prepare the complete dataset
+## Prepare the practical ROI training dataset
+
+The current WSI release is approximately 984 GiB. The official latest ROI set is
+51.75 GiB and is the initial supervised training source. A model trained on ROI
+images can still process a new, unannotated WSI by tiling it during inference.
+
+```powershell
+.\.venv\Scripts\pathlab-ai-data.exe prepare-bracs-roi `
+  --raw-root "D:\PathLabData\BRACS\raw\BRACS_RoI\latest_version" `
+  --summary "D:\PathLabData\BRACS\raw\BRACS.xlsx" `
+  --output-root "D:\PathLabData\BRACS\prepared\bracs-roi-clean-v1"
+```
+
+Full mode decodes and hashes all 4,539 PNGs, validates exact class/split counts,
+links each ROI to its source WSI and patient, rejects duplicate content, and
+fails if any patient crosses train, validation, or test. It writes `manifest.csv`,
+`manifest.jsonl`, and `provenance.json`; raw pixels are never copied or changed.
+
+## Prepare the optional complete WSI dataset
 
 ```powershell
 .\.venv\Scripts\pathlab-ai-data.exe prepare-bracs `
@@ -89,7 +108,8 @@ fixture or patient-derived file is committed.
 
 ## Research boundary
 
-Only slide-level diagnostic labels enter the weakly supervised training manifest.
-BRACS ROI images and QuPath annotations are intentionally excluded and reserved
-for held-out evidence-localization evaluation. An entirely unlabeled local slide
-may later be explored by a model, but it cannot supply objective grading truth.
+ROI labels provide supervised morphology learning while the official patient-level
+split prevents leakage. Unannotated local WSIs are tiled at inference time; tile
+predictions are aggregated into an evidence map and are not treated as new ground
+truth. WSI-level weak supervision remains an optional later experiment because
+the complete source requires roughly 984 GiB before derived training artifacts.

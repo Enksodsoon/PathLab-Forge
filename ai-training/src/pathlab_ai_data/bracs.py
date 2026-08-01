@@ -39,8 +39,8 @@ OFFICIAL_CLASS_COUNTS: Mapping[str, int] = {
 }
 OFFICIAL_SPLIT_COUNTS: Mapping[str, int] = {
     "train": 395,
-    "validation": 67,
-    "test": 85,
+    "validation": 65,
+    "test": 87,
 }
 OFFICIAL_PATIENT_SPLIT_COUNTS: Mapping[str, int] = {
     "train": 133,
@@ -531,7 +531,7 @@ def _write_output_atomically(
                 "dataset": "BRACS",
                 "source_url": BRACS_SOURCE_URL,
                 "rules_url": BRACS_RULES_URL,
-                "license_declared_by_source": "CC0-1.0 after named registration and acceptance of source rules",
+                "license_declared_by_current_source": "CC-BY-NC-4.0",
                 "manifest_sha256": _sha256(staging / "manifest.csv"),
                 "raw_data_copied": False,
                 "pixel_or_roi_annotations_used_for_training_manifest": False,

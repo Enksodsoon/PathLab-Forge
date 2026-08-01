@@ -1,84 +1,85 @@
-# BRACS dataset preparation acceptance — 2026-08-01
+# BRACS dataset preparation acceptance — 2026-08-02
 
 ## Result
 
-The reproducible BRACS cleaning and manifest pipeline is implemented and passes
-synthetic decoded-WSI acceptance. The real 547-slide dataset has not been cleaned
-because the official download requires named user registration and no authorized
-BRACS archive or summary spreadsheet is present on this computer.
+The authorized official `BRACS_RoI/latest_version` release was downloaded from
+the BRACS anonymous FTP endpoint after named registration. All 4,539 ROI PNGs
+were cleaned and indexed successfully. No anonymous mirror, credential bypass,
+or third-party repackaging was used.
 
-No anonymous mirror, credential bypass or third-party repackaging was used.
+Raw data location (outside Git):
+
+```text
+D:\PathLabData\BRACS\raw\BRACS_RoI\latest_version
+D:\PathLabData\BRACS\raw\BRACS.xlsx
+```
+
+Train-ready metadata location:
+
+```text
+D:\PathLabData\BRACS\prepared\bracs-roi-clean-v1
+```
+
+## Real-data evidence
+
+- 4,539 files and 55,569,695,523 bytes matched the official FTP inventory.
+- All 4,539 files verified as RGB PNGs; minimum observed side was 127 px.
+- SHA-256 was computed for every image; duplicate-content images: 0.
+- 3,657 train, 312 validation, and 570 test ROIs matched the official folders.
+- 281/37/69 WSIs and 106/15/30 patients contributed to train/validation/test.
+- Patient overlap between every split pair: 0.
+- Every ROI label agreed with both its filename and class folder.
+- Every ROI linked to a WSI and patient in the official `BRACS.xlsx` summary.
+- Manifest SHA-256:
+  `6b0a633121ee1b1b811ab1265978b8c70ac9be960b147db1c89347d6d58fca20`.
+
+Exact class totals:
+
+| N | PB | UDH | FEA | ADH | DCIS | IC |
+|---:|---:|---:|---:|---:|---:|---:|
+| 484 | 836 | 517 | 756 | 507 | 790 | 649 |
+
+The current official download page declares CC BY-NC 4.0. The raw pixels are
+not copied into the prepared output or repository.
 
 ## Implemented contract
 
-- CSV and XLSX summary parsing with normalized aliases.
-- Seven canonical WSI labels and BT/AT/MT folder validation.
-- Exact published 547-slide, 189-patient, class, split and per-split class gates.
-- Official patient-disjoint split preservation and independent leakage detection.
-- Missing/extra inventory, duplicate ID, duplicate SHA-256, label and split checks.
-- Classic TIFF/BigTIFF signature validation.
-- Bounded `tiffslide` decoding, dimensions, pyramid levels and 512-pixel tissue QC.
-- Full SHA-256 identities and relative paths only.
-- Deterministic manifest and split files through partial staging and atomic rename.
-- No raw WSI, ROI, annotation or generated patch redistribution.
+- Official ROI filename, split, and seven-class folder validation.
+- WSI and patient linkage through the `WSI_Information` spreadsheet sheet.
+- Exact official file, class, split, WSI, and patient distribution gates.
+- Patient-disjoint split preservation and independent leakage detection.
+- PNG CRC verification, dimensions, mode, byte size, and full SHA-256 identity.
+- Duplicate content rejection across every split.
+- Atomic manifest generation without modifying or copying raw pixels.
+- CSV and JSONL training manifests plus checksum-addressed provenance.
 
-## Focused verification
+The optional 547-slide WSI cleaner remains available, but the official WSI
+release is approximately 984.11 GiB. The 51.75 GiB ROI release is the feasible
+initial supervised training source; unannotated WSIs can be tiled at inference.
 
-Environment:
-
-- Python 3.12.13
-- `tiffslide` 4.0.0
-- `Pillow` 12.3.0
-
-Command:
+## Verification
 
 ```powershell
 build\ai-training-venv\Scripts\python.exe `
-  -W error::DeprecationWarning `
   -m unittest discover -s ai-training\tests -v
 ```
 
-Result: 10 tests passed, including a runtime-generated 1024 × 1024 BigTIFF/SVS
-pyramid with two levels and non-empty tissue measurement. Other tests cover
-reproducibility, XLSX normalization, descriptive folder aliases, duplicate
-content, incomplete distribution, invalid container, label disagreement and
-patient leakage.
+Result: 13 tests passed. Coverage includes decoded WSI fixtures, deterministic
+manifests, spreadsheet normalization, invalid containers, duplicate content,
+folder/filename disagreement, incomplete distributions, and patient leakage.
 
-Static verification:
+The real-data command completed successfully:
 
-```text
-ruff check ai-training                  passed
-ruff format --check ai-training         passed
-python -m compileall                    passed
-pip check                               passed
+```powershell
+python -m pathlab_ai_data prepare-bracs-roi `
+  --raw-root "D:\PathLabData\BRACS\raw\BRACS_RoI\latest_version" `
+  --summary "D:\PathLabData\BRACS\raw\BRACS.xlsx" `
+  --output-root "D:\PathLabData\BRACS\prepared\bracs-roi-clean-v1"
 ```
 
-## Repository regression
+## Research boundary
 
-```text
-gradlew.bat test                         passed
-frontend vitest                          5 files, 35 tests passed
-scripts/verify-repo.ps1                 passed
-git diff --check                        passed
-```
-
-The generated decoded-QC fixture was moved out of the repository to the Windows
-temporary directory before the repository policy check. It contained no patient
-data and can be discarded.
-
-## Required real-data handoff
-
-1. The product owner registers at the official BRACS site with correct identity.
-2. Download the `Whole Slide Image Set` and the supplied summary XLSX to an
-   external path such as `D:\PathLabData\BRACS\raw`.
-3. Install `ai-training` with its `wsi` dependency extra.
-4. Run the exact command documented in `ai-training/README.md`.
-5. Do not start feature extraction or model training unless full mode reports
-   `validation_level=decoded-wsi-tissue-qc`, 547 clean slides, 189 patients and
-   zero rejected slides.
-
-## Honest limitation
-
-This acceptance proves the cleaner and its safety contract, not the condition of
-the gated BRACS archive. Real-slide checksums, decoded dimensions, tissue fractions
-and dataset-manifest hash do not exist until the authorized archive is supplied.
+This acceptance proves dataset integrity and leakage-safe manifests. It does not
+prove model accuracy. Training must retain these official patient-level splits,
+report seven-class and coarse-group metrics, compare against non-AI and standard
+classifier baselines, and keep the test split untouched until final evaluation.
