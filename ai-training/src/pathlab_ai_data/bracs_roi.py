@@ -17,7 +17,6 @@ from typing import Any
 from openpyxl import load_workbook
 from PIL import Image, UnidentifiedImageError
 
-
 LABELS = ("N", "PB", "UDH", "FEA", "ADH", "DCIS", "IC")
 OFFICIAL_ROI_COUNT = 4_539
 OFFICIAL_ROI_CLASS_COUNTS = {
@@ -31,7 +30,15 @@ OFFICIAL_ROI_CLASS_COUNTS = {
 }
 OFFICIAL_ROI_SPLIT_COUNTS = {"train": 3_657, "val": 312, "test": 570}
 OFFICIAL_ROI_SPLIT_CLASS_COUNTS = {
-    "train": {"N": 357, "PB": 714, "UDH": 389, "FEA": 624, "ADH": 387, "DCIS": 665, "IC": 521},
+    "train": {
+        "N": 357,
+        "PB": 714,
+        "UDH": 389,
+        "FEA": 624,
+        "ADH": 387,
+        "DCIS": 665,
+        "IC": 521,
+    },
     "val": {"N": 46, "PB": 43, "UDH": 46, "FEA": 49, "ADH": 41, "DCIS": 40, "IC": 47},
     "test": {"N": 81, "PB": 79, "UDH": 82, "FEA": 83, "ADH": 79, "DCIS": 85, "IC": 81},
 }
@@ -77,7 +84,9 @@ def prepare_bracs_roi(config: BracsRoiPreparationConfig) -> dict[str, Any]:
     if not summary_path.is_file():
         raise RoiPreparationError(f"BRACS summary does not exist: {summary_path}")
     if _is_within(output_root, raw_root):
-        raise RoiPreparationError("output root must be outside the immutable raw dataset")
+        raise RoiPreparationError(
+            "output root must be outside the immutable raw dataset"
+        )
 
     metadata = _read_wsi_metadata(summary_path)
     images = sorted(path for path in raw_root.rglob("*.png") if path.is_file())
@@ -99,7 +108,9 @@ def prepare_bracs_roi(config: BracsRoiPreparationConfig) -> dict[str, Any]:
             raise RoiPreparationError(f"invalid ROI filename: {relative.as_posix()}")
         label = match.group("label").upper()
         if label != folder_label:
-            raise RoiPreparationError(f"filename/folder label mismatch: {relative.as_posix()}")
+            raise RoiPreparationError(
+                f"filename/folder label mismatch: {relative.as_posix()}"
+            )
         slide_id = f"BRACS_{int(match.group('slide_number'))}"
         roi_number = int(match.group("roi_number"))
         roi_id = f"{slide_id}_{label}_{roi_number}"
@@ -115,7 +126,9 @@ def prepare_bracs_roi(config: BracsRoiPreparationConfig) -> dict[str, Any]:
             )
         size = path.stat().st_size
         if size < config.minimum_file_bytes:
-            raise RoiPreparationError(f"ROI file is unexpectedly small: {relative.as_posix()}")
+            raise RoiPreparationError(
+                f"ROI file is unexpectedly small: {relative.as_posix()}"
+            )
         width, height, mode = _probe_png(path)
         if min(width, height) < config.minimum_dimension:
             raise RoiPreparationError(
@@ -161,11 +174,17 @@ def _read_wsi_metadata(summary_path: Path) -> dict[str, dict[str, str]]:
         headers = next(values, None)
         if not headers:
             raise RoiPreparationError("WSI_Information is empty")
-        names = {str(value).strip().lower(): index for index, value in enumerate(headers) if value}
+        names = {
+            str(value).strip().lower(): index
+            for index, value in enumerate(headers)
+            if value
+        }
         required = {"wsi filename", "patient id", "wsi label", "set"}
         missing = sorted(required - names.keys())
         if missing:
-            raise RoiPreparationError(f"WSI_Information missing columns: {', '.join(missing)}")
+            raise RoiPreparationError(
+                f"WSI_Information missing columns: {', '.join(missing)}"
+            )
         result: dict[str, dict[str, str]] = {}
         for row_number, values_row in enumerate(values, start=2):
             raw_id = values_row[names["wsi filename"]]
@@ -173,12 +192,16 @@ def _read_wsi_metadata(summary_path: Path) -> dict[str, dict[str, str]]:
                 continue
             match = re.fullmatch(r"BRACS_(\d+)", str(raw_id).strip(), re.IGNORECASE)
             if not match:
-                raise RoiPreparationError(f"invalid WSI identity at spreadsheet row {row_number}: {raw_id!r}")
+                raise RoiPreparationError(
+                    f"invalid WSI identity at spreadsheet row {row_number}: {raw_id!r}"
+                )
             slide_id = f"BRACS_{int(match.group(1))}"
             split_raw = str(values_row[names["set"]]).strip().lower()
             split = _SPLIT_ALIASES.get(split_raw)
             if split is None:
-                raise RoiPreparationError(f"invalid split at spreadsheet row {row_number}: {split_raw!r}")
+                raise RoiPreparationError(
+                    f"invalid split at spreadsheet row {row_number}: {split_raw!r}"
+                )
             if slide_id in result:
                 raise RoiPreparationError(f"duplicate WSI metadata row: {slide_id}")
             result[slide_id] = {
@@ -199,7 +222,9 @@ def _path_facts(relative: Path) -> tuple[str, str]:
     split = _SPLIT_ALIASES.get(relative.parts[0].lower())
     label_match = _LABEL_FOLDER.fullmatch(relative.parts[1])
     if split is None or label_match is None:
-        raise RoiPreparationError(f"invalid ROI folder structure: {relative.as_posix()}")
+        raise RoiPreparationError(
+            f"invalid ROI folder structure: {relative.as_posix()}"
+        )
     return split, label_match.group(1).upper()
 
 
@@ -223,7 +248,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _validate_distribution(rows: list[dict[str, Any]], official: bool) -> dict[str, Any]:
+def _validate_distribution(
+    rows: list[dict[str, Any]], official: bool
+) -> dict[str, Any]:
     split_counts = Counter(row["split"] for row in rows)
     class_counts = Counter(row["label"] for row in rows)
     split_class = {
@@ -253,7 +280,9 @@ def _validate_distribution(rows: list[dict[str, Any]], official: bool) -> dict[s
         )
         for actual, expected, name in checks:
             if actual != expected:
-                raise RoiPreparationError(f"{name} counts differ from official BRACS: {actual}")
+                raise RoiPreparationError(
+                    f"{name} counts differ from official BRACS: {actual}"
+                )
     return {
         "dataset": "BRACS_RoI_latest_version",
         "images": len(rows),
@@ -276,10 +305,14 @@ def _write_output(
     summary_path: Path,
 ) -> None:
     output_root.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_root.parent))
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output_root.name}-", dir=output_root.parent)
+    )
     try:
         fields = list(rows[0].keys())
-        with (staging / "manifest.csv").open("w", encoding="utf-8", newline="") as handle:
+        with (staging / "manifest.csv").open(
+            "w", encoding="utf-8", newline=""
+        ) as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(rows)

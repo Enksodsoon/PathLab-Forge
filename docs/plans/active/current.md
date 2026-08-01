@@ -1,62 +1,56 @@
-# Active Task — Evidence Challenger BRACS Dataset Preparation
+# Active Task — Evidence Challenger AI Model v1
 
-Approved by the product owner on 2026-08-01. This task supersedes the PIVOT
-flagship milestone. PIVOT remains only a legacy spatial-navigation baseline; it
-is not AI and is not the primary educational product.
+Approved by the product owner on 2026-08-02. This task supersedes the completed
+BRACS data-preparation milestone. PIVOT remains a non-AI spatial-navigation
+baseline and is not the primary educational product.
 
 ## Goal
 
-Create the reproducible first data stage for PathLab Evidence Challenger:
+Build a resource-feasible, reproducible AI model that learns from the official
+BRACS ROI release and can analyze an unannotated image or whole slide without
+requiring new human annotations.
 
-- accept an authorized local copy of the official BRACS WSI archive and its
-  summary spreadsheet;
-- preserve and independently verify the published patient-disjoint train,
-  validation and test partitions;
-- normalize the seven slide-level diagnostic labels without importing ROI or
-  pixel annotations into the training manifest;
-- validate every WSI through bounded decoded-slide inspection, tissue-content
-  screening, metadata consistency and SHA-256 identity;
-- emit deterministic, relative-path manifests that can feed later patch
-  extraction and weakly supervised MIL training;
-- never modify, copy, redistribute or commit the source WSIs.
+## Implemented model
+
+- two deterministic views per ROI: global context and center detail;
+- official patient-disjoint train/validation/test partitions;
+- ImageNet-pretrained MobileNetV3-Small 1024-D visual representation;
+- class-balanced multinomial classifier selected using validation macro F1;
+- validation-only temperature calibration and low-confidence review threshold;
+- TorchScript artifact with checksum-verified standalone inference;
+- ordinary-image and bounded SVS/OME-TIFF tile inference;
+- fine seven-class and coarse BT/AT/MT outputs.
+
+## Research comparison
+
+The untouched 570-ROI, 30-patient test split is compared with:
+
+1. majority-class baseline;
+2. RGB mean, standard deviation, and histogram logistic baseline;
+3. pretrained deep-feature transfer model.
+
+Reported outcomes include accuracy, balanced accuracy, macro/weighted F1,
+top-2 accuracy, coarse-group accuracy, confusion matrices, per-class measures,
+selective coverage, and patient-cluster bootstrap confidence intervals.
 
 ## Fixed boundaries
 
-- BRACS download requires truthful named registration on the official site. The
-  repository does not automate registration, store credentials or bypass access.
-- Raw data must remain outside the Git repository and is treated as immutable.
-- The published BRACS reference splits remain the benchmark authority. The
-  cleaner verifies patient separation and published slide/class counts.
-- Only WSI-level labels enter the training manifest. ROI images and QuPath
-  annotations are reserved for held-out evidence-localization evaluation.
-- Header-only validation is allowed solely for deterministic test fixtures.
-  Real training preparation requires decoded WSI and tissue QC through
-  `tiffslide`.
-- No model training, clinical diagnosis, Viewer upload, OCI deployment, merge or
-  production release is part of this task.
+- Research and education only; no clinical or diagnostic claim.
+- Raw BRACS pixels, derived views, and trained artifacts remain outside Git.
+- The official test split is not used for hyperparameter selection or calibration.
+- A low-confidence result asks for human review; it is not converted into a
+  fabricated answer.
+- WSI aggregation is a bounded evidence map, not a validated slide diagnosis.
+- No cloud spending, upload, merge, production release, or deployment is implied.
 
 ## Acceptance gates
 
-1. CSV and XLSX BRACS summaries normalize into one documented schema.
-2. The cleaner fails closed on missing slides, extra slides, invalid IDs,
-   label/folder disagreement, split disagreement and duplicate slide content.
-3. Every accepted slide has a valid TIFF/SVS container, full SHA-256, decoded
-   dimensions, pyramid-level count and a bounded thumbnail tissue measurement.
-4. No patient appears in more than one official split.
-5. Full-dataset mode requires exactly 547 WSIs, 189 patients and the published
-   split/class distributions.
-6. Outputs contain only relative paths, deterministic manifests, checksums,
-   provenance and a dataset card; no raw pixels are copied.
-7. Output uses partial staging and atomic finalization.
-8. Focused Python tests, complete Forge checks and repository policy checks pass.
-9. If authorized BRACS files are unavailable locally, the handoff is reported
-   explicitly and no claim of real-slide cleaning is made.
-
-## Ordered work
-
-1. Confirm official access, license, folder structure and published counts.
-2. Define normalized metadata and validation contracts with failing tests.
-3. Implement CSV/XLSX parsing, inventory reconciliation and patient-leak checks.
-4. Implement decoded-slide QC, hashing and deterministic atomic outputs.
-5. Document the authorized-data handoff and exact preparation command.
-6. Run focused and complete verification and record evidence.
+1. All 4,539 ROI records produce two valid 224×224 lossless views.
+2. No patient crosses train, validation, or test.
+3. Model selection and calibration use validation only.
+4. The deep model materially exceeds majority and color baselines on test.
+5. TorchScript probabilities match the research classifier numerically.
+6. Image inference succeeds on a real BRACS image.
+7. Tiled inference succeeds on a real BRACS SVS.
+8. Focused Python, static, and full Forge regression checks pass.
+9. Exact artifacts, hashes, metrics, environment, and limitations are recorded.

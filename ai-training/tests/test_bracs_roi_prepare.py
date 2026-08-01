@@ -7,13 +7,12 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
-from PIL import Image
-
 from pathlab_ai_data.bracs_roi import (
     BracsRoiPreparationConfig,
     RoiPreparationError,
     prepare_bracs_roi,
 )
+from PIL import Image
 
 
 class BracsRoiPreparationTests(unittest.TestCase):
@@ -69,7 +68,9 @@ class BracsRoiPreparationTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual({row["patient_id"] for row in rows}, {"100", "200", "300"})
         provenance = json.loads((self.output / "provenance.json").read_text())
-        self.assertEqual(provenance["license_declared_by_current_source"], "CC-BY-NC-4.0")
+        self.assertEqual(
+            provenance["license_declared_by_current_source"], "CC-BY-NC-4.0"
+        )
         self.assertFalse(provenance["raw_data_copied"])
 
     def test_rejects_patient_leakage(self) -> None:
@@ -96,7 +97,9 @@ class BracsRoiPreparationTests(unittest.TestCase):
     def test_rejects_filename_folder_label_mismatch(self) -> None:
         self._write_summary([("BRACS_10", 100, 1, "N", "Training")])
         self._write_png("train/0_N/BRACS_10_PB_1.png", (220, 10, 10))
-        with self.assertRaisesRegex(RoiPreparationError, "filename/folder label mismatch"):
+        with self.assertRaisesRegex(
+            RoiPreparationError, "filename/folder label mismatch"
+        ):
             prepare_bracs_roi(
                 BracsRoiPreparationConfig(
                     raw_root=self.raw,

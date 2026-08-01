@@ -96,3 +96,14 @@ checksum-addressed source.
 Registration and official ROI download are complete. All 4,539 files passed the
 fail-closed manifest build at `D:\PathLabData\BRACS\prepared\bracs-roi-clean-v1`.
 The raw data remains outside Git at `D:\PathLabData\BRACS\raw`.
+
+## Model v1 result
+
+The first leakage-safe transfer model is complete. It uses two deterministic ROI
+views, a frozen MobileNetV3-Small encoder, validation-selected class-balanced
+logistic classification, temperature calibration, and confidence-based review.
+On the untouched 570-ROI/30-patient test split it achieved 0.5000 seven-class
+accuracy, 0.4980 macro F1, 0.7123 top-2 accuracy, and 0.6702 coarse BT/AT/MT
+accuracy. See `docs/evidence/BRACS_MODEL_V1_ACCEPTANCE.md` for baselines,
+confidence intervals, per-class limitations, artifact hashes, and real-SVS
+functional evidence.

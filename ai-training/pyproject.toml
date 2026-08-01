@@ -16,9 +16,17 @@ dependencies = [
 wsi = [
     "tiffslide>=3,<5",
 ]
+model = [
+    "joblib>=1.4,<2",
+    "scikit-learn>=1.8,<1.9",
+    "scipy>=1.18,<2",
+    "torch>=2.9,<3",
+    "torchvision>=0.24,<0.25",
+]
 
 [project.scripts]
 pathlab-ai-data = "pathlab_ai_data.cli:main"
+pathlab-ai-model = "pathlab_ai_model.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

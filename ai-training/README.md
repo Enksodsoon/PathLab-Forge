@@ -113,3 +113,62 @@ split prevents leakage. Unannotated local WSIs are tiled at inference time; tile
 predictions are aggregated into an evidence map and are not treated as new ground
 truth. WSI-level weak supervision remains an optional later experiment because
 the complete source requires roughly 984 GiB before derived training artifacts.
+
+## Train and run the Evidence Challenger model
+
+Install the local CPU runtime from the repository root. The explicit PyTorch CPU
+index prevents installation of unnecessary CUDA libraries:
+
+```powershell
+build\ai-training-venv\Scripts\python.exe -m pip install `
+  torch==2.9.0 torchvision==0.24.0 `
+  --index-url https://download.pytorch.org/whl/cpu
+build\ai-training-venv\Scripts\python.exe -m pip install `
+  "scikit-learn>=1.8,<1.9" "joblib>=1.4,<2"
+build\ai-training-venv\Scripts\python.exe -m pip install -e ai-training --no-deps
+```
+
+Create the two deterministic, lossless views for each clean ROI using the
+bundled Node.js and Sharp runtime:
+
+```powershell
+$env:NODE_PATH="C:\Users\enkso\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules"
+& "C:\Users\enkso\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" `
+  ai-training\scripts\build_bracs_views.mjs `
+  --manifest "D:\PathLabData\BRACS\prepared\bracs-roi-clean-v1\manifest.jsonl" `
+  --raw-root "D:\PathLabData\BRACS\raw\BRACS_RoI\latest_version" `
+  --output-root "D:\PathLabData\BRACS\derived\mobilenet-v1\views" `
+  --concurrency 4
+```
+
+Train and evaluate:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe train-bracs `
+  --views-root "D:\PathLabData\BRACS\derived\mobilenet-v1\views" `
+  --output-root "D:\PathLabData\BRACS\models\pathlab-bracs-mobilenet-v1" `
+  --batch-size 64 --threads 6 --bootstrap-iterations 500
+```
+
+Run on an ordinary unannotated image:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe predict-image `
+  --model-root "D:\PathLabData\BRACS\models\pathlab-bracs-mobilenet-v1" `
+  --image "C:\path\to\region.png"
+```
+
+Run bounded tile inference on an unannotated SVS/OME-TIFF:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe predict-slide `
+  --model-root "D:\PathLabData\BRACS\models\pathlab-bracs-mobilenet-v1" `
+  --slide "C:\path\to\slide.svs" `
+  --output "C:\path\to\evidence-map.json" `
+  --tile-size 1024 --max-tiles 400
+```
+
+The v1 model is a frozen ImageNet-pretrained MobileNetV3-Small encoder plus a
+class-balanced seven-class head selected on the official validation split. It
+uses temperature calibration and a validation-derived review threshold. Its
+outputs are educational evidence prompts, not clinical diagnoses.
