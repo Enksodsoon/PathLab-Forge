@@ -1,67 +1,62 @@
-# Active Task — PIVOT Annotation-Free WSI Training MVP
+# Active Task — Evidence Challenger BRACS Dataset Preparation
 
-Approved by the product owner on 2026-08-01. This milestone supersedes the
-Forge-to-Viewer connection task while preserving its completed local connection,
-preview, conversion, packaging, annotation and upload behavior.
+Approved by the product owner on 2026-08-01. This task supersedes the PIVOT
+flagship milestone. PIVOT remains only a legacy spatial-navigation baseline; it
+is not AI and is not the primary educational product.
 
 ## Goal
 
-Add a complete, local, non-diagnostic training workflow that turns any supported
-unannotated 2D RGB WSI into coordinate-grounded cross-scale exercises:
+Create the reproducible first data stage for PathLab Evidence Challenger:
 
-- compile deterministic tasks from the slide's own pixel pyramid and source
-  coordinates;
-- show a high-resolution query region and let a learner relocate it in the live
-  WSI viewer;
-- score answers geometrically without model predictions, annotations or disease
-  labels;
-- record bounded session telemetry and adapt task difficulty from learner
-  performance;
-- persist auditable manifests tied to the source fingerprint, series, preview
-  revision, algorithm version and random seed;
-- remain functional without a trained model, network service or PathLab Viewer.
+- accept an authorized local copy of the official BRACS WSI archive and its
+  summary spreadsheet;
+- preserve and independently verify the published patient-disjoint train,
+  validation and test partitions;
+- normalize the seven slide-level diagnostic labels without importing ROI or
+  pixel annotations into the training manifest;
+- validate every WSI through bounded decoded-slide inspection, tissue-content
+  screening, metadata consistency and SHA-256 identity;
+- emit deterministic, relative-path manifests that can feed later patch
+  extraction and weakly supervised MIL training;
+- never modify, copy, redistribute or commit the source WSIs.
 
 ## Fixed boundaries
 
-- PIVOT is educational and non-diagnostic. It does not name morphology, rank
-  clinical importance, generate diagnoses or claim diagnostic competence.
-- Correctness always comes from source coordinates and transform provenance.
-- A future embedding model may select hard distractors or estimate difficulty,
-  but it must never define the correct answer.
-- Research state stays local and separate from annotations, `.plslide`, Viewer
-  upload and publication contracts.
-- No public upload, automatic publication, merge, push, OCI deployment or
-  production test is in scope.
-- Existing viewing, conversion, packaging, annotation and Viewer connection
-  behavior must not regress.
-- Never load an entire WSI into memory; use bounded DZI/tile reads, caches and
-  cancellable work.
+- BRACS download requires truthful named registration on the official site. The
+  repository does not automate registration, store credentials or bypass access.
+- Raw data must remain outside the Git repository and is treated as immutable.
+- The published BRACS reference splits remain the benchmark authority. The
+  cleaner verifies patient separation and published slide/class counts.
+- Only WSI-level labels enter the training manifest. ROI images and QuPath
+  annotations are reserved for held-out evidence-localization evaluation.
+- Header-only validation is allowed solely for deterministic test fixtures.
+  Real training preparation requires decoded WSI and tissue QC through
+  `tiffslide`.
+- No model training, clinical diagnosis, Viewer upload, OCI deployment, merge or
+  production release is part of this task.
 
 ## Acceptance gates
 
-1. A supported slide with a ready preview can generate a deterministic task set
-   without annotations or network access.
-2. Every task records an exact source rectangle and reproducible query image.
-3. A learner can start a session, view the query, navigate, submit a location,
-   receive normalized geometric feedback, skip, request a bounded hint and end
-   the session.
-4. Session state survives refresh/restart and becomes stale if the source or
-   selected series changes.
-5. APIs retain loopback authentication, origin/CSRF enforcement and bounded
-   request bodies.
-6. The task compiler rejects blank, low-information and ambiguous candidates and
-   reports why tasks were rejected.
-7. Focused and complete Java/frontend checks pass, followed by real-browser
-   desktop and narrow-viewport acceptance.
-8. Added work is measured for cold generation, cached opening, disk size and peak
-   process-tree memory; unmeasured estimates are not reported as facts.
+1. CSV and XLSX BRACS summaries normalize into one documented schema.
+2. The cleaner fails closed on missing slides, extra slides, invalid IDs,
+   label/folder disagreement, split disagreement and duplicate slide content.
+3. Every accepted slide has a valid TIFF/SVS container, full SHA-256, decoded
+   dimensions, pyramid-level count and a bounded thumbnail tissue measurement.
+4. No patient appears in more than one official split.
+5. Full-dataset mode requires exactly 547 WSIs, 189 patients and the published
+   split/class distributions.
+6. Outputs contain only relative paths, deterministic manifests, checksums,
+   provenance and a dataset card; no raw pixels are copied.
+7. Output uses partial staging and atomic finalization.
+8. Focused Python tests, complete Forge checks and repository policy checks pass.
+9. If authorized BRACS files are unavailable locally, the handoff is reported
+   explicitly and no claim of real-slide cleaning is made.
 
 ## Ordered work
 
-1. Define immutable PIVOT task/session contracts and deterministic fixtures.
-2. Add a bounded research tile source, candidate filter and task compiler.
-3. Add atomic local manifest/session persistence and source invalidation.
-4. Add focused local APIs and background scheduling.
-5. Build the integrated learner workspace and viewport-settled telemetry.
-6. Add scoring, hints, adaptive ordering, accessibility and responsive behavior.
-7. Run full regression, browser, resource and visual-fidelity acceptance.
+1. Confirm official access, license, folder structure and published counts.
+2. Define normalized metadata and validation contracts with failing tests.
+3. Implement CSV/XLSX parsing, inventory reconciliation and patient-leak checks.
+4. Implement decoded-slide QC, hashing and deterministic atomic outputs.
+5. Document the authorized-data handoff and exact preparation command.
+6. Run focused and complete verification and record evidence.

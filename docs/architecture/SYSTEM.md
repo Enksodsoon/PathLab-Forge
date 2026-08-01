@@ -18,38 +18,32 @@ PathLab Viewer is no longer a flat slide uploader. The current server has:
 
 Forge therefore produces one derivative that can enter this existing lifecycle. It does not create a second library, share system, publication path or worker service.
 
-## Local PIVOT education subsystem
+## Evidence Challenger research boundary
 
-PIVOT turns an already validated local DZI pyramid into a non-diagnostic visual
-navigation exercise. It does not require annotations, disease labels, a model, or
-another WSI decoder. A bounded deterministic compiler samples at most 512 existing
-JPEG tiles, rejects blank and low-information candidates, measures only image
-appearance and scale separation, and writes at most 12 small query images plus an
-immutable manifest under the dataset's local `research/pivot-v1` directory.
+Model training is isolated from the Java desktop runtime under `ai-training/`.
+The training side owns public-dataset manifests, patient/site split validation,
+feature extraction and later model training/export. It must not place raw WSIs,
+patches, reports, model checkpoints or generated embeddings in Git.
 
 ```text
-validated local DZI
- -> bounded deterministic candidate sampling
- -> blank/information rejection
- -> same-slide appearance ambiguity + scale-gap difficulty
- -> query image + hidden source-coordinate task
- -> learner navigates the complete slide
- -> normalized coordinate error + interaction telemetry
- -> local adaptive next-task selection
+authorized immutable public WSI archive
+ -> dataset-specific metadata normalization
+ -> patient/split/leakage verification
+ -> bounded decoded-slide and tissue QC
+ -> SHA-256 inventory + relative-path manifests
+ -> patch extraction and weakly supervised training (later milestone)
+ -> validated compact ONNX artifact (later milestone)
+ -> isolated local Forge inference (later milestone)
 ```
 
-The source coordinate is the sole correctness authority. Future models may rank
-distractors or difficulty, but must never generate the answer. Target coordinates
-remain server-side until an attempt is scored. PIVOT writes no annotations, makes
-no diagnosis, changes no conversion artifact, and sends no research record to
-PathLab Viewer.
+The BRACS preparation stage uses only WSI-level labels for the training manifest.
+ROI images and annotations are withheld for later evidence-localization evaluation.
+Training never runs inside the Forge HTTP process, and raw training data is never
+included in `.plslide` or uploaded to PathLab Viewer.
 
-The local HTTP surface lives below
-`/api/v2/desktop/datasets/{datasetId}/pivot`, reuses the desktop session and CSRF
-controls, and persists one resumable local session per dataset. Session records
-contain task identifiers, normalized coordinate error, confidence, elapsed time,
-pan distance, zoom reversals, hints and skips so a later research protocol can
-compare learning and navigation outcomes without clinical labels.
+The existing PIVOT subsystem remains readable as a legacy spatial-navigation
+baseline. Its answers come only from source coordinates; it is not AI and is no
+longer the primary educational milestone.
 
 ## End-to-end pipeline
 

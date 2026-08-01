@@ -37,6 +37,20 @@ Thumbs.db
 *.tiff
 *.jp2
 
+# AI research data and generated training artifacts
+ai-training/.venv/
+*.egg-info/
+ai-training/data/
+ai-training/artifacts/
+ai-training/runs/
+*.ckpt
+*.onnx
+*.safetensors
+*.pt
+*.npy
+*.npz
+*.parquet
+
 # Generated slide products
 *.plslide
 *_files/

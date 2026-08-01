@@ -44,7 +44,8 @@ PathLab Forge owns:
 - deterministic `.plslide` packaging;
 - persistent batch queue;
 - resumable upload;
-- local non-diagnostic PIVOT training generated and scored from source coordinates;
+- reproducible non-clinical AI research dataset preparation and local educational inference;
+- legacy PIVOT spatial-navigation drills as an optional research baseline;
 - Windows/macOS packaging.
 
 PathLab Forge does not own:
@@ -54,7 +55,7 @@ PathLab Forge does not own:
 - Viewer library search, collections, sharing or Trash;
 - Viewer annotations;
 - server-managed courses, classrooms or teacher administration;
-- AI diagnosis;
+- clinical AI diagnosis or treatment decisions;
 - fluorescence analysis;
 - Z-stack or time-series navigation;
 - PACS/DICOM integration;

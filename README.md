@@ -67,8 +67,9 @@ The app provides:
   tiled pyramidal OME-BigTIFF staging image;
 - flattened-reader mapping that avoids the Bio-Formats 8.5 non-pyramidal `-noflat` writer defect;
 - source-coordinate crop and annotations with 1x, 1.5x, 2x, 4x, and 8x presets;
-- annotation-free PIVOT training generated from reusable local DZI tiles, with
-  coordinate-grounded scoring, adaptive difficulty, and local research telemetry;
+- a reproducible BRACS dataset cleaner for the Evidence Challenger research
+  pipeline, with patient-leakage checks, decoded-WSI QC and deterministic manifests;
+- legacy annotation-free PIVOT spatial-navigation drills as an optional baseline;
 - immutable artifact revisions, approval invalidation, cancellation checkpoints,
   disk preflight, DZI/tile validation, and deterministic package manifests;
 - source/output quality review before exact-revision approval;
@@ -108,8 +109,9 @@ low-memory safety thresholds.
 - The server receives only manifest, sanitized DZI/JPEG tiles and `thumbnail.jpg`.
 - A prepared slide enters Unfiled or an explicitly selected active folder.
 - Automatic publication and privacy approval are prohibited.
-- No diagnostic AI or clinical quantitative analysis is part of this project. PIVOT is a
-  non-diagnostic education workflow whose answers come only from image coordinates.
+- Educational AI is research-only and must expose uncertainty and provenance. It is not
+  a clinical diagnostic device and must never use its own prediction as grading truth on
+  an entirely unlabeled slide.
 - Older Windows/macOS support is designed from the beginning but claimed only after real testing.
 
 ## Planned source support
