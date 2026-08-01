@@ -123,6 +123,60 @@ export interface AnnotationRecord {
   createdAt: number
 }
 
+export interface PivotManifestSummary {
+  status: 'NOT_BUILT' | 'READY'
+  detail?: string
+  schema?: string
+  algorithmVersion?: string
+  manifestId?: string
+  totalTasks?: number
+  generationMs?: number
+  inspectedCandidates?: number
+  rejectedBlank?: number
+  rejectedMissing?: number
+  createdAt?: number
+  nonDiagnostic?: boolean
+}
+
+export interface PivotTask {
+  id: string
+  queryUrl: string
+  difficulty: number
+  difficultyLabel: 'Foundation' | 'Moderate' | 'Challenge'
+  scaleGap: number
+  index: number
+  total: number
+}
+
+export interface PivotAttempt {
+  taskId: string
+  normalizedError: number
+  rating: 'MATCH' | 'CLOSE' | 'MISSED'
+  elapsedMs: number
+  confidence: number
+}
+
+export interface PivotSession {
+  id: string
+  state: 'ACTIVE' | 'COMPLETED'
+  startedAt: number
+  updatedAt: number
+  completedTasks: number
+  skippedTasks: number
+  hintsUsed: number
+  totalTasks: number
+  currentTask: PivotTask | null
+  recentAttempts: PivotAttempt[]
+}
+
+export interface PivotScore {
+  normalizedError: number
+  distancePixels: number
+  rating: 'MATCH' | 'CLOSE' | 'MISSED'
+  target: { x: number; y: number; width: number; height: number }
+  session: PivotSession
+}
+
 let csrf = ''
 let datasetEtag = ''
 let datasetCache: Dataset[] | undefined
@@ -335,6 +389,71 @@ export async function deleteAnnotation(id: string, annotationId: string) {
   return request<void>(
     `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}`,
     { method: 'DELETE' },
+  )
+}
+
+export async function pivotStatus(id: string) {
+  return request<PivotManifestSummary>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot`,
+  )
+}
+
+export async function compilePivot(id: string) {
+  return request<PivotManifestSummary>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/compile`,
+    { method: 'POST' },
+  )
+}
+
+export async function pivotSession(id: string) {
+  return request<PivotSession>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session`,
+  )
+}
+
+export async function startPivotSession(id: string) {
+  return request<PivotSession>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session`,
+    { method: 'POST' },
+  )
+}
+
+export async function submitPivot(
+  id: string,
+  values: {
+    x: number
+    y: number
+    elapsedMs: number
+    panDistance: number
+    zoomReversals: number
+    confidence: number
+  },
+) {
+  const query = new URLSearchParams(Object.entries(values).map(([key, value]) => [key, String(value)]))
+  return request<PivotScore>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session/submit?${query}`,
+    { method: 'POST' },
+  )
+}
+
+export async function hintPivot(id: string) {
+  return request<{ text: string; session: PivotSession }>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session/hint`,
+    { method: 'POST' },
+  )
+}
+
+export async function skipPivot(id: string) {
+  return request<PivotSession>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session/skip`,
+    { method: 'POST' },
+  )
+}
+
+export async function endPivot(id: string) {
+  return request<PivotSession>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session/end`,
+    { method: 'POST' },
   )
 }
 

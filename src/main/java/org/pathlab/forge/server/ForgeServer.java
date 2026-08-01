@@ -36,6 +36,15 @@ import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
 import org.pathlab.forge.library.SourceVerificationService;
 import org.pathlab.forge.model.BatchId;
+import org.pathlab.forge.pivot.PivotHint;
+import org.pathlab.forge.pivot.PivotImageSource;
+import org.pathlab.forge.pivot.PivotCompiler;
+import org.pathlab.forge.pivot.PivotManifest;
+import org.pathlab.forge.pivot.PivotRepository;
+import org.pathlab.forge.pivot.PivotScore;
+import org.pathlab.forge.pivot.PivotService;
+import org.pathlab.forge.pivot.PivotSession;
+import org.pathlab.forge.pivot.PivotTask;
 import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
 import org.pathlab.forge.viewer.ViewerUploadStatus;
@@ -58,6 +67,9 @@ public final class ForgeServer implements AutoCloseable {
     private final SourceVerificationService sourceVerificationService;
     private final ConversionService conversionService;
     private final AnnotationRepository annotationRepository;
+    private final PivotRepository pivotRepository;
+    private final PivotCompiler pivotCompiler;
+    private final PivotService pivotService;
     private final ViewerPairingService viewerPairingService;
     private volatile boolean launchTokenAvailable = true;
 
@@ -83,6 +95,9 @@ public final class ForgeServer implements AutoCloseable {
         conversionService =
                 new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
         annotationRepository = new AnnotationRepository(managedRoot);
+        pivotRepository = new PivotRepository(managedRoot);
+        pivotCompiler = new PivotCompiler(pivotRepository, 512, 12);
+        pivotService = new PivotService(pivotRepository);
         viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
     }
 
@@ -377,6 +392,34 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteAnnotation(exchange, path);
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                pivotStatus(exchange, pivotDatasetId(path, "/pivot"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/compile")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                compilePivot(exchange, pivotDatasetId(path, "/pivot/compile"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/session")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                pivotSession(exchange, pivotDatasetId(path, "/pivot/session"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/session")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                startPivotSession(exchange, pivotDatasetId(path, "/pivot/session"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/session/submit")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                submitPivot(exchange, pivotDatasetId(path, "/pivot/session/submit"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/session/hint")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                hintPivot(exchange, pivotDatasetId(path, "/pivot/session/hint"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/session/skip")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                skipPivot(exchange, pivotDatasetId(path, "/pivot/session/skip"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot/session/end")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                endPivot(exchange, pivotDatasetId(path, "/pivot/session/end"));
+            } else if (path.matches(
+                            "/api/v2/desktop/datasets/[^/]+/pivot/query/[A-Za-z0-9._-]+\\.jpg")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                pivotQueryImage(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteDataset(exchange, path.substring("/api/datasets/".length()));
@@ -1404,6 +1447,309 @@ public final class ForgeServer implements AutoCloseable {
         exchange.sendResponseHeaders(204, -1);
     }
 
+    private void pivotStatus(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var dataset = repository.find(id);
+        if (dataset.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        var manifest = pivotRepository.findCurrent(dataset.orElseThrow());
+        if (manifest.isEmpty()) {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    "{\"status\":\"NOT_BUILT\",\"detail\":"
+                            + json("Build coordinate-grounded tasks after the reusable preview is ready")
+                            + "}");
+            return;
+        }
+        respond(
+                exchange,
+                200,
+                "application/json",
+                pivotManifestJson(manifest.orElseThrow()));
+    }
+
+    private void compilePivot(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var dataset = repository.find(id);
+        if (dataset.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        var selected = dataset.orElseThrow();
+        if (pivotBusy(selected)) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"dataset_busy\",\"detail\":"
+                            + json("Finish or cancel conversion before building PIVOT tasks")
+                            + "}");
+            return;
+        }
+        try {
+            var artifact = conversionService.currentArtifactRevision(id);
+            PivotImageSource source;
+            if (artifact.isPresent()
+                    && (artifact.orElseThrow().status().name().equals("READY")
+                            || artifact.orElseThrow().status().name().equals("APPROVED"))) {
+                var revision = artifact.orElseThrow();
+                var originX = selected.cropX();
+                var originY = selected.cropY();
+                var scale = selected.downsample();
+                try (var reader = conversionService.openDerivativeReader(id)) {
+                    source = new PivotImageSource() {
+                        public String revision() { return "artifact:" + revision.id(); }
+                        public int imageWidth() { return revision.outputWidth(); }
+                        public int imageHeight() { return revision.outputHeight(); }
+                        public double sourceOriginX() { return originX; }
+                        public double sourceOriginY() { return originY; }
+                        public double sourceScaleX() { return scale; }
+                        public double sourceScaleY() { return scale; }
+                        public byte[] descriptor() throws IOException {
+                            return reader.read("slide.dzi");
+                        }
+                        public byte[] tile(int level, int x, int y, String format) throws IOException {
+                            try {
+                                return reader.read(
+                                        "slide_files/" + level + "/" + x + "_" + y + "." + format);
+                            } catch (IllegalArgumentException missing) {
+                                return null;
+                            }
+                        }
+                    };
+                    respond(
+                            exchange,
+                            201,
+                            "application/json",
+                            pivotManifestJson(pivotCompiler.compile(selected, source)));
+                    return;
+                }
+            } else {
+                var preview = conversionService.cachedPreview(id)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Open the slide and wait for its reusable viewer preview, then try again"));
+                source = new PivotImageSource() {
+                    public String revision() { return "preview:" + selected.configurationRevision(); }
+                    public int imageWidth() { return preview.width(); }
+                    public int imageHeight() { return preview.height(); }
+                    public double sourceOriginX() { return 0; }
+                    public double sourceOriginY() { return 0; }
+                    public double sourceScaleX() { return (double) preview.sourceWidth() / preview.width(); }
+                    public double sourceScaleY() { return (double) preview.sourceHeight() / preview.height(); }
+                    public byte[] descriptor() throws IOException {
+                        return Files.readAllBytes(preview.root().resolve("slide.dzi"));
+                    }
+                    public byte[] tile(int level, int x, int y, String format) throws IOException {
+                        var tile = preview.root().resolve("slide_files").resolve(Integer.toString(level))
+                                .resolve(x + "_" + y + "." + format);
+                        return Files.isRegularFile(tile) ? Files.readAllBytes(tile) : null;
+                    }
+                };
+            }
+            respond(
+                    exchange,
+                    201,
+                    "application/json",
+                    pivotManifestJson(pivotCompiler.compile(selected, source)));
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"pivot_not_ready\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void pivotSession(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var dataset = requirePivotDataset(exchange, id);
+        if (dataset == null) {
+            return;
+        }
+        var manifest = pivotRepository.findCurrent(dataset);
+        if (manifest.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"pivot_not_built\"}");
+            return;
+        }
+        var session = pivotService.activeSession(dataset);
+        if (session.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"session_not_found\"}");
+            return;
+        }
+        respond(
+                exchange,
+                200,
+                "application/json",
+                pivotSessionJson(dataset, manifest.orElseThrow(), session.orElseThrow()));
+    }
+
+    private void startPivotSession(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var dataset = requirePivotDataset(exchange, id);
+        if (dataset == null) {
+            return;
+        }
+        try {
+            var manifest = pivotService.currentManifest(dataset);
+            var session = pivotService.start(dataset, manifest);
+            respond(
+                    exchange,
+                    201,
+                    "application/json",
+                    pivotSessionJson(dataset, manifest, session));
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"pivot_not_ready\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void submitPivot(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var dataset = requirePivotDataset(exchange, id);
+        if (dataset == null) {
+            return;
+        }
+        try {
+            var score = pivotService.submit(
+                    dataset,
+                    optionalDoubleQuery(exchange, "x", -1),
+                    optionalDoubleQuery(exchange, "y", -1),
+                    optionalLongQuery(exchange, "elapsedMs", 0),
+                    optionalDoubleQuery(exchange, "panDistance", 0),
+                    optionalIntegerQuery(exchange, "zoomReversals", 0),
+                    optionalIntegerQuery(exchange, "confidence", 2));
+            var manifest = pivotService.currentManifest(dataset);
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    pivotScoreJson(dataset, manifest, score));
+        } catch (IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"invalid_pivot_attempt\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"pivot_session_unavailable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void hintPivot(HttpExchange exchange, String id) throws IOException {
+        pivotSessionAction(exchange, id, "hint");
+    }
+
+    private void skipPivot(HttpExchange exchange, String id) throws IOException {
+        pivotSessionAction(exchange, id, "skip");
+    }
+
+    private void endPivot(HttpExchange exchange, String id) throws IOException {
+        pivotSessionAction(exchange, id, "end");
+    }
+
+    private void pivotSessionAction(HttpExchange exchange, String id, String action)
+            throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var dataset = requirePivotDataset(exchange, id);
+        if (dataset == null) {
+            return;
+        }
+        try {
+            var manifest = pivotService.currentManifest(dataset);
+            if ("hint".equals(action)) {
+                var hint = pivotService.hint(dataset);
+                respond(exchange, 200, "application/json", pivotHintJson(dataset, manifest, hint));
+                return;
+            }
+            var session = "skip".equals(action)
+                    ? pivotService.skip(dataset)
+                    : pivotService.end(dataset);
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    pivotSessionJson(dataset, manifest, session));
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"pivot_session_unavailable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void pivotQueryImage(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var prefix = "/api/v2/desktop/datasets/";
+        var pivot = path.indexOf("/pivot/query/");
+        var id = path.substring(prefix.length(), pivot);
+        var taskId = path.substring(pivot + "/pivot/query/".length(), path.length() - 4);
+        var dataset = requirePivotDataset(exchange, id);
+        if (dataset == null) {
+            return;
+        }
+        try {
+            var manifest = pivotService.currentManifest(dataset);
+            var task = manifest.tasks().stream()
+                    .filter(candidate -> candidate.id().equals(taskId))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("PIVOT task was not found"));
+            if (immutableNotModified(exchange, manifest.id() + "|" + task.id())) {
+                return;
+            }
+            respondFile(exchange, "image/jpeg", pivotRepository.queryImage(id, task));
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"pivot_query_not_found\"}");
+        }
+    }
+
+    private LocalDataset requirePivotDataset(HttpExchange exchange, String id) throws IOException {
+        var dataset = repository.find(id);
+        if (dataset.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return null;
+        }
+        return dataset.orElseThrow();
+    }
+
+    private static boolean pivotBusy(LocalDataset dataset) {
+        return switch (dataset.status()) {
+            case QUEUED, WAITING_RESOURCES, CONVERTING, OPTIMIZING_OME,
+                    VALIDATING, GENERATING_DZI, DZI_READY -> true;
+            default -> false;
+        };
+    }
+
     private void deleteDataset(HttpExchange exchange, String id) throws IOException {
         if (!requireWrite(exchange)) {
             return;
@@ -1458,6 +1804,83 @@ public final class ForgeServer implements AutoCloseable {
         return "{\"datasets\":["
                 + datasets.stream().map(this::datasetJson).collect(java.util.stream.Collectors.joining(","))
                 + "]}";
+    }
+
+    private String pivotManifestJson(PivotManifest manifest) {
+        return "{\"status\":\"READY\",\"schema\":" + json(manifest.schema())
+                + ",\"algorithmVersion\":" + json(manifest.algorithmVersion())
+                + ",\"manifestId\":" + json(manifest.id())
+                + ",\"totalTasks\":" + manifest.tasks().size()
+                + ",\"generationMs\":" + manifest.generationMs()
+                + ",\"inspectedCandidates\":" + manifest.inspectedCandidates()
+                + ",\"rejectedBlank\":" + manifest.rejectedBlank()
+                + ",\"rejectedMissing\":" + manifest.rejectedMissing()
+                + ",\"createdAt\":" + manifest.createdAt()
+                + ",\"nonDiagnostic\":true} ";
+    }
+
+    private String pivotSessionJson(
+            LocalDataset dataset, PivotManifest manifest, PivotSession session) {
+        var currentTask = session.state() == org.pathlab.forge.pivot.PivotSessionState.ACTIVE
+                ? manifest.tasks().stream()
+                        .filter(task -> task.id().equals(session.currentTaskId()))
+                        .findFirst()
+                : java.util.Optional.<PivotTask>empty();
+        var recentAttempts = session.attempts().stream()
+                .skip(Math.max(0, session.attempts().size() - 5L))
+                .map(attempt -> "{\"taskId\":" + json(attempt.taskId())
+                        + ",\"normalizedError\":" + attempt.normalizedError()
+                        + ",\"rating\":" + json(attempt.rating())
+                        + ",\"elapsedMs\":" + attempt.elapsedMs()
+                        + ",\"confidence\":" + attempt.confidence() + "}")
+                .collect(java.util.stream.Collectors.joining(","));
+        return "{\"id\":" + json(session.id())
+                + ",\"state\":" + json(session.state().name())
+                + ",\"startedAt\":" + session.startedAt()
+                + ",\"updatedAt\":" + session.updatedAt()
+                + ",\"completedTasks\":" + session.completedTasks()
+                + ",\"skippedTasks\":" + session.skippedTasks()
+                + ",\"hintsUsed\":" + session.hintsUsed()
+                + ",\"totalTasks\":" + manifest.tasks().size()
+                + ",\"currentTask\":"
+                + currentTask.map(task -> pivotTaskJson(dataset, manifest, task)).orElse("null")
+                + ",\"recentAttempts\":[" + recentAttempts + "]} ";
+    }
+
+    private String pivotTaskJson(
+            LocalDataset dataset, PivotManifest manifest, PivotTask task) {
+        var index = manifest.tasks().indexOf(task) + 1;
+        return "{\"id\":" + json(task.id())
+                + ",\"queryUrl\":" + json("/api/v2/desktop/datasets/"
+                        + dataset.id() + "/pivot/query/" + task.id() + ".jpg")
+                + ",\"difficulty\":" + task.difficulty()
+                + ",\"difficultyLabel\":" + json(difficultyLabel(task.difficulty()))
+                + ",\"scaleGap\":" + task.scaleGap()
+                + ",\"index\":" + index
+                + ",\"total\":" + manifest.tasks().size() + "}";
+    }
+
+    private String pivotScoreJson(
+            LocalDataset dataset, PivotManifest manifest, PivotScore score) {
+        var task = score.answeredTask();
+        return "{\"normalizedError\":" + score.normalizedError()
+                + ",\"distancePixels\":" + score.distancePixels()
+                + ",\"rating\":" + json(score.rating())
+                + ",\"target\":{\"x\":" + task.targetX()
+                + ",\"y\":" + task.targetY()
+                + ",\"width\":" + task.targetWidth()
+                + ",\"height\":" + task.targetHeight() + "}"
+                + ",\"session\":" + pivotSessionJson(dataset, manifest, score.session()) + "}";
+    }
+
+    private String pivotHintJson(
+            LocalDataset dataset, PivotManifest manifest, PivotHint hint) {
+        return "{\"text\":" + json(hint.text())
+                + ",\"session\":" + pivotSessionJson(dataset, manifest, hint.session()) + "}";
+    }
+
+    private static String difficultyLabel(double difficulty) {
+        return difficulty < 0.34 ? "Foundation" : difficulty < 0.67 ? "Moderate" : "Challenge";
     }
 
     private String datasetJson(LocalDataset dataset) {
@@ -1698,6 +2121,17 @@ public final class ForgeServer implements AutoCloseable {
             HttpExchange exchange, String name, double fallback) {
         var value = queryValue(exchange, name, null);
         return value == null ? fallback : Double.parseDouble(value);
+    }
+
+    private static long optionalLongQuery(
+            HttpExchange exchange, String name, long fallback) {
+        var value = queryValue(exchange, name, null);
+        return value == null ? fallback : Long.parseLong(value);
+    }
+
+    private static String pivotDatasetId(String path, String suffix) {
+        var prefix = "/api/v2/desktop/datasets/";
+        return path.substring(prefix.length(), path.length() - suffix.length());
     }
 
     private static String queryValue(HttpExchange exchange, String name, String fallback) {

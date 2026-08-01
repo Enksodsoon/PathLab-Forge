@@ -99,7 +99,66 @@ vi.mock('../api', () => ({
   revokeViewerConnection: vi.fn(),
   uploadApprovedArtifact: vi.fn(),
   getViewerUpload: vi.fn(),
+  pivotStatus: vi.fn(async () => ({
+    status: 'READY',
+    totalTasks: 12,
+    inspectedCandidates: 120,
+    generationMs: 80,
+    nonDiagnostic: true,
+  })),
+  compilePivot: vi.fn(),
+  pivotSession: vi.fn(async () => { throw new Error('No active session') }),
+  startPivotSession: vi.fn(),
+  submitPivot: vi.fn(),
+  hintPivot: vi.fn(),
+  skipPivot: vi.fn(),
+  endPivot: vi.fn(),
 }))
+
+test('opens PIVOT training from a ready unannotated slide', async () => {
+  const dataset: api.Dataset = {
+    id: 'pivot-entry-slide',
+    displayName: 'Unannotated slide.ome.tif',
+    sourceBytes: 250_000_000,
+    format: 'OME_TIFF',
+    status: 'READY_TO_CONVERT',
+    detail: 'Ready',
+    outputPath: '',
+    sha256: '',
+    selectedSeries: 0,
+    width: 4_000,
+    height: 2_000,
+    downsample: 1,
+    estimatedOutputBytes: 0,
+    projectedFileBytes: 0,
+    projectedFileLowerBytes: 0,
+    projectedFileUpperBytes: 0,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 4_000,
+    cropHeight: 2_000,
+    sourceFingerprint: 'pivot-source',
+    configurationRevision: 'pivot-config',
+    currentArtifactRevision: '',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValueOnce([[dataset], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValueOnce([dataset])
+
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'PIVOT training' }))
+  expect(await screen.findByRole('main', { name: 'PIVOT training workspace' })).toBeVisible()
+  expect(screen.getByText('Your annotation-free training set is ready')).toBeVisible()
+  expect(screen.queryByText('No diagnostic labels are used.')).not.toBeInTheDocument()
+  expect(screen.getByText('Research mode · non-diagnostic · local only')).toBeVisible()
+})
 
 test('launches directly into the Viewer Canvas Focus shell', async () => {
   render(<App />)

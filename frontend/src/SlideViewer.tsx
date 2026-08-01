@@ -22,6 +22,19 @@ interface ViewerPointerEvent {
   preventDefaultAction?: boolean
 }
 
+interface ViewerClickEvent extends ViewerPointerEvent {
+  quick?: boolean
+}
+
+export interface SourcePoint {
+  x: number
+  y: number
+}
+
+export interface ViewportSnapshot extends SourcePoint {
+  zoom: number
+}
+
 type GestureViewer = OpenSeadragon.Viewer & {
   gestureSettingsMouse: { dragToPan: boolean }
   gestureSettingsTouch: { dragToPan: boolean }
@@ -48,6 +61,9 @@ export const SlideViewer = memo(function SlideViewer({
   downsample = 0,
   onCreate,
   onReady,
+  selectedPoint,
+  onSelectLocation,
+  onViewportSettled,
 }: {
   tileSource: string
   activeTool?: string
@@ -62,9 +78,13 @@ export const SlideViewer = memo(function SlideViewer({
   downsample?: number
   onCreate?: (geometry: string) => void
   onReady?: (viewer: OpenSeadragon.Viewer | null) => void
+  selectedPoint?: SourcePoint
+  onSelectLocation?: (point: SourcePoint) => void
+  onViewportSettled?: (snapshot: ViewportSnapshot) => void
 }) {
   const elementRef = useRef<HTMLDivElement>(null)
   const cropOverlayRef = useRef<HTMLDivElement>(null)
+  const selectionOverlayRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
   const cropGestureRef = useRef<CropPointerGesture | null>(null)
@@ -113,11 +133,9 @@ export const SlideViewer = memo(function SlideViewer({
     }
   }, [tileSource])
 
-  const sourcePointFromPixel = (position: OpenSeadragon.Point) => {
+  const sourcePointFromImage = (imagePoint: OpenSeadragon.Point) => {
     const viewer = viewerRef.current
     if (!viewer) return new OpenSeadragon.Point(0, 0)
-    const viewportPoint = viewer.viewport.pointFromPixel(position)
-    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint)
     if (downsample > 0) {
       return new OpenSeadragon.Point(
         imagePoint.x * downsample + cropX,
@@ -129,6 +147,13 @@ export const SlideViewer = memo(function SlideViewer({
       imagePoint.x * sourceWidth / Math.max(1, content?.x || sourceWidth),
       imagePoint.y * sourceHeight / Math.max(1, content?.y || sourceHeight),
     )
+  }
+
+  const sourcePointFromPixel = (position: OpenSeadragon.Point) => {
+    const viewer = viewerRef.current
+    if (!viewer) return new OpenSeadragon.Point(0, 0)
+    const viewportPoint = viewer.viewport.pointFromPixel(position)
+    return sourcePointFromImage(viewer.viewport.viewportToImageCoordinates(viewportPoint))
   }
 
   const sourcePointFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
@@ -249,6 +274,108 @@ export const SlideViewer = memo(function SlideViewer({
     onCreate,
     sourceHeight,
     sourceWidth,
+  ])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !onSelectLocation) return
+    const select = (event: ViewerClickEvent) => {
+      if (event.quick === false) return
+      const point = sourcePointFromPixel(event.position)
+      if (point.x < 0 || point.y < 0 || point.x > sourceWidth || point.y > sourceHeight) return
+      onSelectLocation({ x: point.x, y: point.y })
+    }
+    viewer.addHandler('canvas-click', select)
+    return () => {
+      viewer.removeHandler('canvas-click', select)
+    }
+  }, [
+    cropX,
+    cropY,
+    downsample,
+    onSelectLocation,
+    sourceHeight,
+    sourceWidth,
+  ])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !onViewportSettled) return
+    const report = () => {
+      if (!viewer.world.getItemCount()) return
+      const imageCenter = viewer.viewport.viewportToImageCoordinates(viewer.viewport.getCenter(true))
+      const sourceCenter = sourcePointFromImage(imageCenter)
+      onViewportSettled({
+        x: sourceCenter.x,
+        y: sourceCenter.y,
+        zoom: viewer.viewport.getZoom(true),
+      })
+    }
+    viewer.addHandler('open', report)
+    viewer.addHandler('animation-finish', report)
+    report()
+    return () => {
+      viewer.removeHandler('open', report)
+      viewer.removeHandler('animation-finish', report)
+    }
+  }, [
+    cropX,
+    cropY,
+    downsample,
+    onViewportSettled,
+    sourceHeight,
+    sourceWidth,
+  ])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    const overlay = selectionOverlayRef.current
+    if (!viewer || !overlay || !selectedPoint) return
+    let frame = 0
+    const project = () => {
+      frame = 0
+      if (!viewer.world.getItemCount()) {
+        overlay.style.visibility = 'hidden'
+        return
+      }
+      const content = viewer.world.getItemAt(0)?.getContentSize()
+      const imagePoint = downsample > 0
+        ? new OpenSeadragon.Point(
+            (selectedPoint.x - cropX) / downsample,
+            (selectedPoint.y - cropY) / downsample,
+          )
+        : new OpenSeadragon.Point(
+            selectedPoint.x * Math.max(1, content?.x || sourceWidth) / sourceWidth,
+            selectedPoint.y * Math.max(1, content?.y || sourceHeight) / sourceHeight,
+          )
+      const pixel = viewer.viewport.pixelFromPoint(
+        viewer.viewport.imageToViewportCoordinates(imagePoint),
+        true,
+      )
+      overlay.style.transform = `translate3d(${pixel.x}px, ${pixel.y}px, 0)`
+      overlay.style.visibility = 'visible'
+    }
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(project)
+    }
+    schedule()
+    viewer.addHandler('open', schedule)
+    viewer.addHandler('animation', schedule)
+    viewer.addHandler('resize', schedule)
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      viewer.removeHandler('open', schedule)
+      viewer.removeHandler('animation', schedule)
+      viewer.removeHandler('resize', schedule)
+    }
+  }, [
+    cropX,
+    cropY,
+    downsample,
+    selectedPoint,
+    sourceHeight,
+    sourceWidth,
+    tileSource,
   ])
 
   useEffect(() => {
@@ -466,6 +593,16 @@ export const SlideViewer = memo(function SlideViewer({
               ))}
             </>
           ) : null}
+        </div>
+      ) : null}
+      {selectedPoint ? (
+        <div
+          ref={selectionOverlayRef}
+          className="forge-pivot-selection"
+          data-testid="forge-pivot-selection"
+          aria-label="Selected training location"
+        >
+          <span />
         </div>
       ) : null}
       {loading && !loadError ? (

@@ -156,6 +156,19 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    public java.util.Optional<ArtifactRevision> currentArtifactRevision(String id)
+            throws IOException {
+        var dataset = requireDataset(id);
+        if (dataset.currentArtifactRevision().isBlank()) {
+            return java.util.Optional.empty();
+        }
+        return artifactRepository.find(id, dataset.currentArtifactRevision());
+    }
+
+    public DerivativeEntryReader openDerivativeReader(String id) throws IOException {
+        return new DerivativeEntryReader(artifacts(id));
+    }
+
     public LocalArtifacts revisionArtifacts(String id, String revisionId) {
         requireDataset(id);
         try {

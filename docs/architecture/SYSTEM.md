@@ -18,6 +18,39 @@ PathLab Viewer is no longer a flat slide uploader. The current server has:
 
 Forge therefore produces one derivative that can enter this existing lifecycle. It does not create a second library, share system, publication path or worker service.
 
+## Local PIVOT education subsystem
+
+PIVOT turns an already validated local DZI pyramid into a non-diagnostic visual
+navigation exercise. It does not require annotations, disease labels, a model, or
+another WSI decoder. A bounded deterministic compiler samples at most 512 existing
+JPEG tiles, rejects blank and low-information candidates, measures only image
+appearance and scale separation, and writes at most 12 small query images plus an
+immutable manifest under the dataset's local `research/pivot-v1` directory.
+
+```text
+validated local DZI
+ -> bounded deterministic candidate sampling
+ -> blank/information rejection
+ -> same-slide appearance ambiguity + scale-gap difficulty
+ -> query image + hidden source-coordinate task
+ -> learner navigates the complete slide
+ -> normalized coordinate error + interaction telemetry
+ -> local adaptive next-task selection
+```
+
+The source coordinate is the sole correctness authority. Future models may rank
+distractors or difficulty, but must never generate the answer. Target coordinates
+remain server-side until an attempt is scored. PIVOT writes no annotations, makes
+no diagnosis, changes no conversion artifact, and sends no research record to
+PathLab Viewer.
+
+The local HTTP surface lives below
+`/api/v2/desktop/datasets/{datasetId}/pivot`, reuses the desktop session and CSRF
+controls, and persists one resumable local session per dataset. Session records
+contain task identifiers, normalized coordinate error, confidence, elapsed time,
+pan distance, zoom reversals, hints and skips so a later research protocol can
+compare learning and navigation outcomes without clinical labels.
+
 ## End-to-end pipeline
 
 ```text

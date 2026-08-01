@@ -8,6 +8,7 @@ import {
   CheckCircle,
   Crosshair,
   FolderOpen,
+  GraduationCap,
   House,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
@@ -29,6 +30,7 @@ import type {
 } from './api'
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
+import { PivotWorkspace } from './PivotWorkspace'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
@@ -72,6 +74,7 @@ export function App() {
   const [connection, setConnection] = useState<ViewerConnection>()
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
+  const [pivotOpen, setPivotOpen] = useState(false)
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
 
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
@@ -492,6 +495,28 @@ export function App() {
     effectiveCapacityBytes: 512 * 1024 ** 3,
   }), [datasets])
 
+  const pivotRevision = currentRevision && ['READY', 'APPROVED'].includes(currentRevision.status)
+    ? currentRevision
+    : undefined
+  const pivotTileSource = selected && selected.selectedSeries >= 0 && selected.width > 0
+    ? pivotRevision
+      ? api.artifactDziUrl(selected.id, pivotRevision.id)
+      : `/api/datasets/${encodeURIComponent(selected.id)}/preview/slide.dzi?revision=${encodeURIComponent(selected.configurationRevision || String(selected.selectedSeries))}&preview=${DIRECT_PREVIEW_VERSION}`
+    : ''
+
+  if (pivotOpen && selected && pivotTileSource) {
+    return (
+      <PivotWorkspace
+        dataset={selected}
+        tileSource={pivotTileSource}
+        cropX={pivotRevision?.cropX ?? 0}
+        cropY={pivotRevision?.cropY ?? 0}
+        downsample={pivotRevision?.downsample ?? 0}
+        onClose={() => setPivotOpen(false)}
+      />
+    )
+  }
+
   const rail = (
     <PathLabProductRail
       productName="Forge"
@@ -551,6 +576,7 @@ export function App() {
               viewer={viewer}
               onViewer={setViewer}
               onCreateAnnotation={createLocalAnnotation}
+              onTraining={() => setPivotOpen(true)}
               inspectorOpen={inspectorOpen}
               onInspector={() => setInspectorOpen((current) => !current)}
             />
@@ -856,6 +882,7 @@ function ViewerStage({
   viewer,
   onViewer,
   onCreateAnnotation,
+  onTraining,
   inspectorOpen,
   onInspector,
 }: {
@@ -870,6 +897,7 @@ function ViewerStage({
   viewer: OpenSeadragon.Viewer | null
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
   onCreateAnnotation: (geometry: string) => void
+  onTraining: () => void
   inspectorOpen: boolean
   onInspector: () => void
 }) {
@@ -902,16 +930,23 @@ function ViewerStage({
           <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
           <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
-        <button
-          type="button"
-          aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
-          aria-expanded={inspectorOpen}
-          aria-controls="forge-slide-inspector"
-          title={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
-          onClick={onInspector}
-        >
-          <SidebarSimple />
-        </button>
+        <div className="forge-viewer-header-actions">
+          {dataset && tileSource ? (
+            <button type="button" className="forge-training-button" onClick={onTraining}>
+              <GraduationCap /> PIVOT training
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
+            aria-expanded={inspectorOpen}
+            aria-controls="forge-slide-inspector"
+            title={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
+            onClick={onInspector}
+          >
+            <SidebarSimple />
+          </button>
+        </div>
       </header>
       {importing ? (
         <PreviewLoading
