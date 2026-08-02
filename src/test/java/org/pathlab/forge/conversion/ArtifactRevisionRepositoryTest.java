@@ -79,6 +79,36 @@ final class ArtifactRevisionRepositoryTest {
         assertTrue(properties.contains("omeJpegQuality=75"));
     }
 
+    @Test
+    void removesSvsExtensionFromDefaultArtifactName() throws Exception {
+        var repository = new ArtifactRevisionRepository(temporaryDirectory);
+        var svs = new LocalDataset(
+                "dataset-svs",
+                "cohort-case.svs",
+                "C:\\slides\\cohort-case.svs",
+                100,
+                DatasetFormat.SVS,
+                DatasetStatus.READY_TO_CONVERT,
+                "ready",
+                "",
+                "").withExportConfiguration(
+                        DatasetStatus.READY_TO_CONVERT,
+                        "configured",
+                        0,
+                        7_557,
+                        7_360,
+                        1.0,
+                        100,
+                        0,
+                        0,
+                        7_557,
+                        7_360);
+
+        var revision = repository.create(svs, 7_557, 7_360);
+
+        assertTrue(revision.name().startsWith("cohort-case · "));
+    }
+
     private static LocalDataset configured(int series, double downsample) {
         return new LocalDataset(
                         "dataset-1",

@@ -80,7 +80,7 @@ public final class SwingDatasetPicker implements DatasetPicker {
 
                 @Override
                 public String getDescription() {
-                    return "Pathology slides (*.vsi, *.ome.tif, *.ome.tiff)";
+                    return "Pathology slides (*.svs, *.vsi, *.ome.tif, *.ome.tiff)";
                 }
             });
             var downloads = Path.of(System.getProperty("user.home"), "Downloads");
@@ -109,6 +109,7 @@ public final class SwingDatasetPicker implements DatasetPicker {
     private static boolean supported(String name) {
         var lower = name.toLowerCase(java.util.Locale.ROOT);
         return lower.endsWith(".vsi")
+                || lower.endsWith(".svs")
                 || lower.endsWith(".ome.tif")
                 || lower.endsWith(".ome.tiff");
     }

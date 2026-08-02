@@ -28,10 +28,22 @@ No slide annotations or human-drawn regions are required to run inference.
 ### Public BRACS fixture
 
 - Slide: `BRACS_1003718.svs`, 17,135 x 11,733 pixels.
-- Runtime: 5.70 seconds for 128 representative tissue tiles.
+- Native Forge import: passed; `.svs` was admitted directly without conversion,
+  its two image series and four flattened resolutions were discovered, and the
+  tissue pyramid opened in the original-source viewer.
+- Source verification: passed; SHA-256 content fingerprint
+  `9ba556e5f8f1b82e...` was persisted without overwriting the concurrently
+  selected tissue series.
+- Integrated application runtime: 5.5 seconds for 128 representative tissue
+  tiles after model startup.
 - Prediction: N / BT, confidence 0.330417; review required.
 - Automatically selected region: x 8,436, y 2,664, width 888, height 444.
 - Distinct suspected-evidence regions returned: 5.
+
+This acceptance test used the full Forge route: import local path, verify raw
+SVS, inspect its pyramid, open AI Evidence, run the configured checkpoint, draw
+all five regions in source coordinates, and navigate to the leading region.
+The model consumed the original `.svs`; no OME-TIFF intermediary was created.
 
 ### Local laboratory VSI through its Forge staging OME-TIFF
 
@@ -70,9 +82,10 @@ research evidence and preserves the model's confidence-review requirement.
 
 ## Verification
 
-- Python model tests: 19 passed.
-- Frontend tests: 37 passed.
+- Python model tests: 32 passed.
+- Frontend tests: 38 passed.
 - Complete Gradle test suite: passed.
-- Production bundle budget: passed (`app.js` 83,911 bytes).
-- Real public SVS inference: passed.
+- Production bundle budget: passed (`app.js` 84,016 bytes).
+- Native Forge import, verification, viewer, and real public SVS inference:
+  passed.
 - Real laboratory VSI staging-OME inference: passed.

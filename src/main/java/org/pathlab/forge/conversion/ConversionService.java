@@ -881,41 +881,47 @@ public final class ConversionService implements AutoCloseable {
             List<SeriesInfo> series,
             boolean cacheHit,
             DatasetStatus nextStatus) throws IOException {
-        var previouslySelected = series.stream()
-                .filter(item -> item.index() == dataset.selectedSeries())
-                .filter(SeriesInfo::isRgbPlane)
-                .findFirst();
-        var selected = previouslySelected.orElseGet(() -> series.stream()
-                .filter(SeriesInfo::isRgbPlane)
-                .max(Comparator.comparingLong(
-                        item -> (long) item.width() * (long) item.height()))
-                .orElse(series.get(0)));
-        var preserveConfiguration = previouslySelected.isPresent()
-                && dataset.cropWidth() > 0
-                && dataset.cropHeight() > 0
-                && (long) dataset.cropX() + dataset.cropWidth() <= selected.width()
-                && (long) dataset.cropY() + dataset.cropHeight() <= selected.height();
-        var cropX = preserveConfiguration ? dataset.cropX() : 0;
-        var cropY = preserveConfiguration ? dataset.cropY() : 0;
-        var cropWidth = preserveConfiguration ? dataset.cropWidth() : selected.width();
-        var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
-        var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
-        repository.save(dataset.withExportConfiguration(
-                nextStatus,
-                nextStatus == DatasetStatus.VERIFYING_SOURCE
-                        ? series.size() + " image series found; source verification is still running"
-                        : cacheHit
-                        ? series.size() + " image series loaded instantly from verified cache"
-                        : series.size() + " image series found; thumbnails are ready on demand",
-                selected.index(),
-                selected.width(),
-                selected.height(),
-                downsample,
-                OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
-                cropX,
-                cropY,
-                cropWidth,
-                cropHeight));
+        repository.update(dataset.id(), current -> {
+            var previouslySelected = series.stream()
+                    .filter(item -> item.index() == current.selectedSeries())
+                    .filter(SeriesInfo::isRgbPlane)
+                    .findFirst();
+            var selected = previouslySelected.orElseGet(() -> series.stream()
+                    .filter(SeriesInfo::isRgbPlane)
+                    .max(Comparator.comparingLong(
+                            item -> (long) item.width() * (long) item.height()))
+                    .orElse(series.get(0)));
+            var preserveConfiguration = previouslySelected.isPresent()
+                    && current.cropWidth() > 0
+                    && current.cropHeight() > 0
+                    && (long) current.cropX() + current.cropWidth() <= selected.width()
+                    && (long) current.cropY() + current.cropHeight() <= selected.height();
+            var cropX = preserveConfiguration ? current.cropX() : 0;
+            var cropY = preserveConfiguration ? current.cropY() : 0;
+            var cropWidth = preserveConfiguration ? current.cropWidth() : selected.width();
+            var cropHeight = preserveConfiguration ? current.cropHeight() : selected.height();
+            var downsample = preserveConfiguration ? current.downsample() : 1.0;
+            var resolvedStatus = nextStatus == DatasetStatus.VERIFYING_SOURCE
+                            && !current.sourceFingerprint().isBlank()
+                    ? DatasetStatus.READY_TO_CONVERT
+                    : nextStatus;
+            return current.withExportConfiguration(
+                    resolvedStatus,
+                    resolvedStatus == DatasetStatus.VERIFYING_SOURCE
+                            ? series.size() + " image series found; source verification is still running"
+                            : cacheHit
+                            ? series.size() + " image series loaded instantly from verified cache"
+                            : series.size() + " image series found; thumbnails are ready on demand",
+                    selected.index(),
+                    selected.width(),
+                    selected.height(),
+                    downsample,
+                    OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
+                    cropX,
+                    cropY,
+                    cropWidth,
+                    cropHeight);
+        });
     }
 
     public LocalDataset selectSeries(String id, int seriesIndex, double downsample)
@@ -1153,7 +1159,7 @@ public final class ConversionService implements AutoCloseable {
                 dataset.cropHeight(),
                 dataset.downsample(),
                 dataset.sourceBytes(),
-                dataset.format() == DatasetFormat.OME_TIFF);
+                dataset.format().isSingleFileTiff());
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
@@ -1405,7 +1411,7 @@ public final class ConversionService implements AutoCloseable {
                                 Math.min(bytes, projectedBytes),
                                 projectedBytes));
                     finalOmeWritten = true;
-                } else if (dataset.format() == DatasetFormat.OME_TIFF
+                } else if (dataset.format().isSingleFileTiff()
                         && derivativeEngine.supportsOmeRendering()) {
                     derivativeEngine.renderOme(request, rendered);
                 } else if (useParallelRgb(dataset, request)) {

@@ -56,7 +56,7 @@ final class QuPathRuntime {
 
     boolean supports(DatasetFormat format) {
         return available()
-                && (format == DatasetFormat.VSI || format == DatasetFormat.OME_TIFF);
+                && (format == DatasetFormat.VSI || format.isSingleFileTiff());
     }
 
     void writePyramidalOme(ConversionRequest request, Path output) throws IOException {

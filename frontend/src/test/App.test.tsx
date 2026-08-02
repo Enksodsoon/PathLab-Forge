@@ -170,6 +170,31 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
 })
 
+test('presents an imported cohort SVS as a native whole-slide source', async () => {
+  const dataset: api.Dataset = {
+    id: 'cohort-svs', displayName: 'BRACS_1003718.svs', sourceBytes: 10_000,
+    format: 'SVS', status: 'READY_TO_CONVERT', detail: 'Ready', outputPath: '', sha256: '',
+    selectedSeries: 0, width: 17_135, height: 11_733, downsample: 1,
+    estimatedOutputBytes: 0, projectedFileBytes: 0, projectedFileLowerBytes: 0,
+    projectedFileUpperBytes: 0, cropX: 0, cropY: 0, cropWidth: 17_135, cropHeight: 11_733,
+    sourceFingerprint: 'svs-source', configurationRevision: 'svs-config',
+    currentArtifactRevision: '', approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValueOnce([[dataset], {
+    conversionRuntime: 'Bio-Formats test', derivativeRuntime: 'libvips test',
+    vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValueOnce([dataset])
+  const datasetCallsBeforeRender = vi.mocked(api.datasets).mock.calls.length
+
+  render(<App />)
+
+  expect(await screen.findByText(/SVS · Ready to convert · Original source viewer/)).toBeVisible()
+  expect(screen.getByText('SVS whole slide')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'AI evidence' })).toBeVisible()
+  await waitFor(() => expect(api.datasets).toHaveBeenCalledTimes(datasetCallsBeforeRender + 1))
+})
+
 test('keeps the viewer visible by collapsing the navigator on compact browser widths', async () => {
   const originalWidth = window.innerWidth
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 648 })
@@ -619,7 +644,7 @@ test('removes a slide from the library only after an explicit preservation warni
 
   fireEvent.click(await screen.findByRole('button', { name: 'Remove from library' }))
   const dialog = screen.getByRole('dialog', { name: 'Remove slide?' })
-  expect(within(dialog).getByText(/original VSI or OME-TIFF/i)).toBeVisible()
+  expect(within(dialog).getByText(/original SVS, VSI or OME-TIFF/i)).toBeVisible()
   expect(within(dialog).getByText(/completed exports remain on disk/i)).toBeVisible()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Remove from Forge' }))
 

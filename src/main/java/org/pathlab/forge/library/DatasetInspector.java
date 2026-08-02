@@ -39,6 +39,16 @@ public final class DatasetInspector {
                     "Source snapshot captured; verifying content in background",
                     snapshot);
         }
+        if (lowerName.endsWith(".svs")) {
+            verifyTiffSignature(source);
+            var snapshot = SourceSnapshot.singleFile(source);
+            return dataset(
+                    source,
+                    DatasetFormat.SVS,
+                    DatasetStatus.VERIFYING_SOURCE,
+                    "SVS snapshot captured; verifying content in background",
+                    snapshot);
+        }
         if (lowerName.endsWith(".vsi")) {
             var snapshot = SourceSnapshot.forVsi(source);
             if (!snapshot.hasEtsCompanion()) {
@@ -62,7 +72,7 @@ public final class DatasetInspector {
                     snapshot);
         }
         throw new DatasetInspectionException(
-                "UNSUPPORTED_FORMAT", "Only OME-TIFF and VSI datasets are supported");
+                "UNSUPPORTED_FORMAT", "Only SVS, OME-TIFF and VSI datasets are supported");
     }
 
     private static LocalDataset dataset(
@@ -118,8 +128,11 @@ public final class DatasetInspector {
         if (format == DatasetFormat.VSI && !snapshot.hasEtsCompanion()) {
             return "No matching CellSens .ets companion set was found";
         }
-        return format == DatasetFormat.VSI
-                ? "Complete VSI/ETS set verified; ready for Bio-Formats inspection"
+        if (format == DatasetFormat.VSI) {
+            return "Complete VSI/ETS set verified; ready for Bio-Formats inspection";
+        }
+        return format == DatasetFormat.SVS
+                ? "SVS TIFF signature verified and content digested; ready for native inspection"
                 : "OME-TIFF signature verified and content digested; ready for managed local copy";
     }
 
@@ -137,7 +150,7 @@ public final class DatasetInspector {
         try (InputStream input = Files.newInputStream(source)) {
             if (input.read(signature) != signature.length) {
                 throw new DatasetInspectionException(
-                        "INVALID_TIFF_SIGNATURE", "OME-TIFF file is too short");
+                        "INVALID_TIFF_SIGNATURE", "TIFF-based slide is too short");
             }
         }
         var littleClassic = signature[0] == 'I'
@@ -158,7 +171,7 @@ public final class DatasetInspector {
                 && signature[3] == 43;
         if (!littleClassic && !littleBig && !bigClassic && !bigBig) {
             throw new DatasetInspectionException(
-                    "INVALID_TIFF_SIGNATURE", "Selected OME-TIFF has an invalid TIFF signature");
+                    "INVALID_TIFF_SIGNATURE", "Selected slide has an invalid TIFF signature");
         }
     }
 

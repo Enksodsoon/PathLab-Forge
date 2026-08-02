@@ -22,7 +22,7 @@ public final class DatasetPreparationService {
     public LocalDataset prepare(String id) throws IOException {
         var dataset = repository.find(id).orElseThrow(() ->
                 new IllegalArgumentException("Dataset was not found"));
-        if (dataset.format() != DatasetFormat.OME_TIFF) {
+        if (!dataset.format().isSingleFileTiff()) {
             throw new IllegalStateException("VSI conversion reader is not installed");
         }
         var outputDirectory = managedRoot.resolve(dataset.id()).normalize();
@@ -30,7 +30,8 @@ public final class DatasetPreparationService {
             throw new IllegalArgumentException("Dataset identifier escapes the managed root");
         }
         Files.createDirectories(outputDirectory);
-        var output = outputDirectory.resolve("source.ome.tif");
+        var output = outputDirectory.resolve(
+                dataset.format() == DatasetFormat.SVS ? "source.svs" : "source.ome.tif");
         var partial = output.resolveSibling(output.getFileName() + ".partial");
         try {
             Files.copy(
@@ -49,7 +50,8 @@ public final class DatasetPreparationService {
             }
             var prepared = dataset.withPreparation(
                     DatasetStatus.LOCAL_COPY_READY,
-                    "Managed OME-TIFF copy ready; source preserved",
+                    "Managed " + (dataset.format() == DatasetFormat.SVS ? "SVS" : "OME-TIFF")
+                            + " copy ready; source preserved",
                     output.toString(),
                     digest);
             repository.save(prepared);

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pathlab.forge.derivative.DerivativeEngine;
 import org.pathlab.forge.derivative.DerivativeInfo;
+import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.library.DatasetInspector;
 import org.pathlab.forge.library.DatasetStatus;
 import org.pathlab.forge.library.PropertiesDatasetRepository;
@@ -47,7 +48,44 @@ final class ConversionVerificationRaceTest {
         }
     }
 
+    @Test
+    void inspectionDoesNotOverwriteVerificationThatFinishesDuringReaderWork() throws Exception {
+        var source = temporaryDirectory.resolve("cohort.svs");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+        var repository = new PropertiesDatasetRepository(
+                temporaryDirectory.resolve("svs-library.properties"));
+        var pending = new DatasetInspector().inspectFast(source);
+        repository.save(pending);
+        var verifiedFingerprint = "a".repeat(64);
+
+        var engine = inspectingEngine(() -> {
+            try {
+                repository.update(pending.id(), current -> current.withSourceIdentity(
+                        DatasetStatus.READY,
+                        "SVS verified",
+                        verifiedFingerprint,
+                        current.sourceInventory()));
+            } catch (java.io.IOException error) {
+                throw new java.io.UncheckedIOException(error);
+            }
+        });
+        try (var service = new ConversionService(
+                repository, engine, unavailableDerivative(), temporaryDirectory.resolve("managed-svs"))) {
+            service.inspectWhileVerifying(pending.id());
+            var persisted = repository.find(pending.id()).orElseThrow();
+
+            assertEquals(DatasetFormat.SVS, persisted.format());
+            assertEquals(DatasetStatus.READY_TO_CONVERT, persisted.status());
+            assertEquals(verifiedFingerprint, persisted.sourceFingerprint());
+            assertEquals(4, persisted.selectedSeries());
+        }
+    }
+
     private static ConversionEngine inspectingEngine() {
+        return inspectingEngine(() -> {});
+    }
+
+    private static ConversionEngine inspectingEngine(Runnable duringInspection) {
         return new ConversionEngine() {
             @Override
             public boolean available() {
@@ -61,6 +99,7 @@ final class ConversionVerificationRaceTest {
 
             @Override
             public List<SeriesInfo> inspect(Path ignored) {
+                duringInspection.run();
                 return List.of(new SeriesInfo(
                         4, "Tissue", 2000, 1000, 3, 1, 1, "uint8", 0.25, 0.25, "µm"));
             }

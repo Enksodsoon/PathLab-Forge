@@ -46,4 +46,13 @@ final class AiResearchServiceTest {
                 IllegalStateException.class,
                 () -> AiResearchService.modelInput(vsi.toString(), ""));
     }
+
+    @Test
+    void sendsARealSvsDirectlyToTheResearchModel() throws Exception {
+        var svs = Files.writeString(temporaryDirectory.resolve("cohort-case.svs"), "fixture");
+
+        assertEquals(
+                svs.toAbsolutePath(),
+                AiResearchService.modelInput(svs.toString(), ""));
+    }
 }

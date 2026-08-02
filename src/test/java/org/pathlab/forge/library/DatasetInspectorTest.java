@@ -39,6 +39,31 @@ final class DatasetInspectorTest {
     }
 
     @Test
+    void acceptsAWholeSlideSvsAsAStandaloneTiffSource() throws Exception {
+        var source = temporaryDirectory.resolve("BRACS_1003718.svs");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+
+        var dataset = new DatasetInspector().inspect(source);
+
+        assertEquals(DatasetFormat.SVS, dataset.format());
+        assertEquals(DatasetStatus.READY, dataset.status());
+        assertTrue(dataset.detail().contains("SVS"));
+        assertEquals(64, dataset.sourceFingerprint().length());
+    }
+
+    @Test
+    void rejectsAnSvsExtensionWithTheWrongTiffSignature() throws Exception {
+        var source = temporaryDirectory.resolve("broken.svs");
+        Files.writeString(source, "not a TIFF");
+
+        var error = assertThrows(
+                DatasetInspectionException.class,
+                () -> new DatasetInspector().inspect(source));
+
+        assertEquals("INVALID_TIFF_SIGNATURE", error.code());
+    }
+
+    @Test
     void reportsMissingAndPresentVsiCompanionsTruthfully() throws Exception {
         var source = temporaryDirectory.resolve("case.vsi");
         Files.write(source, new byte[] {1, 2, 3});

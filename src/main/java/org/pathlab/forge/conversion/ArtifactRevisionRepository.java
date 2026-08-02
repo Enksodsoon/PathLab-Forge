@@ -181,6 +181,7 @@ public final class ArtifactRevisionRepository {
         var base = dataset.displayName()
                 .replaceFirst("(?i)\\.(ome\\.)?tiff?$", "")
                 .replaceFirst("(?i)\\.vsi$", "")
+                .replaceFirst("(?i)\\.svs$", "")
                 .strip();
         var suffix = " · " + java.time.format.DateTimeFormatter
                 .ofPattern("yyyy-MM-dd HH:mm")

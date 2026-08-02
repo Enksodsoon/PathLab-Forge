@@ -2,7 +2,7 @@ export interface Dataset {
   id: string
   displayName: string
   sourceBytes: number
-  format: 'OME_TIFF' | 'VSI'
+  format: 'OME_TIFF' | 'VSI' | 'SVS'
   status: string
   detail: string
   outputPath: string

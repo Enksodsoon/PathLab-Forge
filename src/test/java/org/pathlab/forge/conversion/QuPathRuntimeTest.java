@@ -14,6 +14,7 @@ class QuPathRuntimeTest {
 
         assertTrue(runtime.supports(org.pathlab.forge.library.DatasetFormat.VSI));
         assertTrue(runtime.supports(org.pathlab.forge.library.DatasetFormat.OME_TIFF));
+        assertTrue(runtime.supports(org.pathlab.forge.library.DatasetFormat.SVS));
     }
 
     @Test

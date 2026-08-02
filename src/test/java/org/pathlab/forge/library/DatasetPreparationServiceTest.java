@@ -39,6 +39,26 @@ final class DatasetPreparationServiceTest {
     }
 
     @Test
+    void preservesSvsExtensionInValidatedManagedCopy() throws Exception {
+        var source = temporaryDirectory.resolve("cohort-case.svs");
+        var bytes = new byte[] {'I', 'I', 42, 0, 1, 2, 3, 4};
+        Files.write(source, bytes);
+        var repository = new PropertiesDatasetRepository(
+                temporaryDirectory.resolve("svs-library.properties"));
+        var dataset = new DatasetInspector().inspect(source);
+        repository.save(dataset);
+
+        var prepared = new DatasetPreparationService(
+                        repository, temporaryDirectory.resolve("managed"))
+                .prepare(dataset.id());
+
+        var output = Path.of(prepared.outputPath());
+        assertEquals("source.svs", output.getFileName().toString());
+        assertEquals(DatasetStatus.LOCAL_COPY_READY, prepared.status());
+        assertArrayEquals(bytes, Files.readAllBytes(output));
+    }
+
+    @Test
     void rejectsTamperedDatasetIdentifierThatEscapesManagedRoot() throws Exception {
         var source = temporaryDirectory.resolve("tampered.ome.tiff");
         Files.write(source, new byte[] {'I', 'I', 42, 0});
