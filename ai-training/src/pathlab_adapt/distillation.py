@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .ontology import TRACE_SIM_HEADS
+
 
 @dataclass(frozen=True, slots=True)
 class DistillationConfig:
@@ -30,13 +32,13 @@ def multitask_distillation_loss(
 ) -> Any:
     """Calculate frozen-teacher binary distillation loss for every shared head."""
 
-    required_heads = {"retention", "effort", "calibration", "source_risk"}
+    required_heads = set(TRACE_SIM_HEADS)
     if (
         set(student_outputs) != required_heads
         or set(teacher_outputs) != required_heads
         or set(hard_targets) != required_heads
     ):
-        raise ValueError("distillation mappings must contain exactly the four prespecified heads")
+        raise ValueError("distillation mappings must contain exactly the five prespecified heads")
     try:
         import torch
         from torch.nn import functional

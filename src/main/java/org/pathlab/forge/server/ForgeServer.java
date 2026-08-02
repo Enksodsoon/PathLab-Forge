@@ -59,6 +59,7 @@ import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
 import org.pathlab.forge.viewer.ViewerUploadStatus;
 import org.pathlab.forge.viewer.WindowsCredentialStore;
+import org.pathlab.forge.viewer.EphemeralCredentialStore;
 
 public final class ForgeServer implements AutoCloseable {
     private static final int MAX_WRITE_BYTES = 65_536;
@@ -119,7 +120,10 @@ public final class ForgeServer implements AutoCloseable {
         studyPackRepository = new StudyPackRepository(managedRoot);
         viewerSlideAssociationRepository = new ViewerSlideAssociationRepository(managedRoot);
         pivotApprovalRepository = new PivotApprovalRepository(managedRoot);
-        viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
+        viewerPairingService = new ViewerPairingService(
+                Boolean.getBoolean("pathlab.forge.ephemeralViewerCredentials")
+                        ? new EphemeralCredentialStore()
+                        : new WindowsCredentialStore());
     }
 
     public static ForgeServer start() throws IOException {

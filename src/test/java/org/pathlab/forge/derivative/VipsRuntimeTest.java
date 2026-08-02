@@ -13,9 +13,9 @@ import org.junit.jupiter.api.io.TempDir;
 class VipsRuntimeTest {
     @Test
     void acceptsAProfileWithoutStoredSubifdsWhenTheFirstFactorFourLevelFitsOneTile() {
-        assertEquals(0, VipsRuntime.expectedStoredSubifds(2048, 1536, OmeDynamicProfile.V1));
-        assertEquals(1, VipsRuntime.expectedStoredSubifds(2049, 1536, OmeDynamicProfile.V1));
-        assertEquals(2, VipsRuntime.expectedStoredSubifds(8193, 4096, OmeDynamicProfile.V1));
+        assertEquals(2, VipsRuntime.expectedStoredSubifds(2048, 1536, OmeDynamicProfile.V1));
+        assertEquals(3, VipsRuntime.expectedStoredSubifds(2049, 1536, OmeDynamicProfile.V1));
+        assertEquals(5, VipsRuntime.expectedStoredSubifds(8193, 4096, OmeDynamicProfile.V1));
     }
 
     @TempDir
@@ -61,7 +61,7 @@ class VipsRuntimeTest {
 
         assertEquals(
                 "[pyramid,tile,tile-width=512,tile-height=512,"
-                        + "compression=jpeg,Q=75,bigtiff,subifd,properties=false]",
+                        + "depth=onetile,compression=jpeg,Q=75,bigtiff,subifd,properties=false]",
                 method.orElseThrow().invoke(null, OmeDynamicProfile.V1, 75));
     }
 

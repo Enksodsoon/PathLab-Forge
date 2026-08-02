@@ -32,6 +32,15 @@ adapt-export = [
     "onnx>=1.17,<2",
     "onnxruntime>=1.20,<2",
 ]
+adapt-train = [
+    "numpy>=2,<3",
+    "pyarrow>=21,<22",
+    "psutil>=7,<8",
+    "torch>=2.9,<3",
+    "onnx>=1.18,<2",
+    "onnxruntime>=1.22,<2",
+    "onnxscript>=0.5,<0.6",
+]
 
 [project.scripts]
 pathlab-ai-data = "pathlab_ai_data.cli:main"

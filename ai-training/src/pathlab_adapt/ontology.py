@@ -15,6 +15,14 @@ CONTROL_ACTIONS = (
     "pause",
 )
 
+TRACE_SIM_HEADS = (
+    "retention",
+    "effort",
+    "hint_need",
+    "calibration_risk",
+    "source_risk",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class LearnerEvent:
@@ -39,6 +47,9 @@ class LearnerEvent:
     confidence: float | None = None
     source_checked: bool | None = None
     retention_target: bool | None = None
+    hint_need_target: bool | None = None
+    calibration_risk_target: bool | None = None
+    source_risk_target: bool | None = None
     duration_ms: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 

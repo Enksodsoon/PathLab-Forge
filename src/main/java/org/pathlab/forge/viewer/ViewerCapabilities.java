@@ -19,7 +19,7 @@ public record ViewerCapabilities(
     }
 
     public boolean supportsDynamicOme() {
-        return ingestModes.contains("ome-dynamic-v1");
+        return ingestModes.contains("ome-dynamic-v2") || ingestModes.contains("ome-dynamic-v1");
     }
 
     public int uploadChunkBytes() {

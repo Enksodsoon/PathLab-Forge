@@ -251,7 +251,7 @@ class SplitAndModelTests(unittest.TestCase):
         self.assertLessEqual(teacher.estimated_parameters, 40_000_000)
         self.assertEqual(
             teacher.heads,
-            ("retention", "effort", "calibration", "source_risk"),
+            ("retention", "effort", "hint_need", "calibration_risk", "source_risk"),
         )
         self.assertEqual(tuple(config.target_parameters for config in STUDENT_CONFIGS), (3_000_000, 8_000_000, 15_000_000))
         self.assertTrue(all(config.quantization == "int8" for config in STUDENT_CONFIGS))

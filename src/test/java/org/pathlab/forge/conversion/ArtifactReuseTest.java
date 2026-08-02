@@ -51,7 +51,7 @@ class ArtifactReuseTest {
                 sha256(preparedPackage),
                 request.outputWidth(),
                 request.outputHeight(),
-                "ome-dynamic-v1",
+                "ome-dynamic-v2",
                 75,
                 0,
                 "Test conversion",

@@ -516,6 +516,8 @@ export function App() {
     return <StudyPackWorkspace datasets={datasets.map((dataset) => ({
       id: dataset.id,
       displayName: dataset.displayName,
+      selectedSeries: dataset.selectedSeries,
+      sourceFingerprint: dataset.sourceFingerprint,
     }))} onClose={() => setStudyPackOpen(false)} />
   }
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from .distillation import DistillationConfig, multitask_distillation_loss
 from .models import STUDENT_CONFIGS, TRACEFormerConfig, build_trace_former
+from .ontology import TRACE_SIM_HEADS
 
 
 def run_optional_behavior_checks() -> dict[str, Any]:
@@ -37,7 +38,7 @@ def run_optional_behavior_checks() -> dict[str, Any]:
             raise AssertionError(f"{config.name} parameter count misses its target")
         with torch.no_grad():
             outputs = model(torch.zeros((1, 256), dtype=torch.long))
-        if set(outputs) != {"retention", "effort", "calibration", "source_risk"}:
+        if set(outputs) != set(TRACE_SIM_HEADS):
             raise AssertionError("TRACE-Former output heads changed")
         if any(tuple(value.shape) != (1,) for value in outputs.values()):
             raise AssertionError("TRACE-Former head shape changed")
@@ -84,6 +85,7 @@ def run_optional_behavior_checks() -> dict[str, Any]:
         export_record = export_onnx_int8(
             model,
             torch.zeros((1, 256), dtype=torch.long),
+            torch.zeros((1, 256, STUDENT_CONFIGS[0].continuous_features), dtype=torch.float32),
             output,
             metadata_output=metadata,
         )
@@ -91,10 +93,13 @@ def run_optional_behavior_checks() -> dict[str, Any]:
             str(output), providers=["CPUExecutionProvider"]
         )
         runtime_outputs = session.run(
-            None, {"tokens": torch.zeros((1, 256), dtype=torch.long).numpy()}
+            None, {
+                "tokens": torch.zeros((1, 256), dtype=torch.long).numpy(),
+                "features": torch.zeros((1, 256, STUDENT_CONFIGS[0].continuous_features), dtype=torch.float32).numpy(),
+            }
         )
-        if len(runtime_outputs) != 4:
-            raise AssertionError("ONNX runtime did not return exactly four heads")
+        if len(runtime_outputs) != len(TRACE_SIM_HEADS):
+            raise AssertionError("ONNX runtime did not return exactly five heads")
         checks["onnx_int8_runtime"] = {
             "status": "verified",
             "artifact_sha256": export_record["artifact_sha256"],

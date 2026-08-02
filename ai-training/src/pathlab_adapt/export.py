@@ -27,6 +27,7 @@ def validate_export_paths(
 def export_onnx_int8(
     model: Any,
     sample_tokens: Any,
+    sample_features: Any,
     output: Path,
     *,
     opset_version: int = 18,
@@ -51,16 +52,34 @@ def export_onnx_int8(
     int8_partial = output.with_name(f".{output.name}.int8.partial")
     try:
         model.eval()
+        head_names = tuple(model.config.heads)
+
+        class ExportWrapper(torch.nn.Module):
+            def __init__(self, wrapped: Any) -> None:
+                super().__init__()
+                self.wrapped = wrapped
+
+            def forward(self, tokens: Any, features: Any) -> tuple[Any, ...]:
+                outputs = self.wrapped(tokens, features)
+                return tuple(outputs[name] for name in head_names)
+
+        wrapper = ExportWrapper(model).eval()
+        fastpath_enabled = torch.backends.mha.get_fastpath_enabled()
+        torch.backends.mha.set_fastpath_enabled(False)
         with torch.no_grad():
-            torch.onnx.export(
-                model,
-                sample_tokens,
-                float_partial,
-                input_names=["tokens"],
-                output_names=["retention", "effort", "calibration", "source_risk"],
-                dynamic_axes={"tokens": {0: "batch", 1: "sequence"}},
-                opset_version=opset_version,
-            )
+            try:
+                torch.onnx.export(
+                    wrapper,
+                    (sample_tokens, sample_features),
+                    float_partial,
+                    input_names=["tokens", "features"],
+                    output_names=list(head_names),
+                    dynamic_axes={"tokens": {0: "batch", 1: "sequence"}, "features": {0: "batch", 1: "sequence"}},
+                    opset_version=opset_version,
+                    dynamo=False,
+                )
+            finally:
+                torch.backends.mha.set_fastpath_enabled(fastpath_enabled)
         quantize_dynamic(float_partial, int8_partial, weight_type=QuantType.QInt8)
         int8_partial.replace(output)
     finally:
@@ -74,5 +93,7 @@ def export_onnx_int8(
         "artifact_size_bytes": output.stat().st_size,
         "runtime": f"onnxruntime {importlib.metadata.version('onnxruntime')}",
         "opset_version": opset_version,
+        "output_heads": list(head_names),
+        "continuous_features": int(sample_features.shape[2]),
         "approval_status": "not_approved_fixed_order_only_release",
     }

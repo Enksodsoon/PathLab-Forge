@@ -30,6 +30,7 @@ from .manifest import build_manifest, write_manifest
 from .models import STUDENT_CONFIGS, TRACEFormerConfig, build_trace_former
 from .pareto import CandidateEvidence, evaluate_gates
 from .synthetic import SyntheticConfig, generate_synthetic_events
+from .synthetic_suite import SyntheticSuiteConfig, generate_synthetic_suite, scenario_catalog
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,6 +46,33 @@ def build_parser() -> argparse.ArgumentParser:
     synthetic.add_argument("--learners", type=int, default=32)
     synthetic.add_argument("--events-per-learner", type=int, default=128)
     synthetic.add_argument("--concepts", type=int, default=8)
+
+    suite = commands.add_parser("generate-synthetic-suite")
+    suite.add_argument("--tier", choices=("smoke", "integration", "final"), default="smoke")
+    suite.add_argument("--artifact-root", type=Path)
+    suite.add_argument("--seed", type=int, default=20260802)
+    suite.add_argument("--event-count", type=int)
+    suite.add_argument("--shard-events", type=int, default=64_000)
+
+    train = commands.add_parser("train-trace-sim")
+    train.add_argument("--dataset-manifest", required=True, type=Path)
+    train.add_argument("--output-dir", required=True, type=Path)
+    train.add_argument("--configuration", choices=("student-3m", "student-8m", "student-15m", "teacher"), default="student-3m")
+    train.add_argument("--seed", type=int, default=20260802)
+    train.add_argument("--epochs", type=int, default=6)
+    train.add_argument("--patience", type=int, default=2)
+    train.add_argument("--max-windows", type=int, default=40_000)
+    train.add_argument("--max-events", type=int, default=128_000)
+
+    validate = commands.add_parser("validate-trace-sim")
+    validate.add_argument("--dataset-manifest", required=True, type=Path)
+    validate.add_argument("--checkpoint", required=True, type=Path)
+    validate.add_argument("--onnx", required=True, type=Path)
+    validate.add_argument("--output", required=True, type=Path)
+    validate.add_argument("--configuration", choices=("student-3m", "student-8m", "student-15m", "teacher"), default="student-3m")
+    validate.add_argument("--seed", type=int, default=20260802)
+    validate.add_argument("--max-events", type=int, default=128_000)
+    validate.add_argument("--max-windows", type=int, default=2_000)
 
     oulad = commands.add_parser("adapt-oulad")
     oulad.add_argument("--student-vle", required=True, type=Path)
@@ -221,6 +249,39 @@ def main(argv: list[str] | None = None) -> int:
                 args.output, (item.to_dict() for item in generate_synthetic_events(config))
             )
             print(json.dumps(_summary(output, count, scope="software_validation_only"), sort_keys=True))
+            return 0
+
+        if args.command == "generate-synthetic-suite":
+            from .artifact_store import write_parquet_dataset
+            config = SyntheticSuiteConfig(tier=args.tier, seed=args.seed, event_count=args.event_count)
+            manifest = write_parquet_dataset(
+                generate_synthetic_suite(config), root=args.artifact_root,
+                shard_events=args.shard_events,
+                metadata={"tier": config.tier, "seed": config.seed, "scenario_families": len(scenario_catalog()), "counterfactual_fraction": config.counterfactual_fraction},
+            )
+            print(json.dumps(manifest, sort_keys=True))
+            return 0
+
+        if args.command == "train-trace-sim":
+            from .training import TrainingConfig, load_parquet_events, train_trace_sim
+            configurations = {"teacher": TRACEFormerConfig.teacher(), "student-3m": STUDENT_CONFIGS[0], "student-8m": STUDENT_CONFIGS[1], "student-15m": STUDENT_CONFIGS[2]}
+            events = load_parquet_events(args.dataset_manifest, max_events=args.max_events)
+            report = train_trace_sim(
+                events, configurations[args.configuration], args.output_dir,
+                TrainingConfig(seed=args.seed, epochs=args.epochs, patience=args.patience, max_windows=args.max_windows),
+            )
+            print(json.dumps(report, sort_keys=True))
+            return 0
+
+        if args.command == "validate-trace-sim":
+            from .validation import validate_trace_sim
+            configurations = {"teacher": TRACEFormerConfig.teacher(), "student-3m": STUDENT_CONFIGS[0], "student-8m": STUDENT_CONFIGS[1], "student-15m": STUDENT_CONFIGS[2]}
+            report = validate_trace_sim(
+                checkpoint=args.checkpoint, onnx_path=args.onnx,
+                dataset_manifest=args.dataset_manifest, model_config=configurations[args.configuration],
+                output=args.output, seed=args.seed, max_events=args.max_events, max_windows=args.max_windows,
+            )
+            print(json.dumps(report, sort_keys=True))
             return 0
 
         if args.command == "adapt-oulad":
@@ -413,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
             metadata = export_onnx_int8(
                 model,
                 torch.zeros((1, args.sample_context), dtype=torch.long),
+                torch.zeros((1, args.sample_context, config.continuous_features), dtype=torch.float32),
                 args.output,
                 metadata_output=args.metadata_output,
             )

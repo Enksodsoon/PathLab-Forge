@@ -33,7 +33,8 @@ public final class StudyPackRepository {
     private static final Set<String> SLIDE_FIELDS = Set.of(
             "schema", "viewerSlideId", "sha256", "displayName", "license");
     private static final Set<String> COMMON_TASK_FIELDS = Set.of(
-            "schema", "type", "id", "slideId", "prompt", "source", "author", "license", "revision");
+            "schema", "type", "id", "slideId", "prompt", "source", "author", "license", "revision",
+            "discussionPrompt", "approvedRubric", "approvedExplanation", "approvedSources");
     private static final Set<String> KEYED_TASK_FIELDS = union(
             COMMON_TASK_FIELDS, Set.of("answerKey", "keyApproval", "choices"));
     private static final Set<String> SPATIAL_TASK_FIELDS = union(
@@ -183,6 +184,10 @@ public final class StudyPackRepository {
             if (!slideIds.contains(text(task, "slideId", 100))) throw new IllegalArgumentException("Task slide is not declared");
             text(task, "prompt", 2000); text(task, "source", 500);
             text(task, "author", 240); text(task, "license", 240); text(task, "revision", 120);
+            optionalText(task, "discussionPrompt", 4000);
+            optionalStringArray(task, "approvedRubric", 20);
+            optionalText(task, "approvedExplanation", 8000);
+            optionalSources(task);
             if ("keyed".equals(type)) {
                 text(task, "answerKey", 2000);
                 var approval = text(task, "keyApproval", 16);
@@ -243,6 +248,32 @@ public final class StudyPackRepository {
         var value = node.get("schema");
         if (value != null && (!value.isTextual() || !expected.equals(value.textValue()))) {
             throw new IllegalArgumentException(label + " schema is invalid");
+        }
+    }
+
+    private static void optionalText(JsonNode node, String name, int maximum) {
+        var value = node.get(name);
+        if (value != null && (!value.isTextual() || value.textValue().isBlank()
+                || value.textValue().length() > maximum)) {
+            throw new IllegalArgumentException("Study Pack " + name + " is invalid");
+        }
+    }
+
+    private static void optionalSources(JsonNode node) {
+        var value = node.get("approvedSources");
+        if (value == null) return;
+        if (!value.isArray() || value.size() > 20) {
+            throw new IllegalArgumentException("Study Pack approvedSources is invalid or too large");
+        }
+        for (var source : value) {
+            requireObject(source, "approved source");
+            rejectUnknown(source, Set.of("title", "url", "identifier"), "approved source");
+            text(source, "title", 500);
+            var url = text(source, "url", 1000);
+            if (!url.startsWith("https://")) {
+                throw new IllegalArgumentException("Approved source URL must use HTTPS");
+            }
+            optionalText(source, "identifier", 240);
         }
     }
 

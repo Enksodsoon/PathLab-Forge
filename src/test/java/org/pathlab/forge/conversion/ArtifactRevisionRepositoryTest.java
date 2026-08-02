@@ -75,7 +75,7 @@ final class ArtifactRevisionRepositoryTest {
         var properties = Files.readString(
                 Path.of(revision.omePath()).getParent().resolve("revision.properties"));
 
-        assertTrue(properties.contains("omeProfile=ome-dynamic-v1"));
+        assertTrue(properties.contains("omeProfile=ome-dynamic-v2"));
         assertTrue(properties.contains("omeJpegQuality=75"));
     }
 

@@ -180,7 +180,7 @@ public final class ViewerPairingService implements AutoCloseable {
         }
         var capabilities = viewerCapabilities(credential);
         var dynamic = capabilities.supportsDynamicOme()
-                && "ome-dynamic-v1".equals(revision.omeProfile())
+                && Set.of("ome-dynamic-v1", "ome-dynamic-v2").contains(revision.omeProfile())
                 && revision.omeJpegQuality() == 75
                 && Files.isRegularFile(Path.of(revision.omePath()))
                 && ArtifactIntegrityStamp.matchesOme(revision);

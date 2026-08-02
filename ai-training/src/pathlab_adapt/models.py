@@ -6,6 +6,8 @@ import importlib.util
 from dataclasses import dataclass
 from typing import Any
 
+from .ontology import TRACE_SIM_HEADS
+
 
 @dataclass(frozen=True, slots=True)
 class TRACEFormerConfig:
@@ -19,6 +21,7 @@ class TRACEFormerConfig:
     heads: tuple[str, ...]
     target_parameters: int
     quantization: str = "float32"
+    continuous_features: int = 12
 
     @property
     def estimated_parameters(self) -> int:
@@ -41,7 +44,7 @@ class TRACEFormerConfig:
             layers=6,
             attention_heads=8,
             feedforward_dimension=1_536,
-            heads=("retention", "effort", "calibration", "source_risk"),
+            heads=TRACE_SIM_HEADS,
             target_parameters=32_000_000,
         )
 
@@ -49,15 +52,15 @@ class TRACEFormerConfig:
 STUDENT_CONFIGS = (
     TRACEFormerConfig(
         "trace-student-3m-int8", 256, 20_000, 128, 3, 4, 384,
-        ("retention", "effort", "calibration", "source_risk"), 3_000_000, "int8"
+        TRACE_SIM_HEADS, 3_000_000, "int8"
     ),
     TRACEFormerConfig(
         "trace-student-8m-int8", 256, 32_000, 192, 4, 6, 768,
-        ("retention", "effort", "calibration", "source_risk"), 8_000_000, "int8"
+        TRACE_SIM_HEADS, 8_000_000, "int8"
     ),
     TRACEFormerConfig(
         "trace-student-15m-int8", 256, 43_000, 256, 5, 8, 1_024,
-        ("retention", "effort", "calibration", "source_risk"), 15_000_000, "int8"
+        TRACE_SIM_HEADS, 15_000_000, "int8"
     ),
 )
 
@@ -80,6 +83,10 @@ def build_trace_former(config: TRACEFormerConfig) -> Any:
             self.config = config
             self.token_embedding = nn.Embedding(config.token_vocabulary, config.d_model)
             self.position_embedding = nn.Embedding(config.context_length, config.d_model)
+            self.feature_projection = nn.Sequential(
+                nn.Linear(config.continuous_features, config.d_model),
+                nn.LayerNorm(config.d_model),
+            )
             layer = nn.TransformerEncoderLayer(
                 d_model=config.d_model,
                 nhead=config.attention_heads,
@@ -92,11 +99,20 @@ def build_trace_former(config: TRACEFormerConfig) -> Any:
                 {name: nn.Linear(config.d_model, 1) for name in config.heads}
             )
 
-        def forward(self, tokens: Any, padding_mask: Any | None = None) -> dict[str, Any]:
+        def forward(
+            self,
+            tokens: Any,
+            features: Any | None = None,
+            padding_mask: Any | None = None,
+        ) -> dict[str, Any]:
             if tokens.shape[1] > config.context_length:
                 raise ValueError(f"context exceeds {config.context_length} events")
             positions = torch.arange(tokens.shape[1], device=tokens.device).unsqueeze(0)
             values = self.token_embedding(tokens) + self.position_embedding(positions)
+            if features is not None:
+                if features.shape[:2] != tokens.shape or features.shape[2] != config.continuous_features:
+                    raise ValueError("features must match token batch/sequence and configured width")
+                values = values + self.feature_projection(features)
             encoded = self.encoder(values, src_key_padding_mask=padding_mask)
             final = encoded[:, -1, :]
             return {name: head(final).squeeze(-1) for name, head in self.output_heads.items()}

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import * as api from './api'
 
-type WorkspaceDataset = { id: string; displayName: string }
+type WorkspaceDataset = { id: string; displayName: string; selectedSeries?: number; sourceFingerprint?: string }
 type ImportedTask = api.ImportedStudyTask
 const PAGE_SIZE = 50
 
@@ -20,6 +20,7 @@ export function StudyPackWorkspace({ datasets, onClose }: { datasets: WorkspaceD
   const [page, setPage] = useState(0)
   const [ankiFile, setAnkiFile] = useState<File>()
   const [ankiMapping, setAnkiMapping] = useState({ promptField: '0', answerField: '1', approved: false })
+  const [manual, setManual] = useState({ enabled: false, prompt: '', discussionPrompt: '', rubric: '', explanation: '', sourceTitle: '', sourceUrl: '', x: .5, y: .5, size: .12, tolerance: .06 })
   const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -35,10 +36,14 @@ export function StudyPackWorkspace({ datasets, onClose }: { datasets: WorkspaceD
     (task.source || fields.source) && (task.author || fields.author)
       && (task.license || fields.license) && (task.revision || fields.revision),
   )), [tasks, fields.source, fields.author, fields.license, fields.revision])
-  const saveReady = coreMetadataReady && tasks.length > 0 && provenanceReady
+  const manualReady = manual.enabled && Boolean(manual.prompt && manual.discussionPrompt && manual.rubric && manual.explanation && manual.sourceTitle && /^https:\/\//.test(manual.sourceUrl))
+  const saveReady = coreMetadataReady && (tasks.length > 0 || manualReady) && provenanceReady
+    && (!manual.enabled || Boolean(fields.source && fields.author && fields.license && fields.revision))
   const pivotReady = coreMetadataReady && Boolean(fields.author && fields.license && fields.revision)
   const preview = tasks.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const datasetName = new Map(datasets.map((dataset) => [dataset.id, dataset.displayName]))
+  const selectedDataset = datasets.find((dataset) => dataset.id === association?.datasetId)
+  const thumbnailUrl = selectedDataset ? `/api/datasets/${encodeURIComponent(selectedDataset.id)}/series/${selectedDataset.selectedSeries ?? 0}/thumbnail?v=${encodeURIComponent((selectedDataset.sourceFingerprint || 'roi').slice(0, 24))}` : ''
   const invalidate = () => { setSaved(undefined); setNotice('') }
   const update = (name: keyof typeof fields, value: string) => {
     invalidate(); setFields((current) => ({ ...current, [name]: value }))
@@ -84,10 +89,17 @@ export function StudyPackWorkspace({ datasets, onClose }: { datasets: WorkspaceD
         courseId: fields.courseId, objectives: ['Faculty authored'],
         slides: [{ viewerSlideId: association.viewerSlideId, sha256: association.sha256,
           displayName: association.displayName, license: association.license }],
-        tasks: tasks.map((task) => ({ type: 'keyed', id: task.id, slideId: association.viewerSlideId,
+        tasks: [...tasks.map((task) => ({ type: 'keyed', id: task.id, slideId: association.viewerSlideId,
           prompt: task.prompt, answerKey: task.answerKey, keyApproval: task.keyOrigin,
           source: task.source || fields.source, author: task.author || fields.author,
           license: task.license || fields.license, revision: task.revision || fields.revision })),
+          ...(manualReady ? [{ type: 'spatial', id: 'faculty-roi-1', slideId: association.viewerSlideId,
+            prompt: manual.prompt, targetX: Math.max(0, Math.min(1 - manual.size, manual.x - manual.size / 2)),
+            targetY: Math.max(0, Math.min(1 - manual.size, manual.y - manual.size / 2)),
+            targetWidth: manual.size, targetHeight: manual.size, tolerance: manual.tolerance,
+            discussionPrompt: manual.discussionPrompt, approvedRubric: manual.rubric.split('\n').map((item) => item.trim()).filter(Boolean),
+            approvedExplanation: manual.explanation, approvedSources: [{ title: manual.sourceTitle, url: manual.sourceUrl }],
+            source: fields.source, author: fields.author, license: fields.license, revision: fields.revision }] : [])],
       }))
       setSaved(result); setNotice(`Saved immutable version ${result.version}`)
     } catch (nextError) { setSaved(undefined); setError(message(nextError)) } finally { setBusy(false) }
@@ -136,6 +148,10 @@ export function StudyPackWorkspace({ datasets, onClose }: { datasets: WorkspaceD
         <button type="button" disabled={!saved || busy} onClick={() => void publish()}><UploadSimple /> Publish privately</button>
       </div>
       <p className="forge-help">QTI packages/XML, Moodle XML, CSV, and real Anki packages are bounded before reading. Missing keys are never inferred.</p>
+      <fieldset className="forge-manual-roi"><legend>Manual teaching region</legend><label className="forge-manual-roi__toggle"><input type="checkbox" checked={manual.enabled} onChange={(event) => { invalidate(); setManual((current) => ({ ...current, enabled: event.target.checked })) }} /> Add a faculty-selected ROI with discussion and approved feedback</label>{manual.enabled ? <div className="forge-manual-roi__grid">
+        <button type="button" className="forge-roi-canvas" aria-label="Select teaching region" disabled={!thumbnailUrl} onClick={(event) => { const box = event.currentTarget.getBoundingClientRect(); setManual((current) => ({ ...current, x: (event.clientX - box.left) / box.width, y: (event.clientY - box.top) / box.height })); invalidate() }}>{thumbnailUrl ? <img src={thumbnailUrl} alt="Local WSI teaching slide thumbnail" /> : <span>Select a linked slide</span>}<i style={{ left: `${manual.x * 100}%`, top: `${manual.y * 100}%`, width: `${manual.size * 100}%`, aspectRatio: '1' }} /></button>
+        <div className="forge-manual-roi__fields"><p>Click the interesting region. Position {manual.x.toFixed(3)}, {manual.y.toFixed(3)}</p><label>ROI size<input aria-label="ROI size" type="range" min="0.03" max="0.4" step="0.01" value={manual.size} onChange={(event) => setManual((current) => ({ ...current, size: Number(event.target.value) }))} /></label><label>Coordinate tolerance<input aria-label="Coordinate tolerance" type="number" min="0.01" max="0.5" step="0.01" value={manual.tolerance} onChange={(event) => setManual((current) => ({ ...current, tolerance: Number(event.target.value) }))} /></label><label>Quiz prompt<textarea aria-label="ROI quiz prompt" value={manual.prompt} onChange={(event) => setManual((current) => ({ ...current, prompt: event.target.value }))} /></label><label>Discussion prompt<textarea aria-label="Discussion prompt" value={manual.discussionPrompt} onChange={(event) => setManual((current) => ({ ...current, discussionPrompt: event.target.value }))} /></label><label>Approved rubric, one item per line<textarea aria-label="Approved rubric" value={manual.rubric} onChange={(event) => setManual((current) => ({ ...current, rubric: event.target.value }))} /></label><label>Faculty-approved explanation<textarea aria-label="Faculty-approved explanation" value={manual.explanation} onChange={(event) => setManual((current) => ({ ...current, explanation: event.target.value }))} /></label><label>Approved source title<input aria-label="Approved source title" value={manual.sourceTitle} onChange={(event) => setManual((current) => ({ ...current, sourceTitle: event.target.value }))} /></label><label>Approved source URL<input aria-label="Approved source URL" type="url" placeholder="https://…" value={manual.sourceUrl} onChange={(event) => setManual((current) => ({ ...current, sourceUrl: event.target.value }))} /></label></div>
+      </div> : null}</fieldset>
       {ankiFile ? <details className="forge-study-pack-mapping"><summary>Faculty mapping for unsupported Anki templates</summary><div><label>Prompt field index<input aria-label="Prompt field index" type="number" min="0" max="99" value={ankiMapping.promptField} onChange={(event) => setAnkiMapping((current) => ({ ...current, promptField: event.target.value }))} /></label><label>Answer field index<input aria-label="Answer field index" type="number" min="0" max="99" value={ankiMapping.answerField} onChange={(event) => setAnkiMapping((current) => ({ ...current, answerField: event.target.value }))} /></label><label><input type="checkbox" checked={ankiMapping.approved} onChange={(event) => setAnkiMapping((current) => ({ ...current, approved: event.target.checked }))} /> I verified these fields and approve the imported keys.</label><button type="button" disabled={!ankiMapping.approved || busy} onClick={() => void importMappedAnki()}>Import approved mapping</button></div></details> : null}
       {tasks.length ? <><ol className="forge-study-pack-tasks" aria-label="Imported task preview">{preview.map((task) => <li key={task.id}><strong>{task.prompt}</strong><span>Explicit key: {task.answerKey}</span></li>)}</ol><nav className="forge-study-pack-pages" aria-label="Task preview pages"><button type="button" disabled={page === 0} onClick={() => setPage((value) => value - 1)}>Previous</button><span>Page {page + 1} of {Math.ceil(tasks.length / PAGE_SIZE)}</span><button type="button" disabled={(page + 1) * PAGE_SIZE >= tasks.length} onClick={() => setPage((value) => value + 1)}>Next</button></nav></> : null}
       <fieldset className="forge-study-pack-pivot"><legend>Coordinate tasks from PIVOT</legend><label><input type="checkbox" checked={pivotApproved} onChange={(event) => { invalidate(); setPivotApproved(event.target.checked) }} /> I approve the current PIVOT manifest for this linked dataset.</label><button type="button" disabled={!pivotReady || !pivotApproved || busy} onClick={() => void exportPivot()}>Approve and save PIVOT tasks</button></fieldset>

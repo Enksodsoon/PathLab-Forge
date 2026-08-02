@@ -160,26 +160,21 @@ public final class VipsRuntime implements DerivativeEngine {
         }
         var subifds = imageDimension(omeTiff, "", "n-subifds");
         if (subifds != expectedSubifds) {
-            throw new IOException("Dynamic OME pyramid level count is invalid");
+            throw new IOException("Dynamic OME pyramid level count is invalid: expected "
+                    + expectedSubifds + " but found " + subifds);
         }
-        int expectedWidth = width;
-        int expectedHeight = height;
+        long divisor = 1;
         for (int level = 0; level < expectedSubifds; level++) {
-            var previousWidth = expectedWidth;
-            var previousHeight = expectedHeight;
-            expectedWidth = ceilDivide(previousWidth, profile.pyramidFactor());
-            expectedHeight = ceilDivide(previousHeight, profile.pyramidFactor());
+            divisor *= profile.pyramidFactor();
             var selector = "[subifd=" + level + "]";
-            if (!matchesFactorDimension(
-                            previousWidth,
-                            imageDimension(omeTiff, selector, "width"),
-                            profile.pyramidFactor())
-                    || !matchesFactorDimension(
-                            previousHeight,
-                            imageDimension(omeTiff, selector, "height"),
-                            profile.pyramidFactor())) {
+            var actualWidth = imageDimension(omeTiff, selector, "width");
+            var actualHeight = imageDimension(omeTiff, selector, "height");
+            if (!matchesPyramidDimension(width, actualWidth, divisor)
+                    || !matchesPyramidDimension(height, actualHeight, divisor)) {
                 throw new IOException("Dynamic OME pyramid geometry is not factor "
-                        + profile.pyramidFactor());
+                        + profile.pyramidFactor() + " at subifd " + level
+                        + ": base " + width + "x" + height
+                        + ", actual " + actualWidth + "x" + actualHeight);
             }
             requireField(omeTiff, selector, "tile-width", Integer.toString(profile.tileSize()));
             requireField(omeTiff, selector, "tile-height", Integer.toString(profile.tileSize()));
@@ -191,10 +186,7 @@ public final class VipsRuntime implements DerivativeEngine {
         int levels = 0;
         int nextWidth = width;
         int nextHeight = height;
-        while (Math.max(
-                        ceilDivide(nextWidth, profile.pyramidFactor()),
-                        ceilDivide(nextHeight, profile.pyramidFactor()))
-                > profile.tileSize()) {
+        while (Math.max(nextWidth, nextHeight) > profile.tileSize()) {
             nextWidth = ceilDivide(nextWidth, profile.pyramidFactor());
             nextHeight = ceilDivide(nextHeight, profile.pyramidFactor());
             levels++;
@@ -206,9 +198,10 @@ public final class VipsRuntime implements DerivativeEngine {
         return Math.max(1, (value + divisor - 1) / divisor);
     }
 
-    private static boolean matchesFactorDimension(int full, int reduced, int factor) {
-        return reduced == Math.max(1, full / factor)
-                || reduced == ceilDivide(full, factor);
+    private static boolean matchesPyramidDimension(int full, int reduced, long divisor) {
+        var floor = Math.max(1L, full / divisor);
+        var ceil = Math.max(1L, (full + divisor - 1L) / divisor);
+        return reduced == floor || reduced == ceil;
     }
 
     @Override
@@ -310,6 +303,7 @@ public final class VipsRuntime implements DerivativeEngine {
                         Integer.toString(height)));
             }
             requireNonempty(pyramidalOme, "final pyramidal OME-TIFF");
+            OmeTiffDescription.writeMinimal(pyramidalOme, width, height);
         } finally {
             Files.deleteIfExists(paddedJoin);
             deleteTree(resizedRoot);
@@ -422,6 +416,7 @@ public final class VipsRuntime implements DerivativeEngine {
                 "--size",
                 "force"));
         requireNonempty(pyramidalOme, "pyramidal OME-TIFF");
+        OmeTiffDescription.writeMinimal(pyramidalOme, width, height);
     }
 
     static int omeJpegQuality(int width, int height) {
@@ -442,6 +437,7 @@ public final class VipsRuntime implements DerivativeEngine {
         }
         return "[pyramid,tile,tile-width=" + profile.tileSize()
                 + ",tile-height=" + profile.tileSize()
+                + ",depth=onetile"
                 + ",compression=" + profile.codec()
                 + ",Q=" + jpegQuality
                 + ",bigtiff,subifd,properties=false]";

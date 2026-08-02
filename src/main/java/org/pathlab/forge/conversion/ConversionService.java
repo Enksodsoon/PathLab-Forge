@@ -785,6 +785,7 @@ public final class ConversionService implements AutoCloseable {
                 .orElse(null);
         return revision != null
                 && revision.configurationRevision().equals(dataset.configurationRevision())
+                && revision.omeProfile().equals(OmeDynamicProfile.V1.id())
                 && (revision.status() == ArtifactRevisionStatus.READY
                         || revision.status() == ArtifactRevisionStatus.APPROVED)
                 && Files.isRegularFile(Path.of(revision.packagePath()));
@@ -1254,6 +1255,7 @@ public final class ConversionService implements AutoCloseable {
             throws IOException {
         if (!revision.configurationRevision().equals(dataset.configurationRevision())
                 || !revision.sourceFingerprint().equals(dataset.sourceFingerprint())
+                || !revision.omeProfile().equals(OmeDynamicProfile.V1.id())
                 || revision.outputWidth() != request.outputWidth()
                 || revision.outputHeight() != request.outputHeight()
                 || (revision.status() != ArtifactRevisionStatus.READY
