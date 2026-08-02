@@ -30,6 +30,8 @@ _NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
 _UNSUPPORTED = re.compile(
     r"\b(?:caus(?:e|ed|es|al|ally|ation)|lead|leads|led|result(?:ed|s)?\s+in|"
     r"effect(?:ive|iveness|s)?|efficacy|improv(?:e|ed|es|ing|ement|ements)|"
+    r"increas(?:e|ed|es|ing)|enhanc(?:e|ed|es|ing)|boost(?:ed|s|ing)?|"
+    r"reduc(?:e|ed|es|ing|tion)|decreas(?:e|ed|es|ing)|outperform(?:ed|s|ing)?|"
     r"benefit(?:ed|s|ting)?|better|superior|positive|higher|lower|first[ -]ever)\b",
     re.IGNORECASE,
 )
@@ -134,6 +136,7 @@ class EvidenceRecord:
     verified_at: str
     claim_text: str = ""
     truth_status: str = "not_applicable"
+    content_sha256: str = ""
 
     def validate(self) -> None:
         if not self.claim_id.strip():
@@ -158,6 +161,12 @@ class EvidenceRecord:
             raise ValueError("evidence truth status is invalid")
         if not self.signoff.strip() or not self.verified_at.strip():
             raise ValueError("evidence requires investigator signoff and verification timestamp")
+        if not self.claim_text.strip():
+            raise ValueError("evidence used by the manuscript requires exact signed claim text")
+        if _CITATION.search(self.claim_text):
+            raise ValueError("signed claim text cannot contain citation markup; the engine binds citations locally")
+        if re.fullmatch(r"[0-9a-f]{64}", self.content_sha256) is None:
+            raise ValueError("evidence requires a lowercase SHA-256 source content hash")
 
 
 @dataclass(frozen=True)
@@ -310,7 +319,9 @@ class StudyProtocol:
         )
 
 
-def _validate_contribution_claim(claim: str, records: list[Mapping[str, Any]]) -> None:
+def _validate_contribution_claim(
+    claim: str, records: list[Mapping[str, Any]], *, exact_signed_claim: bool = False,
+) -> None:
     if _UNSUPPORTED.search(claim):
         raise ValueError("unsupported wording for nonrandomized or inconclusive evidence")
     record_map = {str(row["claim_id"]): row for row in records}
@@ -326,7 +337,7 @@ def _validate_contribution_claim(claim: str, records: list[Mapping[str, Any]]) -
                 raise ValueError("citation does not use its allowed wording template")
         elif _WORDING_PATTERNS[allowed].search(claim) is None:
             raise ValueError("citation does not use its allowed wording template")
-    if _NUMBER.search(_CITATION.sub("", claim)):
+    if not exact_signed_claim and _NUMBER.search(_CITATION.sub("", claim)):
         raise ValueError("untraced number in investigator contribution claim")
 
 
@@ -365,7 +376,6 @@ def render_manuscript(
     result: StudyResult,
     *,
     novelty: Mapping[str, Any],
-    contribution_claim: str | None = None,
 ) -> str:
     records = evidence.get("records")
     if not isinstance(records, list):
@@ -377,18 +387,27 @@ def render_manuscript(
     if validated_evidence["sha256"] != evidence.get("sha256"):
         raise ValueError("evidence registry digest is invalid")
     records = validated_evidence["records"]
-    contribution = _novelty_sentence(novelty) if contribution_claim is None else contribution_claim
+    contribution = _novelty_sentence(novelty)
     _validate_contribution_claim(contribution, records)
+    evidence_claims: list[str] = []
+    for row in records:
+        claim_text = str(row["claim_text"]).strip()
+        _validate_contribution_claim(
+            f"{claim_text} [{row['claim_id']}]", records, exact_signed_claim=True,
+        )
+        evidence_claims.append(f"{claim_text} [{row['claim_id']}]")
+    prior_evidence = "\n".join(f"- {claim}" for claim in evidence_claims) or "- No signed external evidence claims were supplied."
     metrics = result.metrics
     references = "\n".join(
-        f"- [{row['claim_id']}] {row['identifier']} — {row['source_location']} (investigator-verified {row['verified_at']})"
+        f"- [{row['claim_id']}] {row['identifier']} — {row['source_location']} "
+        f"(content SHA-256 {row['content_sha256']}; investigator-verified {row['verified_at']})"
         for row in records
     ) or "- No external claims cited."
     return (
         "# PathLab ADAPT — Evidence-bound draft\n\n## Abstract\n\n"
         f"Status: **{result.status}**. {contribution}\n\n## Introduction\n\n"
         "ADAPT is an educational, non-clinical workflow. It does not analyze slide pixels or generate medical answers.\n\n"
-        "## Methods\n\n"
+        f"## Prior evidence\n\n{prior_evidence}\n\n## Methods\n\n"
         f"Frozen snapshot: `{snapshot.snapshot_sha256}`. Design: nonrandomized normal-use implementation. "
         "The prespecified model is mixed-effects logistic regression with learner and task intercepts; only adjusted associations may be reported. Primary outcomes are not imputed.\n\n"
         "## Results\n\n"
@@ -405,13 +424,22 @@ def render_manuscript(
 class SourceApproval:
     source_id: str
     relationship: str
+    exact_location: str
+    content_sha256: str
     signoff: str
     verified_at: str
     approval_status: str = "pending"
 
     def validate(self) -> None:
-        if not self.source_id.strip() or self.relationship != "unrelated":
+        stable_internal = re.fullmatch(r"internal:[A-Za-z0-9._-]{8,128}", self.source_id) is not None
+        if not (_DOI.fullmatch(self.source_id) or _PMID.fullmatch(self.source_id) or stable_internal):
+            raise ValueError("safe-AI source requires a stable DOI, PMID, or approved internal content ID")
+        if self.relationship != "unrelated":
             raise ValueError("safe-AI source requires an independently approved unrelated source")
+        if not self.exact_location.strip():
+            raise ValueError("safe-AI source requires an exact location")
+        if re.fullmatch(r"[0-9a-f]{64}", self.content_sha256) is None:
+            raise ValueError("safe-AI source requires a lowercase SHA-256 content hash")
         if not self.signoff.strip() or not self.verified_at.strip() or self.approval_status != "approved":
             raise ValueError("safe-AI source requires signoff and verification time")
 

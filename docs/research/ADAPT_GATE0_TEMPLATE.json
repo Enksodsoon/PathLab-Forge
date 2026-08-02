@@ -6,7 +6,7 @@
     "PMID:26110095",
     "doi:10.1186/s12909-026-09002-3"
   ],
-  "evidence_completion_note": "Identifiers are seed leads only. Exact source spans, study-design tags, allowed wording, verification timestamps and investigator signoff are intentionally blank and must not be inferred.",
+  "evidence_completion_note": "Identifiers are seed leads only. Exact source spans, source-content hashes, signed claim text, study-design tags, allowed wording, verification timestamps and investigator signoff are intentionally blank and must not be inferred.",
   "queries": [
     {"database": "pubmed", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
     {"database": "pmc", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},

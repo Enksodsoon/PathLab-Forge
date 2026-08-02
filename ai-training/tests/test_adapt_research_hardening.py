@@ -42,7 +42,8 @@ def complete_novelty(*, all_unavailable: bool = False) -> dict[str, object]:
 def evidence_registry() -> dict[str, object]:
     return EvidenceRegistry((EvidenceRecord(
         "prior-vmat", "PMID:26110095", "abstract:methods", "observational", "association",
-        "faculty-reviewer", "2026-08-02T12:00:00Z",
+        "faculty-reviewer", "2026-08-02T12:00:00Z", claim_text="An association was documented.",
+        content_sha256="b" * 64,
     ),)).freeze()
 
 
@@ -107,19 +108,24 @@ def test_evidence_registry_rejects_empty_enums_and_design_wording_mismatch() -> 
     "ADAPT improves learning.", "ADAPT was effective.", "ADAPT caused higher scores.",
 ])
 def test_claim_gate_blocks_positive_and_causal_variants(tmp_path: Path, claim: str) -> None:
+    record = EvidenceRecord(
+        "claim", "PMID:26110095", "abstract:results", "observational", "background",
+        "faculty", "2026-08-02", claim_text=claim, content_sha256="b" * 64,
+    )
     with pytest.raises(ValueError, match="unsupported wording"):
-        render_manuscript(snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=complete_novelty(), contribution_claim=claim)
+        render_manuscript(snapshot(tmp_path), EvidenceRegistry((record,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty())
 
 
 def test_citation_must_use_record_allowed_wording(tmp_path: Path) -> None:
+    invalid = EvidenceRecord(
+        "prior-vmat", "PMID:26110095", "abstract", "observational", "association",
+        "faculty", "2026-08-02", claim_text="Viewport behavior was documented.", content_sha256="b" * 64,
+    )
     with pytest.raises(ValueError, match="allowed wording"):
-        render_manuscript(
-            snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=complete_novelty(),
-            contribution_claim="Viewport behavior was documented [prior-vmat].",
-        )
+        render_manuscript(snapshot(tmp_path), EvidenceRegistry((invalid,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty())
+    valid = replace(invalid, claim_text="An association was reported.")
     text = render_manuscript(
-        snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=complete_novelty(),
-        contribution_claim="An association was reported [prior-vmat].",
+        snapshot(tmp_path), EvidenceRegistry((valid,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty(),
     )
     assert "association was reported" in text
 
@@ -158,8 +164,11 @@ def test_snapshot_verification_rejects_metadata_forgery(tmp_path: Path) -> None:
 
 
 def test_safe_ai_sequence_requires_signed_true_claim_and_unrelated_source() -> None:
-    claim = EvidenceRecord("truth", "PMID:26110095", "abstract:result", "observational", "factual", "faculty", "2026-08-02", claim_text="Faculty-approved true claim", truth_status="verified_true")
-    unrelated = SourceApproval("source-2", "unrelated", "faculty", "2026-08-02", "approved")
+    claim = EvidenceRecord("truth", "PMID:26110095", "abstract:result", "observational", "factual", "faculty", "2026-08-02", claim_text="Faculty-approved true claim", truth_status="verified_true", content_sha256="b" * 64)
+    unrelated = SourceApproval(
+        "internal:unrelated-source-0001", "unrelated", "curriculum/source-2#statement",
+        "a" * 64, "faculty", "2026-08-02", "approved",
+    )
     sequence = build_safe_ai_literacy_sequence(claim, unrelated)
     assert sequence[1]["claim_id"] == "truth"
     with pytest.raises(ValueError, match="unrelated"):

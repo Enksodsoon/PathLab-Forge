@@ -38,9 +38,15 @@ novelty wording is “to our knowledge.” “First ever” is blocked.
 ## Evidence registry
 
 Every manuscript claim is keyed to a strictly formatted DOI or PMID, exact source location or span,
+source-content SHA-256,
 study-design tag, allowed wording, investigator signoff, and verification date.
 Unknown citation IDs and investigator-entered numbers are rejected. Generated
 numbers come only from frozen analysis rows and are mapped in `tables.json`.
+The renderer has no free-form contribution override. It selects novelty wording
+from the validated signed Gate 0 state and renders literature claims only as the
+exact signed `claim_text` immediately followed by its claim ID. An exact-prior-
+art state requires narrowing or renaming; unavailable review states remain
+pending. Neither state can emit “not located.”
 
 ## Approved normal-use analysis
 
@@ -79,7 +85,19 @@ produces identical artifact hashes.
 
 Safe-AI literacy output is `pending_faculty_evidence` with no sequence unless a
 signed verified-true evidence record and a separately approved unrelated-source
-record are both present. Placeholder approval-like identifiers are forbidden.
+record are both present. The unrelated source must have a stable DOI, PMID, or
+approved internal content ID, exact location, content SHA-256, relationship,
+signoff, verification time, and approval status. The complete records are stored
+in `safe-ai-literacy.json` and `manuscript-inputs.json` and are covered by the
+snapshot. Placeholder approval-like identifiers are forbidden.
+
+The snapshot also covers canonical configuration JSON; `research.py`,
+`reproduce.py`, `io.py`, `cli.py`, and the package initializer; `pyproject.toml`;
+an available supported lock file; and a deterministic environment manifest.
+The environment manifest captures Python version and implementation, operating
+system, machine architecture, ADAPT/package versions, and dependency-capture policy. It
+intentionally excludes host identity, absolute paths, locale, wall-clock values,
+and environment variables so repeated runs do not drift for irrelevant reasons.
 
 No command in this workflow performs paper submission, deployment, production
 activation, or external data transfer.

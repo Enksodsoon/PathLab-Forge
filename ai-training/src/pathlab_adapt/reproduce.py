@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import platform
 import shutil
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
 from . import research as research_module
+from . import __version__ as adapt_version
 from .io import sha256_file, write_json_atomic
 from .research import (
     AnalysisSnapshotV1,
@@ -114,6 +118,52 @@ def _parse_evidence(row: object) -> EvidenceRecord:
         raise ValueError(f"invalid evidence row: {error}") from error
 
 
+def _environment_manifest() -> dict[str, object]:
+    return {
+        "schema_version": "AdaptEnvironmentV1",
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "operating_system": platform.system(),
+        "machine_architecture": platform.machine(),
+        "pathlab_adapt_version": adapt_version,
+        "package_versions": {"pathlab-ai-data": adapt_version},
+        "dependency_capture": "pyproject plus lock file when present; excludes host identity, paths, locale, clock, and environment variables",
+    }
+
+
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def verify_safe_ai_literacy_artifact(payload: object) -> bool:
+    if not isinstance(payload, dict) or payload.get("schema_version") != "SafeAILiteracyV1":
+        return False
+    if payload.get("status") == "pending_faculty_evidence":
+        return payload == {"schema_version": "SafeAILiteracyV1", "status": "pending_faculty_evidence", "sequence": []}
+    if payload.get("status") != "approved_fixed_sequence":
+        return False
+    expected_keys = {
+        "schema_version", "status", "claim_evidence", "source_evidence", "sequence", "approval_sha256",
+    }
+    if set(payload) != expected_keys:
+        return False
+    body = {key: payload[key] for key in expected_keys if key != "approval_sha256"}
+    if payload.get("approval_sha256") != _canonical_sha256(body):
+        return False
+    try:
+        claim_raw = payload["claim_evidence"]
+        source_raw = payload["source_evidence"]
+        if not isinstance(claim_raw, dict) or not isinstance(source_raw, dict):
+            return False
+        claim = EvidenceRecord(**claim_raw)
+        source = SourceApproval(**source_raw)
+        expected = build_safe_ai_literacy_sequence(claim, source)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return payload.get("sequence") == [dict(item) for item in expected]
+
+
 def _prepare(config_path: Path, output_dir: Path) -> tuple[dict[str, Any], dict[str, Path], dict[str, Any], dict[str, Any], Any, StudyProtocol, dict[str, Any]]:
     if not config_path.is_file():
         raise ValueError("reproduction config does not exist")
@@ -169,10 +219,14 @@ def _prepare(config_path: Path, output_dir: Path) -> tuple[dict[str, Any], dict[
             source = SourceApproval(**safe_config["source"])
         except TypeError as error:
             raise ValueError(f"invalid safe-AI source approval: {error}") from error
-        safe_payload = {
+        safe_body = {
             "schema_version": "SafeAILiteracyV1", "status": "approved_fixed_sequence",
-            "sequence": build_safe_ai_literacy_sequence(claims[claim_id], source),
+            "claim_evidence": asdict(claims[claim_id]), "source_evidence": asdict(source),
+            "sequence": [dict(item) for item in build_safe_ai_literacy_sequence(claims[claim_id], source)],
         }
+        safe_payload = {**safe_body, "approval_sha256": _canonical_sha256(safe_body)}
+        if not verify_safe_ai_literacy_artifact(safe_payload):
+            raise ValueError("safe-AI literacy approval artifact failed restoration verification")
     return config, input_artifacts, novelty, evidence, result, StudyProtocol.default(), safe_payload
 
 
@@ -189,6 +243,9 @@ def reproduce_study(config_path: Path, output_dir: Path) -> dict[str, Any]:
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", suffix=".partial", dir=output_dir.parent))
     try:
+        write_json_atomic(temporary / "config-canonical.json", config)
+        write_json_atomic(temporary / "environment.json", _environment_manifest())
+        write_json_atomic(temporary / "safe-ai-literacy.json", safe_payload)
         row_sources = {
             "eligible_pairs": "unique frozen baseline learner/task pairs",
             "baseline_count": "frozen baseline rows", "followup_count": "frozen follow-up rows",
@@ -214,15 +271,28 @@ def reproduce_study(config_path: Path, output_dir: Path) -> dict[str, Any]:
             "evidence_registry": evidence, "protocol": {
                 "version": protocol.protocol_version, "design": protocol.design,
                 "analysis_plan": protocol.analysis_plan, "withdrawal_policy": protocol.withdrawal_policy,
-            }, "result": result.to_dict(),
+            }, "result": result.to_dict(), "safe_ai_literacy": safe_payload,
         })
+        package_root = Path(__file__).resolve().parent
+        project_root = package_root.parents[1]
         snapshot_artifacts = {
             **input_artifacts,
             "analysis_code_research": Path(research_module.__file__).resolve(),
             "analysis_code_reproduce": Path(__file__).resolve(),
+            "analysis_code_io": package_root / "io.py",
+            "analysis_code_cli": package_root / "cli.py",
+            "analysis_code_init": package_root / "__init__.py",
+            "pyproject": project_root / "pyproject.toml",
+            "config_canonical": temporary / "config-canonical.json",
+            "environment_manifest": temporary / "environment.json",
+            "safe_ai_literacy": temporary / "safe-ai-literacy.json",
             "table": temporary / "tables.json", "figure": temporary / "figure.json",
             "result": temporary / "tables.json", "manuscript_inputs": temporary / "manuscript-inputs.json",
         }
+        for lock_name in ("uv.lock", "poetry.lock", "requirements.lock"):
+            lock_path = project_root / lock_name
+            if lock_path.is_file():
+                snapshot_artifacts[f"dependency_lock_{lock_name.replace('.', '_')}"] = lock_path
         snapshot = AnalysisSnapshotV1.freeze(
             _required_text(config, "snapshot_id"), _required_text(config, "protocol_version"),
             _required_text(config, "model_version"), snapshot_artifacts,
@@ -232,6 +302,7 @@ def reproduce_study(config_path: Path, output_dir: Path) -> dict[str, Any]:
         snapshot_payload = snapshot.to_dict()
         snapshot_payload["novelty_registry_sha256"] = novelty["sha256"]
         snapshot_payload["evidence_registry_sha256"] = evidence["sha256"]
+        snapshot_payload["config_canonical_sha256"] = sha256_file(temporary / "config-canonical.json")
         write_json_atomic(temporary / "snapshot.json", snapshot_payload)
         _write_text_atomic(temporary / "manuscript.md", render_manuscript(snapshot, evidence, result, novelty=novelty))
         _write_text_atomic(
@@ -241,11 +312,11 @@ def reproduce_study(config_path: Path, output_dir: Path) -> dict[str, Any]:
             + json.dumps(evidence, indent=2, sort_keys=True) + "\n```\n",
         )
         _write_text_atomic(temporary / "dossier.md", render_institutional_dossier(protocol))
-        write_json_atomic(temporary / "safe-ai-literacy.json", safe_payload)
         _check_output_cap(temporary)
         output_names = (
             "snapshot.json", "tables.json", "figure.json", "manuscript.md", "supplement.md",
             "dossier.md", "safe-ai-literacy.json", "manuscript-inputs.json",
+            "config-canonical.json", "environment.json",
         )
         output_hashes = {name: sha256_file(temporary / name) for name in output_names}
         manifest: dict[str, Any] = {
