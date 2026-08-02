@@ -35,6 +35,14 @@ novelty claim. The software does not claim these searches have been run. A forma
 be performed and signed by investigators. Until then, the strongest permitted
 novelty wording is “to our knowledge.” “First ever” is blocked.
 
+`complete` is reserved for a signed matrix in which every required source was
+searched and every returned result has one structured screening decision and
+reason. If any source is `unavailable`, a mixed matrix is
+`partial_unavailable` (or `unavailable` when none were searched) and remains
+pending; it cannot emit “did not locate” wording. An `exact_prior_art_found`
+decision still requires narrowing or renaming even if another source was
+unavailable.
+
 ## Evidence registry
 
 Every manuscript claim is keyed to a strictly formatted DOI or PMID, exact source location or span,

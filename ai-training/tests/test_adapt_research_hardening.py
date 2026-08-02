@@ -28,7 +28,7 @@ from pathlab_adapt.research import (
 def complete_novelty(*, all_unavailable: bool = False) -> dict[str, object]:
     searches = []
     for database in PRIOR_ART_SOURCES:
-        if all_unavailable or database in {"scopus", "web-of-science"}:
+        if all_unavailable:
             searches.append(NoveltySearch(database, "exact frozen query", "2026-08-02", "unavailable", (), "access unavailable", ()))
         else:
             result_id = f"{database}:stable-1"
@@ -37,6 +37,25 @@ def complete_novelty(*, all_unavailable: bool = False) -> dict[str, object]:
                 (ScreeningRecord(result_id, "exclude", "adjacent system; exact combination absent"),),
             ))
     return NoveltyRegistry(tuple(searches), "faculty-reviewer", "2026-08-02T12:00:00Z").freeze()
+
+
+def partial_unavailable_novelty() -> dict[str, object]:
+    searches = []
+    for database in PRIOR_ART_SOURCES:
+        if database == "scopus":
+            searches.append(NoveltySearch(
+                database, "exact frozen query", "2026-08-02", "unavailable", (),
+                "subscription unavailable", (),
+            ))
+            continue
+        result_id = f"{database}:stable-1"
+        searches.append(NoveltySearch(
+            database, "exact frozen query", "2026-08-02", "searched", (result_id,), "",
+            (ScreeningRecord(result_id, "exclude", "adjacent system; exact combination absent"),),
+        ))
+    return NoveltyRegistry(
+        tuple(searches), "faculty-reviewer", "2026-08-02T12:00:00Z"
+    ).freeze()
 
 
 def evidence_registry() -> dict[str, object]:
@@ -79,6 +98,55 @@ def test_manuscript_novelty_claim_fails_closed_when_review_unavailable(tmp_path:
     manuscript = render_manuscript(snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=complete_novelty(all_unavailable=True))
     assert "Formal prior-art review pending or unavailable" in manuscript
     assert "combination was not located" not in manuscript
+
+
+def test_any_unavailable_source_keeps_novelty_review_partial_and_blocks_not_located(
+    tmp_path: Path,
+) -> None:
+    novelty = partial_unavailable_novelty()
+    assert novelty["formal_review_status"] == "partial_unavailable"
+
+    manuscript = render_manuscript(
+        snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=novelty,
+    )
+    assert "Formal prior-art review pending or unavailable" in manuscript
+    assert "did not locate" not in manuscript
+
+
+def test_complete_novelty_requires_every_source_searched_and_screened(tmp_path: Path) -> None:
+    novelty = complete_novelty()
+    assert novelty["formal_review_status"] == "complete"
+    manuscript = render_manuscript(
+        snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=novelty,
+    )
+    assert "signed formal review did not locate" in manuscript
+
+
+def test_exact_prior_art_overrides_partial_unavailable_status(tmp_path: Path) -> None:
+    novelty = partial_unavailable_novelty()
+    first_screening = novelty["searches"][0]["screenings"][0]  # type: ignore[index]
+    first_screening["decision"] = "include_exact"
+    searches = tuple(
+        NoveltySearch(
+            database=row["database"],
+            query=row["query"],
+            run_date=row["run_date"],
+            status=row["status"],
+            result_ids=tuple(row["result_ids"]),
+            reason=row["reason"],
+            screenings=tuple(ScreeningRecord(**screening) for screening in row["screenings"]),
+        )
+        for row in novelty["searches"]  # type: ignore[union-attr]
+    )
+    refrozen = NoveltyRegistry(
+        searches, "faculty-reviewer", "2026-08-02T12:00:00Z"
+    ).freeze()
+    assert refrozen["formal_review_status"] == "exact_prior_art_found"
+    manuscript = render_manuscript(
+        snapshot(tmp_path), evidence_registry(), analyze_normal_use((), ()), novelty=refrozen,
+    )
+    assert "contribution must be narrowed" in manuscript
+    assert "did not locate" not in manuscript
 
 
 def test_manuscript_revalidates_frozen_novelty_matrix_not_only_digest(tmp_path: Path) -> None:

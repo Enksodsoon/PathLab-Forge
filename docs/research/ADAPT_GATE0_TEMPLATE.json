@@ -1,6 +1,7 @@
 {
   "schema_version": "NoveltyReviewTemplateV1",
   "completion_required": "Faculty investigators must replace every unrun status, add exact queries, dates, stable result IDs, structured screening decisions and reasons, then sign the freeze. This template is not a completed search.",
+  "formal_status_policy": "Complete requires every required source to be searched and every result to be screened. Any unavailable source keeps the review pending or partial_unavailable and cannot support not-located wording. Exact prior art always requires narrowing or renaming.",
   "adjacent_evidence_identifiers_from_plan": [
     "doi:10.1186/s13000-016-0452-z",
     "PMID:26110095",

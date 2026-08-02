@@ -120,7 +120,14 @@ class NoveltyRegistry:
             searched_count += int(search.status == "searched")
             exact_found = exact_found or any(item.decision == "include_exact" for item in search.screenings)
             rows.append(asdict(search))
-        status = "exact_prior_art_found" if exact_found else ("complete" if searched_count else "unavailable")
+        if exact_found:
+            status = "exact_prior_art_found"
+        elif searched_count == len(self.searches):
+            status = "complete"
+        elif searched_count == 0:
+            status = "unavailable"
+        else:
+            status = "partial_unavailable"
         body = {
             "schema_version": "NoveltyRegistryV1",
             "reviewer": self.reviewer,
