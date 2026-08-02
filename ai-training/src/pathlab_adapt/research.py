@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +39,9 @@ _PMID = re.compile(r"^pmid:\d+$", re.IGNORECASE)
 _CITATION = re.compile(r"\[([A-Za-z][A-Za-z0-9_.:-]*)\]")
 _NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
 _SAFE_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
-_SAFE_SOURCE_LOCATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,:;#/_-]{0,255}$")
+_SAFE_SOURCE_LOCATION = re.compile(
+    r"^[A-Za-z0-9§][A-Za-z0-9 .,:;#/_()§-]{0,255}$"
+)
 _UTC_TIMESTAMP = re.compile(
     r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T"
     r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$"
@@ -179,6 +182,12 @@ class EvidenceRecord:
             raise ValueError("evidence investigator signoff must be a safe token")
         if _UTC_TIMESTAMP.fullmatch(self.verified_at) is None:
             raise ValueError("evidence verification timestamp must be strict UTC ISO-8601")
+        try:
+            datetime.strptime(self.verified_at, "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError as exc:
+            raise ValueError(
+                "evidence verification timestamp must be a real UTC ISO-8601 instant"
+            ) from exc
         if not self.claim_text.strip():
             raise ValueError("evidence used by the manuscript requires exact signed claim text")
         if _CITATION.search(self.claim_text):

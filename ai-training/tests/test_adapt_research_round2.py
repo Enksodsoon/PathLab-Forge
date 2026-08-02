@@ -79,6 +79,21 @@ def test_evidence_metadata_cannot_inject_markdown(field: str, injected: str) -> 
         EvidenceRegistry((replace(signed_record(), **{field: injected}),)).freeze()
 
 
+@pytest.mark.parametrize(
+    "impossible",
+    ["2026-02-29T00:00:00Z", "2026-02-31T00:00:00Z"],
+)
+def test_evidence_timestamp_must_be_a_real_calendar_instant(impossible: str) -> None:
+    with pytest.raises(ValueError, match="timestamp"):
+        EvidenceRegistry((replace(signed_record(), verified_at=impossible),)).freeze()
+
+
+@pytest.mark.parametrize("location", ["Figure 2(a)", "Table 1 (row 3)", "§ 2.1/results"])
+def test_evidence_location_accepts_common_safe_exact_spans(location: str) -> None:
+    frozen = EvidenceRegistry((replace(signed_record(), source_location=location),)).freeze()
+    assert frozen["records"][0]["source_location"] == location
+
+
 def test_free_text_number_cannot_bypass_structured_claim_template(tmp_path: Path) -> None:
     record = signed_record(claim_text="A 2015 viewport study was documented.")
     with pytest.raises(ValueError, match="structured claim template"):
