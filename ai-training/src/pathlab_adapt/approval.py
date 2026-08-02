@@ -1,22 +1,26 @@
-"""Verifier-only approval from cryptographically bound benchmark artifacts."""
+"""Diagnostic verification of cryptographically bound benchmark artifacts."""
 
 from __future__ import annotations
 
 import json
 import math
 import hashlib
-import hmac
-import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .baselines import BASELINE_NAMES, BaselineResult
-from .benchmark import ResourceEvidence, assert_prediction_alignment, benchmark_candidate
+from .benchmark import (
+    PREDICTION_KEYS,
+    ResourceEvidence,
+    assert_prediction_alignment,
+    benchmark_candidate,
+    prediction_artifact_hashes,
+)
 from .evaluation import Prediction
 from .io import sha256_file
 from .license import LicenseLedger, sha256_path
-from .manifest import _APPROVAL_SEAL, _build_verified_manifest, build_manifest, write_manifest
+from .manifest import build_manifest, write_manifest
 from .pareto import CandidateEvidence, evaluate_gates
 from .ontology import LearnerEvent
 from .splits import learner_disjoint_split, time_forward_split
@@ -24,47 +28,6 @@ from .splits import learner_disjoint_split, time_forward_split
 BENCHMARK_SCHEMA = "pathlab-adapt-verified-benchmark-v2"
 DATASET_SCHEMA = "pathlab-adapt-dataset-manifest-v1"
 SPLIT_SCHEMA = "pathlab-adapt-split-manifest-v1"
-PREDICTION_KEYS = (
-    "candidate",
-    "teacher",
-    "logistic_regression",
-    "bkt",
-    "gru",
-    "ordinary_transformer",
-)
-_VERIFIED_RUNTIME_SEAL = object()
-
-
-@dataclass(frozen=True, slots=True)
-class SignedApprovalAttestation:
-    payload: str
-    signature_sha256: str
-
-
-class ApprovalAuthority:
-    """Ephemeral verifier authority; signatures cannot be supplied as JSON."""
-
-    def __init__(self) -> None:
-        self.__key = secrets.token_bytes(32)
-
-    def verify(self, attestation: SignedApprovalAttestation) -> bool:
-        expected = hmac.new(
-            self.__key, attestation.payload.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(expected, attestation.signature_sha256):
-            return False
-        try:
-            payload = json.loads(attestation.payload)
-        except json.JSONDecodeError:
-            return False
-        return (
-            isinstance(payload, dict)
-            and payload.get("schema_version") == "pathlab-adapt-runtime-attestation-v1"
-            and payload.get("optional_validation_status") == "verified"
-            and payload.get("all_gates_passed") is True
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class ValidatedProvenance:
     dataset_kind: str
@@ -78,17 +41,9 @@ class ValidatedProvenance:
 
 
 @dataclass(frozen=True, slots=True)
-class VerifiedApprovedManifest:
+class ManifestVerificationResult:
     payload: dict[str, Any]
     manifest_sha256: str
-    _seal: object
-
-    @property
-    def verified_approved(self) -> bool:
-        return (
-            self._seal is _VERIFIED_RUNTIME_SEAL
-            and self.payload.get("approval_status") == "approved"
-        )
 
 
 def _read_object(path: Path, label: str) -> dict[str, Any]:
@@ -213,13 +168,13 @@ def validate_provenance_files(
             if not line.strip():
                 continue
             if len(events) >= 100_000:
-                raise ValueError("canonical event artifact exceeds bounded approval limit 100,000")
+                raise ValueError("canonical event artifact exceeds verifier limit 100,000")
             try:
                 item = LearnerEvent(**json.loads(line))
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("canonical event artifact contains an invalid event") from error
             if not isinstance(item.retention_target, bool):
-                raise ValueError("canonical approval events require boolean retention targets")
+                raise ValueError("canonical verifier events require boolean retention targets")
             if item.event_id in seen_event_ids:
                 raise ValueError("canonical event artifact contains duplicate event_id")
             seen_event_ids.add(item.event_id)
@@ -360,17 +315,16 @@ def _verify_benchmark(
     if not isinstance(artifact_records, dict) or set(artifact_records) != set(PREDICTION_KEYS):
         raise ValueError("verified benchmark prediction artifacts are incomplete")
     paths: dict[str, Path] = {}
-    hashes: dict[str, str] = {}
     for name in PREDICTION_KEYS:
         artifact = artifact_records[name]
         if not isinstance(artifact, dict):
             raise ValueError("invalid prediction artifact record")
         path = _resolve_artifact(benchmark_path, str(artifact.get("path", "")))
-        digest = sha256_file(path)
-        if digest != artifact.get("sha256"):
-            raise ValueError(f"prediction artifact checksum mismatch: {name}")
         paths[name] = path
-        hashes[name] = digest
+    hashes = prediction_artifact_hashes(paths)
+    for name in PREDICTION_KEYS:
+        if hashes[name] != artifact_records[name].get("sha256"):
+            raise ValueError(f"prediction artifact checksum mismatch: {name}")
     predictions = {name: _read_predictions(path) for name, path in paths.items()}
     assert_prediction_alignment(predictions, expected_split_digest=provenance.split_test_digest)
     resource_payload = record.get("resource_evidence")
@@ -413,7 +367,7 @@ def _verify_benchmark(
     return record, outcome.evidence, outcome.baselines, provenance
 
 
-def issue_verified_manifest(
+def verify_and_produce_manifest(
     *,
     benchmark_path: Path,
     model_path: Path,
@@ -421,9 +375,7 @@ def issue_verified_manifest(
     dataset_manifest_path: Path,
     split_manifest_path: Path,
     output_path: Path,
-    runtime_attestation: SignedApprovalAttestation | None = None,
-    approval_authority: ApprovalAuthority | None = None,
-) -> VerifiedApprovedManifest:
+) -> ManifestVerificationResult:
     initial = _read_object(benchmark_path, "verified benchmark")
     if initial.get("schema_version") != BENCHMARK_SCHEMA:
         raise ValueError(
@@ -465,30 +417,9 @@ def issue_verified_manifest(
             "weights_permitted": False,
         }
         digest = write_manifest(output_path, payload)
-        return VerifiedApprovedManifest(payload, digest, None)
+        return ManifestVerificationResult(payload, digest)
 
     gates = evaluate_gates(evidence)
-    expected_attestation = {
-        "schema_version": "pathlab-adapt-runtime-attestation-v1",
-        "benchmark_sha256": sha256_file(benchmark_path),
-        "model_sha256": sha256_file(model_path),
-        "dataset_manifest_sha256": provenance.dataset_manifest_sha256,
-        "split_manifest_sha256": provenance.split_manifest_sha256,
-        "license_ledger_sha256": provenance.license_ledger_sha256,
-        "measurement_provenance_sha256": str(evidence.measurement_provenance_sha256),
-        "optional_validation_status": "verified",
-        "all_gates_passed": gates.approved,
-    }
-    authorized = False
-    if (
-        isinstance(runtime_attestation, SignedApprovalAttestation)
-        and isinstance(approval_authority, ApprovalAuthority)
-        and approval_authority.verify(runtime_attestation)
-    ):
-        try:
-            authorized = json.loads(runtime_attestation.payload) == expected_attestation
-        except json.JSONDecodeError:
-            authorized = False
     common = dict(
         model_id=str(record.get("model_id", evidence.candidate_id)),
         dataset_kind=provenance.dataset_kind,
@@ -500,27 +431,19 @@ def issue_verified_manifest(
         artifact_sha256=sha256_file(model_path),
         artifact_size_bytes=model_path.stat().st_size,
     )
-    verified_provenance = {
+    measured_provenance = {
             "benchmark_sha256": sha256_file(benchmark_path),
             "dataset_manifest_sha256": provenance.dataset_manifest_sha256,
             "split_manifest_sha256": provenance.split_manifest_sha256,
             "license_ledger_sha256": provenance.license_ledger_sha256,
             "measurement_provenance_sha256": str(evidence.measurement_provenance_sha256),
     }
-    if authorized:
-        payload = _build_verified_manifest(
-            **common,
-            verified_provenance=verified_provenance,
-            approval_seal=_APPROVAL_SEAL,
-        )
-        seal: object | None = _VERIFIED_RUNTIME_SEAL
-    else:
-        payload = build_manifest(**common)
-        payload["approval_blockers"].append("verifier_owned_runtime_attestation_required")
-        seal = None
+    payload = build_manifest(**common)
+    payload["approval_blockers"].append("verifier_owned_model_execution_not_implemented")
+    payload["measured_provenance"] = measured_provenance
     payload["runtime_validation"] = {
-        "status": "verified" if authorized else "unverified",
-        "reason": "verifier_owned_runtime" if authorized else "optional_runtime_or_attestation_unavailable",
+        "status": "unverified",
+        "reason": "verifier_owned_model_execution_not_implemented",
     }
     payload["redistribution_policy"] = {
         "data_permitted": provenance.data_redistribution_permitted,
@@ -529,4 +452,8 @@ def issue_verified_manifest(
     if not provenance.weights_redistribution_permitted and isinstance(payload.get("export"), dict):
         payload["export"]["redistribution_permitted"] = False
     digest = write_manifest(output_path, payload)
-    return VerifiedApprovedManifest(payload, digest, seal)
+    return ManifestVerificationResult(payload, digest)
+
+
+# Backward-compatible diagnostic name. Both paths always emit not_approved.
+issue_verified_manifest = verify_and_produce_manifest

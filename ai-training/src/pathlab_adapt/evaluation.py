@@ -41,6 +41,9 @@ class BootstrapInterval:
     seed: int
 
 
+MAX_BOOTSTRAP_OPERATIONS = 2_000_000
+
+
 def _quantile(values: list[float], probability: float) -> float:
     ordered = sorted(values)
     if not ordered:
@@ -134,13 +137,21 @@ def bootstrap_relative_brier_improvement(
     learners = sorted(aggregates)
     if len(learners) < 2:
         raise ValueError("learner bootstrap requires at least two learners")
+    if len(learners) * iterations > MAX_BOOTSTRAP_OPERATIONS:
+        raise ValueError(
+            f"bootstrap operation budget exceeded: maximum {MAX_BOOTSTRAP_OPERATIONS:,}"
+        )
     rng = random.Random(seed)
     samples: list[float] = []
     for _ in range(iterations):
-        selected = [rng.choice(learners) for _ in learners]
-        candidate_sum = sum(aggregates[learner][0] for learner in selected)
-        baseline_sum = sum(aggregates[learner][1] for learner in selected)
-        count = sum(aggregates[learner][2] for learner in selected)
+        candidate_sum = 0.0
+        baseline_sum = 0.0
+        count = 0.0
+        for _learner_index in range(len(learners)):
+            current = aggregates[rng.choice(learners)]
+            candidate_sum += current[0]
+            baseline_sum += current[1]
+            count += current[2]
         baseline_brier = baseline_sum / count
         if baseline_brier <= 0:
             raise ValueError("baseline Brier score must be positive")

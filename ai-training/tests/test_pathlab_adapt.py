@@ -299,9 +299,8 @@ class EvaluationGateAndManifestTests(unittest.TestCase):
         evidence = CandidateEvidence(candidate_id="student-8m", benchmark_kind="synthetic")
         result = evaluate_gates(evidence)
         self.assertEqual(tuple(item.gate_id for item in result.gates), GATE_ORDER)
-        self.assertFalse(result.approved)
+        self.assertFalse(result.all_gates_passed)
         self.assertTrue(any(item.status == "unmeasured" for item in result.gates))
-        self.assertEqual(result.delivery_mode, "fixed_order")
 
     def test_real_measured_candidate_can_pass_without_hard_coded_size_preference(self) -> None:
         common = dict(
@@ -320,7 +319,7 @@ class EvaluationGateAndManifestTests(unittest.TestCase):
         )
         candidate = CandidateEvidence(candidate_id="student-15m", artifact_size_bytes=24 * 1024 * 1024, **common)
         result = evaluate_gates(candidate)
-        self.assertTrue(result.approved)
+        self.assertTrue(result.all_gates_passed)
         self.assertTrue(all(item.status == "passed" for item in result.gates))
 
     def test_benchmark_computes_strongest_baseline_and_provenance_bound_evidence(self) -> None:
@@ -368,7 +367,7 @@ class EvaluationGateAndManifestTests(unittest.TestCase):
         )
         self.assertEqual(outcome.evidence.strongest_baseline, "ordinary_transformer")
         self.assertEqual(len(outcome.evidence.measurement_provenance_sha256 or ""), 64)
-        self.assertTrue(evaluate_gates(outcome.evidence).approved)
+        self.assertTrue(evaluate_gates(outcome.evidence).all_gates_passed)
         self.assertTrue(all(item.status == "measured" for item in outcome.baselines))
 
     def test_synthetic_manifest_never_claims_approval_and_is_atomic_and_hashed(self) -> None:

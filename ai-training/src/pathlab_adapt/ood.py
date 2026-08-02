@@ -50,17 +50,4 @@ class ControllerPolicy:
     ) -> ControllerDecision:
         if proposed_action not in CONTROL_ACTIONS:
             raise ValueError("proposed action is outside the fixed controller action set")
-        from .approval import ApprovalAuthority, SignedApprovalAttestation
-
-        authorized = (
-            isinstance(approval_attestation, SignedApprovalAttestation)
-            and isinstance(approval_authority, ApprovalAuthority)
-            and approval_authority.verify(approval_attestation)
-        )
-        if not authorized:
-            return ControllerDecision("pause", "fixed_order", "approved_manifest_required")
-        if signal.ood_score > self.max_ood_score:
-            return ControllerDecision("pause", "fixed_order", "out_of_distribution")
-        if signal.uncertainty > self.max_uncertainty:
-            return ControllerDecision("ask_confidence", "fixed_order", "uncertain")
-        return ControllerDecision(proposed_action, "adaptive", "within_prespecified_limits")
+        return ControllerDecision("pause", "fixed_order", "fixed_order_only_release")

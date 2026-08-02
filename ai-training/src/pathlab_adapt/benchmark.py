@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Mapping
 
 from .baselines import BASELINE_NAMES, BaselineResult
 from .evaluation import (
@@ -13,7 +15,25 @@ from .evaluation import (
     bootstrap_relative_brier_improvement,
     evaluate_predictions,
 )
+from .io import sha256_file
 from .pareto import CandidateEvidence
+
+
+PREDICTION_KEYS = (
+    "candidate",
+    "teacher",
+    "logistic_regression",
+    "bkt",
+    "gru",
+    "ordinary_transformer",
+)
+
+
+def prediction_artifact_hashes(paths: Mapping[str, Path]) -> dict[str, str]:
+    """Hash the exact canonical prediction artifact vocabulary in stable order."""
+    if set(paths) != set(PREDICTION_KEYS):
+        raise ValueError("prediction artifact paths must use the canonical vocabulary")
+    return {name: sha256_file(paths[name]) for name in PREDICTION_KEYS}
 
 
 def ordered_event_digest(predictions: list[Prediction]) -> str:

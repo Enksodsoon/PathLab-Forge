@@ -12,12 +12,16 @@ from pathlib import Path
 
 from .adapters import EDNET_EVENT_CAP, EdNetAdapterConfig, adapt_ednet, adapt_oulad
 from .baselines import BASELINE_NAMES, BaselineResult
-from .benchmark import ResourceEvidence, benchmark_candidate
+from .benchmark import (
+    PREDICTION_KEYS,
+    ResourceEvidence,
+    benchmark_candidate,
+    prediction_artifact_hashes,
+)
 from .approval import (
     BENCHMARK_SCHEMA,
-    PREDICTION_KEYS,
-    issue_verified_manifest,
     validate_provenance_files,
+    verify_and_produce_manifest,
 )
 from .evaluation import Prediction
 from .io import sha256_file, write_json_atomic, write_jsonl_atomic
@@ -255,28 +259,21 @@ def main(argv: list[str] | None = None) -> int:
                 split_manifest_path=args.split_manifest,
                 evaluation_protocol=args.evaluation_protocol,
             )
-            prediction_paths = {
-                "candidate_predictions": args.candidate_predictions,
-                "teacher_predictions": args.teacher_predictions,
-                "logistic_regression_predictions": args.logistic_predictions,
-                "bkt_predictions": args.bkt_predictions,
-                "gru_predictions": args.gru_predictions,
-                "ordinary_transformer_predictions": args.transformer_predictions,
+            prediction_path_map = {
+                "candidate": args.candidate_predictions,
+                "teacher": args.teacher_predictions,
+                "logistic_regression": args.logistic_predictions,
+                "bkt": args.bkt_predictions,
+                "gru": args.gru_predictions,
+                "ordinary_transformer": args.transformer_predictions,
             }
             resource_payload = _read_json(args.resource_evidence)
             if not isinstance(resource_payload, dict):
                 raise ValueError("resource evidence must be a JSON object")
             predictions = _read_aligned_predictions(
-                {
-                    "candidate": args.candidate_predictions,
-                    "teacher": args.teacher_predictions,
-                    "logistic_regression": args.logistic_predictions,
-                    "bkt": args.bkt_predictions,
-                    "gru": args.gru_predictions,
-                    "ordinary_transformer": args.transformer_predictions,
-                },
-                max_predictions=args.max_predictions,
+                prediction_path_map, max_predictions=args.max_predictions
             )
+            prediction_hashes = prediction_artifact_hashes(prediction_path_map)
             model_sha = sha256_file(args.model_artifact)
             outcome = benchmark_candidate(
                 predictions["candidate"],
@@ -293,19 +290,11 @@ def main(argv: list[str] | None = None) -> int:
                     p95_inference_ms=float(resource_payload["p95_inference_ms"]),
                     reference_device=str(resource_payload["reference_device"]),
                 ),
-                input_hashes={name: sha256_file(path) for name, path in prediction_paths.items()},
+                input_hashes=prediction_hashes,
                 bootstrap_iterations=args.bootstrap_iterations,
                 seed=args.seed,
                 expected_split_digest=provenance.split_test_digest,
             )
-            prediction_path_map = {
-                "candidate": args.candidate_predictions,
-                "teacher": args.teacher_predictions,
-                "logistic_regression": args.logistic_predictions,
-                "bkt": args.bkt_predictions,
-                "gru": args.gru_predictions,
-                "ordinary_transformer": args.transformer_predictions,
-            }
             record = {
                 "schema_version": BENCHMARK_SCHEMA,
                 "candidate_id": args.candidate_id,
@@ -321,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "model_artifact": {"sha256": model_sha, "size_bytes": args.model_artifact.stat().st_size},
                 "prediction_artifacts": {
-                    name: {"path": str(path.resolve()), "sha256": sha256_file(path)}
+                    name: {"path": str(path.resolve()), "sha256": prediction_hashes[name]}
                     for name, path in prediction_path_map.items()
                 },
                 "resource_evidence": {
@@ -334,14 +323,14 @@ def main(argv: list[str] | None = None) -> int:
             }
             write_json_atomic(args.output, record)
             gate_result = evaluate_gates(outcome.evidence)
-            print(json.dumps({"approved": gate_result.approved, "delivery_mode": gate_result.delivery_mode}, sort_keys=True))
+            print(json.dumps({"all_gates_passed": gate_result.all_gates_passed}, sort_keys=True))
             return 0
 
         if args.command == "evaluate-gates":
             payload = _read_json(args.evidence)
             result = evaluate_gates(CandidateEvidence(**_evidence_payload(payload)))
             write_json_atomic(args.output, result.to_dict())
-            print(json.dumps({"approved": result.approved, "delivery_mode": result.delivery_mode}, sort_keys=True))
+            print(json.dumps({"all_gates_passed": result.all_gates_passed}, sort_keys=True))
             return 0
 
         if args.command == "produce-manifest":
@@ -355,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                 missing = [name for name, value in required.items() if value is None]
                 if missing:
                     raise ValueError(f"verified manifest is missing arguments: {missing}")
-                verified = issue_verified_manifest(
+                verified = verify_and_produce_manifest(
                     benchmark_path=args.benchmark,
                     model_path=args.model_artifact,
                     license_ledger_path=args.license_ledger,

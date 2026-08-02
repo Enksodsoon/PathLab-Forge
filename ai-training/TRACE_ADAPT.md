@@ -48,10 +48,10 @@ The dataset manifest binds the adapted event artifact, real source artifacts,
 and structured license permissions. The split manifest binds train/validation/
 test key artifacts for both learner-disjoint and time-forward protocols, their
 seeds, ordered event digests, counts, and recomputed leakage audit.
-The approval verifier parses every canonical event (including its source and
+The diagnostic verifier parses every canonical event (including its source and
 boolean target), derives dataset kind/count from those events, reruns both split
 algorithms, and compares every partition digest. Caller-written counts, targets,
-split rows, source kinds, and leakage status are never release authority.
+split rows, source kinds, and leakage status cannot change release behavior.
 
 Benchmark evidence is evaluated in a fixed gate order with a maximum 100,000-row
 evaluation cohort. Six prediction files are aligned in one streamed pass:
@@ -72,21 +72,21 @@ pathlab-adapt produce-manifest --benchmark evidence.json --model-artifact studen
   --output model-manifest.json
 ```
 
-Missing or failed evidence emits `fixed_order` delivery and `not_approved`.
-Loose/manual evidence can produce only an unapproved diagnostic manifest.
-Approval requires the v2 verified benchmark, actual model/prediction hashes,
-finite recomputed metrics, all four baselines, matching license/source/dataset/
-split digests, actual optional inference/export validation, and a verifier-owned
-runtime that generates predictions from the model. It then requires a signed,
-immutable runtime attestation bound to every digest and passed gate. The base
-runtime cannot create this attestation and therefore always emits
-`not_approved`. The controller accepts only the exact signed attestation type
-verified by its issuing authority; absent, unapproved, persisted dictionaries,
-and duck-typed objects are fixed order.
+Every evidence path emits `fixed_order` delivery and `not_approved`, including
+valid v2 benchmark evidence. Loose/manual evidence can produce only an
+unapproved diagnostic manifest. The v2 verifier still checks actual model and
+prediction hashes, finite recomputed metrics, all four baselines, and matching
+license/source/dataset/split digests so measured gate results remain useful.
+Those results are reported as `all_gates_passed`; they are not release approval
+and cannot enable adaptive behavior. Verifier-owned model execution is not
+implemented in this release, so there is no library-local attestation,
+authority, signature, or adaptive authorization path. Caller objects,
+persisted manifests, and duck-typed values are ignored by the controller, which
+always pauses into fixed-order delivery.
 Candidate size is selected from the measured Pareto frontier; there is no
-hard-coded 3M, 8M, or 15M preference. ONNX export remains unapproved until the
-same versioned manifest records all passed gates, hashes, quantization, runtime,
-and reference-device measurements.
+hard-coded 3M, 8M, or 15M preference. ONNX export remains unapproved in this
+fixed-order-only release even when the diagnostic manifest records passed gates,
+hashes, quantization, runtime, and reference-device measurements.
 
 Run optional behavioral validation in an environment with the extras installed:
 

@@ -8,7 +8,11 @@ import unittest
 from dataclasses import asdict, replace
 from pathlib import Path
 
-from pathlab_adapt.approval import BENCHMARK_SCHEMA, issue_verified_manifest
+from pathlab_adapt.approval import (
+    BENCHMARK_SCHEMA,
+    issue_verified_manifest,
+    verify_and_produce_manifest,
+)
 from pathlab_adapt.benchmark import (
     ResourceEvidence,
     assert_prediction_alignment,
@@ -53,6 +57,30 @@ def make_event(
 
 
 class CriticalApprovalTests(unittest.TestCase):
+    def test_release_contains_no_private_or_public_manifest_approval_capability(self) -> None:
+        from pathlab_adapt import manifest
+
+        self.assertFalse(hasattr(manifest, "_APPROVAL_SEAL"))
+        self.assertFalse(hasattr(manifest, "_build_verified_manifest"))
+
+    def test_cli_and_verifier_share_prediction_provenance_vocabulary(self) -> None:
+        from pathlab_adapt import approval, benchmark, cli
+
+        for consumer in (approval, cli):
+            self.assertIs(
+                consumer.prediction_artifact_hashes,
+                benchmark.prediction_artifact_hashes,
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for name in benchmark.PREDICTION_KEYS:
+                path = root / f"{name}.jsonl"
+                path.write_text(f"{name}\n", encoding="utf-8")
+                paths[name] = path
+            hashes = benchmark.prediction_artifact_hashes(paths)
+        self.assertEqual(tuple(hashes), benchmark.PREDICTION_KEYS)
+
     def test_predictions_require_identical_ordered_event_keys_and_targets(self) -> None:
         candidate = [Prediction("e1", "learner", True, 0.9)]
         teacher = [Prediction("different", "learner", True, 0.9)]
@@ -276,7 +304,7 @@ class CriticalApprovalTests(unittest.TestCase):
                 },
             )
             manifest_path = root / "manifest.json"
-            verified = issue_verified_manifest(
+            verified = verify_and_produce_manifest(
                 benchmark_path=benchmark_path,
                 model_path=model,
                 license_ledger_path=ledger_path,
@@ -284,8 +312,10 @@ class CriticalApprovalTests(unittest.TestCase):
                 split_manifest_path=split_path,
                 output_path=manifest_path,
             )
-            self.assertFalse(verified.verified_approved)
             self.assertEqual(verified.payload["approval_status"], "not_approved")
+            self.assertIn("all_gates_passed", verified.payload["gate_evaluation"])
+            self.assertNotIn("approved", verified.payload["gate_evaluation"])
+            self.assertNotIn("delivery_mode", verified.payload["gate_evaluation"])
             policy = ControllerPolicy(max_ood_score=0.5, max_uncertainty=0.4)
             self.assertEqual(
                 policy.decide(
@@ -302,7 +332,7 @@ class CriticalApprovalTests(unittest.TestCase):
                 split_manifest_path=split_path,
                 output_path=root / "tampered-manifest.json",
             )
-            self.assertFalse(tampered.verified_approved)
+            self.assertEqual(tampered.payload["approval_status"], "not_approved")
 
 
 class ChronologyAndSplitTests(unittest.TestCase):
@@ -354,6 +384,18 @@ class EfficientEvaluationTests(unittest.TestCase):
                 rows, [replace(item, probability=0.6 if item.target else 0.4) for item in rows], iterations=10_001
             )
 
+    def test_bootstrap_learner_iteration_operations_are_hard_bounded(self) -> None:
+        rows = [
+            Prediction(f"event-{index}", f"learner-{index}", bool(index % 2), 0.8 if index % 2 else 0.2)
+            for index in range(2_001)
+        ]
+        with self.assertRaisesRegex(ValueError, "operation budget"):
+            bootstrap_relative_brier_improvement(
+                rows,
+                [replace(item, probability=0.6 if item.target else 0.4) for item in rows],
+                iterations=1_000,
+            )
+
 
 class LicenseControllerAndOptionalTests(unittest.TestCase):
     def test_license_entry_validates_actual_artifact_and_structured_permissions(self) -> None:
@@ -379,19 +421,33 @@ class LicenseControllerAndOptionalTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum"):
                 ledger.validate_source("ednet", artifact.with_name("missing.csv"))
 
-    def test_controller_requires_verified_approved_manifest_and_bounded_thresholds(self) -> None:
+    def test_controller_is_fixed_order_only_and_thresholds_are_bounded(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_ood_score"):
             ControllerPolicy(max_ood_score=1.1, max_uncertainty=0.4)
         policy = ControllerPolicy(max_ood_score=0.5, max_uncertainty=0.4)
         decision = policy.decide(UncertaintySignal(ood_score=0.1, uncertainty=0.1))
         self.assertEqual(decision.delivery_mode, "fixed_order")
-        self.assertEqual(decision.reason, "approved_manifest_required")
+        self.assertEqual(decision.reason, "fixed_order_only_release")
         fake = type("FakeApproval", (), {"verified_approved": True})()
         forged = policy.decide(
             UncertaintySignal(ood_score=0.1, uncertainty=0.1),
             approved_manifest=fake,
         )
         self.assertEqual(forged.delivery_mode, "fixed_order")
+
+    def test_constructed_objects_cannot_enable_adaptive_delivery(self) -> None:
+        from pathlab_adapt import approval
+
+        self.assertFalse(hasattr(approval, "ApprovalAuthority"))
+        self.assertFalse(hasattr(approval, "SignedApprovalAttestation"))
+        attestation = type("ConstructedAttestation", (), {"all_gates_passed": True})()
+        authority = type("ConstructedAuthority", (), {"verify": lambda self, value: True})()
+        decision = ControllerPolicy(0.5, 0.4).decide(
+            UncertaintySignal(0.1, 0.1),
+            approval_attestation=attestation,
+            approval_authority=authority,
+        )
+        self.assertEqual(decision.delivery_mode, "fixed_order")
 
     def test_distillation_rejects_missing_prespecified_head_before_optional_runtime(self) -> None:
         outputs = {name: object() for name in ("retention", "effort", "calibration")}

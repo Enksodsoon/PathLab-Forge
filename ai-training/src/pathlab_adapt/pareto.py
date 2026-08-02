@@ -58,15 +58,13 @@ class GateResult:
 class GateEvaluation:
     candidate_id: str
     gates: tuple[GateResult, ...]
-    approved: bool
-    delivery_mode: str
+    all_gates_passed: bool
 
     def to_dict(self) -> dict[str, object]:
         return {
             "candidate_id": self.candidate_id,
             "gates": [asdict(item) for item in self.gates],
-            "approved": self.approved,
-            "delivery_mode": self.delivery_mode,
+            "all_gates_passed": self.all_gates_passed,
         }
 
 
@@ -147,14 +145,14 @@ def evaluate_gates(evidence: CandidateEvidence) -> GateEvaluation:
     )
     if tuple(item.gate_id for item in gates) != GATE_ORDER:
         raise AssertionError("gate ordering changed")
-    approved = all(item.status == "passed" for item in gates)
-    return GateEvaluation(evidence.candidate_id, gates, approved, "adaptive" if approved else "fixed_order")
+    all_gates_passed = all(item.status == "passed" for item in gates)
+    return GateEvaluation(evidence.candidate_id, gates, all_gates_passed)
 
 
 def pareto_frontier(candidates: list[CandidateEvidence]) -> tuple[CandidateEvidence, ...]:
     """Return non-dominated fully measured candidates; no size is preferred a priori."""
 
-    eligible = [item for item in candidates if evaluate_gates(item).approved]
+    eligible = [item for item in candidates if evaluate_gates(item).all_gates_passed]
     frontier: list[CandidateEvidence] = []
     for candidate in eligible:
         vector = (

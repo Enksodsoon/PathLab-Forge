@@ -74,5 +74,5 @@ def export_onnx_int8(
         "artifact_size_bytes": output.stat().st_size,
         "runtime": f"onnxruntime {importlib.metadata.version('onnxruntime')}",
         "opset_version": opset_version,
-        "approval_status": "not_approved_until_all_manifest_gates_pass",
+        "approval_status": "not_approved_fixed_order_only_release",
     }
