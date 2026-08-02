@@ -37,6 +37,12 @@ _DOI = re.compile(r"^doi:10\.\d{4,9}/\S+$", re.IGNORECASE)
 _PMID = re.compile(r"^pmid:\d+$", re.IGNORECASE)
 _CITATION = re.compile(r"\[([A-Za-z][A-Za-z0-9_.:-]*)\]")
 _NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
+_SAFE_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_SOURCE_LOCATION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,:;#/_-]{0,255}$")
+_UTC_TIMESTAMP = re.compile(
+    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T"
+    r"(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$"
+)
 
 
 def _canonical_hash(payload: object) -> str:
@@ -143,12 +149,14 @@ class EvidenceRecord:
         return self.claim_kind or legacy_kind
 
     def validate(self) -> None:
-        if not self.claim_id.strip():
-            raise ValueError("evidence requires claim ID")
+        if _SAFE_TOKEN.fullmatch(self.claim_id) is None:
+            raise ValueError("evidence claim ID must be a safe token")
         if not (_DOI.fullmatch(self.identifier.strip()) or _PMID.fullmatch(self.identifier.strip())):
             raise ValueError("evidence identifier must use strict DOI or PMID syntax")
-        if not self.source_location.strip():
-            raise ValueError("evidence requires an exact source location or span")
+        if _SAFE_SOURCE_LOCATION.fullmatch(self.source_location) is None:
+            raise ValueError(
+                "evidence source location must be bounded safe single-line text"
+            )
         if self.study_design not in STUDY_DESIGNS:
             raise ValueError("evidence requires an enumerated study design")
         if self.allowed_wording not in ALLOWED_WORDING:
@@ -167,8 +175,10 @@ class EvidenceRecord:
             raise ValueError("study design and allowed wording are incompatible")
         if self.truth_status not in {"not_applicable", "unverified", "verified_true"}:
             raise ValueError("evidence truth status is invalid")
-        if not self.signoff.strip() or not self.verified_at.strip():
-            raise ValueError("evidence requires investigator signoff and verification timestamp")
+        if _SAFE_TOKEN.fullmatch(self.signoff) is None:
+            raise ValueError("evidence investigator signoff must be a safe token")
+        if _UTC_TIMESTAMP.fullmatch(self.verified_at) is None:
+            raise ValueError("evidence verification timestamp must be strict UTC ISO-8601")
         if not self.claim_text.strip():
             raise ValueError("evidence used by the manuscript requires exact signed claim text")
         if _CITATION.search(self.claim_text):

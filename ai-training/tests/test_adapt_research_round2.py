@@ -64,6 +64,21 @@ def test_manuscript_renders_only_structured_engine_template_with_local_citation(
         EvidenceRegistry((replace(record, claim_text="Swapped source [other]."),)).freeze()
 
 
+@pytest.mark.parametrize(
+    ("field", "injected"),
+    [
+        ("claim_id", "c]\n\nADAPT improved retention. [x"),
+        ("source_location", "abstract\n\nADAPT improved retention."),
+        ("source_location", "abstract [forged]"),
+        ("signoff", "faculty\n\nADAPT improved retention."),
+        ("verified_at", "2026-01-01)\n\nADAPT improved retention. ("),
+    ],
+)
+def test_evidence_metadata_cannot_inject_markdown(field: str, injected: str) -> None:
+    with pytest.raises(ValueError, match="safe|single-line|timestamp"):
+        EvidenceRegistry((replace(signed_record(), **{field: injected}),)).freeze()
+
+
 def test_free_text_number_cannot_bypass_structured_claim_template(tmp_path: Path) -> None:
     record = signed_record(claim_text="A 2015 viewport study was documented.")
     with pytest.raises(ValueError, match="structured claim template"):
