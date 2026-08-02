@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image
+
 from pathlab_ai_model.core import (
     COARSE_GROUP,
     LABELS,
@@ -43,7 +45,6 @@ from pathlab_ai_model.wsi_bags import (
     shard_bracs_wsi_inventory,
     verify_bracs_wsi_bags,
 )
-from PIL import Image
 
 
 class PathLabAiModelTests(unittest.TestCase):

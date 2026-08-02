@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import platform
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from . import research as research_module
 from . import __version__ as adapt_version
+from . import research as research_module
 from .io import sha256_file, write_json_atomic
 from .research import (
     AnalysisSnapshotV1,
@@ -29,7 +30,6 @@ from .research import (
     render_institutional_dossier,
     render_manuscript,
 )
-
 
 MAX_CONFIG_BYTES = 2 * 1024 * 1024
 MAX_RECORDS = 100_000
@@ -70,7 +70,7 @@ def _validate_bounded(value: object, *, depth: int = 0, counter: list[int] | Non
             raise ValueError("configuration object exceeds record cap")
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ValueError("configuration object keys must be strings")
+                raise TypeError("configuration object keys must be strings")
             _validate_bounded(key, depth=depth + 1, counter=counter)
             _validate_bounded(item, depth=depth + 1, counter=counter)
     elif isinstance(value, list):
@@ -91,13 +91,13 @@ def _required_text(config: Mapping[str, Any], key: str) -> str:
 
 def _parse_search(row: object) -> NoveltySearch:
     if not isinstance(row, dict):
-        raise ValueError("novelty search rows must be objects")
+        raise TypeError("novelty search rows must be objects")
     screenings = row.get("screenings", [])
     if not isinstance(screenings, list):
-        raise ValueError("novelty screenings must be a list")
+        raise TypeError("novelty screenings must be a list")
     result_ids = row.get("result_ids", [])
     if not isinstance(result_ids, list):
-        raise ValueError("novelty result_ids must be a list")
+        raise TypeError("novelty result_ids must be a list")
     try:
         return NoveltySearch(
             database=str(row["database"]), query=str(row["query"]),
@@ -111,7 +111,7 @@ def _parse_search(row: object) -> NoveltySearch:
 
 def _parse_evidence(row: object) -> EvidenceRecord:
     if not isinstance(row, dict):
-        raise ValueError("evidence rows must be objects")
+        raise TypeError("evidence rows must be objects")
     try:
         return EvidenceRecord(**row)
     except TypeError as error:
@@ -177,7 +177,7 @@ def _prepare(config_path: Path, output_dir: Path) -> tuple[dict[str, Any], dict[
     except (UnicodeError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid reproduction JSON: {error}") from error
     if not isinstance(config, dict):
-        raise ValueError("reproduction config must be a JSON object")
+        raise TypeError("reproduction config must be a JSON object")
     _validate_bounded(config)
     for key in ("snapshot_id", "protocol_version", "model_version", "reviewer", "signed_at"):
         _required_text(config, key)
@@ -189,20 +189,20 @@ def _prepare(config_path: Path, output_dir: Path) -> tuple[dict[str, Any], dict[
         raise ValueError("frozen input verification failed")
     novelty_rows = config.get("novelty_searches")
     if not isinstance(novelty_rows, list):
-        raise ValueError("reproduction config requires novelty searches")
+        raise TypeError("reproduction config requires novelty searches")
     novelty = NoveltyRegistry(
         tuple(_parse_search(row) for row in novelty_rows),
         _required_text(config, "reviewer"), _required_text(config, "signed_at"),
     ).freeze()
     evidence_rows = config.get("evidence")
     if not isinstance(evidence_rows, list):
-        raise ValueError("reproduction config requires an evidence list")
+        raise TypeError("reproduction config requires an evidence list")
     evidence_records = tuple(_parse_evidence(row) for row in evidence_rows)
     evidence = EvidenceRegistry(evidence_records).freeze()
     baseline = config.get("baseline", [])
     followup = config.get("followup", [])
     if not isinstance(baseline, list) or not isinstance(followup, list):
-        raise ValueError("baseline and followup must be lists")
+        raise TypeError("baseline and followup must be lists")
     if len(baseline) > MAX_RECORDS or len(followup) > MAX_RECORDS:
         raise ValueError("study rows exceed record cap")
     result = analyze_normal_use(baseline, followup, task_kind=str(config.get("task_kind", "keyed")))

@@ -18,6 +18,10 @@ from typing import Any
 import numpy as np
 import torch
 from openpyxl import load_workbook
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision.transforms import v2
+
 from pathlab_ai_data.bracs import (
     OFFICIAL_CLASS_COUNTS,
     OFFICIAL_SPLIT_CLASS_COUNTS,
@@ -27,9 +31,6 @@ from pathlab_ai_data.bracs_roi import (
     OFFICIAL_ROI_PATIENT_COUNTS,
     OFFICIAL_ROI_SLIDE_COUNTS,
 )
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import v2
 
 from .core import COARSE_GROUP, LABELS, sha256
 

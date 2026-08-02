@@ -16,10 +16,12 @@ from pathlab_adapt.research import (
     analyze_normal_use,
     render_manuscript,
 )
-from test_adapt_research_hardening import complete_novelty, snapshot, valid_config
+from tests.test_adapt_research_hardening import complete_novelty, snapshot, valid_config
 
 
-def signed_record(*, claim_text: str = "Viewport interaction patterns were documented.") -> EvidenceRecord:
+def signed_record(
+    *, claim_text: str = "Background source material was registered."
+) -> EvidenceRecord:
     return EvidenceRecord(
         "viewport", "PMID:26110095", "abstract:results", "observational", "background",
         "faculty-reviewer", "2026-08-02T12:00:00Z", claim_text=claim_text,
@@ -45,7 +47,9 @@ def test_exact_prior_art_and_unavailable_review_force_fixed_non_novelty_wording(
     assert "not locate" not in unavailable
 
 
-def test_manuscript_renders_only_exact_signed_claim_text_with_local_citation(tmp_path: Path) -> None:
+def test_manuscript_renders_only_structured_engine_template_with_local_citation(
+    tmp_path: Path,
+) -> None:
     record = signed_record()
     manuscript = render_manuscript(
         snapshot(tmp_path), EvidenceRegistry((record,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty(),
@@ -60,12 +64,15 @@ def test_manuscript_renders_only_exact_signed_claim_text_with_local_citation(tmp
         EvidenceRegistry((replace(record, claim_text="Swapped source [other]."),)).freeze()
 
 
-def test_number_in_exact_signed_claim_is_locally_traceable(tmp_path: Path) -> None:
+def test_free_text_number_cannot_bypass_structured_claim_template(tmp_path: Path) -> None:
     record = signed_record(claim_text="A 2015 viewport study was documented.")
-    manuscript = render_manuscript(
-        snapshot(tmp_path), EvidenceRegistry((record,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty(),
-    )
-    assert "A 2015 viewport study was documented. [viewport]" in manuscript
+    with pytest.raises(ValueError, match="structured claim template"):
+        render_manuscript(
+            snapshot(tmp_path),
+            EvidenceRegistry((record,)).freeze(),
+            analyze_normal_use((), ()),
+            novelty=complete_novelty(),
+        )
 
 
 @pytest.mark.parametrize("word", [
@@ -75,8 +82,58 @@ def test_number_in_exact_signed_claim_is_locally_traceable(tmp_path: Path) -> No
 def test_manuscript_blocks_extended_positive_semantic_variants(tmp_path: Path, word: str) -> None:
     record = signed_record(claim_text=f"The system {word} delayed retention.")
     evidence = EvidenceRegistry((record,)).freeze()
-    with pytest.raises(ValueError, match="unsupported wording"):
+    with pytest.raises(ValueError, match="structured claim template"):
         render_manuscript(snapshot(tmp_path), evidence, analyze_normal_use((), ()), novelty=complete_novelty())
+
+
+@pytest.mark.parametrize("claim", [
+    "The intervention raised delayed retention.",
+    "The intervention yielded gains in delayed retention.",
+    "The intervention strengthened delayed retention.",
+    "The intervention produced greater delayed retention.",
+    "Learners made fewer errors.",
+    "Learners were more accurate.",
+    "The intervention advanced delayed retention.",
+    "The intervention optimized delayed retention.",
+])
+def test_manuscript_rejects_all_free_outcome_direction_claims(
+    tmp_path: Path,
+    claim: str,
+) -> None:
+    record = signed_record(claim_text=claim)
+    evidence = EvidenceRegistry((record,)).freeze()
+    with pytest.raises(ValueError, match="structured claim template"):
+        render_manuscript(
+            snapshot(tmp_path),
+            evidence,
+            analyze_normal_use((), ()),
+            novelty=complete_novelty(),
+        )
+
+
+def test_manuscript_requires_an_unavailable_approved_outcome_artifact(
+    tmp_path: Path,
+) -> None:
+    record = EvidenceRecord(
+        "outcome",
+        "PMID:26110095",
+        "abstract:results",
+        "observational",
+        "approved_outcome",
+        "faculty-reviewer",
+        "2026-08-02T12:00:00Z",
+        claim_text="Delayed correctness was greater.",
+        content_sha256="b" * 64,
+        claim_kind="approved_outcome",
+    )
+    evidence = EvidenceRegistry((record,)).freeze()
+    with pytest.raises(ValueError, match="approved matched analysis/result artifact"):
+        render_manuscript(
+            snapshot(tmp_path),
+            evidence,
+            analyze_normal_use((), ()),
+            novelty=complete_novelty(),
+        )
 
 
 def approved_safe_config(tmp_path: Path) -> Path:

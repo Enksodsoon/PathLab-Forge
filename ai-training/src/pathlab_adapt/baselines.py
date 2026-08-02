@@ -72,7 +72,7 @@ class LogisticBaseline:
         *,
         iterations: int = 200,
         learning_rate: float = 0.05,
-    ) -> "LogisticBaseline":
+    ) -> LogisticBaseline:
         if not rows or len(rows) != len(targets):
             raise ValueError("rows and targets must have equal non-zero length")
         for _ in range(iterations):

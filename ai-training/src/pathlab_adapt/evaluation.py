@@ -49,8 +49,8 @@ def _quantile(values: list[float], probability: float) -> float:
     if not ordered:
         raise ValueError("cannot calculate a quantile of no values")
     location = (len(ordered) - 1) * probability
-    lower = int(math.floor(location))
-    upper = int(math.ceil(location))
+    lower = math.floor(location)
+    upper = math.ceil(location)
     if lower == upper:
         return ordered[lower]
     fraction = location - lower

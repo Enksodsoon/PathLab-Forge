@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from pathlab_adapt.adapters import EdNetAdapterConfig, adapt_ednet, adapt_oulad
-from pathlab_adapt.baselines import BASELINE_NAMES, BktBaseline, BaselineResult
+from pathlab_adapt.baselines import BASELINE_NAMES, BaselineResult, BktBaseline
 from pathlab_adapt.benchmark import ResourceEvidence, benchmark_candidate
 from pathlab_adapt.cli import main
 from pathlab_adapt.evaluation import (
@@ -18,7 +18,12 @@ from pathlab_adapt.evaluation import (
     bootstrap_relative_brier_improvement,
     evaluate_predictions,
 )
-from pathlab_adapt.license import LicenseEntry, LicenseLedger, TraceDistribution, sha256_path
+from pathlab_adapt.license import (
+    LicenseEntry,
+    LicenseLedger,
+    TraceDistribution,
+    sha256_path,
+)
 from pathlab_adapt.manifest import build_manifest, write_manifest
 from pathlab_adapt.models import (
     STUDENT_CONFIGS,
@@ -28,7 +33,7 @@ from pathlab_adapt.models import (
 )
 from pathlab_adapt.ontology import CONTROL_ACTIONS, LearnerEvent
 from pathlab_adapt.ood import ControllerPolicy, UncertaintySignal
-from pathlab_adapt.pareto import CandidateEvidence, GATE_ORDER, evaluate_gates
+from pathlab_adapt.pareto import GATE_ORDER, CandidateEvidence, evaluate_gates
 from pathlab_adapt.splits import learner_disjoint_split, time_forward_split
 from pathlab_adapt.synthetic import SyntheticConfig, generate_synthetic_events
 
@@ -303,20 +308,20 @@ class EvaluationGateAndManifestTests(unittest.TestCase):
         self.assertTrue(any(item.status == "unmeasured" for item in result.gates))
 
     def test_real_measured_candidate_can_pass_without_hard_coded_size_preference(self) -> None:
-        common = dict(
-            benchmark_kind="real",
-            strongest_baseline="ordinary_transformer",
-            measurement_provenance_sha256="b" * 64,
-            artifact_sha256="a" * 64,
-            relative_brier_improvement=0.08,
-            relative_brier_ci_low=0.01,
-            ece=0.04,
-            distilled_brier_gap=0.009,
-            distilled_auroc_gap=0.019,
-            incremental_ram_bytes=200 * 1024 * 1024,
-            p95_inference_ms=140.0,
-            reference_device="named-device / 8GB RAM / 6-core CPU",
-        )
+        common = {
+            "benchmark_kind": "real",
+            "strongest_baseline": "ordinary_transformer",
+            "measurement_provenance_sha256": "b" * 64,
+            "artifact_sha256": "a" * 64,
+            "relative_brier_improvement": 0.08,
+            "relative_brier_ci_low": 0.01,
+            "ece": 0.04,
+            "distilled_brier_gap": 0.009,
+            "distilled_auroc_gap": 0.019,
+            "incremental_ram_bytes": 200 * 1024 * 1024,
+            "p95_inference_ms": 140.0,
+            "reference_device": "named-device / 8GB RAM / 6-core CPU",
+        }
         candidate = CandidateEvidence(candidate_id="student-15m", artifact_size_bytes=24 * 1024 * 1024, **common)
         result = evaluate_gates(candidate)
         self.assertTrue(result.all_gates_passed)

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping
 
 from .baselines import BASELINE_NAMES, BaselineResult
 from .evaluation import (
@@ -17,7 +17,6 @@ from .evaluation import (
 )
 from .io import sha256_file
 from .pareto import CandidateEvidence
-
 
 PREDICTION_KEYS = (
     "candidate",
@@ -54,7 +53,7 @@ def assert_prediction_alignment(
 ) -> str:
     if not predictions:
         raise ValueError("prediction sets are required")
-    reference_name = sorted(predictions)[0]
+    reference_name = min(predictions)
     reference = predictions[reference_name]
     reference_keys = [(item.event_id, item.learner_id, item.target) for item in reference]
     for name, rows in predictions.items():

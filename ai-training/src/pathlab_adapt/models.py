@@ -32,7 +32,7 @@ class TRACEFormerConfig:
         return embeddings + attention_and_ffn + outputs
 
     @classmethod
-    def teacher(cls) -> "TRACEFormerConfig":
+    def teacher(cls) -> TRACEFormerConfig:
         return cls(
             name="trace-former-teacher-32m",
             context_length=256,

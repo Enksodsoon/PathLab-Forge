@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from pathlab_adapt.cli import main
 import pathlab_adapt.reproduce as reproduce_module
+from pathlab_adapt.cli import main
 from pathlab_adapt.reproduce import MAX_CONFIG_BYTES, reproduce_study
 from pathlab_adapt.research import (
     PRIOR_ART_SOURCES,
@@ -42,7 +42,7 @@ def complete_novelty(*, all_unavailable: bool = False) -> dict[str, object]:
 def evidence_registry() -> dict[str, object]:
     return EvidenceRegistry((EvidenceRecord(
         "prior-vmat", "PMID:26110095", "abstract:methods", "observational", "association",
-        "faculty-reviewer", "2026-08-02T12:00:00Z", claim_text="An association was documented.",
+        "faculty-reviewer", "2026-08-02T12:00:00Z", claim_text="An association was reported.",
         content_sha256="b" * 64,
     ),)).freeze()
 
@@ -112,7 +112,7 @@ def test_claim_gate_blocks_positive_and_causal_variants(tmp_path: Path, claim: s
         "claim", "PMID:26110095", "abstract:results", "observational", "background",
         "faculty", "2026-08-02", claim_text=claim, content_sha256="b" * 64,
     )
-    with pytest.raises(ValueError, match="unsupported wording"):
+    with pytest.raises(ValueError, match="structured claim template"):
         render_manuscript(snapshot(tmp_path), EvidenceRegistry((record,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty())
 
 
@@ -121,7 +121,7 @@ def test_citation_must_use_record_allowed_wording(tmp_path: Path) -> None:
         "prior-vmat", "PMID:26110095", "abstract", "observational", "association",
         "faculty", "2026-08-02", claim_text="Viewport behavior was documented.", content_sha256="b" * 64,
     )
-    with pytest.raises(ValueError, match="allowed wording"):
+    with pytest.raises(ValueError, match="structured claim template"):
         render_manuscript(snapshot(tmp_path), EvidenceRegistry((invalid,)).freeze(), analyze_normal_use((), ()), novelty=complete_novelty())
     valid = replace(invalid, claim_text="An association was reported.")
     text = render_manuscript(

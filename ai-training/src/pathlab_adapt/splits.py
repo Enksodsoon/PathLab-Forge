@@ -34,7 +34,7 @@ class EventSplit:
         return {"train": self.train, "validation": self.validation, "test": self.test}
 
     def assert_no_duplicate_events(self) -> None:
-        groups = [set(item.event_id for item in values) for values in self.as_dict().values()]
+        groups = [{item.event_id for item in values} for values in self.as_dict().values()]
         if groups[0] & groups[1] or groups[0] & groups[2] or groups[1] & groups[2]:
             raise ValueError("event leakage detected across splits")
 
@@ -71,7 +71,7 @@ def learner_disjoint_split(
         seed=seed,
     )
     result.assert_no_duplicate_events()
-    learner_groups = [set(item.learner_id for item in values) for values in result.as_dict().values()]
+    learner_groups = [{item.learner_id for item in values} for values in result.as_dict().values()]
     if learner_groups[0] & learner_groups[1] or learner_groups[0] & learner_groups[2] or learner_groups[1] & learner_groups[2]:
         raise ValueError("learner leakage detected across splits")
     return result

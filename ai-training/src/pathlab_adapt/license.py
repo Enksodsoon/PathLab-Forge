@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 from dataclasses import asdict, dataclass
 from datetime import date
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -88,12 +88,12 @@ class LicenseLedger:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "LicenseLedger":
+    def from_dict(cls, payload: dict[str, Any]) -> LicenseLedger:
         if payload.get("schema_version") != "pathlab-adapt-license-ledger-v1":
             raise ValueError("unsupported license ledger schema_version")
         entries = payload.get("entries")
         if not isinstance(entries, list):
-            raise ValueError("license ledger entries must be a list")
+            raise TypeError("license ledger entries must be a list")
         return cls(tuple(LicenseEntry(**entry) for entry in entries))
 
     def validate_source(
@@ -127,7 +127,7 @@ class TraceDistribution:
     restrictions: str
 
     @classmethod
-    def trace_open(cls) -> "TraceDistribution":
+    def trace_open(cls) -> TraceDistribution:
         return cls(
             name="TRACE-Open",
             sources=("oulad", "synthetic"),
@@ -137,7 +137,7 @@ class TraceDistribution:
             restrictions="Preserve source attribution and each source license.",
         )
     @classmethod
-    def trace_research(cls) -> "TraceDistribution":
+    def trace_research(cls) -> TraceDistribution:
         return cls(
             name="TRACE-Research",
             sources=("oulad", "synthetic", "ednet"),

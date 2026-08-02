@@ -9,8 +9,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from .ontology import LearnerEvent
 from .license import LicenseEntry, LicenseLedger
+from .ontology import LearnerEvent
 
 EDNET_EVENT_CAP = 5_000_000
 
@@ -18,7 +18,7 @@ EDNET_EVENT_CAP = 5_000_000
 def _pseudonym(source: str, raw_id: str, salt: str) -> str:
     if not salt:
         raise ValueError("pseudonym_salt must be non-empty")
-    digest = hashlib.sha256(f"{source}|{salt}|{raw_id}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{source}|{salt}|{raw_id}".encode()).hexdigest()
     return f"{source}-{digest[:24]}"
 
 

@@ -7,12 +7,12 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from .io import sha256_file
-
 
 PRIOR_ART_SOURCES = (
     "pubmed", "pmc", "crossref", "openalex", "arxiv", "ieee-xplore",
@@ -22,24 +22,21 @@ PRIOR_ART_SOURCES = (
 SEARCH_STATUSES = frozenset({"searched", "unavailable"})
 SCREENING_DECISIONS = frozenset({"include_exact", "include_adjacent", "exclude"})
 STUDY_DESIGNS = frozenset({"observational", "randomized", "systematic_review", "methods", "registry", "product_documentation"})
-ALLOWED_WORDING = frozenset({"association", "methods", "background", "factual"})
+ALLOWED_WORDING = frozenset(
+    {"association", "methods", "background", "factual", "approved_outcome"}
+)
+CLAIM_KINDS = frozenset(
+    {"association", "methods", "background", "safe_ai_fact", "approved_outcome"}
+)
+MANUSCRIPT_CLAIM_TEMPLATES = {
+    "association": "An association was reported.",
+    "methods": "A methods description was registered.",
+    "background": "Background source material was registered.",
+}
 _DOI = re.compile(r"^doi:10\.\d{4,9}/\S+$", re.IGNORECASE)
 _PMID = re.compile(r"^pmid:\d+$", re.IGNORECASE)
 _CITATION = re.compile(r"\[([A-Za-z][A-Za-z0-9_.:-]*)\]")
 _NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
-_UNSUPPORTED = re.compile(
-    r"\b(?:caus(?:e|ed|es|al|ally|ation)|lead|leads|led|result(?:ed|s)?\s+in|"
-    r"effect(?:ive|iveness|s)?|efficacy|improv(?:e|ed|es|ing|ement|ements)|"
-    r"increas(?:e|ed|es|ing)|enhanc(?:e|ed|es|ing)|boost(?:ed|s|ing)?|"
-    r"reduc(?:e|ed|es|ing|tion)|decreas(?:e|ed|es|ing)|outperform(?:ed|s|ing)?|"
-    r"benefit(?:ed|s|ting)?|better|superior|positive|higher|lower|first[ -]ever)\b",
-    re.IGNORECASE,
-)
-_WORDING_PATTERNS = {
-    "association": re.compile(r"\b(?:association|associated)\b", re.IGNORECASE),
-    "methods": re.compile(r"\b(?:method|methods|implemented|implementation)\b", re.IGNORECASE),
-    "background": re.compile(r"\b(?:reported|described|documented|background)\b", re.IGNORECASE),
-}
 
 
 def _canonical_hash(payload: object) -> str:
@@ -137,6 +134,13 @@ class EvidenceRecord:
     claim_text: str = ""
     truth_status: str = "not_applicable"
     content_sha256: str = ""
+    claim_kind: str = ""
+
+    def resolved_claim_kind(self) -> str:
+        legacy_kind = "safe_ai_fact" if self.allowed_wording == "factual" else self.allowed_wording
+        if self.claim_kind and self.claim_kind != legacy_kind:
+            raise ValueError("claim kind and legacy allowed wording are incompatible")
+        return self.claim_kind or legacy_kind
 
     def validate(self) -> None:
         if not self.claim_id.strip():
@@ -149,13 +153,17 @@ class EvidenceRecord:
             raise ValueError("evidence requires an enumerated study design")
         if self.allowed_wording not in ALLOWED_WORDING:
             raise ValueError("evidence requires enumerated allowed wording")
+        claim_kind = self.resolved_claim_kind()
+        if claim_kind not in CLAIM_KINDS:
+            raise ValueError("evidence requires an enumerated claim kind")
         compatible_designs = {
             "association": {"observational", "randomized", "systematic_review", "registry"},
             "methods": {"methods", "product_documentation"},
             "background": STUDY_DESIGNS,
-            "factual": STUDY_DESIGNS,
+            "safe_ai_fact": STUDY_DESIGNS,
+            "approved_outcome": {"observational", "randomized", "systematic_review"},
         }
-        if self.study_design not in compatible_designs[self.allowed_wording]:
+        if self.study_design not in compatible_designs[claim_kind]:
             raise ValueError("study design and allowed wording are incompatible")
         if self.truth_status not in {"not_applicable", "unverified", "verified_true"}:
             raise ValueError("evidence truth status is invalid")
@@ -181,7 +189,9 @@ class EvidenceRegistry:
             if record.claim_id in seen:
                 raise ValueError(f"duplicate evidence claim: {record.claim_id}")
             seen.add(record.claim_id)
-            rows.append(asdict(record))
+            row = asdict(record)
+            row["claim_kind"] = record.resolved_claim_kind()
+            rows.append(row)
         body = {"schema_version": "EvidenceRegistryV1", "records": rows}
         return {**body, "sha256": _canonical_hash(body)}
 
@@ -205,7 +215,7 @@ class AnalysisSnapshotV1:
     snapshot_sha256: str
 
     @classmethod
-    def freeze(cls, snapshot_id: str, protocol_version: str, model_version: str, artifacts: Mapping[str, Path]) -> "AnalysisSnapshotV1":
+    def freeze(cls, snapshot_id: str, protocol_version: str, model_version: str, artifacts: Mapping[str, Path]) -> AnalysisSnapshotV1:
         if not snapshot_id.strip() or not protocol_version.strip() or not model_version.strip() or not artifacts:
             raise ValueError("snapshot requires IDs and at least one frozen artifact")
         pairs = tuple(sorted((str(name), sha256_file(Path(path))) for name, path in artifacts.items()))
@@ -265,7 +275,7 @@ def _indexed_rows(rows: Sequence[Mapping[str, Any]], label: str) -> dict[tuple[s
         active = row["active_minutes"]
         hints = row["hints"]
         if not isinstance(row["success"], bool):
-            raise ValueError(f"{label} row success must be boolean")
+            raise TypeError(f"{label} row success must be boolean")
         if isinstance(active, bool) or not isinstance(active, (int, float)) or not math.isfinite(float(active)) or float(active) < 0:
             raise ValueError(f"{label} row active_minutes must be finite and nonnegative")
         if isinstance(hints, bool) or not isinstance(hints, int) or hints < 0:
@@ -310,35 +320,13 @@ class StudyProtocol:
     withdrawal_policy: str
 
     @classmethod
-    def default(cls) -> "StudyProtocol":
+    def default(cls) -> StudyProtocol:
         return cls(
             "StudyProtocolV1",
             "approved nonrandomized normal-use pre/post implementation",
             "Mixed-effects logistic model planned for delayed correctness with learner and task intercepts; adjusted associations only; no primary-outcome imputation; report attrition and inverse-probability sensitivity. No fit is emitted without approved data and dependencies.",
             "Honor withdrawal according to the frozen institutional protocol and exclude withdrawn records from new snapshots.",
         )
-
-
-def _validate_contribution_claim(
-    claim: str, records: list[Mapping[str, Any]], *, exact_signed_claim: bool = False,
-) -> None:
-    if _UNSUPPORTED.search(claim):
-        raise ValueError("unsupported wording for nonrandomized or inconclusive evidence")
-    record_map = {str(row["claim_id"]): row for row in records}
-    citations = set(_CITATION.findall(claim))
-    if not citations.issubset(record_map):
-        raise ValueError("unknown or unfrozen citation in contribution claim")
-    for citation in citations:
-        row = record_map[citation]
-        allowed = str(row["allowed_wording"])
-        if allowed == "factual":
-            exact = str(row.get("claim_text", "")).strip()
-            if not exact or exact.casefold() not in claim.casefold():
-                raise ValueError("citation does not use its allowed wording template")
-        elif _WORDING_PATTERNS[allowed].search(claim) is None:
-            raise ValueError("citation does not use its allowed wording template")
-    if not exact_signed_claim and _NUMBER.search(_CITATION.sub("", claim)):
-        raise ValueError("untraced number in investigator contribution claim")
 
 
 def _novelty_sentence(novelty: Mapping[str, Any]) -> str:
@@ -379,7 +367,7 @@ def render_manuscript(
 ) -> str:
     records = evidence.get("records")
     if not isinstance(records, list):
-        raise ValueError("evidence registry is not frozen")
+        raise TypeError("evidence registry is not frozen")
     try:
         validated_evidence = EvidenceRegistry(tuple(EvidenceRecord(**row) for row in records)).freeze()
     except (TypeError, ValueError) as error:
@@ -388,20 +376,30 @@ def render_manuscript(
         raise ValueError("evidence registry digest is invalid")
     records = validated_evidence["records"]
     contribution = _novelty_sentence(novelty)
-    _validate_contribution_claim(contribution, records)
     evidence_claims: list[str] = []
+    manuscript_records: list[Mapping[str, Any]] = []
     for row in records:
+        claim_kind = str(row["claim_kind"])
+        if claim_kind == "approved_outcome":
+            raise ValueError(
+                "approved outcome claims require a frozen approved matched analysis/result artifact"
+            )
+        if claim_kind == "safe_ai_fact":
+            continue
         claim_text = str(row["claim_text"]).strip()
-        _validate_contribution_claim(
-            f"{claim_text} [{row['claim_id']}]", records, exact_signed_claim=True,
-        )
-        evidence_claims.append(f"{claim_text} [{row['claim_id']}]")
+        template = MANUSCRIPT_CLAIM_TEMPLATES[claim_kind]
+        if claim_text != template:
+            raise ValueError(
+                "manuscript evidence must use its exact structured claim template"
+            )
+        evidence_claims.append(f"{template} [{row['claim_id']}]")
+        manuscript_records.append(row)
     prior_evidence = "\n".join(f"- {claim}" for claim in evidence_claims) or "- No signed external evidence claims were supplied."
     metrics = result.metrics
     references = "\n".join(
         f"- [{row['claim_id']}] {row['identifier']} — {row['source_location']} "
         f"(content SHA-256 {row['content_sha256']}; investigator-verified {row['verified_at']})"
-        for row in records
+        for row in manuscript_records
     ) or "- No external claims cited."
     return (
         "# PathLab ADAPT — Evidence-bound draft\n\n## Abstract\n\n"
@@ -447,7 +445,11 @@ class SourceApproval:
 def build_safe_ai_literacy_sequence(claim: EvidenceRecord, source: SourceApproval) -> tuple[dict[str, Any], ...]:
     claim.validate()
     source.validate()
-    if claim.allowed_wording != "factual" or not claim.claim_text.strip() or claim.truth_status != "verified_true":
+    if (
+        claim.resolved_claim_kind() != "safe_ai_fact"
+        or not claim.claim_text.strip()
+        or claim.truth_status != "verified_true"
+    ):
         raise ValueError("safe-AI claim must be an evidence-bound signed verified true factual claim")
     return (
         {"order": 1, "kind": "independent_answer", "randomized": False},

@@ -43,8 +43,13 @@ study-design tag, allowed wording, investigator signoff, and verification date.
 Unknown citation IDs and investigator-entered numbers are rejected. Generated
 numbers come only from frozen analysis rows and are mapped in `tables.json`.
 The renderer has no free-form contribution override. It selects novelty wording
-from the validated signed Gate 0 state and renders literature claims only as the
-exact signed `claim_text` immediately followed by its claim ID. An exact-prior-
+from the validated signed Gate 0 state. Background, methods, and association
+records can render only fixed engine templates selected by their structured
+claim kind; investigator prose is never copied into the manuscript. Safe-AI
+facts stay outside manuscript claims. Outcome-direction claims require the
+distinct `approved_outcome` kind plus a frozen approved matched-analysis/result
+artifact and design-aware wording. This release has no such artifact, so it
+rejects every outcome-direction claim. An exact-prior-
 art state requires narrowing or renaming; unavailable review states remain
 pending. Neither state can emit “not located.”
 

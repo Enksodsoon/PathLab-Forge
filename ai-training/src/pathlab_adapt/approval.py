@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
-import hashlib
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,8 @@ from .evaluation import Prediction
 from .io import sha256_file
 from .license import LicenseLedger, sha256_path
 from .manifest import build_manifest, write_manifest
-from .pareto import CandidateEvidence, evaluate_gates
 from .ontology import LearnerEvent
+from .pareto import CandidateEvidence, evaluate_gates
 from .splits import learner_disjoint_split, time_forward_split
 
 BENCHMARK_SCHEMA = "pathlab-adapt-verified-benchmark-v2"
@@ -52,7 +53,7 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid {label}") from error
     if not isinstance(payload, dict):
-        raise ValueError(f"{label} must be a JSON object")
+        raise TypeError(f"{label} must be a JSON object")
     return payload
 
 
@@ -80,7 +81,7 @@ def _validate_split_protocol(
     for partition in ("train", "validation", "test"):
         artifact = partitions[partition]
         if not isinstance(artifact, dict):
-            raise ValueError(f"invalid {name} {partition} key artifact")
+            raise TypeError(f"invalid {name} {partition} key artifact")
         key_path = _resolve_artifact(manifest_path, str(artifact.get("path", "")))
         if sha256_path(key_path) != artifact.get("sha256"):
             raise ValueError(f"{name} {partition} key checksum mismatch")
@@ -131,7 +132,7 @@ def _validate_split_protocol(
         order = ("train", "validation", "test")
         for values in sequence_times.values():
             nonempty = [partition for partition in order if partition in values]
-            for left, right in zip(nonempty, nonempty[1:]):
+            for left, right in pairwise(nonempty):
                 if left in values and right in values and max(values[left]) >= min(values[right]):
                     raise ValueError("time-order or equal-time leakage detected in time-forward split manifest")
     return test_digest
@@ -174,7 +175,7 @@ def validate_provenance_files(
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 raise ValueError("canonical event artifact contains an invalid event") from error
             if not isinstance(item.retention_target, bool):
-                raise ValueError("canonical verifier events require boolean retention targets")
+                raise TypeError("canonical verifier events require boolean retention targets")
             if item.event_id in seen_event_ids:
                 raise ValueError("canonical event artifact contains duplicate event_id")
             seen_event_ids.add(item.event_id)
@@ -190,7 +191,7 @@ def validate_provenance_files(
     weights_redistribution = True
     for source in sources:
         if not isinstance(source, dict):
-            raise ValueError("dataset source record must be an object")
+            raise TypeError("dataset source record must be an object")
         source_id = str(source.get("source_id", ""))
         source_path = _resolve_artifact(dataset_manifest_path, str(source.get("path", "")))
         entry = ledger.validate_source(source_id, source_path, require_derivative_models=True)
@@ -215,7 +216,7 @@ def validate_provenance_files(
     if split.get("dataset_manifest_sha256") != dataset_sha:
         raise ValueError("split manifest dataset checksum mismatch")
     if not isinstance(split.get("seed"), int):
-        raise ValueError("split manifest requires an integer seed")
+        raise TypeError("split manifest requires an integer seed")
     audit = split.get("leakage_audit")
     if not isinstance(audit, dict) or audit.get("status") != "passed" or audit.get("duplicate_event_ids") != 0:
         raise ValueError("split leakage audit is absent or failed")
@@ -226,7 +227,7 @@ def validate_provenance_files(
     for name in ("learner_disjoint", "time_forward"):
         record = protocols[name]
         if not isinstance(record, dict) or not isinstance(record.get("seed"), int):
-            raise ValueError(f"invalid {name} split record")
+            raise TypeError(f"invalid {name} split record")
         validation_fraction = float(record.get("validation_fraction", 0.15))
         test_fraction = float(record.get("test_fraction", 0.15))
         derived_split = (
@@ -318,7 +319,7 @@ def _verify_benchmark(
     for name in PREDICTION_KEYS:
         artifact = artifact_records[name]
         if not isinstance(artifact, dict):
-            raise ValueError("invalid prediction artifact record")
+            raise TypeError("invalid prediction artifact record")
         path = _resolve_artifact(benchmark_path, str(artifact.get("path", "")))
         paths[name] = path
     hashes = prediction_artifact_hashes(paths)
@@ -329,7 +330,7 @@ def _verify_benchmark(
     assert_prediction_alignment(predictions, expected_split_digest=provenance.split_test_digest)
     resource_payload = record.get("resource_evidence")
     if not isinstance(resource_payload, dict):
-        raise ValueError("resource evidence is missing")
+        raise TypeError("resource evidence is missing")
     resource = ResourceEvidence(
         artifact_size_bytes=model_path.stat().st_size,
         artifact_sha256=actual_model_sha,
@@ -420,17 +421,19 @@ def verify_and_produce_manifest(
         return ManifestVerificationResult(payload, digest)
 
     gates = evaluate_gates(evidence)
-    common = dict(
-        model_id=str(record.get("model_id", evidence.candidate_id)),
-        dataset_kind=provenance.dataset_kind,
-        candidate_id=evidence.candidate_id,
-        gates=gates,
-        baselines=list(baselines),
-        export_metadata=record.get("export_metadata") if isinstance(record.get("export_metadata"), dict) else None,
-        license_ledger_sha256=provenance.license_ledger_sha256,
-        artifact_sha256=sha256_file(model_path),
-        artifact_size_bytes=model_path.stat().st_size,
-    )
+    common = {
+        "model_id": str(record.get("model_id", evidence.candidate_id)),
+        "dataset_kind": provenance.dataset_kind,
+        "candidate_id": evidence.candidate_id,
+        "gates": gates,
+        "baselines": list(baselines),
+        "export_metadata": record.get("export_metadata")
+        if isinstance(record.get("export_metadata"), dict)
+        else None,
+        "license_ledger_sha256": provenance.license_ledger_sha256,
+        "artifact_sha256": sha256_file(model_path),
+        "artifact_size_bytes": model_path.stat().st_size,
+    }
     measured_provenance = {
             "benchmark_sha256": sha256_file(benchmark_path),
             "dataset_manifest_sha256": provenance.dataset_manifest_sha256,

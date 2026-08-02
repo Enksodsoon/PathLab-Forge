@@ -6,22 +6,22 @@ import argparse
 import json
 import sys
 from contextlib import ExitStack
-from itertools import zip_longest
 from dataclasses import asdict
+from itertools import zip_longest
 from pathlib import Path
 
 from .adapters import EDNET_EVENT_CAP, EdNetAdapterConfig, adapt_ednet, adapt_oulad
+from .approval import (
+    BENCHMARK_SCHEMA,
+    validate_provenance_files,
+    verify_and_produce_manifest,
+)
 from .baselines import BASELINE_NAMES, BaselineResult
 from .benchmark import (
     PREDICTION_KEYS,
     ResourceEvidence,
     benchmark_candidate,
     prediction_artifact_hashes,
-)
-from .approval import (
-    BENCHMARK_SCHEMA,
-    validate_provenance_files,
-    verify_and_produce_manifest,
 )
 from .evaluation import Prediction
 from .io import sha256_file, write_json_atomic, write_jsonl_atomic
@@ -137,7 +137,7 @@ def _baselines(path: Path | None) -> list[BaselineResult]:
         return [BaselineResult(name, None, None, "unmeasured") for name in BASELINE_NAMES]
     payload = _read_json(path)
     if not isinstance(payload, list):
-        raise ValueError("baseline file must contain a JSON list")
+        raise TypeError("baseline file must contain a JSON list")
     return [BaselineResult(**item) for item in payload]
 
 
@@ -153,7 +153,7 @@ def _read_predictions(path: Path, *, max_predictions: int) -> list[Prediction]:
                 raise ValueError(f"prediction file {path} exceeds bounded cap {max_predictions}")
             payload = json.loads(line)
             if not isinstance(payload, dict):
-                raise ValueError(f"prediction row {line_number} in {path} must be an object")
+                raise TypeError(f"prediction row {line_number} in {path} must be an object")
             rows.append(Prediction(**payload))
     return rows
 
@@ -184,7 +184,7 @@ def _read_aligned_predictions(
             for line in lines:
                 payload = json.loads(str(line))
                 if not isinstance(payload, dict):
-                    raise ValueError("prediction row must be a JSON object")
+                    raise TypeError("prediction row must be a JSON object")
                 parsed.append(Prediction(**payload))
             expected = (parsed[0].event_id, parsed[0].learner_id, parsed[0].target)
             if any((item.event_id, item.learner_id, item.target) != expected for item in parsed[1:]):
@@ -198,7 +198,7 @@ def _read_aligned_predictions(
 
 def _evidence_payload(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
-        raise ValueError("evidence must be a JSON object")
+        raise TypeError("evidence must be a JSON object")
     nested = payload.get("evidence")
     if nested is not None:
         if not isinstance(nested, dict):

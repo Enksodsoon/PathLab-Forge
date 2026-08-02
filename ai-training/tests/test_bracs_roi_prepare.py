@@ -7,12 +7,13 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
+from PIL import Image
+
 from pathlab_ai_data.bracs_roi import (
     BracsRoiPreparationConfig,
     RoiPreparationError,
     prepare_bracs_roi,
 )
-from PIL import Image
 
 
 class BracsRoiPreparationTests(unittest.TestCase):

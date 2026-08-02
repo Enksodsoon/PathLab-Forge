@@ -72,8 +72,9 @@ def run_optional_behavior_checks() -> dict[str, Any]:
         }
         return {"status": "unverified_missing_dependencies", "checks": checks}
 
-    from .export import export_onnx_int8
     import onnxruntime
+
+    from .export import export_onnx_int8
 
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

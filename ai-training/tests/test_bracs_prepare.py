@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook
+
 from pathlab_ai_data.bracs import (
     BracsPreparationConfig,
     PreparationError,

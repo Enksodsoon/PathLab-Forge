@@ -39,7 +39,7 @@ def multitask_distillation_loss(
         raise ValueError("distillation mappings must contain exactly the four prespecified heads")
     try:
         import torch
-        from torch.nn import functional as functional
+        from torch.nn import functional
     except ImportError as error:
         raise RuntimeError("PyTorch is optional; install pathlab-ai-data[adapt-model]") from error
     head_names = sorted(required_heads)

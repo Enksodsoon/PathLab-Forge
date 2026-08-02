@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import tempfile
@@ -28,7 +27,6 @@ from pathlab_adapt.evaluation import (
 from pathlab_adapt.export import validate_export_paths
 from pathlab_adapt.io import sha256_file, write_json_atomic, write_jsonl_atomic
 from pathlab_adapt.license import LicenseEntry, LicenseLedger, sha256_path
-from pathlab_adapt.manifest import write_manifest
 from pathlab_adapt.ontology import LearnerEvent
 from pathlab_adapt.ood import ControllerPolicy, UncertaintySignal
 from pathlab_adapt.optional_validation import run_optional_behavior_checks
