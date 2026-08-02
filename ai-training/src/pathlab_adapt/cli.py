@@ -5,12 +5,20 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import ExitStack
+from itertools import zip_longest
 from dataclasses import asdict
 from pathlib import Path
 
 from .adapters import EDNET_EVENT_CAP, EdNetAdapterConfig, adapt_ednet, adapt_oulad
 from .baselines import BASELINE_NAMES, BaselineResult
 from .benchmark import ResourceEvidence, benchmark_candidate
+from .approval import (
+    BENCHMARK_SCHEMA,
+    PREDICTION_KEYS,
+    issue_verified_manifest,
+    validate_provenance_files,
+)
 from .evaluation import Prediction
 from .io import sha256_file, write_json_atomic, write_jsonl_atomic
 from .license import LicenseEntry, LicenseLedger
@@ -44,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     ednet.add_argument("--output", required=True, type=Path)
     ednet.add_argument("--pseudonym-salt", required=True)
     ednet.add_argument("--event-cap", type=int, default=EDNET_EVENT_CAP)
+    ednet.add_argument("--license-ledger", required=True, type=Path)
 
     ledger = commands.add_parser("validate-license-ledger")
     ledger.add_argument("--input", required=True, type=Path)
@@ -57,11 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--gru-predictions", required=True, type=Path)
     benchmark.add_argument("--transformer-predictions", required=True, type=Path)
     benchmark.add_argument("--resource-evidence", required=True, type=Path)
-    benchmark.add_argument("--benchmark-kind", choices=("real", "synthetic"), required=True)
     benchmark.add_argument("--candidate-id", required=True)
     benchmark.add_argument("--bootstrap-iterations", type=int, default=1_000)
     benchmark.add_argument("--seed", type=int, default=20260802)
-    benchmark.add_argument("--max-predictions", type=int, default=2_000_000)
+    benchmark.add_argument("--max-predictions", type=int, default=100_000)
+    benchmark.add_argument("--model-artifact", required=True, type=Path)
+    benchmark.add_argument("--license-ledger", required=True, type=Path)
+    benchmark.add_argument("--dataset-manifest", required=True, type=Path)
+    benchmark.add_argument("--split-manifest", required=True, type=Path)
+    benchmark.add_argument(
+        "--evaluation-protocol",
+        choices=("learner_disjoint", "time_forward"),
+        required=True,
+    )
     benchmark.add_argument("--output", required=True, type=Path)
 
     evaluate = commands.add_parser("evaluate-gates")
@@ -69,12 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--output", required=True, type=Path)
 
     manifest = commands.add_parser("produce-manifest")
-    manifest.add_argument("--evidence", required=True, type=Path)
+    manifest.add_argument("--evidence", type=Path)
     manifest.add_argument("--output", required=True, type=Path)
     manifest.add_argument("--model-id", required=True)
     manifest.add_argument("--baselines", type=Path)
     manifest.add_argument("--license-ledger", type=Path)
     manifest.add_argument("--export-metadata", type=Path)
+    manifest.add_argument("--benchmark", type=Path)
+    manifest.add_argument("--model-artifact", type=Path)
+    manifest.add_argument("--dataset-manifest", type=Path)
+    manifest.add_argument("--split-manifest", type=Path)
 
     export = commands.add_parser("export-onnx")
     export.add_argument("--checkpoint", required=True, type=Path)
@@ -113,8 +134,8 @@ def _baselines(path: Path | None) -> list[BaselineResult]:
 
 
 def _read_predictions(path: Path, *, max_predictions: int) -> list[Prediction]:
-    if not 1 <= max_predictions <= 5_000_000:
-        raise ValueError("max-predictions must be in [1, 5,000,000]")
+    if not 1 <= max_predictions <= 100_000:
+        raise ValueError("max-predictions must be in [1, 100,000]")
     rows: list[Prediction] = []
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -126,6 +147,44 @@ def _read_predictions(path: Path, *, max_predictions: int) -> list[Prediction]:
             if not isinstance(payload, dict):
                 raise ValueError(f"prediction row {line_number} in {path} must be an object")
             rows.append(Prediction(**payload))
+    return rows
+
+
+def _read_aligned_predictions(
+    paths: dict[str, Path], *, max_predictions: int
+) -> dict[str, list[Prediction]]:
+    """Stream six files in lockstep, rejecting misalignment before benchmarking."""
+
+    if not 1 <= max_predictions <= 100_000:
+        raise ValueError("max-predictions must be in [1, 100,000]")
+    rows = {name: [] for name in paths}
+    sentinel = object()
+    with ExitStack() as stack:
+        handles = {
+            name: stack.enter_context(path.open(encoding="utf-8"))
+            for name, path in paths.items()
+        }
+        iterators = [
+            (line for line in handle if line.strip()) for handle in handles.values()
+        ]
+        for index, lines in enumerate(zip_longest(*iterators, fillvalue=sentinel)):
+            if index >= max_predictions:
+                raise ValueError(f"prediction artifacts exceed bounded cap {max_predictions}")
+            if any(line is sentinel for line in lines):
+                raise ValueError("ordered event alignment mismatch: prediction lengths differ")
+            parsed: list[Prediction] = []
+            for line in lines:
+                payload = json.loads(str(line))
+                if not isinstance(payload, dict):
+                    raise ValueError("prediction row must be a JSON object")
+                parsed.append(Prediction(**payload))
+            expected = (parsed[0].event_id, parsed[0].learner_id, parsed[0].target)
+            if any((item.event_id, item.learner_id, item.target) != expected for item in parsed[1:]):
+                raise ValueError(f"ordered event alignment mismatch at row {index + 1}")
+            for name, item in zip(paths, parsed):
+                rows[name].append(item)
+    if not rows[next(iter(paths))]:
+        raise ValueError("prediction artifacts are empty")
     return rows
 
 
@@ -165,7 +224,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "adapt-ednet":
-            config = EdNetAdapterConfig(args.root, args.event_cap, args.pseudonym_salt)
+            ledger_payload = _read_json(args.license_ledger)
+            if not isinstance(ledger_payload, dict):
+                raise ValueError("license ledger must be a JSON object")
+            config = EdNetAdapterConfig(
+                args.root,
+                args.event_cap,
+                args.pseudonym_salt,
+                LicenseLedger.from_dict(ledger_payload),
+            )
             output, count = write_jsonl_atomic(
                 args.output, (item.to_dict() for item in adapt_ednet(config))
             )
@@ -182,6 +249,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "benchmark":
+            provenance = validate_provenance_files(
+                license_ledger_path=args.license_ledger,
+                dataset_manifest_path=args.dataset_manifest,
+                split_manifest_path=args.split_manifest,
+                evaluation_protocol=args.evaluation_protocol,
+            )
             prediction_paths = {
                 "candidate_predictions": args.candidate_predictions,
                 "teacher_predictions": args.teacher_predictions,
@@ -189,28 +262,77 @@ def main(argv: list[str] | None = None) -> int:
                 "bkt_predictions": args.bkt_predictions,
                 "gru_predictions": args.gru_predictions,
                 "ordinary_transformer_predictions": args.transformer_predictions,
-                "resource_evidence": args.resource_evidence,
             }
             resource_payload = _read_json(args.resource_evidence)
             if not isinstance(resource_payload, dict):
                 raise ValueError("resource evidence must be a JSON object")
-            outcome = benchmark_candidate(
-                _read_predictions(args.candidate_predictions, max_predictions=args.max_predictions),
-                _read_predictions(args.teacher_predictions, max_predictions=args.max_predictions),
+            predictions = _read_aligned_predictions(
                 {
-                    "logistic_regression": _read_predictions(args.logistic_predictions, max_predictions=args.max_predictions),
-                    "bkt": _read_predictions(args.bkt_predictions, max_predictions=args.max_predictions),
-                    "gru": _read_predictions(args.gru_predictions, max_predictions=args.max_predictions),
-                    "ordinary_transformer": _read_predictions(args.transformer_predictions, max_predictions=args.max_predictions),
+                    "candidate": args.candidate_predictions,
+                    "teacher": args.teacher_predictions,
+                    "logistic_regression": args.logistic_predictions,
+                    "bkt": args.bkt_predictions,
+                    "gru": args.gru_predictions,
+                    "ordinary_transformer": args.transformer_predictions,
                 },
-                benchmark_kind=args.benchmark_kind,
+                max_predictions=args.max_predictions,
+            )
+            model_sha = sha256_file(args.model_artifact)
+            outcome = benchmark_candidate(
+                predictions["candidate"],
+                predictions["teacher"],
+                {
+                    name: predictions[name] for name in PREDICTION_KEYS[2:]
+                },
+                benchmark_kind=provenance.dataset_kind,
                 candidate_id=args.candidate_id,
-                resource=ResourceEvidence(**resource_payload),
+                resource=ResourceEvidence(
+                    artifact_size_bytes=args.model_artifact.stat().st_size,
+                    artifact_sha256=model_sha,
+                    incremental_ram_bytes=int(resource_payload["incremental_ram_bytes"]),
+                    p95_inference_ms=float(resource_payload["p95_inference_ms"]),
+                    reference_device=str(resource_payload["reference_device"]),
+                ),
                 input_hashes={name: sha256_file(path) for name, path in prediction_paths.items()},
                 bootstrap_iterations=args.bootstrap_iterations,
                 seed=args.seed,
+                expected_split_digest=provenance.split_test_digest,
             )
-            write_json_atomic(args.output, outcome.to_dict())
+            prediction_path_map = {
+                "candidate": args.candidate_predictions,
+                "teacher": args.teacher_predictions,
+                "logistic_regression": args.logistic_predictions,
+                "bkt": args.bkt_predictions,
+                "gru": args.gru_predictions,
+                "ordinary_transformer": args.transformer_predictions,
+            }
+            record = {
+                "schema_version": BENCHMARK_SCHEMA,
+                "candidate_id": args.candidate_id,
+                "model_id": args.candidate_id,
+                "evaluation_protocol": provenance.evaluation_protocol,
+                "seed": args.seed,
+                "bootstrap_iterations": args.bootstrap_iterations,
+                "provenance": {
+                    "dataset_manifest_sha256": provenance.dataset_manifest_sha256,
+                    "split_manifest_sha256": provenance.split_manifest_sha256,
+                    "license_ledger_sha256": provenance.license_ledger_sha256,
+                    "split_test_digest": provenance.split_test_digest,
+                },
+                "model_artifact": {"sha256": model_sha, "size_bytes": args.model_artifact.stat().st_size},
+                "prediction_artifacts": {
+                    name: {"path": str(path.resolve()), "sha256": sha256_file(path)}
+                    for name, path in prediction_path_map.items()
+                },
+                "resource_evidence": {
+                    "incremental_ram_bytes": int(resource_payload["incremental_ram_bytes"]),
+                    "p95_inference_ms": float(resource_payload["p95_inference_ms"]),
+                    "reference_device": str(resource_payload["reference_device"]),
+                },
+                "evidence": asdict(outcome.evidence),
+                "baselines": [asdict(item) for item in outcome.baselines],
+            }
+            write_json_atomic(args.output, record)
             gate_result = evaluate_gates(outcome.evidence)
             print(json.dumps({"approved": gate_result.approved, "delivery_mode": gate_result.delivery_mode}, sort_keys=True))
             return 0
@@ -223,6 +345,28 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "produce-manifest":
+            if args.benchmark is not None:
+                required = {
+                    "model-artifact": args.model_artifact,
+                    "license-ledger": args.license_ledger,
+                    "dataset-manifest": args.dataset_manifest,
+                    "split-manifest": args.split_manifest,
+                }
+                missing = [name for name, value in required.items() if value is None]
+                if missing:
+                    raise ValueError(f"verified manifest is missing arguments: {missing}")
+                verified = issue_verified_manifest(
+                    benchmark_path=args.benchmark,
+                    model_path=args.model_artifact,
+                    license_ledger_path=args.license_ledger,
+                    dataset_manifest_path=args.dataset_manifest,
+                    split_manifest_path=args.split_manifest,
+                    output_path=args.output,
+                )
+                print(json.dumps({"approval_status": verified.payload["approval_status"], "sha256": verified.manifest_sha256}, sort_keys=True))
+                return 0
+            if args.evidence is None:
+                raise ValueError("manual unapproved manifest requires --evidence")
             payload = _read_json(args.evidence)
             evidence = CandidateEvidence(**_evidence_payload(payload))
             gates = evaluate_gates(evidence)
@@ -248,6 +392,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "export-onnx":
+            from .export import validate_export_paths
+
+            validate_export_paths(
+                args.output,
+                args.metadata_output,
+                model_source=args.checkpoint,
+            )
             try:
                 import torch
             except ImportError as error:
@@ -270,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
                 model,
                 torch.zeros((1, args.sample_context), dtype=torch.long),
                 args.output,
+                metadata_output=args.metadata_output,
             )
             metadata["checkpoint_sha256"] = sha256_file(args.checkpoint)
             metadata["configuration"] = asdict(config)

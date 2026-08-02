@@ -16,6 +16,37 @@ from .evaluation import (
 from .pareto import CandidateEvidence
 
 
+def ordered_event_digest(predictions: list[Prediction]) -> str:
+    digest = hashlib.sha256()
+    for item in predictions:
+        digest.update(
+            json.dumps(
+                [item.event_id, item.learner_id, item.target],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def assert_prediction_alignment(
+    predictions: dict[str, list[Prediction]], *, expected_split_digest: str
+) -> str:
+    if not predictions:
+        raise ValueError("prediction sets are required")
+    reference_name = sorted(predictions)[0]
+    reference = predictions[reference_name]
+    reference_keys = [(item.event_id, item.learner_id, item.target) for item in reference]
+    for name, rows in predictions.items():
+        keys = [(item.event_id, item.learner_id, item.target) for item in rows]
+        if keys != reference_keys:
+            raise ValueError(f"ordered event alignment mismatch: {reference_name} vs {name}")
+    digest = ordered_event_digest(reference)
+    if digest != expected_split_digest:
+        raise ValueError("ordered event alignment does not match the validated split digest")
+    return digest
+
+
 def _valid_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
@@ -69,6 +100,7 @@ def benchmark_candidate(
     input_hashes: dict[str, str],
     bootstrap_iterations: int = 1_000,
     seed: int = 20260802,
+    expected_split_digest: str | None = None,
 ) -> BenchmarkOutcome:
     """Compute every statistical gate from aligned rows, never supplied metrics."""
 
@@ -78,6 +110,11 @@ def benchmark_candidate(
         raise ValueError(f"baseline predictions must include exactly {BASELINE_NAMES}")
     if any(not _valid_sha256(value) for value in input_hashes.values()):
         raise ValueError("every input hash must be a lowercase SHA-256 digest")
+    aligned = {"candidate": candidate, "teacher": teacher, **baseline_predictions}
+    assert_prediction_alignment(
+        aligned,
+        expected_split_digest=expected_split_digest or ordered_event_digest(candidate),
+    )
     candidate_metrics = evaluate_predictions(candidate)
     teacher_metrics = evaluate_predictions(teacher)
     baseline_results = tuple(

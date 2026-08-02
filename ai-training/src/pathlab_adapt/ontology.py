@@ -32,6 +32,7 @@ class LearnerEvent:
     concept_id: str
     action: str
     source: str
+    sequence_id: str = ""
     correct: bool | None = None
     effort: float | None = None
     hint_used: bool | None = None
@@ -52,8 +53,8 @@ class LearnerEvent:
         ):
             if not str(getattr(self, name)).strip():
                 raise ValueError(f"{name} must be non-empty")
-        if self.timestamp_ms < 0:
-            raise ValueError("timestamp_ms must be non-negative")
+        if not self.sequence_id:
+            object.__setattr__(self, "sequence_id", self.learner_id)
         if self.sequence_index < 0:
             raise ValueError("sequence_index must be non-negative")
         if self.duration_ms is not None and self.duration_ms < 0:

@@ -33,9 +33,23 @@ class ControllerPolicy:
     max_ood_score: float
     max_uncertainty: float
 
-    def decide(self, signal: UncertaintySignal, proposed_action: str = "continue") -> ControllerDecision:
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.max_ood_score <= 1.0:
+            raise ValueError("max_ood_score must be in [0, 1]")
+        if not 0.0 <= self.max_uncertainty <= 1.0:
+            raise ValueError("max_uncertainty must be in [0, 1]")
+
+    def decide(
+        self,
+        signal: UncertaintySignal,
+        proposed_action: str = "continue",
+        *,
+        approved_manifest: object | None = None,
+    ) -> ControllerDecision:
         if proposed_action not in CONTROL_ACTIONS:
             raise ValueError("proposed action is outside the fixed controller action set")
+        if not bool(getattr(approved_manifest, "verified_approved", False)):
+            return ControllerDecision("pause", "fixed_order", "approved_manifest_required")
         if signal.ood_score > self.max_ood_score:
             return ControllerDecision("pause", "fixed_order", "out_of_distribution")
         if signal.uncertainty > self.max_uncertainty:

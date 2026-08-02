@@ -9,15 +9,35 @@ from typing import Any
 from .io import sha256_file
 
 
+def validate_export_paths(
+    output: Path, metadata_output: Path, *, model_source: Path | None = None
+) -> None:
+    paths = [
+        output.resolve(),
+        metadata_output.resolve(),
+        output.resolve().with_name(f".{output.name}.float.partial"),
+        output.resolve().with_name(f".{output.name}.int8.partial"),
+    ]
+    if model_source is not None:
+        paths.append(model_source.resolve())
+    if len(set(paths)) != len(paths):
+        raise ValueError("model, metadata, and staging paths must be distinct")
+
+
 def export_onnx_int8(
     model: Any,
     sample_tokens: Any,
     output: Path,
     *,
     opset_version: int = 18,
+    metadata_output: Path | None = None,
 ) -> dict[str, Any]:
     """Export and dynamically quantize a model, never exposing a partial artifact."""
 
+    validate_export_paths(
+        output,
+        metadata_output or output.with_name(f"{output.name}.metadata.json"),
+    )
     try:
         import torch
         from onnxruntime.quantization import QuantType, quantize_dynamic

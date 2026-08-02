@@ -30,14 +30,19 @@ def multitask_distillation_loss(
 ) -> Any:
     """Calculate frozen-teacher binary distillation loss for every shared head."""
 
+    required_heads = {"retention", "effort", "calibration", "source_risk"}
+    if (
+        set(student_outputs) != required_heads
+        or set(teacher_outputs) != required_heads
+        or set(hard_targets) != required_heads
+    ):
+        raise ValueError("distillation mappings must contain exactly the four prespecified heads")
     try:
         import torch
         from torch.nn import functional as functional
     except ImportError as error:
         raise RuntimeError("PyTorch is optional; install pathlab-ai-data[adapt-model]") from error
-    head_names = sorted(set(student_outputs) & set(teacher_outputs) & set(hard_targets))
-    if not head_names:
-        raise ValueError("student, teacher, and target mappings share no heads")
+    head_names = sorted(required_heads)
     total = torch.zeros((), device=next(iter(student_outputs.values())).device)
     for name in head_names:
         student = student_outputs[name]

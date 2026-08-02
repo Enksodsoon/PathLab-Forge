@@ -12,6 +12,7 @@ from .ontology import CONTROL_ACTIONS
 from .pareto import GateEvaluation
 
 MANIFEST_VERSION = "pathlab-adapt-model-manifest-v1"
+_APPROVAL_SEAL = object()
 
 
 def build_manifest(
@@ -25,6 +26,35 @@ def build_manifest(
     license_ledger_sha256: str | None = None,
     artifact_sha256: str | None = None,
     artifact_size_bytes: int | None = None,
+) -> dict[str, Any]:
+    return _build_manifest(
+        model_id=model_id,
+        dataset_kind=dataset_kind,
+        candidate_id=candidate_id,
+        gates=gates,
+        baselines=baselines,
+        export_metadata=export_metadata,
+        license_ledger_sha256=license_ledger_sha256,
+        artifact_sha256=artifact_sha256,
+        artifact_size_bytes=artifact_size_bytes,
+        approval_seal=None,
+        verified_provenance=None,
+    )
+
+
+def _build_manifest(
+    *,
+    model_id: str,
+    dataset_kind: str,
+    candidate_id: str,
+    gates: GateEvaluation,
+    baselines: list[BaselineResult],
+    export_metadata: dict[str, Any] | None,
+    license_ledger_sha256: str | None,
+    artifact_sha256: str | None,
+    artifact_size_bytes: int | None,
+    approval_seal: object | None,
+    verified_provenance: dict[str, str] | None,
 ) -> dict[str, Any]:
     if dataset_kind not in {"real", "synthetic", "unmeasured"}:
         raise ValueError("dataset_kind must be real, synthetic, or unmeasured")
@@ -44,6 +74,8 @@ def build_manifest(
         and all(character in "0123456789abcdef" for character in artifact_sha256)
     )
     approved = (
+        approval_seal is _APPROVAL_SEAL
+        and
         dataset_kind == "real"
         and gates.approved
         and complete_baselines
@@ -75,6 +107,7 @@ def build_manifest(
             reason
             for reason, blocked in (
                 ("dataset_not_real", dataset_kind != "real"),
+                ("verified_benchmark_required", approval_seal is not _APPROVAL_SEAL),
                 ("prespecified_gate_failed_or_unmeasured", not gates.approved),
                 ("baseline_comparison_incomplete", not complete_baselines),
                 ("license_ledger_hash_missing_or_invalid", not valid_license_hash),
@@ -89,6 +122,7 @@ def build_manifest(
             "sha256": artifact_sha256,
             "size_bytes": artifact_size_bytes,
         },
+        "verified_provenance": verified_provenance,
         "export": export_metadata
         or {
             "status": "not_exported",
@@ -98,6 +132,37 @@ def build_manifest(
             "runtime": None,
         },
     }
+
+
+def _build_verified_manifest(
+    *,
+    model_id: str,
+    dataset_kind: str,
+    candidate_id: str,
+    gates: GateEvaluation,
+    baselines: list[BaselineResult],
+    export_metadata: dict[str, Any] | None,
+    license_ledger_sha256: str,
+    artifact_sha256: str,
+    artifact_size_bytes: int,
+    verified_provenance: dict[str, str],
+    approval_seal: object,
+) -> dict[str, Any]:
+    if approval_seal is not _APPROVAL_SEAL:
+        raise ValueError("verified approval seal required")
+    return _build_manifest(
+        model_id=model_id,
+        dataset_kind=dataset_kind,
+        candidate_id=candidate_id,
+        gates=gates,
+        baselines=baselines,
+        export_metadata=export_metadata,
+        license_ledger_sha256=license_ledger_sha256,
+        artifact_sha256=artifact_sha256,
+        artifact_size_bytes=artifact_size_bytes,
+        approval_seal=approval_seal,
+        verified_provenance=verified_provenance,
+    )
 
 
 def write_manifest(path: Path, manifest: dict[str, Any]) -> str:

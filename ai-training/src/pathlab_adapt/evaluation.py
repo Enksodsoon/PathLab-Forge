@@ -10,11 +10,14 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Prediction:
+    event_id: str
     learner_id: str
     target: bool
     probability: float
 
     def __post_init__(self) -> None:
+        if not self.event_id:
+            raise ValueError("event_id must be non-empty")
         if not self.learner_id:
             raise ValueError("learner_id must be non-empty")
         if not 0.0 <= self.probability <= 1.0:
@@ -52,15 +55,21 @@ def _quantile(values: list[float], probability: float) -> float:
 
 
 def _auroc(rows: list[Prediction]) -> float:
-    positives = [item.probability for item in rows if item.target]
-    negatives = [item.probability for item in rows if not item.target]
+    positives = sum(item.target for item in rows)
+    negatives = len(rows) - positives
     if not positives or not negatives:
         raise ValueError("AUROC requires both target classes")
-    favorable = 0.0
-    for positive in positives:
-        for negative in negatives:
-            favorable += 1.0 if positive > negative else 0.5 if positive == negative else 0.0
-    return favorable / (len(positives) * len(negatives))
+    ordered = sorted(rows, key=lambda item: item.probability)
+    positive_rank_sum = 0.0
+    index = 0
+    while index < len(ordered):
+        end = index + 1
+        while end < len(ordered) and ordered[end].probability == ordered[index].probability:
+            end += 1
+        average_rank = ((index + 1) + end) / 2.0
+        positive_rank_sum += average_rank * sum(item.target for item in ordered[index:end])
+        index = end
+    return (positive_rank_sum - positives * (positives + 1) / 2) / (positives * negatives)
 
 
 def evaluate_predictions(predictions: list[Prediction] | tuple[Prediction, ...]) -> PredictionMetrics:
@@ -89,8 +98,8 @@ def evaluate_predictions(predictions: list[Prediction] | tuple[Prediction, ...])
 
 
 def _relative_brier(candidate: list[Prediction], baseline: list[Prediction]) -> float:
-    candidate_brier = evaluate_predictions(candidate).brier
-    baseline_brier = evaluate_predictions(baseline).brier
+    candidate_brier = sum((item.probability - float(item.target)) ** 2 for item in candidate) / len(candidate)
+    baseline_brier = sum((item.probability - float(item.target)) ** 2 for item in baseline) / len(baseline)
     if baseline_brier <= 0:
         raise ValueError("baseline Brier score must be positive")
     return (baseline_brier - candidate_brier) / baseline_brier
@@ -110,23 +119,32 @@ def bootstrap_relative_brier_improvement(
     if len(candidate) != len(baseline):
         raise ValueError("candidate and baseline predictions must align")
     for left, right in zip(candidate, baseline):
-        if left.learner_id != right.learner_id or left.target != right.target:
-            raise ValueError("candidate and baseline learner/target rows must align")
-    candidate_by_learner: dict[str, list[Prediction]] = defaultdict(list)
-    baseline_by_learner: dict[str, list[Prediction]] = defaultdict(list)
+        if (
+            left.event_id != right.event_id
+            or left.learner_id != right.learner_id
+            or left.target != right.target
+        ):
+            raise ValueError("candidate and baseline event/learner/target rows must align")
+    aggregates: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
     for left, right in zip(candidate, baseline):
-        candidate_by_learner[left.learner_id].append(left)
-        baseline_by_learner[right.learner_id].append(right)
-    learners = sorted(candidate_by_learner)
+        current = aggregates[left.learner_id]
+        current[0] += (left.probability - float(left.target)) ** 2
+        current[1] += (right.probability - float(right.target)) ** 2
+        current[2] += 1
+    learners = sorted(aggregates)
     if len(learners) < 2:
         raise ValueError("learner bootstrap requires at least two learners")
     rng = random.Random(seed)
     samples: list[float] = []
     for _ in range(iterations):
         selected = [rng.choice(learners) for _ in learners]
-        candidate_sample = [row for learner in selected for row in candidate_by_learner[learner]]
-        baseline_sample = [row for learner in selected for row in baseline_by_learner[learner]]
-        samples.append(_relative_brier(candidate_sample, baseline_sample))
+        candidate_sum = sum(aggregates[learner][0] for learner in selected)
+        baseline_sum = sum(aggregates[learner][1] for learner in selected)
+        count = sum(aggregates[learner][2] for learner in selected)
+        baseline_brier = baseline_sum / count
+        if baseline_brier <= 0:
+            raise ValueError("baseline Brier score must be positive")
+        samples.append((baseline_brier - candidate_sum / count) / baseline_brier)
     return BootstrapInterval(
         estimate=_relative_brier(candidate, baseline),
         lower_95=_quantile(samples, 0.025),
@@ -150,5 +168,5 @@ class TemperatureCalibrator:
             clipped = min(1 - 1e-7, max(1e-7, item.probability))
             logit = math.log(clipped / (1 - clipped)) / self.temperature
             probability = 1 / (1 + math.exp(-logit))
-            calibrated.append(Prediction(item.learner_id, item.target, probability))
+            calibrated.append(Prediction(item.event_id, item.learner_id, item.target, probability))
         return calibrated

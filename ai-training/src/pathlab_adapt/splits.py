@@ -14,6 +14,14 @@ def _sort_key(item: LearnerEvent) -> tuple[str, int, int, str]:
     return (item.learner_id, item.timestamp_ms, item.sequence_index, item.event_id)
 
 
+def _assert_unique_event_ids(rows: list[LearnerEvent]) -> None:
+    seen: set[str] = set()
+    for item in rows:
+        if item.event_id in seen:
+            raise ValueError(f"duplicate event_id: {item.event_id}")
+        seen.add(item.event_id)
+
+
 @dataclass(frozen=True, slots=True)
 class EventSplit:
     train: tuple[LearnerEvent, ...]
@@ -43,6 +51,7 @@ def learner_disjoint_split(
     if validation_fraction <= 0 or test_fraction <= 0 or validation_fraction + test_fraction >= 1:
         raise ValueError("fractions must be positive and leave a non-empty training fraction")
     rows = sorted(events, key=_sort_key)
+    _assert_unique_event_ids(rows)
     learners = sorted({item.learner_id for item in rows})
     if len(learners) < 3:
         raise ValueError("learner-disjoint split requires at least three learners")
@@ -78,22 +87,30 @@ def time_forward_split(
 
     if validation_fraction <= 0 or test_fraction <= 0 or validation_fraction + test_fraction >= 1:
         raise ValueError("fractions must be positive and leave a training prefix")
-    by_learner: dict[str, list[LearnerEvent]] = defaultdict(list)
-    for item in events:
-        by_learner[item.learner_id].append(item)
+    rows = list(events)
+    _assert_unique_event_ids(rows)
+    by_learner: dict[tuple[str, str], list[LearnerEvent]] = defaultdict(list)
+    for item in rows:
+        by_learner[(item.learner_id, item.sequence_id)].append(item)
     partitions: dict[str, list[LearnerEvent]] = {"train": [], "validation": [], "test": []}
-    for learner, values in sorted(by_learner.items()):
+    for learner_key, values in sorted(by_learner.items()):
+        learner = ":".join(learner_key)
         ordered = sorted(values, key=lambda item: (item.timestamp_ms, item.sequence_index, item.event_id))
-        if len(ordered) < 3:
-            raise ValueError(f"time-forward split requires at least three events for {learner}")
-        validation_count = max(1, int(len(ordered) * validation_fraction))
-        test_count = max(1, int(len(ordered) * test_fraction))
-        train_end = len(ordered) - validation_count - test_count
+        groups: list[list[LearnerEvent]] = []
+        for item in ordered:
+            if not groups or groups[-1][0].timestamp_ms != item.timestamp_ms:
+                groups.append([])
+            groups[-1].append(item)
+        if len(groups) < 3:
+            raise ValueError(f"time-forward split requires at least three timestamp groups for {learner}")
+        validation_groups = max(1, int(len(groups) * validation_fraction))
+        test_groups = max(1, int(len(groups) * test_fraction))
+        train_end = len(groups) - validation_groups - test_groups
         if train_end < 1:
-            raise ValueError(f"not enough events for a training prefix for {learner}")
-        partitions["train"].extend(ordered[:train_end])
-        partitions["validation"].extend(ordered[train_end : train_end + validation_count])
-        partitions["test"].extend(ordered[train_end + validation_count :])
+            raise ValueError(f"not enough timestamp groups for a training prefix for {learner}")
+        partitions["train"].extend(item for group in groups[:train_end] for item in group)
+        partitions["validation"].extend(item for group in groups[train_end : train_end + validation_groups] for item in group)
+        partitions["test"].extend(item for group in groups[train_end + validation_groups :] for item in group)
     result = EventSplit(
         train=tuple(sorted(partitions["train"], key=_sort_key)),
         validation=tuple(sorted(partitions["validation"], key=_sort_key)),

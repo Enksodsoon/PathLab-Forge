@@ -18,7 +18,7 @@ from pathlab_adapt.evaluation import (
     bootstrap_relative_brier_improvement,
     evaluate_predictions,
 )
-from pathlab_adapt.license import LicenseEntry, LicenseLedger, TraceDistribution
+from pathlab_adapt.license import LicenseEntry, LicenseLedger, TraceDistribution, sha256_path
 from pathlab_adapt.manifest import build_manifest, write_manifest
 from pathlab_adapt.models import (
     STUDENT_CONFIGS,
@@ -114,11 +114,24 @@ class AdapterAndLicenseTests(unittest.TestCase):
                         "sum_click": "5",
                     }
                 )
+                writer.writerow(
+                    {
+                        "code_module": "AAA",
+                        "code_presentation": "2014J",
+                        "id_student": "42",
+                        "id_site": "8",
+                        "date": "-2",
+                        "sum_click": "2",
+                    }
+                )
             rows = list(adapt_oulad(source, pseudonym_salt="test-salt"))
-            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0].source, "oulad")
             self.assertNotEqual(rows[0].learner_id, "42")
             self.assertEqual(rows[0].metadata["click_count"], 5)
+            self.assertEqual(rows[1].timestamp_ms, -2 * 86_400_000)
+            self.assertNotEqual(rows[0].sequence_id, rows[1].sequence_id)
+            self.assertEqual((rows[0].sequence_index, rows[1].sequence_index), (0, 0))
 
     def test_ednet_adapter_is_deterministic_streaming_and_hard_capped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -148,8 +161,27 @@ class AdapterAndLicenseTests(unittest.TestCase):
                                 "elapsed_time": 500 + index,
                             }
                         )
+            ledger = LicenseLedger(
+                (
+                    LicenseEntry(
+                        source_id="ednet",
+                        source_url="https://example.test/ednet",
+                        license_name="fixture research terms",
+                        permitted_use="research",
+                        redistribution="prohibited",
+                        derivative_model_restrictions="restricted",
+                        retrieval_date="2026-08-02",
+                        checksum_sha256=sha256_path(root),
+                        research_use_permitted=True,
+                        derivative_models_permitted=True,
+                    ),
+                )
+            )
             config = EdNetAdapterConfig(
-                root=root, event_cap=5, pseudonym_salt="test-salt"
+                root=root,
+                event_cap=5,
+                pseudonym_salt="test-salt",
+                license_ledger=ledger,
             )
             first = list(adapt_ednet(config))
             second = list(adapt_ednet(config))
@@ -244,11 +276,11 @@ class SplitAndModelTests(unittest.TestCase):
 class EvaluationGateAndManifestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.teacher = [
-            Prediction(f"l{i}", bool(i % 2), 0.85 if i % 2 else 0.15)
+            Prediction(f"e{i}", f"l{i}", bool(i % 2), 0.85 if i % 2 else 0.15)
             for i in range(40)
         ]
         self.baseline = [
-            Prediction(f"l{i}", bool(i % 2), 0.70 if i % 2 else 0.30)
+            Prediction(f"e{i}", f"l{i}", bool(i % 2), 0.70 if i % 2 else 0.30)
             for i in range(40)
         ]
 
@@ -293,16 +325,17 @@ class EvaluationGateAndManifestTests(unittest.TestCase):
 
     def test_benchmark_computes_strongest_baseline_and_provenance_bound_evidence(self) -> None:
         candidate = [
-            Prediction(f"l{i}", bool(i % 2), 0.96 if i % 2 else 0.04)
+            Prediction(f"e{i}", f"l{i}", bool(i % 2), 0.96 if i % 2 else 0.04)
             for i in range(40)
         ]
         teacher = [
-            Prediction(f"l{i}", bool(i % 2), 0.97 if i % 2 else 0.03)
+            Prediction(f"e{i}", f"l{i}", bool(i % 2), 0.97 if i % 2 else 0.03)
             for i in range(40)
         ]
         baselines = {
             name: [
                 Prediction(
+                    f"e{i}",
                     f"l{i}",
                     bool(i % 2),
                     probability if i % 2 else 1 - probability,
