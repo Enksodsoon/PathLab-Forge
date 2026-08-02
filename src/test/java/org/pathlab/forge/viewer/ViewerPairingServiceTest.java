@@ -2,6 +2,7 @@ package org.pathlab.forge.viewer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -48,6 +49,76 @@ final class ViewerPairingServiceTest {
 
             service.revoke();
             assertFalse(service.status().connected());
+        } finally {
+            viewer.stop(0);
+        }
+    }
+
+    @Test
+    void publishesAnImmutableStudyPackWithThePairedCredential() throws Exception {
+        var received = new AtomicReference<String>();
+        var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        viewer.createContext("/", exchange -> {
+            if (exchange.getRequestURI().getPath()
+                    .equals("/api/v1/desktop/research/study-packs")) {
+                assertEquals("Bearer desktop-token",
+                        exchange.getRequestHeaders().getFirst("Authorization"));
+                received.set(new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                respond(exchange, 201, "{\"id\":\"pack-id\",\"packKey\":\"course-a\","
+                        + "\"version\":1,\"checksum\":\"" + sha256(received.get()) + "\","
+                        + "\"masteryEligible\":false,\"status\":\"immutable\"}");
+            } else {
+                respond(exchange, 404, "{\"detail\":\"not found\"}");
+            }
+        });
+        viewer.start();
+        try {
+            var store = new MemoryCredentialStore();
+            store.write("http://127.0.0.1:" + viewer.getAddress().getPort()
+                    + "\ndesktop-token");
+            try (var service = new ViewerPairingService(store)) {
+                var body = "{\"schema\":\"pathlab.study-pack/1\",\"packKey\":\"course-a\",\"version\":1}";
+                var published = service.publishStudyPack(body);
+                assertEquals(body, received.get());
+                assertEquals("pack-id", published.id());
+                assertEquals("course-a", published.packKey());
+                assertEquals(1, published.version());
+                assertFalse(published.masteryEligible());
+            }
+        } finally {
+            viewer.stop(0);
+        }
+    }
+
+    @Test
+    void rejectsMismatchedPublishIdentityAndDoesNotExposeRemoteErrorBodies() throws Exception {
+        var responseStatus = new AtomicInteger(201);
+        var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        viewer.createContext("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            if (responseStatus.get() == 201) {
+                respond(exchange, 201, "{\"id\":\"wrong\",\"packKey\":\"another-pack\","
+                        + "\"version\":1,\"checksum\":\"" + "a".repeat(64) + "\","
+                        + "\"masteryEligible\":false,\"status\":\"public\"}");
+            } else {
+                respond(exchange, 422, "{\"detail\":\"secret-upstream-token\"}");
+            }
+        });
+        viewer.start();
+        try {
+            var store = new MemoryCredentialStore();
+            store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
+            try (var service = new ViewerPairingService(store)) {
+                var body = "{\"schema\":\"pathlab.study-pack/1\",\"packKey\":\"course-a\",\"version\":1}";
+                var mismatch = assertThrows(IOException.class, () -> service.publishStudyPack(body));
+                assertTrue(mismatch.getMessage().contains("identity or private status"));
+
+                responseStatus.set(422);
+                var rejected = assertThrows(IOException.class, () -> service.publishStudyPack(body));
+                assertFalse(rejected.getMessage().contains("secret-upstream-token"));
+                assertEquals("Viewer rejected the Study Pack (422)", rejected.getMessage());
+            }
         } finally {
             viewer.stop(0);
         }
@@ -312,6 +383,15 @@ final class ViewerPairingServiceTest {
     private static String sha256(Path path) throws Exception {
         return HexFormat.of().formatHex(
                 MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private static void writeOmeStamp(ArtifactRevision revision, Path ome) throws Exception {

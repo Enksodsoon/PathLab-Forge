@@ -8,26 +8,30 @@ import org.pathlab.forge.pivot.PivotTask;
 public final class StudyPackAuthoringService {
     public String fromApprovedPivot(
             PivotManifest manifest,
+            PivotApproval approval,
+            ViewerSlideAssociation association,
             String packKey,
             int version,
             String title,
             String courseId,
-            String viewerSlideId,
             String author,
             String license,
-            String revision,
-            boolean facultyApproved) {
+            String revision) {
         var approvedManifest = Objects.requireNonNull(manifest, "manifest");
         if (!"pathlab-pivot/v1".equals(approvedManifest.schema())) {
             throw new IllegalArgumentException("PIVOT manifest schema is not approved");
         }
-        if (!facultyApproved) {
-            throw new IllegalArgumentException("Faculty approval is required for PIVOT export");
+        if (approval == null || !approval.datasetId().equals(approvedManifest.datasetId())
+                || !approval.manifestId().equals(approvedManifest.id())
+                || !approval.inputRevision().equals(approvedManifest.inputRevision())) {
+            throw new IllegalArgumentException("Durable PIVOT approval does not match the manifest");
+        }
+        if (association == null || !association.datasetId().equals(approvedManifest.datasetId())) {
+            throw new IllegalArgumentException("Viewer slide association does not match the PIVOT dataset");
         }
         requireText(packKey, "packKey");
         requireText(title, "title");
         requireText(courseId, "courseId");
-        requireText(viewerSlideId, "viewerSlideId");
         requireText(author, "author");
         requireText(license, "license");
         requireText(revision, "revision");
@@ -36,13 +40,17 @@ public final class StudyPackAuthoringService {
         }
 
         var tasks = approvedManifest.tasks().stream()
-                .map(task -> spatialTask(task, viewerSlideId, approvedManifest, author, license, revision))
+                .map(task -> spatialTask(task, association.viewerSlideId(), approvedManifest, author, license, revision))
                 .collect(java.util.stream.Collectors.joining(","));
         return "{\"schema\":\"pathlab.study-pack/1\",\"packKey\":" + json(packKey)
                 + ",\"version\":" + version + ",\"title\":" + json(title)
                 + ",\"courseId\":" + json(courseId)
                 + ",\"objectives\":[\"Coordinate retrieval\"],\"slides\":[{\"viewerSlideId\":"
-                + json(viewerSlideId) + "}],\"tasks\":[" + tasks + "]}";
+                + json(association.viewerSlideId())
+                + ",\"sha256\":" + json(association.sha256())
+                + ",\"displayName\":" + json(association.displayName())
+                + ",\"license\":" + json(association.license())
+                + "}],\"tasks\":[" + tasks + "]}";
     }
 
     private static String spatialTask(
@@ -52,18 +60,33 @@ public final class StudyPackAuthoringService {
             String author,
             String license,
             String revision) {
+        var x = normalized(task.targetX(), manifest.sourceWidth());
+        var y = normalized(task.targetY(), manifest.sourceHeight());
+        var width = normalized(task.targetWidth(), manifest.sourceWidth());
+        var height = normalized(task.targetHeight(), manifest.sourceHeight());
+        if (width <= 0 || height <= 0 || x + width > 1.000000001 || y + height > 1.000000001) {
+            throw new IllegalArgumentException("PIVOT target escapes source bounds");
+        }
         return "{\"type\":\"spatial\",\"id\":" + json(task.id())
                 + ",\"slideId\":" + json(viewerSlideId)
                 + ",\"prompt\":\"Locate the approved source region\""
-                + ",\"targetX\":" + task.targetX()
-                + ",\"targetY\":" + task.targetY()
-                + ",\"targetWidth\":" + task.targetWidth()
-                + ",\"targetHeight\":" + task.targetHeight()
+                + ",\"targetX\":" + x
+                + ",\"targetY\":" + y
+                + ",\"targetWidth\":" + width
+                + ",\"targetHeight\":" + height
                 + ",\"tolerance\":0.08,\"source\":"
                 + json("PIVOT manifest " + manifest.id())
                 + ",\"author\":" + json(author)
                 + ",\"license\":" + json(license)
                 + ",\"revision\":" + json(revision) + "}";
+    }
+
+    private static double normalized(double value, int extent) {
+        var normalized = value / extent;
+        if (!Double.isFinite(normalized) || normalized < 0 || normalized > 1) {
+            throw new IllegalArgumentException("PIVOT coordinate escapes source bounds");
+        }
+        return normalized;
     }
 
     private static void requireText(String value, String name) {

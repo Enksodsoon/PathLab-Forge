@@ -113,6 +113,45 @@ final class ForgeServerTest {
     }
 
     @Test
+    void protectsAdaptApprovalRouteWithAuthenticationCsrfAndBodyLimit() throws Exception {
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        try (var server = startEphemeral()) {
+            var route = server.baseUri().resolve("/api/v2/desktop/adapt/pivot-approvals");
+            var unauthenticated = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(route)
+                            .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, unauthenticated.statusCode());
+
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var csrf = session.headers().firstValue("x-forge-csrf").orElseThrow();
+            var missingCsrf = client.send(
+                    HttpRequest.newBuilder(route)
+                            .header("Origin", server.baseUri().toString())
+                            .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, missingCsrf.statusCode());
+
+            var oversized = client.send(
+                    HttpRequest.newBuilder(route)
+                            .header("Origin", server.baseUri().toString())
+                            .header("X-Forge-CSRF", csrf)
+                            .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[16_385]))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(413, oversized.statusCode());
+            assertTrue(oversized.body().contains("request_too_large"));
+        }
+    }
+
+    @Test
     void returnsNotModifiedForUnchangedDatasetWorkspace() throws Exception {
         var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         var client = HttpClient.newBuilder().cookieHandler(cookies).build();

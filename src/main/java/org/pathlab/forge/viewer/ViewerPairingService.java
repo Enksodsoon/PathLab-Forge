@@ -237,14 +237,35 @@ public final class ViewerPairingService implements AutoCloseable {
                 credential.base().resolve("/api/v1/desktop/research/study-packs"),
                 studyPackJson,
                 "Bearer " + credential.token());
-        requireStatus(response, 201, "Viewer rejected the Study Pack");
-        return new ViewerStudyPack(
+        if (response.statusCode() != 201) {
+            throw new IOException("Viewer rejected the Study Pack (" + response.statusCode() + ")");
+        }
+        var published = new ViewerStudyPack(
                 string(response.body(), "id"),
                 string(response.body(), "packKey"),
                 integer(response.body(), "version"),
                 string(response.body(), "checksum"),
                 booleanValue(response.body(), "masteryEligible"),
                 string(response.body(), "status"));
+        var expectedKey = string(studyPackJson, "packKey");
+        var expectedVersion = integer(studyPackJson, "version");
+        var expectedChecksum = sha256(studyPackJson);
+        if (!published.packKey().equals(expectedKey)
+                || published.version() != expectedVersion
+                || !published.checksum().equals(expectedChecksum)
+                || !Set.of("private", "immutable").contains(published.status())) {
+            throw new IOException("Viewer Study Pack identity or private status did not match");
+        }
+        return published;
+    }
+
+    private static String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private void upload(

@@ -199,6 +199,18 @@ export interface ImportedStudyTask {
   prompt: string
   answerKey: string
   keyOrigin: 'imported' | 'faculty-approved'
+  source?: string
+  author?: string
+  license?: string
+  revision?: string
+}
+
+export interface ViewerSlideAssociation {
+  datasetId: string
+  viewerSlideId: string
+  sha256: string
+  displayName: string
+  license: string
 }
 
 export interface AiResearchStatus {
@@ -570,26 +582,53 @@ export async function exportPivotStudyPack(values: {
   author: string
   license: string
   revision: string
-  facultyApproved: boolean
 }) {
   return request<StudyPackRecord>('/api/v2/desktop/adapt/packs/pivot', {
     method: 'POST', body: JSON.stringify(values),
   })
 }
 
-export async function importAnkiPackage(file: File) {
+export async function approvePivotManifest(datasetId: string, approvedBy: string) {
+  return request<{ manifestId: string; approvedBy: string; approvedAt: number }>(
+    '/api/v2/desktop/adapt/pivot-approvals',
+    { method: 'POST', body: JSON.stringify({ datasetId, approvedBy }) },
+  )
+}
+
+export async function viewerSlideAssociations() {
+  const body = await request<{ items: ViewerSlideAssociation[] }>('/api/v2/desktop/adapt/viewer-slides')
+  return body.items
+}
+
+export async function importAnkiPackage(file: File, mapping?: { promptField: number; answerField: number; facultyApproved: boolean }) {
+  const query = mapping ? `?${new URLSearchParams({
+    promptField: String(mapping.promptField), answerField: String(mapping.answerField),
+    facultyApproved: String(mapping.facultyApproved),
+  })}` : ''
   const headers = new Headers({
     'X-Forge-CSRF': csrf,
     Origin: window.location.origin,
     'Content-Type': 'application/octet-stream',
   })
-  const response = await fetch('/api/v2/desktop/adapt/imports/anki', {
+  const response = await fetch(`/api/v2/desktop/adapt/imports/anki${query}`, {
     method: 'POST', headers, body: file, credentials: 'same-origin',
   })
   const body = await response.json() as { items?: ImportedStudyTask[]; detail?: string; error?: string }
   if (!response.ok || !body.items) {
     throw new Error(body.detail || body.error || `Request failed (${response.status})`)
   }
+  return body.items
+}
+
+export async function importQtiPackage(file: File) {
+  const headers = new Headers({
+    'X-Forge-CSRF': csrf, Origin: window.location.origin, 'Content-Type': 'application/zip',
+  })
+  const response = await fetch('/api/v2/desktop/adapt/imports/qti', {
+    method: 'POST', headers, body: file, credentials: 'same-origin',
+  })
+  const body = await response.json() as { items?: ImportedStudyTask[]; detail?: string; error?: string }
+  if (!response.ok || !body.items) throw new Error(body.detail || body.error || `Request failed (${response.status})`)
   return body.items
 }
 

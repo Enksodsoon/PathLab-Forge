@@ -516,8 +516,6 @@ export function App() {
     return <StudyPackWorkspace datasets={datasets.map((dataset) => ({
       id: dataset.id,
       displayName: dataset.displayName,
-      viewerSlideId: viewerUpload?.artifactRevisionId === dataset.approvedArtifactRevision
-        ? viewerUpload.viewerSlideId : '',
     }))} onClose={() => setStudyPackOpen(false)} />
   }
 

@@ -19,9 +19,14 @@ import java.util.List;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationRepository;
 import org.pathlab.forge.adapt.AnkiPackageImporter;
+import org.pathlab.forge.adapt.AdaptRequestParser;
+import org.pathlab.forge.adapt.PivotApprovalRepository;
+import org.pathlab.forge.adapt.QtiPackageImporter;
 import org.pathlab.forge.adapt.StudyPackAuthoringService;
 import org.pathlab.forge.adapt.StudyPackRecord;
 import org.pathlab.forge.adapt.StudyPackRepository;
+import org.pathlab.forge.adapt.ViewerSlideAssociation;
+import org.pathlab.forge.adapt.ViewerSlideAssociationRepository;
 import org.pathlab.forge.ai.AiResearchService;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
@@ -77,8 +82,11 @@ public final class ForgeServer implements AutoCloseable {
     private final PivotCompiler pivotCompiler;
     private final PivotService pivotService;
     private final StudyPackRepository studyPackRepository;
+    private final ViewerSlideAssociationRepository viewerSlideAssociationRepository;
+    private final PivotApprovalRepository pivotApprovalRepository;
     private final StudyPackAuthoringService studyPackAuthoringService = new StudyPackAuthoringService();
     private final AnkiPackageImporter ankiPackageImporter = new AnkiPackageImporter();
+    private final QtiPackageImporter qtiPackageImporter = new QtiPackageImporter();
     private final ViewerPairingService viewerPairingService;
     private volatile boolean launchTokenAvailable = true;
 
@@ -109,6 +117,8 @@ public final class ForgeServer implements AutoCloseable {
         pivotCompiler = new PivotCompiler(pivotRepository, 512, 12);
         pivotService = new PivotService(pivotRepository);
         studyPackRepository = new StudyPackRepository(managedRoot);
+        viewerSlideAssociationRepository = new ViewerSlideAssociationRepository(managedRoot);
+        pivotApprovalRepository = new PivotApprovalRepository(managedRoot);
         viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
     }
 
@@ -406,9 +416,18 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/v2/desktop/adapt/packs/pivot".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 createPivotStudyPack(exchange);
+            } else if ("/api/v2/desktop/adapt/pivot-approvals".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                approvePivotManifest(exchange);
+            } else if ("/api/v2/desktop/adapt/viewer-slides".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                listViewerSlideAssociations(exchange);
             } else if ("/api/v2/desktop/adapt/imports/anki".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 importAnkiPackage(exchange);
+            } else if ("/api/v2/desktop/adapt/imports/qti".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                importQtiPackage(exchange);
             } else if ("/api/v2/desktop/adapt/packs".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 listStudyPacks(exchange);
@@ -618,11 +637,29 @@ public final class ForgeServer implements AutoCloseable {
         if (!requireAuthenticated(exchange)) {
             return;
         }
+        var upload = viewerPairingService.uploadStatus();
+        if ("READY_PRIVATE".equals(upload.state()) && !upload.viewerSlideId().isBlank()) {
+            for (var dataset : repository.list()) {
+                if (upload.artifactRevisionId().equals(dataset.approvedArtifactRevision())) {
+                    try {
+                        var revision = conversionService.approvedRevision(dataset.id());
+                        var checksum = revision.omeSha256().isBlank()
+                                ? revision.packageSha256() : revision.omeSha256();
+                        viewerSlideAssociationRepository.record(new ViewerSlideAssociation(
+                                dataset.id(), upload.viewerSlideId(), checksum, dataset.displayName(),
+                                "institution-restricted", revision.id()));
+                    } catch (IllegalArgumentException | IllegalStateException ignored) {
+                        // Status remains readable; authoring stays locked until association succeeds.
+                    }
+                    break;
+                }
+            }
+        }
         respond(
                 exchange,
                 200,
                 "application/json",
-                viewerUploadJson(viewerPairingService.uploadStatus()));
+                viewerUploadJson(upload));
     }
 
     private void listStudyPacks(HttpExchange exchange) throws IOException {
@@ -671,27 +708,57 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
-            var input = new String(bytes, StandardCharsets.UTF_8);
-            var datasetId = requiredJsonString(input, "datasetId");
-            var dataset = repository.find(datasetId)
+            var input = AdaptRequestParser.pivotPack(bytes);
+            var dataset = repository.find(input.datasetId())
                     .orElseThrow(() -> new IllegalArgumentException("PIVOT dataset was not found"));
             var manifest = pivotRepository.findCurrent(dataset)
                     .orElseThrow(() -> new IllegalArgumentException("Approved PIVOT manifest is unavailable"));
+            var approval = pivotApprovalRepository.requireApproved(manifest);
+            var association = viewerSlideAssociationRepository.require(input.datasetId(), input.viewerSlideId());
             var pack = studyPackRepository.save(studyPackAuthoringService.fromApprovedPivot(
                     manifest,
-                    requiredJsonString(input, "packKey"),
-                    requiredJsonInteger(input, "version"),
-                    requiredJsonString(input, "title"),
-                    requiredJsonString(input, "courseId"),
-                    requiredJsonString(input, "viewerSlideId"),
-                    requiredJsonString(input, "author"),
-                    requiredJsonString(input, "license"),
-                    requiredJsonString(input, "revision"),
-                    requiredJsonBoolean(input, "facultyApproved")));
+                    approval,
+                    association,
+                    input.packKey(), input.version(), input.title(), input.courseId(),
+                    input.author(), input.license(), input.revision()));
             respond(exchange, 201, "application/json", studyPackJson(pack));
         } catch (IOException | IllegalArgumentException error) {
             respond(exchange, 422, "application/json", "{\"error\":\"pivot_study_pack_invalid\",\"detail\":"
                     + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void approvePivotManifest(HttpExchange exchange) throws IOException {
+        var bytes = requireWriteBody(exchange, 16_384);
+        if (bytes == null) return;
+        try {
+            var input = AdaptRequestParser.pivotApproval(bytes);
+            var dataset = repository.find(input.datasetId())
+                    .orElseThrow(() -> new IllegalArgumentException("PIVOT dataset was not found"));
+            var manifest = pivotRepository.findCurrent(dataset)
+                    .orElseThrow(() -> new IllegalArgumentException("Current PIVOT manifest is unavailable"));
+            var approval = pivotApprovalRepository.approve(manifest, input.approvedBy(), System.currentTimeMillis());
+            respond(exchange, 201, "application/json", "{\"manifestId\":" + json(approval.manifestId())
+                    + ",\"approvedBy\":" + json(approval.approvedBy())
+                    + ",\"approvedAt\":" + approval.approvedAt() + "}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 422, "application/json", "{\"error\":\"pivot_approval_invalid\",\"detail\":\"PIVOT approval could not be recorded\"}");
+        }
+    }
+
+    private void listViewerSlideAssociations(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        try {
+            var items = viewerSlideAssociationRepository.list().stream()
+                    .map(item -> "{\"datasetId\":" + json(item.datasetId())
+                            + ",\"viewerSlideId\":" + json(item.viewerSlideId())
+                            + ",\"sha256\":" + json(item.sha256())
+                            + ",\"displayName\":" + json(item.displayName())
+                            + ",\"license\":" + json(item.license()) + "}")
+                    .collect(java.util.stream.Collectors.joining(","));
+            respond(exchange, 200, "application/json", "{\"items\":[" + items + "]}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 500, "application/json", "{\"error\":\"viewer_slide_associations_unavailable\"}");
         }
     }
 
@@ -703,10 +770,15 @@ public final class ForgeServer implements AutoCloseable {
         var upload = Files.createTempFile("pathlab-anki-upload-", ".apkg");
         try {
             Files.write(upload, bytes);
-            var items = ankiPackageImporter.read(upload).stream()
+            var promptField = optionalIntegerQuery(exchange, "promptField", -1);
+            var answerField = optionalIntegerQuery(exchange, "answerField", -1);
+            var mapping = promptField < 0 && answerField < 0 ? null
+                    : new AnkiPackageImporter.FieldMapping(promptField, answerField,
+                            Boolean.parseBoolean(queryValue(exchange, "facultyApproved", "false")));
+            var items = ankiPackageImporter.read(upload, mapping).stream()
                     .map(card -> "{\"id\":" + json(card.id()) + ",\"prompt\":"
                             + json(card.prompt()) + ",\"answerKey\":" + json(card.answerKey())
-                            + ",\"keyOrigin\":\"imported\"}")
+                            + ",\"keyOrigin\":" + json(card.keyOrigin()) + "}")
                     .collect(java.util.stream.Collectors.joining(","));
             respond(exchange, 200, "application/json", "{\"items\":[" + items + "]}");
         } catch (IllegalArgumentException error) {
@@ -715,6 +787,24 @@ public final class ForgeServer implements AutoCloseable {
         } finally {
             Files.deleteIfExists(upload);
         }
+    }
+
+    private void importQtiPackage(HttpExchange exchange) throws IOException {
+        var bytes = requireWriteBody(exchange, 8 * 1024 * 1024);
+        if (bytes == null) return;
+        var upload = Files.createTempFile("pathlab-qti-upload-", ".qti");
+        try {
+            Files.write(upload, bytes);
+            var items = qtiPackageImporter.read(upload).stream().map(item -> "{\"id\":" + json(item.id())
+                    + ",\"prompt\":" + json(item.prompt()) + ",\"answerKey\":" + json(item.answerKey())
+                    + ",\"source\":" + json(item.source()) + ",\"author\":" + json(item.author())
+                    + ",\"license\":" + json(item.license()) + ",\"revision\":" + json(item.revision())
+                    + ",\"keyOrigin\":" + json(item.keyOrigin()) + "}")
+                    .collect(java.util.stream.Collectors.joining(","));
+            respond(exchange, 200, "application/json", "{\"items\":[" + items + "]}");
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 422, "application/json", "{\"error\":\"qti_import_invalid\",\"detail\":\"QTI package could not be imported safely\"}");
+        } finally { Files.deleteIfExists(upload); }
     }
 
     private void publishStudyPack(HttpExchange exchange, String path) throws IOException {
@@ -741,8 +831,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     503,
                     "application/json",
-                    "{\"error\":\"study_pack_publish_failed\",\"detail\":"
-                            + json(error.getMessage()) + "}");
+                    "{\"error\":\"study_pack_publish_failed\",\"detail\":\"Private Study Pack publish failed\"}");
         }
     }
 
@@ -2394,37 +2483,6 @@ public final class ForgeServer implements AutoCloseable {
             }
         }
         return fallback;
-    }
-
-    private static String requiredJsonString(String body, String name) {
-        var match = java.util.regex.Pattern.compile(
-                        "\\\"" + java.util.regex.Pattern.quote(name)
-                                + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"")
-                .matcher(body);
-        if (!match.find()) {
-            throw new IllegalArgumentException("Study Pack request omitted " + name);
-        }
-        return match.group(1).replace("\\\"", "\"").replace("\\\\", "\\").trim();
-    }
-
-    private static int requiredJsonInteger(String body, String name) {
-        var match = java.util.regex.Pattern.compile(
-                        "\\\"" + java.util.regex.Pattern.quote(name) + "\\\"\\s*:\\s*([0-9]+)")
-                .matcher(body);
-        if (!match.find()) {
-            throw new IllegalArgumentException("Study Pack request omitted " + name);
-        }
-        return Integer.parseInt(match.group(1));
-    }
-
-    private static boolean requiredJsonBoolean(String body, String name) {
-        var match = java.util.regex.Pattern.compile(
-                        "\\\"" + java.util.regex.Pattern.quote(name) + "\\\"\\s*:\\s*(true|false)")
-                .matcher(body);
-        if (!match.find()) {
-            throw new IllegalArgumentException("Study Pack request omitted " + name);
-        }
-        return Boolean.parseBoolean(match.group(1));
     }
 
     private static String json(String value) {
