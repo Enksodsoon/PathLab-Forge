@@ -1,5 +1,8 @@
 package org.pathlab.forge.adapt;
 
+import org.pathlab.forge.conversion.ArtifactRevision;
+import org.pathlab.forge.viewer.ViewerUploadStatus;
+
 public record ViewerSlideAssociation(
         String datasetId,
         String viewerSlideId,
@@ -29,6 +32,47 @@ public record ViewerSlideAssociation(
                 || viewerHeight != Math.max(1, (int) Math.floor(cropHeight / downsample))) {
             throw new IllegalArgumentException("Viewer slide coordinate transform is invalid");
         }
+    }
+
+    public static ViewerSlideAssociation fromReadyUpload(
+            String datasetId,
+            String displayName,
+            String license,
+            ArtifactRevision revision,
+            ViewerUploadStatus upload,
+            int cropX,
+            int cropY,
+            int cropWidth,
+            int cropHeight,
+            double downsample) {
+        if (!"READY_PRIVATE".equals(upload.state())
+                || upload.viewerSlideId().isBlank()
+                || !revision.id().equals(upload.artifactRevisionId())) {
+            throw new IllegalArgumentException("Viewer did not report an exact ready slide association");
+        }
+        var expectedChecksum = switch (upload.uploadMode()) {
+            case "PREPARED_V2" -> revision.packageSha256();
+            case "OME_DYNAMIC" -> revision.omeSha256();
+            default -> throw new IllegalArgumentException("Viewer upload mode is invalid");
+        };
+        if (!upload.viewerSlideSha256().matches("[a-f0-9]{64}")
+                || !upload.viewerSlideSha256().equals(expectedChecksum)) {
+            throw new IllegalArgumentException("Viewer persisted slide checksum did not match upload");
+        }
+        return new ViewerSlideAssociation(
+                datasetId,
+                upload.viewerSlideId(),
+                upload.viewerSlideSha256(),
+                displayName,
+                license,
+                revision.id(),
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight,
+                downsample,
+                Math.max(1, (int) Math.floor(cropWidth / downsample)),
+                Math.max(1, (int) Math.floor(cropHeight / downsample)));
     }
 
     private static String required(String value, String name) {

@@ -9,6 +9,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pathlab.forge.pivot.PivotManifest;
 import org.pathlab.forge.pivot.PivotTask;
+import org.pathlab.forge.conversion.ArtifactRevision;
+import org.pathlab.forge.conversion.ArtifactRevisionFormat;
+import org.pathlab.forge.conversion.ArtifactRevisionStatus;
+import org.pathlab.forge.viewer.ViewerUploadStatus;
 
 final class AdaptAuthorizationRepositoryTest {
     @TempDir Path temp;
@@ -27,6 +31,36 @@ final class AdaptAuthorizationRepositoryTest {
         assertEquals(100, repository.require("dataset-1", "viewer-1").cropX());
         assertEquals(1_500, repository.require("dataset-1", "viewer-1").viewerWidth());
         assertEquals(2, repository.require("dataset-1", "viewer-1").downsample());
+    }
+
+    @Test
+    void preparedAssociationUsesViewerReportedPackageChecksumAndFailsClosed() {
+        var omeSha256 = "a".repeat(64);
+        var packageSha256 = "b".repeat(64);
+        var revision = new ArtifactRevision(
+                "artifact-1", "dataset-1", "configuration-1", "source", 1,
+                ArtifactRevisionStatus.APPROVED, ArtifactRevisionFormat.PREPARED_DZI_V2,
+                "slide.ome.tif", "derivative", "slide.plslide", omeSha256, packageSha256,
+                1_000, 800, "ome-dynamic-v1", 75, 1, "Teaching", "");
+        var ready = new ViewerUploadStatus(
+                "READY_PRIVATE", revision.id(), 100, 100, "viewer-1", packageSha256,
+                "PREPARED_V2", "Viewer private slide is ready");
+
+        var association = ViewerSlideAssociation.fromReadyUpload(
+                "dataset-1", "Teaching", "institutional-teaching", revision, ready,
+                0, 0, 1_000, 800, 1);
+
+        assertEquals(packageSha256, association.sha256());
+        assertThrows(IllegalArgumentException.class, () -> ViewerSlideAssociation.fromReadyUpload(
+                "dataset-1", "Teaching", "institutional-teaching", revision,
+                new ViewerUploadStatus("READY_PRIVATE", revision.id(), 100, 100,
+                        "viewer-1", "", "PREPARED_V2", "ready"),
+                0, 0, 1_000, 800, 1));
+        assertThrows(IllegalArgumentException.class, () -> ViewerSlideAssociation.fromReadyUpload(
+                "dataset-1", "Teaching", "institutional-teaching", revision,
+                new ViewerUploadStatus("READY_PRIVATE", revision.id(), 100, 100,
+                        "viewer-1", omeSha256, "PREPARED_V2", "ready"),
+                0, 0, 1_000, 800, 1));
     }
 
     @Test

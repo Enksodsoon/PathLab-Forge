@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,45 @@ final class StudyPackRepositoryTest {
     }
 
     @Test
+    void canonicalChecksumIgnoresWhitespaceAndObjectKeyOrder() throws Exception {
+        var repository = new StudyPackRepository(temp);
+        var compact = spatialPack("canonical", 1, "0.50");
+        var reordered = """
+                {
+                  "tasks": [{"revision":"pivot-v1","license":"teaching","author":"PathLab Forge","source":"PIVOT","tolerance":0.08,"targetHeight":0.10,"targetWidth":0.10,"targetY":0.40,"targetX":0.50,"prompt":"Find region","slideId":"slide-1","id":"s1","type":"spatial"}],
+                  "slides": [{"license":"teaching","displayName":"Teaching","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","viewerSlideId":"slide-1"}],
+                  "objectives": ["Navigate"],
+                  "courseId": "path-101",
+                  "title": "Spatial navigation",
+                  "version": 1,
+                  "packKey": "canonical",
+                  "schema": "pathlab.study-pack/1"
+                }
+                """;
+
+        var first = repository.save(compact);
+        var equivalent = repository.save(reordered);
+
+        assertEquals(StudyPackCanonicalJson.checksum(compact),
+                StudyPackCanonicalJson.checksum(reordered));
+        assertEquals(first.checksum(), equivalent.checksum());
+    }
+
+    @Test
+    void validatesTheCanonicalCrossRepositoryForgeFixture() throws Exception {
+        var body = Files.readString(Path.of(
+                "contracts/research/v1/forge-study-pack-v1.fixture.json"));
+
+        var saved = new StudyPackRepository(temp).save(body);
+
+        assertEquals("forge-cross-repo", saved.packKey());
+        assertTrue(saved.masteryEligible());
+        assertEquals(StudyPackCanonicalJson.checksum(body), saved.checksum());
+        assertEquals("632b0ad8a8028e2f45d6c917cb718213b014368075616e92dfeec25bc86a0275",
+                saved.checksum());
+    }
+
+    @Test
     void refusesVersionReplacementAndUnprovenMedicalKeys() throws Exception {
         var repository = new StudyPackRepository(temp);
         repository.save(spatialPack("pack-a", 1, "0.50"));
@@ -54,6 +94,7 @@ final class StudyPackRepositoryTest {
         var repository = new StudyPackRepository(temp);
         for (var body : java.util.List.of(
                 spatialPack("pack-a", 1, "0.50").replace("\"title\":", "\"title\":\"duplicate\",\"title\":"),
+                spatialPack("pack-a", 1, "0.50") + "{}",
                 spatialPack("pack-a", 1, "0.50").replace("\"courseId\":", "\"pixelPath\":\"C:/slide.svs\",\"courseId\":"),
                 spatialPack("pack-a", 1, "0.50").replace("\"tolerance\":0.08", "\"tolerance\":0.08,\"answerKey\":\"smuggled\""),
                 spatialPack("pack-a", 1, "0.50").replace("\"type\":\"spatial\"", "\"type\":\"keyed\"")

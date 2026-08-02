@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationTransformer;
+import org.pathlab.forge.adapt.StudyPackCanonicalJson;
 import org.pathlab.forge.conversion.ArtifactIntegrityStamp;
 import org.pathlab.forge.conversion.ArtifactRevision;
 
@@ -199,6 +200,7 @@ public final class ViewerPairingService implements AutoCloseable {
                 0,
                 total,
                 "",
+                "",
                 uploadMode,
                 dynamic ? "Creating direct OME ingest" : "Creating prepared ingest");
         uploadExecutor.submit(() -> upload(
@@ -249,7 +251,7 @@ public final class ViewerPairingService implements AutoCloseable {
                 string(response.body(), "status"));
         var expectedKey = string(studyPackJson, "packKey");
         var expectedVersion = integer(studyPackJson, "version");
-        var expectedChecksum = sha256(studyPackJson);
+        var expectedChecksum = StudyPackCanonicalJson.checksum(studyPackJson);
         if (!published.packKey().equals(expectedKey)
                 || published.version() != expectedVersion
                 || !published.checksum().equals(expectedChecksum)
@@ -257,15 +259,6 @@ public final class ViewerPairingService implements AutoCloseable {
             throw new IOException("Viewer Study Pack identity or private status did not match");
         }
         return published;
-    }
-
-    private static String sha256(String value) {
-        try {
-            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (java.security.NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
     }
 
     private void upload(
@@ -385,6 +378,7 @@ public final class ViewerPairingService implements AutoCloseable {
                         offset,
                         length,
                         stringOrEmpty(response.body(), "slideId"),
+                        "",
                         uploadMode,
                         offset == length
                                 ? "Viewer is finalizing the " + (dynamic ? "OME-TIFF" : "prepared package")
@@ -422,6 +416,7 @@ public final class ViewerPairingService implements AutoCloseable {
                                 length,
                                 length,
                                 slideId,
+                                string(statusResponse.body(), "slideSha256"),
                                 uploadMode,
                                 annotations.isEmpty()
                                         ? "Viewer private slide is ready"
@@ -447,6 +442,7 @@ public final class ViewerPairingService implements AutoCloseable {
                     uploadStatus.uploadedBytes(),
                     uploadStatus.totalBytes(),
                     uploadStatus.viewerSlideId(),
+                    uploadStatus.viewerSlideSha256(),
                     uploadStatus.uploadMode(),
                     error.getMessage() == null ? "Viewer upload failed" : error.getMessage());
         }

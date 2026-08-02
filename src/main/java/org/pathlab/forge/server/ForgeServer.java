@@ -643,13 +643,11 @@ public final class ForgeServer implements AutoCloseable {
                 if (upload.artifactRevisionId().equals(dataset.approvedArtifactRevision())) {
                     try {
                         var revision = conversionService.approvedRevision(dataset.id());
-                        var checksum = revision.omeSha256().isBlank()
-                                ? revision.packageSha256() : revision.omeSha256();
-                        viewerSlideAssociationRepository.record(new ViewerSlideAssociation(
-                                dataset.id(), upload.viewerSlideId(), checksum, dataset.displayName(),
-                                "institution-restricted", revision.id(), dataset.cropX(), dataset.cropY(),
-                                dataset.cropWidth(), dataset.cropHeight(), dataset.downsample(),
-                                revision.outputWidth(), revision.outputHeight()));
+                        viewerSlideAssociationRepository.record(
+                                ViewerSlideAssociation.fromReadyUpload(
+                                        dataset.id(), dataset.displayName(), "institution-restricted",
+                                        revision, upload, dataset.cropX(), dataset.cropY(),
+                                        dataset.cropWidth(), dataset.cropHeight(), dataset.downsample()));
                     } catch (IllegalArgumentException | IllegalStateException ignored) {
                         // Status remains readable; authoring stays locked until association succeeds.
                     }

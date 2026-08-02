@@ -1,0 +1,48 @@
+{
+  "schema": "pathlab.study-pack/1",
+  "packKey": "forge-cross-repo",
+  "version": 1,
+  "title": "Forge contract fixture",
+  "courseId": "path-101",
+  "objectives": [
+    "Recall an approved key",
+    "Navigate a target region"
+  ],
+  "slides": [
+    {
+      "viewerSlideId": "viewer-slide-1",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "displayName": "Teaching slide",
+      "license": "institutional-teaching"
+    }
+  ],
+  "tasks": [
+    {
+      "type": "keyed",
+      "id": "keyed-1",
+      "slideId": "viewer-slide-1",
+      "prompt": "Which region was approved?",
+      "answerKey": "Upper left",
+      "keyApproval": "faculty-approved",
+      "source": "Faculty QTI bank",
+      "author": "Faculty reviewer",
+      "license": "institutional-teaching",
+      "revision": "2026-08-02"
+    },
+    {
+      "type": "spatial",
+      "id": "spatial-1",
+      "slideId": "viewer-slide-1",
+      "prompt": "Locate the approved region",
+      "targetX": 0.2,
+      "targetY": 0.3,
+      "targetWidth": 0.1,
+      "targetHeight": 0.2,
+      "tolerance": 0.08,
+      "source": "PIVOT",
+      "author": "PathLab Forge",
+      "license": "institutional-teaching",
+      "revision": "pivot-v1"
+    }
+  ]
+}

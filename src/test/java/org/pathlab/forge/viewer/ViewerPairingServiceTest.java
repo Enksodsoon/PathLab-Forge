@@ -24,6 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pathlab.forge.conversion.ArtifactRevision;
 import org.pathlab.forge.conversion.ArtifactRevisionFormat;
 import org.pathlab.forge.conversion.ArtifactRevisionStatus;
+import org.pathlab.forge.adapt.StudyPackCanonicalJson;
 
 final class ViewerPairingServiceTest {
     @TempDir
@@ -66,7 +67,8 @@ final class ViewerPairingServiceTest {
                 received.set(new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 respond(exchange, 201, "{\"id\":\"pack-id\",\"packKey\":\"course-a\","
-                        + "\"version\":1,\"checksum\":\"" + sha256(received.get()) + "\","
+                        + "\"version\":1,\"checksum\":\""
+                        + StudyPackCanonicalJson.checksum(received.get()) + "\","
                         + "\"masteryEligible\":false,\"status\":\"immutable\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
@@ -78,7 +80,8 @@ final class ViewerPairingServiceTest {
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort()
                     + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
-                var body = "{\"schema\":\"pathlab.study-pack/1\",\"packKey\":\"course-a\",\"version\":1}";
+                var body = "{ \"version\": 1, \"packKey\": \"course-a\","
+                        + " \"schema\": \"pathlab.study-pack/1\" }";
                 var published = service.publishStudyPack(body);
                 assertEquals(body, received.get());
                 assertEquals("pack-id", published.id());
@@ -147,7 +150,8 @@ final class ViewerPairingServiceTest {
                 receivedPayload.set(exchange.getRequestBody().readAllBytes());
                 respond(exchange, 202, "{\"slideId\":null}");
             } else if (path.equals("/api/v1/desktop/ingests/one")) {
-                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\"}");
+                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
+                        + "\"slideSha256\":\"" + "c".repeat(64) + "\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
             }
@@ -174,6 +178,7 @@ final class ViewerPairingServiceTest {
                 }
                 assertEquals("READY_PRIVATE", service.uploadStatus().state());
                 assertEquals("OME_DYNAMIC", service.uploadStatus().uploadMode());
+                assertEquals("c".repeat(64), service.uploadStatus().viewerSlideSha256());
                 assertTrue(receivedCreateBody.get().contains("\"profile\":\"ome-dynamic-v1\""));
                 assertTrue(receivedCreateBody.get().contains("\"jpegQuality\":75"));
                 assertTrue(receivedCreateBody.get().contains("\"omeSha256\":\"" + sha + "\""));
@@ -219,7 +224,8 @@ final class ViewerPairingServiceTest {
                     respond(exchange, 202, "{\"slideId\":null}");
                 }
             } else if (path.equals("/api/v1/desktop/ingests/resume")) {
-                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-resumed\"}");
+                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-resumed\","
+                        + "\"slideSha256\":\"" + "d".repeat(64) + "\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
             }
@@ -284,7 +290,8 @@ final class ViewerPairingServiceTest {
                 if (finalizationChecks.getAndIncrement() == 0) {
                     respond(exchange, 200, "{\"status\":\"failed\",\"errorCode\":\"FINALIZER_FAILED\"}");
                 } else {
-                    respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-finalized\"}");
+                    respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-finalized\","
+                            + "\"slideSha256\":\"" + "e".repeat(64) + "\"}");
                 }
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");

@@ -23,18 +23,19 @@ import java.util.UUID;
 
 public final class StudyPackRepository {
     private static final int MAX_PACK_BYTES = 4 * 1024 * 1024;
-    private static final int MAX_TASKS = 10_000;
+    private static final int MAX_TASKS = 5_000;
     private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
             .build();
     private static final Set<String> ROOT_FIELDS = Set.of(
             "schema", "packKey", "version", "title", "courseId", "objectives", "slides", "tasks");
     private static final Set<String> SLIDE_FIELDS = Set.of(
-            "viewerSlideId", "sha256", "displayName", "license");
+            "schema", "viewerSlideId", "sha256", "displayName", "license");
     private static final Set<String> COMMON_TASK_FIELDS = Set.of(
-            "type", "id", "slideId", "prompt", "source", "author", "license", "revision");
+            "schema", "type", "id", "slideId", "prompt", "source", "author", "license", "revision");
     private static final Set<String> KEYED_TASK_FIELDS = union(
-            COMMON_TASK_FIELDS, Set.of("answerKey", "keyApproval"));
+            COMMON_TASK_FIELDS, Set.of("answerKey", "keyApproval", "choices"));
     private static final Set<String> SPATIAL_TASK_FIELDS = union(
             COMMON_TASK_FIELDS,
             Set.of("targetX", "targetY", "targetWidth", "targetHeight", "tolerance"));
@@ -72,7 +73,7 @@ public final class StudyPackRepository {
             throw new IllegalArgumentException("Study Pack was not found");
         }
         var body = Files.readString(target, StandardCharsets.UTF_8);
-        if (!sha256(body).equals(checksum)) {
+        if (!StudyPackCanonicalJson.checksum(body).equals(checksum)) {
             throw new IOException("Study Pack checksum no longer matches");
         }
         validate(body);
@@ -137,23 +138,27 @@ public final class StudyPackRepository {
         if (!"pathlab.study-pack/1".equals(text(root, "schema"))) {
             throw new IllegalArgumentException("Unsupported Study Pack schema");
         }
-        var packKey = text(root, "packKey");
-        var title = text(root, "title");
-        text(root, "courseId");
+        var packKey = text(root, "packKey", 120);
+        if (!packKey.matches("[A-Za-z0-9._-]{1,120}")) {
+            throw new IllegalArgumentException("Study Pack packKey is invalid");
+        }
+        var title = text(root, "title", 240);
+        text(root, "courseId", 160);
         var version = positiveInteger(root, "version");
-        stringArray(root, "objectives", 100);
+        stringArray(root, "objectives", 40, true);
         var slides = requiredArray(root, "slides", 100);
         var slideIds = new HashSet<String>();
         var slideReferences = new ArrayList<StudyPackSlide>();
         for (var slide : slides) {
             requireObject(slide, "slide");
             rejectUnknown(slide, SLIDE_FIELDS, "slide");
-            var id = text(slide, "viewerSlideId");
+            optionalSchema(slide, "pathlab.slide-reference/1", "slide");
+            var id = text(slide, "viewerSlideId", 100);
             if (!slideIds.add(id)) throw new IllegalArgumentException("Viewer slide IDs must be unique");
-            var checksum = text(slide, "sha256");
+            var checksum = text(slide, "sha256", 64);
             if (!checksum.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("Slide checksum is invalid");
-            var displayName = text(slide, "displayName");
-            var license = text(slide, "license");
+            var displayName = text(slide, "displayName", 200);
+            var license = text(slide, "license", 240);
             slideReferences.add(new StudyPackSlide(id, checksum, displayName, license));
         }
         var tasks = requiredArray(root, "tasks", MAX_TASKS);
@@ -169,26 +174,35 @@ public final class StudyPackRepository {
                 default -> throw new IllegalArgumentException("Unsupported Study Pack task type");
             };
             rejectUnknown(task, allowed, type + " task");
-            if (!taskIds.add(text(task, "id"))) throw new IllegalArgumentException("Task IDs must be unique");
-            if (!slideIds.contains(text(task, "slideId"))) throw new IllegalArgumentException("Task slide is not declared");
-            text(task, "prompt"); text(task, "source"); text(task, "author"); text(task, "license"); text(task, "revision");
+            optionalSchema(task, "pathlab.study-task/1", "task");
+            var taskId = text(task, "id", 120);
+            if (!taskId.matches("[A-Za-z0-9._-]{1,120}")) {
+                throw new IllegalArgumentException("Study Pack task id is invalid");
+            }
+            if (!taskIds.add(taskId)) throw new IllegalArgumentException("Task IDs must be unique");
+            if (!slideIds.contains(text(task, "slideId", 100))) throw new IllegalArgumentException("Task slide is not declared");
+            text(task, "prompt", 2000); text(task, "source", 500);
+            text(task, "author", 240); text(task, "license", 240); text(task, "revision", 120);
             if ("keyed".equals(type)) {
-                text(task, "answerKey");
-                var approval = text(task, "keyApproval");
+                text(task, "answerKey", 2000);
+                var approval = text(task, "keyApproval", 16);
                 if (!Set.of("imported", "faculty-approved").contains(approval)) {
                     throw new IllegalArgumentException("Keyed task approval is invalid");
                 }
+                optionalStringArray(task, "choices", 20);
                 masteryEligible = true;
             } else {
                 var x = unit(task, "targetX"); var y = unit(task, "targetY");
                 var width = positiveUnit(task, "targetWidth"); var height = positiveUnit(task, "targetHeight");
-                positiveUnit(task, "tolerance");
-                if (x + width > 1.000000001 || y + height > 1.000000001) {
+                var tolerance = positiveUnit(task, "tolerance");
+                if (tolerance > 0.5) throw new IllegalArgumentException("Spatial tolerance is too large");
+                if (x + width > 1 || y + height > 1) {
                     throw new IllegalArgumentException("Spatial target escapes normalized slide bounds");
                 }
             }
         }
-        return new ValidatedPack(packKey, version, title, sha256(body), masteryEligible,
+        return new ValidatedPack(packKey, version, title,
+                StudyPackCanonicalJson.checksum(body), masteryEligible,
                 List.copyOf(slideReferences));
     }
 
@@ -200,21 +214,49 @@ public final class StudyPackRepository {
         return value;
     }
 
-    private static void stringArray(JsonNode node, String name, int maximum) {
-        for (var value : requiredArray(node, name, maximum)) {
-            if (!value.isTextual() || value.textValue().isBlank()) {
+    private static void stringArray(JsonNode node, String name, int maximum, boolean requireNonEmpty) {
+        var values = requiredArray(node, name, maximum);
+        if (requireNonEmpty && values.isEmpty()) {
+            throw new IllegalArgumentException("Study Pack " + name + " must not be empty");
+        }
+        for (var value : values) {
+            if (!value.isTextual()) {
                 throw new IllegalArgumentException("Study Pack " + name + " must contain text");
             }
         }
     }
 
     private static String text(JsonNode node, String name) {
+        return text(node, name, 4096);
+    }
+
+    private static String text(JsonNode node, String name, int maximum) {
         var value = node.get(name);
         if (value == null || !value.isTextual() || value.textValue().isBlank()
-                || value.textValue().length() > 4096) {
+                || value.textValue().length() > maximum) {
             throw new IllegalArgumentException("Study Pack omitted or invalid " + name);
         }
-        return value.textValue().trim();
+        return value.textValue();
+    }
+
+    private static void optionalSchema(JsonNode node, String expected, String label) {
+        var value = node.get("schema");
+        if (value != null && (!value.isTextual() || !expected.equals(value.textValue()))) {
+            throw new IllegalArgumentException(label + " schema is invalid");
+        }
+    }
+
+    private static void optionalStringArray(JsonNode node, String name, int maximum) {
+        var value = node.get(name);
+        if (value == null) return;
+        if (!value.isArray() || value.size() > maximum) {
+            throw new IllegalArgumentException("Study Pack " + name + " is invalid or too large");
+        }
+        for (var item : value) {
+            if (!item.isTextual()) {
+                throw new IllegalArgumentException("Study Pack " + name + " must contain text");
+            }
+        }
     }
 
     private static int positiveInteger(JsonNode node, String name) {

@@ -64,6 +64,7 @@ Forge supplies:
 PathLab Viewer returns:
 
 - slide ID;
+- persisted slide SHA-256 once the ingest reaches `ready_private`;
 - current slide state;
 - ingest ID and upload offset.
 
@@ -97,6 +98,12 @@ The final upload only transitions to `finalizing`. A single bounded Viewer worke
 claims and validates it asynchronously; `HEAD` and status requests never perform
 finalization. `ready_private` means the derivative was atomically installed and
 committed to the private library.
+
+The ready status response includes `slideSha256`, read from the persisted Viewer
+slide. Forge fails closed if it is absent or differs from the approved artifact:
+prepared-v2 must match the package SHA-256 and ome-dynamic-v1 must match the OME
+SHA-256. ADAPT Study Packs pin this server-reported value; Forge never infers the
+association checksum from whichever local artifact fields happen to be present.
 
 ### Private preview
 
@@ -170,6 +177,22 @@ A prepared slide must behave exactly like a legacy converted slide after import:
 - work with existing individual publication grants, folder/collection shares, Trash, restore, permanent deletion and private annotations.
 
 Forge does not create collections or activate public shares during upload.
+
+## Private ADAPT Study Packs
+
+Forge and Viewer share `pathlab.study-pack/1`. Keyed tasks require
+`keyApproval` equal to `imported` or `faculty-approved`. Spatial targets use
+normalized `targetX` and `targetY` as the rectangle origin and require positive
+`targetWidth` and `targetHeight`; Viewer scores the submitted coordinate against
+the rectangle center using the authored tolerance. Learner responses omit all
+answer keys, key-approval evidence, and target geometry.
+
+The immutable Study Pack checksum is SHA-256 over canonical JSON: recursively
+sorted object keys, preserved array order, normalized finite JSON numbers,
+compact separators, and UTF-8 encoding. Whitespace and object-key order do not
+change the checksum. Publishing an existing `packKey` and `version` is
+idempotent only when its canonical checksum is identical; a different checksum
+is an immutable-version conflict.
 
 ## Authentication roadmap
 
