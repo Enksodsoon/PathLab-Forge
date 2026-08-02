@@ -172,3 +172,88 @@ The v1 model is a frozen ImageNet-pretrained MobileNetV3-Small encoder plus a
 class-balanced seven-class head selected on the official validation split. It
 uses temperature calibration and a validation-derived review threshold. Its
 outputs are educational evidence prompts, not clinical diagnoses.
+
+## Annotation-free WSI MIL development
+
+The v2 research path trains from WSI-level labels only. It uses a deterministic
+tissue sampler, Kaiko ViT-S/16 tile features, and a gated-attention MIL head.
+Create/validate feature bags first, then select the model without touching test:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe verify-bracs-wsi-bags `
+  --inventory "D:\PathLabData\BRACS\prepared\bracs-wsi-cohort-15x5-v1\inventory.jsonl" `
+  --bags-root "D:\PathLabData\BRACS\derived\kaiko-wsi-cohort-15x5-v1\bags"
+```
+
+After a resource-bounded pilot, freeze the complete patient-safe development
+inventory and deterministic byte-balanced extraction shards with:
+
+```powershell
+pathlab-ai-model build-bracs-development-inventory `
+  --full-inventory D:\PathLabData\BRACS\prepared\bracs-wsi-remote-v1\inventory.jsonl `
+  --output D:\PathLabData\BRACS\prepared\bracs-wsi-full-development-v1\inventory.jsonl
+
+pathlab-ai-model shard-bracs-wsi-inventory `
+  --inventory D:\PathLabData\BRACS\prepared\bracs-wsi-full-development-v1\inventory.jsonl `
+  --output-directory D:\PathLabData\BRACS\prepared\bracs-wsi-full-development-v1 `
+  --shards 3
+```
+
+These commands never include test rows in the development inventory. The complete
+split contains 392 train and 68 validation WSIs; test remains locked behind the
+unchanged advancement gates.
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe train-bracs-mil `
+  --bags-root "D:\PathLabData\BRACS\derived\kaiko-wsi-cohort-15x5-v1\bags" `
+  --output-root "D:\PathLabData\BRACS\models\pathlab-bracs-kaiko-wsi-mil-v1" `
+  --validation-only --max-epochs 200 --patience 25
+```
+
+After validation-only selection, run a new unannotated WSI end to end as a
+functional check. This is allowed even when advancement gates fail because it
+does not expose the locked test split or establish a performance claim:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe predict-slide-mil `
+  --model-root "D:\PathLabData\BRACS\models\pathlab-bracs-kaiko-wsi-mil-v1" `
+  --slide "C:\path\to\unannotated.svs" `
+  --output "C:\path\to\mil-evidence.json" `
+  --target-mpp 0.5 --max-tiles 128
+```
+
+The output includes calibrated probabilities, a review flag, and ranked spatial
+tile evidence. Kaiko weights are non-commercial research-only; see the fixed
+protocol in `docs/research/BRACS_WSI_MIL_PROTOCOL.md`.
+
+Verify exact feature repeatability on the same real unannotated slide twice:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe `
+  verify-slide-feature-repeatability `
+  --slide "D:\PathLabData\BRACS\fixtures\unannotated\BRACS_1003718.svs" `
+  --output "D:\PathLabData\BRACS\models\pathlab-bracs-kaiko-wsi-validation-grid-v1\real_slide_repeatability.json" `
+  --target-mpp 0.5 --max-tiles 16 --batch-size 8
+```
+
+The command fails unless tile coordinates, tissue scores, and encoded features
+are exactly identical. Its JSON includes source, feature, loader-code, and encoder
+weight SHA-256 values.
+
+The locked test is not evaluated by rerunning training. Once validation gates
+pass and test feature bags have been added to a patient-safe combined manifest,
+evaluate the frozen selected artifact exactly once:
+
+```powershell
+build\ai-training-venv\Scripts\pathlab-ai-model.exe evaluate-bracs-mil-test `
+  --bags-root "D:\PathLabData\BRACS\derived\kaiko-wsi-final-v1\bags" `
+  --model-root "D:\PathLabData\BRACS\models\pathlab-bracs-kaiko-wsi-validation-grid-v1\SELECTED" `
+  --bootstrap-iterations 500
+```
+
+The command refuses to run when `final_test_evaluation.json` already exists.
+This prevents an accidental second test-set pass. `SELECTED` is the candidate
+named in `validation_grid.json`; do not choose it from test performance. Production
+evaluation requires the v2 selection record and verifies the validation-grid,
+selected-candidate, advancement-gate, model, configuration, evaluation, and
+baseline checksum chain before it creates the durable one-time test-attempt lock.

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from collections import defaultdict
 from collections.abc import Iterable
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +17,7 @@ import torch
 from PIL import Image, ImageOps
 from sklearn.metrics import (
     accuracy_score,
-    balanced_accuracy_score,
     confusion_matrix,
-    f1_score,
     log_loss,
     precision_recall_fscore_support,
 )
@@ -72,12 +73,15 @@ class MobileNetViewClassifier(nn.Module):
         return self.head(self.encoder(inputs))
 
 
-def tensor_transform() -> v2.Compose:
+def tensor_transform(
+    mean: tuple[float, float, float] = (0.485, 0.456, 0.406),
+    std: tuple[float, float, float] = (0.229, 0.224, 0.225),
+) -> v2.Compose:
     return v2.Compose(
         [
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            v2.Normalize(mean=mean, std=std),
         ]
     )
 
@@ -112,6 +116,33 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def write_json_atomic(path: Path, payload: Any) -> Path:
+    """Durably replace a JSON artifact without exposing a partial file."""
+
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return path
 
 
 def softmax(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
@@ -172,18 +203,38 @@ def metrics_from_probabilities(
             probabilities[:, fine_index]
         )
     coarse_predictions = coarse_probabilities.argmax(axis=1)
+    _, _, coarse_f1, _ = precision_recall_fscore_support(
+        coarse_true,
+        coarse_predictions,
+        labels=np.arange(len(COARSE_LABELS)),
+        zero_division=0,
+    )
+    present = support > 0
+    one_hot = np.eye(len(LABELS), dtype=np.float64)[y_true]
+    confidence = probabilities.max(axis=1)
+    correct = predictions == y_true
+    calibration_error = 0.0
+    edges = np.linspace(0.0, 1.0, 11)
+    for index, (lower, upper) in enumerate(pairwise(edges)):
+        selected = (confidence >= lower) & (
+            confidence <= upper if index == len(edges) - 2 else confidence < upper
+        )
+        if selected.any():
+            calibration_error += float(selected.mean()) * abs(
+                float(correct[selected].mean()) - float(confidence[selected].mean())
+            )
     return {
         "accuracy": float(accuracy_score(y_true, predictions)),
-        "balanced_accuracy": float(balanced_accuracy_score(y_true, predictions)),
-        "macro_f1": float(
-            f1_score(y_true, predictions, average="macro", zero_division=0)
-        ),
-        "weighted_f1": float(
-            f1_score(y_true, predictions, average="weighted", zero_division=0)
-        ),
+        "balanced_accuracy": float(recall[present].mean()),
+        "macro_f1": float(f1.mean()),
+        "weighted_f1": float(np.average(f1, weights=support)),
         "log_loss": float(
             log_loss(y_true, probabilities, labels=np.arange(len(LABELS)))
         ),
+        "multiclass_brier_score": float(
+            np.mean(np.sum((probabilities - one_hot) ** 2, axis=1))
+        ),
+        "expected_calibration_error_10_bin": calibration_error,
         "top2_accuracy": float(
             np.mean(
                 [
@@ -193,9 +244,7 @@ def metrics_from_probabilities(
             )
         ),
         "coarse_accuracy": float(accuracy_score(coarse_true, coarse_predictions)),
-        "coarse_macro_f1": float(
-            f1_score(coarse_true, coarse_predictions, average="macro", zero_division=0)
-        ),
+        "coarse_macro_f1": float(coarse_f1.mean()),
         "per_class": {
             label: {
                 "precision": float(precision[index]),
@@ -247,7 +296,7 @@ def choose_review_threshold(
     *,
     target_accuracy: float = 0.65,
     minimum_coverage: float = 0.10,
-) -> dict[str, float]:
+) -> dict[str, float | str]:
     confidence = probabilities.max(axis=1)
     predictions = probabilities.argmax(axis=1)
     candidates = sorted({float(value) for value in confidence})
@@ -266,6 +315,9 @@ def choose_review_threshold(
             "threshold": threshold,
             "coverage": coverage,
             "selective_accuracy": accuracy,
+            "target_accuracy": target_accuracy,
+            "minimum_coverage": minimum_coverage,
+            "selection_status": "target_met",
         }
     threshold = float(np.quantile(confidence, 0.90))
     selected = confidence >= threshold
@@ -273,6 +325,9 @@ def choose_review_threshold(
         "threshold": threshold,
         "coverage": float(selected.mean()),
         "selective_accuracy": float((predictions[selected] == y_true[selected]).mean()),
+        "target_accuracy": target_accuracy,
+        "minimum_coverage": minimum_coverage,
+        "selection_status": "fallback_top_confidence_decile",
     }
 
 

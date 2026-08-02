@@ -20,6 +20,7 @@ import torchvision
 from PIL import Image
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from .core import (
@@ -28,7 +29,6 @@ from .core import (
     LABELS,
     WEIGHTS_ID,
     MobileNetFeatureEncoder,
-    MobileNetViewClassifier,
     choose_review_threshold,
     group_view_logits,
     metrics_from_probabilities,
@@ -38,6 +38,10 @@ from .core import (
     softmax,
     tensor_transform,
 )
+from .wsi_bags import ENCODER_ID as KAIKO_ENCODER_ID
+from .wsi_bags import ENCODER_LICENSE as KAIKO_ENCODER_LICENSE
+from .wsi_bags import ENCODER_SOURCE as KAIKO_ENCODER_SOURCE
+from .wsi_bags import load_kaiko_encoder
 
 
 @dataclass(frozen=True)
@@ -48,12 +52,13 @@ class TrainingConfig:
     threads: int = 6
     bootstrap_iterations: int = 500
     seed: int = 20260802
+    encoder: str = "mobilenet"
 
 
 class ViewDataset(Dataset[tuple[torch.Tensor, int]]):
-    def __init__(self, paths: list[Path]) -> None:
+    def __init__(self, paths: list[Path], transform: Any) -> None:
         self.paths = paths
-        self.transform = tensor_transform()
+        self.transform = transform
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -61,6 +66,26 @@ class ViewDataset(Dataset[tuple[torch.Tensor, int]]):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         with Image.open(self.paths[index]) as image:
             return self.transform(image.convert("RGB")), index
+
+
+class FusionFeatureEncoder(nn.Module):
+    """Complementary ImageNet and pathology encoders with correct normalization."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mobilenet = MobileNetFeatureEncoder(pretrained=True).eval()
+        self.kaiko = load_kaiko_encoder().eval()
+        self.register_buffer(
+            "imagenet_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        )
+        self.register_buffer(
+            "imagenet_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        )
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        mobile = self.mobilenet((inputs - self.imagenet_mean) / self.imagenet_std)
+        kaiko = self.kaiko((inputs - 0.5) / 0.5)
+        return torch.cat((mobile, kaiko), dim=1)
 
 
 def train_bracs_model(config: TrainingConfig) -> dict[str, Any]:
@@ -137,8 +162,13 @@ def train_bracs_model(config: TrainingConfig) -> dict[str, Any]:
     )
 
     baselines = _baselines(feature_data, train_mask, val_mask, test_mask, config.seed)
-    artifact_path = output_root / "pathlab_bracs_mobilenet_v1.ts"
-    _export_model(best_classifier, scaler, artifact_path)
+    artifact_name = {
+        "mobilenet": "pathlab_bracs_mobilenet_v1.ts",
+        KAIKO_ENCODER_ID: "pathlab_bracs_kaiko_vits16_v1.ts",
+        "fusion": "pathlab_bracs_fusion_v1.ts",
+    }[config.encoder]
+    artifact_path = output_root / artifact_name
+    _export_model(best_classifier, scaler, artifact_path, config.encoder)
     predictions_path = output_root / "test_predictions.csv"
     _write_predictions(
         predictions_path,
@@ -154,11 +184,12 @@ def train_bracs_model(config: TrainingConfig) -> dict[str, Any]:
 
     result: dict[str, Any] = {
         "schema_version": 1,
-        "model_name": "PathLab BRACS MobileNetV3-Small Transfer v1",
+        "model_name": _model_name(config.encoder),
         "task": "seven-class breast pathology ROI classification",
         "labels": list(LABELS),
         "coarse_groups": COARSE_GROUP,
-        "encoder": WEIGHTS_ID,
+        "encoder": _encoder_source(config.encoder),
+        "encoder_license": _encoder_license(config.encoder),
         "classifier": "class-balanced multinomial logistic regression",
         "selected_C": float(best_classifier.C),
         "temperature": temperature,
@@ -199,7 +230,7 @@ def train_bracs_model(config: TrainingConfig) -> dict[str, Any]:
             "torchscript": artifact_path.name,
             "torchscript_sha256": sha256(artifact_path),
             "test_predictions": predictions_path.name,
-            "feature_cache": "feature_cache.npz",
+            "feature_cache": f"feature_cache_{config.encoder}.npz",
         },
         "intended_use": "research and education; not for clinical diagnosis",
         "test_split_touched_once_after_validation_selection": True,
@@ -214,11 +245,9 @@ def train_bracs_model(config: TrainingConfig) -> dict[str, Any]:
         "coarse_groups": COARSE_GROUP,
         "temperature": temperature,
         "review_threshold": float(review["threshold"]),
+        "review_policy": review,
         "image_size": 224,
-        "normalization": {
-            "mean": [0.485, 0.456, 0.406],
-            "std": [0.229, 0.224, 0.225],
-        },
+        "normalization": _normalization(config.encoder),
         "torchscript": artifact_path.name,
         "torchscript_sha256": sha256(artifact_path),
         "views_manifest_sha256": result["dataset_artifacts"]["views_manifest_sha256"],
@@ -254,7 +283,7 @@ def _features(
     output_root: Path,
     config: TrainingConfig,
 ) -> dict[str, np.ndarray]:
-    cache = output_root / "feature_cache.npz"
+    cache = output_root / f"feature_cache_{config.encoder}.npz"
     views_hash = sha256(views_root / "views.jsonl")
     if cache.is_file():
         loaded = np.load(cache, allow_pickle=False)
@@ -278,16 +307,16 @@ def _features(
             splits.append(record["split"])
             labels.append(LABEL_TO_INDEX[record["label"]])
             views.append(view_name)
-    encoder = MobileNetFeatureEncoder(pretrained=True).eval()
+    encoder, feature_dimension, transform = _encoder(config.encoder)
     for parameter in encoder.parameters():
         parameter.requires_grad_(False)
     loader = DataLoader(
-        ViewDataset(paths),
+        ViewDataset(paths, transform),
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=0,
     )
-    features = np.empty((len(paths), 1024), dtype=np.float32)
+    features = np.empty((len(paths), feature_dimension), dtype=np.float32)
     with torch.inference_mode():
         for batch, indices in loader:
             values = encoder(batch).cpu().numpy().astype(np.float32, copy=False)
@@ -413,10 +442,13 @@ def _baselines(
 
 
 def _export_model(
-    classifier: LogisticRegression, scaler: StandardScaler, artifact_path: Path
+    classifier: LogisticRegression,
+    scaler: StandardScaler,
+    artifact_path: Path,
+    encoder_name: str,
 ) -> None:
-    encoder = MobileNetFeatureEncoder(pretrained=True).eval()
-    model = MobileNetViewClassifier(encoder, len(LABELS)).eval()
+    encoder, feature_dimension, _ = _encoder(encoder_name)
+    model = nn.Sequential(encoder, nn.Linear(feature_dimension, len(LABELS))).eval()
     coefficient = (
         classifier.coef_.astype(np.float32) / scaler.scale_.astype(np.float32)[None, :]
     )
@@ -426,10 +458,63 @@ def _export_model(
         / scaler.scale_.astype(np.float32)[None, :]
     ).sum(axis=1)
     with torch.no_grad():
-        model.head.weight.copy_(torch.from_numpy(coefficient))
-        model.head.bias.copy_(torch.from_numpy(bias))
+        model[1].weight.copy_(torch.from_numpy(coefficient))
+        model[1].bias.copy_(torch.from_numpy(bias))
     traced = torch.jit.trace(model, torch.zeros((1, 3, 224, 224), dtype=torch.float32))
     torch.jit.save(traced, artifact_path)
+
+
+def _encoder(name: str) -> tuple[nn.Module, int, Any]:
+    if name == "mobilenet":
+        return MobileNetFeatureEncoder(pretrained=True).eval(), 1024, tensor_transform()
+    if name == KAIKO_ENCODER_ID:
+        return (
+            load_kaiko_encoder().eval(),
+            384,
+            tensor_transform((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        )
+    if name == "fusion":
+        return (
+            FusionFeatureEncoder().eval(),
+            1408,
+            tensor_transform((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+        )
+    raise ValueError(f"unsupported encoder: {name}")
+
+
+def _normalization(name: str) -> dict[str, list[float]]:
+    if name == KAIKO_ENCODER_ID:
+        return {"mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5]}
+    if name == "fusion":
+        return {"mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0]}
+    return {
+        "mean": [0.485, 0.456, 0.406],
+        "std": [0.229, 0.224, 0.225],
+    }
+
+
+def _model_name(name: str) -> str:
+    if name == KAIKO_ENCODER_ID:
+        return "PathLab BRACS Kaiko ViT-S/16 Transfer v1"
+    if name == "fusion":
+        return "PathLab BRACS Pathology-ImageNet Fusion v1"
+    return "PathLab BRACS MobileNetV3-Small Transfer v1"
+
+
+def _encoder_source(name: str) -> str:
+    if name == KAIKO_ENCODER_ID:
+        return KAIKO_ENCODER_SOURCE
+    if name == "fusion":
+        return f"{WEIGHTS_ID} + {KAIKO_ENCODER_SOURCE}"
+    return WEIGHTS_ID
+
+
+def _encoder_license(name: str) -> str:
+    if name == KAIKO_ENCODER_ID:
+        return KAIKO_ENCODER_LICENSE
+    if name == "fusion":
+        return "Torchvision BSD-3-Clause and Kaiko non-commercial research license"
+    return "Torchvision BSD-3-Clause; ImageNet weights terms apply"
 
 
 def _selective_metrics(
