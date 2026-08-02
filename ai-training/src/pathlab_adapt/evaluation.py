@@ -114,8 +114,8 @@ def bootstrap_relative_brier_improvement(
 ) -> BootstrapInterval:
     """Learner-cluster bootstrap of relative Brier improvement."""
 
-    if iterations < 20:
-        raise ValueError("bootstrap requires at least 20 iterations")
+    if not 20 <= iterations <= 10_000:
+        raise ValueError("bootstrap iterations must be between 20 and 10,000")
     if len(candidate) != len(baseline):
         raise ValueError("candidate and baseline predictions must align")
     for left, right in zip(candidate, baseline):

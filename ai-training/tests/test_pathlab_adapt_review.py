@@ -16,7 +16,11 @@ from pathlab_adapt.benchmark import (
     ordered_event_digest,
 )
 from pathlab_adapt.distillation import DistillationConfig, multitask_distillation_loss
-from pathlab_adapt.evaluation import Prediction, evaluate_predictions
+from pathlab_adapt.evaluation import (
+    Prediction,
+    bootstrap_relative_brier_improvement,
+    evaluate_predictions,
+)
 from pathlab_adapt.export import validate_export_paths
 from pathlab_adapt.io import sha256_file, write_json_atomic, write_jsonl_atomic
 from pathlab_adapt.license import LicenseEntry, LicenseLedger, sha256_path
@@ -101,7 +105,7 @@ class CriticalApprovalTests(unittest.TestCase):
                 )
             self.assertFalse(output.exists())
 
-    def test_verified_artifact_recomputes_metrics_and_binds_every_digest(self) -> None:
+    def test_fake_model_events_splits_predictions_and_resources_never_approve(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "oulad-source.csv"
@@ -280,29 +284,25 @@ class CriticalApprovalTests(unittest.TestCase):
                 split_manifest_path=split_path,
                 output_path=manifest_path,
             )
-            self.assertTrue(verified.verified_approved)
-            self.assertEqual(verified.payload["approval_status"], "approved")
-            self.assertEqual(
-                verified.payload["verified_provenance"]["benchmark_sha256"],
-                sha256_file(benchmark_path),
-            )
+            self.assertFalse(verified.verified_approved)
+            self.assertEqual(verified.payload["approval_status"], "not_approved")
             policy = ControllerPolicy(max_ood_score=0.5, max_uncertainty=0.4)
             self.assertEqual(
                 policy.decide(
                     UncertaintySignal(0.1, 0.1), approved_manifest=verified
                 ).delivery_mode,
-                "adaptive",
+                "fixed_order",
             )
             model.write_bytes(b"tampered")
-            with self.assertRaisesRegex(ValueError, "model hash or size"):
-                issue_verified_manifest(
-                    benchmark_path=benchmark_path,
-                    model_path=model,
-                    license_ledger_path=ledger_path,
-                    dataset_manifest_path=dataset_path,
-                    split_manifest_path=split_path,
-                    output_path=root / "tampered-manifest.json",
-                )
+            tampered = issue_verified_manifest(
+                benchmark_path=benchmark_path,
+                model_path=model,
+                license_ledger_path=ledger_path,
+                dataset_manifest_path=dataset_path,
+                split_manifest_path=split_path,
+                output_path=root / "tampered-manifest.json",
+            )
+            self.assertFalse(tampered.verified_approved)
 
 
 class ChronologyAndSplitTests(unittest.TestCase):
@@ -344,6 +344,16 @@ class EfficientEvaluationTests(unittest.TestCase):
         self.assertEqual(metrics.observations, 10_000)
         self.assertTrue(0.0 <= metrics.auroc <= 1.0)
 
+    def test_bootstrap_iterations_are_hard_bounded(self) -> None:
+        rows = [
+            Prediction(f"event-{index}", f"learner-{index}", bool(index % 2), 0.8 if index % 2 else 0.2)
+            for index in range(20)
+        ]
+        with self.assertRaisesRegex(ValueError, "10,000"):
+            bootstrap_relative_brier_improvement(
+                rows, [replace(item, probability=0.6 if item.target else 0.4) for item in rows], iterations=10_001
+            )
+
 
 class LicenseControllerAndOptionalTests(unittest.TestCase):
     def test_license_entry_validates_actual_artifact_and_structured_permissions(self) -> None:
@@ -376,6 +386,12 @@ class LicenseControllerAndOptionalTests(unittest.TestCase):
         decision = policy.decide(UncertaintySignal(ood_score=0.1, uncertainty=0.1))
         self.assertEqual(decision.delivery_mode, "fixed_order")
         self.assertEqual(decision.reason, "approved_manifest_required")
+        fake = type("FakeApproval", (), {"verified_approved": True})()
+        forged = policy.decide(
+            UncertaintySignal(ood_score=0.1, uncertainty=0.1),
+            approved_manifest=fake,
+        )
+        self.assertEqual(forged.delivery_mode, "fixed_order")
 
     def test_distillation_rejects_missing_prespecified_head_before_optional_runtime(self) -> None:
         outputs = {name: object() for name in ("retention", "effort", "calibration")}

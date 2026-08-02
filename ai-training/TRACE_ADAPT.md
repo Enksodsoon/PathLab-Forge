@@ -48,6 +48,10 @@ The dataset manifest binds the adapted event artifact, real source artifacts,
 and structured license permissions. The split manifest binds train/validation/
 test key artifacts for both learner-disjoint and time-forward protocols, their
 seeds, ordered event digests, counts, and recomputed leakage audit.
+The approval verifier parses every canonical event (including its source and
+boolean target), derives dataset kind/count from those events, reruns both split
+algorithms, and compares every partition digest. Caller-written counts, targets,
+split rows, source kinds, and leakage status are never release authority.
 
 Benchmark evidence is evaluated in a fixed gate order with a maximum 100,000-row
 evaluation cohort. Six prediction files are aligned in one streamed pass:
@@ -72,9 +76,13 @@ Missing or failed evidence emits `fixed_order` delivery and `not_approved`.
 Loose/manual evidence can produce only an unapproved diagnostic manifest.
 Approval requires the v2 verified benchmark, actual model/prediction hashes,
 finite recomputed metrics, all four baselines, matching license/source/dataset/
-split digests, and a verifier-issued runtime seal. The controller accepts only
-that verified object; an absent or persisted-but-unverified dictionary is fixed
-order.
+split digests, actual optional inference/export validation, and a verifier-owned
+runtime that generates predictions from the model. It then requires a signed,
+immutable runtime attestation bound to every digest and passed gate. The base
+runtime cannot create this attestation and therefore always emits
+`not_approved`. The controller accepts only the exact signed attestation type
+verified by its issuing authority; absent, unapproved, persisted dictionaries,
+and duck-typed objects are fixed order.
 Candidate size is selected from the measured Pareto frontier; there is no
 hard-coded 3M, 8M, or 15M preference. ONNX export remains unapproved until the
 same versioned manifest records all passed gates, hashes, quantization, runtime,
@@ -90,3 +98,7 @@ It exercises actual parameter counts, a 256-event forward pass, four output-head
 shapes, distillation loss, int8 export, and ONNX Runtime when available. Missing
 optional dependencies are reported as `unverified_missing_dependencies`, never
 as a pass or model approval.
+
+Dataset and weight redistribution are separate manifest policies derived from
+every validated license entry. An EdNet-enhanced dataset always forces weight
+redistribution off even if a caller supplies contrary text or export metadata.

@@ -45,10 +45,19 @@ class ControllerPolicy:
         proposed_action: str = "continue",
         *,
         approved_manifest: object | None = None,
+        approval_attestation: object | None = None,
+        approval_authority: object | None = None,
     ) -> ControllerDecision:
         if proposed_action not in CONTROL_ACTIONS:
             raise ValueError("proposed action is outside the fixed controller action set")
-        if not bool(getattr(approved_manifest, "verified_approved", False)):
+        from .approval import ApprovalAuthority, SignedApprovalAttestation
+
+        authorized = (
+            isinstance(approval_attestation, SignedApprovalAttestation)
+            and isinstance(approval_authority, ApprovalAuthority)
+            and approval_authority.verify(approval_attestation)
+        )
+        if not authorized:
             return ControllerDecision("pause", "fixed_order", "approved_manifest_required")
         if signal.ood_score > self.max_ood_score:
             return ControllerDecision("pause", "fixed_order", "out_of_distribution")
