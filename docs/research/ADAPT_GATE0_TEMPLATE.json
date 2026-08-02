@@ -1,0 +1,27 @@
+{
+  "schema_version": "NoveltyReviewTemplateV1",
+  "completion_required": "Faculty investigators must replace every unrun status, add exact queries, dates, stable result IDs, structured screening decisions and reasons, then sign the freeze. This template is not a completed search.",
+  "adjacent_evidence_identifiers_from_plan": [
+    "doi:10.1186/s13000-016-0452-z",
+    "PMID:26110095",
+    "doi:10.1186/s12909-026-09002-3"
+  ],
+  "evidence_completion_note": "Identifiers are seed leads only. Exact source spans, study-design tags, allowed wording, verification timestamps and investigator signoff are intentionally blank and must not be inferred.",
+  "queries": [
+    {"database": "pubmed", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "pmc", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "crossref", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "openalex", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "arxiv", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "ieee-xplore", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "acm-digital-library", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "scopus", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "web-of-science", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "trial-registries", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "wipo-patentscope", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "google-patents", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []},
+    {"database": "product-documentation", "query": "", "status": "unrun", "run_date": "", "result_ids": [], "screenings": []}
+  ],
+  "reviewer": "",
+  "signed_at": ""
+}

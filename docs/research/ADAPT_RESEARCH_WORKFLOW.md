@@ -7,7 +7,8 @@ the records; the local institutional authority decides approval.
 
 ## Gate 0: formal novelty review
 
-Create one exact, dated query and screening record for every source below.
+Start from `ADAPT_GATE0_TEMPLATE.json`. Create one exact, dated query and
+screening record for every source below.
 Record stable result identifiers, inclusion/exclusion decisions, reasons, the
 reviewer, and source locations. A source that cannot be accessed—especially a
 subscription database—must be recorded as `unavailable` with its reason. Do not
@@ -29,13 +30,14 @@ describe an unavailable source as searched.
 | Google Patents | `google-patents` |
 | Product documentation | `product-documentation` |
 
-The software does not claim these searches have been run. A formal review must
+The seed template marks every source `unrun`; it cannot be frozen or used for a
+novelty claim. The software does not claim these searches have been run. A formal review must
 be performed and signed by investigators. Until then, the strongest permitted
 novelty wording is “to our knowledge.” “First ever” is blocked.
 
 ## Evidence registry
 
-Every manuscript claim is keyed to a DOI or PMID, exact source location or span,
+Every manuscript claim is keyed to a strictly formatted DOI or PMID, exact source location or span,
 study-design tag, allowed wording, investigator signoff, and verification date.
 Unknown citation IDs and investigator-entered numbers are rejected. Generated
 numbers come only from frozen analysis rows and are mapped in `tables.json`.
@@ -67,11 +69,17 @@ After freezing a JSON config and all input artifacts:
 pathlab-adapt reproduce-study --config .\study.json --output-dir .\frozen-output
 ```
 
-The output directory must be empty. The command writes the immutable snapshot,
+The output directory must not exist. The command validates bounded inputs first,
+writes to a temporary sibling, and atomically renames only after every hash and
+size gate passes. It writes the immutable snapshot,
 machine-readable table and figure data, IMRaD draft, limitations, investigator
 dossier, supplement, safe-AI sequence, and a hash-verifying reproduction
 manifest. Re-running against identical inputs in a different empty directory
 produces identical artifact hashes.
+
+Safe-AI literacy output is `pending_faculty_evidence` with no sequence unless a
+signed verified-true evidence record and a separately approved unrelated-source
+record are both present. Placeholder approval-like identifiers are forbidden.
 
 No command in this workflow performs paper submission, deployment, production
 activation, or external data transfer.
