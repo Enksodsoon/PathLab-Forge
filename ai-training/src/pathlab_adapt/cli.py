@@ -111,6 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export.add_argument("--sample-context", type=int, default=16)
     export.add_argument("--metadata-output", required=True, type=Path)
+
+    reproduce = commands.add_parser("reproduce-study")
+    reproduce.add_argument("--config", required=True, type=Path)
+    reproduce.add_argument("--output-dir", required=True, type=Path)
     return parser
 
 
@@ -416,6 +420,13 @@ def main(argv: list[str] | None = None) -> int:
             metadata["configuration"] = asdict(config)
             write_json_atomic(args.metadata_output, metadata)
             print(json.dumps(metadata, sort_keys=True))
+            return 0
+
+        if args.command == "reproduce-study":
+            from .reproduce import reproduce_study
+
+            result = reproduce_study(args.config, args.output_dir)
+            print(json.dumps(result, sort_keys=True))
             return 0
     except (OSError, ValueError, RuntimeError, TypeError, json.JSONDecodeError) as error:
         print(f"pathlab-adapt failed: {error}", file=sys.stderr)
