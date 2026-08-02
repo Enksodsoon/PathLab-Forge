@@ -15,6 +15,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -78,6 +79,10 @@ public final class StudyPackRepository {
         return body;
     }
 
+    public List<StudyPackSlide> viewerSlides(String body) {
+        return validate(body).slides();
+    }
+
     public List<StudyPackRecord> list() throws IOException {
         if (!Files.isDirectory(root)) return List.of();
         try (var files = Files.list(root)) {
@@ -139,6 +144,7 @@ public final class StudyPackRepository {
         stringArray(root, "objectives", 100);
         var slides = requiredArray(root, "slides", 100);
         var slideIds = new HashSet<String>();
+        var slideReferences = new ArrayList<StudyPackSlide>();
         for (var slide : slides) {
             requireObject(slide, "slide");
             rejectUnknown(slide, SLIDE_FIELDS, "slide");
@@ -146,8 +152,9 @@ public final class StudyPackRepository {
             if (!slideIds.add(id)) throw new IllegalArgumentException("Viewer slide IDs must be unique");
             var checksum = text(slide, "sha256");
             if (!checksum.matches("[a-f0-9]{64}")) throw new IllegalArgumentException("Slide checksum is invalid");
-            text(slide, "displayName");
-            text(slide, "license");
+            var displayName = text(slide, "displayName");
+            var license = text(slide, "license");
+            slideReferences.add(new StudyPackSlide(id, checksum, displayName, license));
         }
         var tasks = requiredArray(root, "tasks", MAX_TASKS);
         if (tasks.isEmpty()) throw new IllegalArgumentException("Study Pack needs at least one task");
@@ -181,7 +188,8 @@ public final class StudyPackRepository {
                 }
             }
         }
-        return new ValidatedPack(packKey, version, title, sha256(body), masteryEligible);
+        return new ValidatedPack(packKey, version, title, sha256(body), masteryEligible,
+                List.copyOf(slideReferences));
     }
 
     private static JsonNode requiredArray(JsonNode node, String name, int maximum) {
@@ -274,6 +282,12 @@ public final class StudyPackRepository {
         } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
-    private record ValidatedPack(String packKey, int version, String title, String checksum, boolean masteryEligible) {}
-    private static final class StudyPackReadException extends RuntimeException { StudyPackReadException(IOException cause) { super(cause); } }
+    public record StudyPackSlide(String viewerSlideId, String sha256, String displayName, String license) {}
+    private record ValidatedPack(String packKey, int version, String title, String checksum,
+            boolean masteryEligible, List<StudyPackSlide> slides) {}
+    private static final class StudyPackReadException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        StudyPackReadException(IOException cause) { super(cause); }
+    }
 }

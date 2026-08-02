@@ -29,6 +29,13 @@ public final class StudyPackAuthoringService {
         if (association == null || !association.datasetId().equals(approvedManifest.datasetId())) {
             throw new IllegalArgumentException("Viewer slide association does not match the PIVOT dataset");
         }
+        if (!approvedManifest.inputRevision().equals("artifact:" + association.artifactRevisionId())) {
+            throw new IllegalArgumentException("Viewer slide transform does not match the PIVOT artifact revision");
+        }
+        if ((long) association.cropX() + association.cropWidth() > approvedManifest.sourceWidth()
+                || (long) association.cropY() + association.cropHeight() > approvedManifest.sourceHeight()) {
+            throw new IllegalArgumentException("Viewer slide transform escapes the PIVOT source image");
+        }
         requireText(packKey, "packKey");
         requireText(title, "title");
         requireText(courseId, "courseId");
@@ -40,7 +47,7 @@ public final class StudyPackAuthoringService {
         }
 
         var tasks = approvedManifest.tasks().stream()
-                .map(task -> spatialTask(task, association.viewerSlideId(), approvedManifest, author, license, revision))
+                .map(task -> spatialTask(task, association, approvedManifest, author, license, revision))
                 .collect(java.util.stream.Collectors.joining(","));
         return "{\"schema\":\"pathlab.study-pack/1\",\"packKey\":" + json(packKey)
                 + ",\"version\":" + version + ",\"title\":" + json(title)
@@ -55,20 +62,24 @@ public final class StudyPackAuthoringService {
 
     private static String spatialTask(
             PivotTask task,
-            String viewerSlideId,
+            ViewerSlideAssociation association,
             PivotManifest manifest,
             String author,
             String license,
             String revision) {
-        var x = normalized(task.targetX(), manifest.sourceWidth());
-        var y = normalized(task.targetY(), manifest.sourceHeight());
-        var width = normalized(task.targetWidth(), manifest.sourceWidth());
-        var height = normalized(task.targetHeight(), manifest.sourceHeight());
+        var viewerX = (task.targetX() - association.cropX()) / association.downsample();
+        var viewerY = (task.targetY() - association.cropY()) / association.downsample();
+        var viewerWidth = task.targetWidth() / association.downsample();
+        var viewerHeight = task.targetHeight() / association.downsample();
+        var x = normalized(viewerX, association.viewerWidth());
+        var y = normalized(viewerY, association.viewerHeight());
+        var width = normalized(viewerWidth, association.viewerWidth());
+        var height = normalized(viewerHeight, association.viewerHeight());
         if (width <= 0 || height <= 0 || x + width > 1.000000001 || y + height > 1.000000001) {
-            throw new IllegalArgumentException("PIVOT target escapes source bounds");
+            throw new IllegalArgumentException("PIVOT target escapes the persisted Viewer crop");
         }
         return "{\"type\":\"spatial\",\"id\":" + json(task.id())
-                + ",\"slideId\":" + json(viewerSlideId)
+                + ",\"slideId\":" + json(association.viewerSlideId())
                 + ",\"prompt\":\"Locate the approved source region\""
                 + ",\"targetX\":" + x
                 + ",\"targetY\":" + y
@@ -81,7 +92,7 @@ public final class StudyPackAuthoringService {
                 + ",\"revision\":" + json(revision) + "}";
     }
 
-    private static double normalized(double value, int extent) {
+    private static double normalized(double value, double extent) {
         var normalized = value / extent;
         if (!Double.isFinite(normalized) || normalized < 0 || normalized > 1) {
             throw new IllegalArgumentException("PIVOT coordinate escapes source bounds");

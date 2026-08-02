@@ -13,6 +13,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import org.junit.jupiter.api.io.TempDir;
+import org.pathlab.forge.adapt.ViewerSlideAssociation;
+import org.pathlab.forge.adapt.ViewerSlideAssociationRepository;
 import org.pathlab.forge.library.PropertiesDatasetRepository;
 import org.junit.jupiter.api.Test;
 
@@ -148,6 +150,49 @@ final class ForgeServerTest {
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(413, oversized.statusCode());
             assertTrue(oversized.body().contains("request_too_large"));
+        }
+    }
+
+    @Test
+    void rejectsGenericStudyPackThatBypassesPersistedViewerSlideAssociations() throws Exception {
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        try (var server = startEphemeral()) {
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var csrf = session.headers().firstValue("x-forge-csrf").orElseThrow();
+            var body = "{\"schema\":\"pathlab.study-pack/1\",\"packKey\":\"bypass\","
+                    + "\"version\":1,\"title\":\"Bypass\",\"courseId\":\"course\","
+                    + "\"objectives\":[\"x\"],\"slides\":[{\"viewerSlideId\":\"arbitrary-slide\","
+                    + "\"sha256\":\"" + "a".repeat(64) + "\",\"displayName\":\"Arbitrary\","
+                    + "\"license\":\"L\"}],\"tasks\":[{\"type\":\"keyed\",\"id\":\"t\","
+                    + "\"slideId\":\"arbitrary-slide\",\"prompt\":\"P\",\"answerKey\":\"A\","
+                    + "\"keyApproval\":\"faculty-approved\",\"source\":\"S\",\"author\":\"A\","
+                    + "\"license\":\"L\",\"revision\":\"R\"}]}";
+            var response = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/v2/desktop/adapt/packs"))
+                            .header("Origin", server.baseUri().toString())
+                            .header("X-Forge-CSRF", csrf)
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(422, response.statusCode());
+            assertTrue(response.body().contains("persisted Viewer slide association"));
+
+            new ViewerSlideAssociationRepository(temp.resolve("managed-0")).record(
+                    new ViewerSlideAssociation("dataset", "arbitrary-slide", "a".repeat(64),
+                            "Arbitrary", "L", "artifact", 0, 0, 1_000, 800, 1, 1_000, 800));
+            var associated = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/v2/desktop/adapt/packs"))
+                            .header("Origin", server.baseUri().toString())
+                            .header("X-Forge-CSRF", csrf)
+                            .POST(HttpRequest.BodyPublishers.ofString(body))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(201, associated.statusCode());
         }
     }
 

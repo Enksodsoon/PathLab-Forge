@@ -17,12 +17,16 @@ final class AdaptAuthorizationRepositoryTest {
     void persistsExactDatasetViewerAssociationAndRejectsArbitrarySlide() throws Exception {
         var repository = new ViewerSlideAssociationRepository(temp);
         repository.record(new ViewerSlideAssociation(
-                "dataset-1", "viewer-1", "a".repeat(64), "Teaching", "CC BY 4.0", "artifact-1"));
+                "dataset-1", "viewer-1", "a".repeat(64), "Teaching", "CC BY 4.0", "artifact-1",
+                100, 200, 3_000, 2_000, 2, 1_500, 1_000));
 
         assertEquals("viewer-1", repository.require("dataset-1", "viewer-1").viewerSlideId());
         assertThrows(IllegalArgumentException.class, () -> repository.require("dataset-1", "viewer-2"));
         assertEquals("viewer-1", new ViewerSlideAssociationRepository(temp)
                 .require("dataset-1", "viewer-1").viewerSlideId());
+        assertEquals(100, repository.require("dataset-1", "viewer-1").cropX());
+        assertEquals(1_500, repository.require("dataset-1", "viewer-1").viewerWidth());
+        assertEquals(2, repository.require("dataset-1", "viewer-1").downsample());
     }
 
     @Test

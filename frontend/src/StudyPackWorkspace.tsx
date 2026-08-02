@@ -108,9 +108,10 @@ export function StudyPackWorkspace({ datasets, onClose }: { datasets: WorkspaceD
 
   const publish = async () => {
     if (!saved) return
-    setBusy(true); setError('')
-    try { const published = await api.publishStudyPack(saved.checksum); setNotice(`Privately published as ${published.id}`) }
-    catch (nextError) { setError(message(nextError)) } finally { setBusy(false) }
+    const checksum = saved.checksum
+    setSaved(undefined); setBusy(true); setError(''); setNotice('')
+    try { const published = await api.publishStudyPack(checksum); setNotice(`Privately published as ${published.id}`) }
+    catch (nextError) { setSaved(undefined); setError(message(nextError)) } finally { setBusy(false) }
   }
 
   return <main className="forge-study-pack" aria-label="Study Pack authoring">

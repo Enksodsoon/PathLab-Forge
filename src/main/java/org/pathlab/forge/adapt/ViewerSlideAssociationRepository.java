@@ -29,6 +29,13 @@ public final class ViewerSlideAssociationRepository {
         values.setProperty("displayName", association.displayName());
         values.setProperty("license", association.license());
         values.setProperty("artifactRevisionId", association.artifactRevisionId());
+        values.setProperty("cropX", Integer.toString(association.cropX()));
+        values.setProperty("cropY", Integer.toString(association.cropY()));
+        values.setProperty("cropWidth", Integer.toString(association.cropWidth()));
+        values.setProperty("cropHeight", Integer.toString(association.cropHeight()));
+        values.setProperty("downsample", Double.toString(association.downsample()));
+        values.setProperty("viewerWidth", Integer.toString(association.viewerWidth()));
+        values.setProperty("viewerHeight", Integer.toString(association.viewerHeight()));
         write(target, values);
         return association;
     }
@@ -46,10 +53,26 @@ public final class ViewerSlideAssociationRepository {
         var result = new ArrayList<ViewerSlideAssociation>();
         try (var paths = Files.list(root)) {
             for (var path : paths.filter(value -> value.getFileName().toString().endsWith(".properties")).toList()) {
-                result.add(read(path));
+                try {
+                    result.add(read(path));
+                } catch (IllegalArgumentException staleOrInvalid) {
+                    // Fail closed: legacy links without an exact transform must be re-associated.
+                }
             }
         }
         return List.copyOf(result);
+    }
+
+    public ViewerSlideAssociation requireLinkedSlide(
+            String viewerSlideId, String sha256, String displayName, String license) throws IOException {
+        return list().stream()
+                .filter(item -> item.viewerSlideId().equals(viewerSlideId)
+                        && item.sha256().equals(sha256)
+                        && item.displayName().equals(displayName)
+                        && item.license().equals(license))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Study Pack slide lacks an exact persisted Viewer slide association"));
     }
 
     private ViewerSlideAssociation read(Path target) throws IOException {
@@ -58,7 +81,9 @@ public final class ViewerSlideAssociationRepository {
         try (var reader = Files.newBufferedReader(target, StandardCharsets.UTF_8)) { values.load(reader); }
         return new ViewerSlideAssociation(values.getProperty("datasetId"), values.getProperty("viewerSlideId"),
                 values.getProperty("sha256"), values.getProperty("displayName"), values.getProperty("license"),
-                values.getProperty("artifactRevisionId"));
+                values.getProperty("artifactRevisionId"), integer(values, "cropX"), integer(values, "cropY"),
+                integer(values, "cropWidth"), integer(values, "cropHeight"), decimal(values, "downsample"),
+                integer(values, "viewerWidth"), integer(values, "viewerHeight"));
     }
 
     private Path target(String datasetId) {
@@ -79,5 +104,15 @@ public final class ViewerSlideAssociationRepository {
     private static String hash(String value) {
         try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
         catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private static int integer(Properties values, String name) {
+        try { return Integer.parseInt(values.getProperty(name, "")); }
+        catch (NumberFormatException error) { throw new IllegalArgumentException("Viewer slide transform is invalid", error); }
+    }
+
+    private static double decimal(Properties values, String name) {
+        try { return Double.parseDouble(values.getProperty(name, "")); }
+        catch (NumberFormatException error) { throw new IllegalArgumentException("Viewer slide transform is invalid", error); }
     }
 }

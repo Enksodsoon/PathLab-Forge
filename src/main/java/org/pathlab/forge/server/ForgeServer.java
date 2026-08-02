@@ -647,7 +647,9 @@ public final class ForgeServer implements AutoCloseable {
                                 ? revision.packageSha256() : revision.omeSha256();
                         viewerSlideAssociationRepository.record(new ViewerSlideAssociation(
                                 dataset.id(), upload.viewerSlideId(), checksum, dataset.displayName(),
-                                "institution-restricted", revision.id()));
+                                "institution-restricted", revision.id(), dataset.cropX(), dataset.cropY(),
+                                dataset.cropWidth(), dataset.cropHeight(), dataset.downsample(),
+                                revision.outputWidth(), revision.outputHeight()));
                     } catch (IllegalArgumentException | IllegalStateException ignored) {
                         // Status remains readable; authoring stays locked until association succeeds.
                     }
@@ -690,7 +692,12 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         try {
-            var pack = studyPackRepository.save(new String(bytes, StandardCharsets.UTF_8));
+            var body = new String(bytes, StandardCharsets.UTF_8);
+            for (var slide : studyPackRepository.viewerSlides(body)) {
+                viewerSlideAssociationRepository.requireLinkedSlide(
+                        slide.viewerSlideId(), slide.sha256(), slide.displayName(), slide.license());
+            }
+            var pack = studyPackRepository.save(body);
             respond(exchange, 201, "application/json", studyPackJson(pack));
         } catch (IOException | IllegalArgumentException error) {
             respond(

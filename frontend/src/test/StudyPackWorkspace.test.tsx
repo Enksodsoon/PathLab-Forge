@@ -49,6 +49,31 @@ test('imports a real QTI key with provenance, saves it, then publishes the immut
   await waitFor(() => expect(api.publishStudyPack).toHaveBeenCalledWith('a'.repeat(64)))
 })
 
+test('invalidates the saved checksum when private publication fails', async () => {
+  vi.mocked(api.saveStudyPack).mockResolvedValue({
+    packKey: 'failure', version: 1, title: 'Failure', checksum: 'c'.repeat(64), masteryEligible: true,
+  })
+  vi.mocked(api.publishStudyPack).mockRejectedValue(new Error('Viewer unavailable'))
+  render(<StudyPackWorkspace datasets={[{ id: 'local-one', displayName: 'Teaching slide' }]} onClose={vi.fn()} />)
+  fireEvent.change(screen.getByLabelText('Pack key'), { target: { value: 'failure' } })
+  fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Failure' } })
+  fireEvent.change(screen.getByLabelText('Course ID'), { target: { value: 'course' } })
+  fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'Faculty' } })
+  fireEvent.change(screen.getByLabelText('Author'), { target: { value: 'Dr R' } })
+  fireEvent.change(screen.getByLabelText('License'), { target: { value: 'L' } })
+  fireEvent.change(screen.getByLabelText('Revision'), { target: { value: 'R' } })
+  await screen.findByRole('option', { name: /Teaching slide/ })
+  const csv = new File(['prompt,answer\nP,A'], 'cards.csv', { type: 'text/csv' })
+  Object.defineProperty(csv, 'text', { value: async () => 'prompt,answer\nP,A' })
+  fireEvent.change(screen.getByLabelText('Import content'), { target: { files: [csv] } })
+  await screen.findByText('P')
+  fireEvent.click(screen.getByRole('button', { name: 'Save immutable version' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Publish privately' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Publish privately' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Viewer unavailable')
+  expect(screen.getByRole('button', { name: 'Publish privately' })).toBeDisabled()
+})
+
 test('keeps a quoted CSV answer instead of splitting it into an invented key', async () => {
   const csv = new File(['prompt,answer\n"Where is it?","Upper, left"'], 'cards.csv', { type: 'text/csv' })
   Object.defineProperty(csv, 'text', { value: async () => 'prompt,answer\n"Where is it?","Upper, left"' })
