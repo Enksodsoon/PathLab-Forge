@@ -77,7 +77,9 @@ public final class ViewerPairingService implements AutoCloseable {
         var base = validateBase(viewerUrl);
         var response = sendJson(
                 base.resolve("/api/v1/desktop/pairings"),
-                "{\"deviceName\":\"PathLab Forge on Windows\"}",
+                "{\"deviceName\":\"PathLab Forge on Windows\",\"requestedScopes\":["
+                        + "\"desktop:ingest\",\"slides:private:read\","
+                        + "\"annotations:sync\",\"desktop:research\"]}",
                 "");
         requireStatus(response, 201, "Viewer rejected the pairing request");
         var body = response.body();
@@ -88,7 +90,7 @@ public final class ViewerPairingService implements AutoCloseable {
         var userCode = string(body, "userCode");
         return new ViewerPairing(
                 userCode,
-                base.resolve("/admin/connect?code=" + userCode).toString(),
+                base.resolve("/admin/connect?code=" + userCode + "&research=1").toString(),
                 string(body, "expiresAt"));
     }
 

@@ -40,7 +40,9 @@ final class ViewerPairingServiceTest {
             var base = "http://127.0.0.1:" + viewer.getAddress().getPort();
             var pairing = service.start(base);
             assertEquals("ABCD-EFGH", pairing.userCode());
-            assertEquals(base + "/admin/connect?code=ABCD-EFGH", pairing.verificationUrl());
+            assertEquals(
+                    base + "/admin/connect?code=ABCD-EFGH&research=1",
+                    pairing.verificationUrl());
 
             var connection = service.exchange();
             assertTrue(connection.connected());
@@ -349,6 +351,9 @@ final class ViewerPairingServiceTest {
         int status;
         String body;
         if (path.equals("/api/v1/desktop/pairings")) {
+            var request = new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(request.contains("\"desktop:research\""));
             status = 201;
             body = "{\"deviceCode\":\"device-code\",\"deviceSecret\":\"device-secret\","
                     + "\"userCode\":\"ABCD-EFGH\",\"verificationUrl\":\"http://127.0.0.1:8000"
