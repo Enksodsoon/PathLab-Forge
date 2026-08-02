@@ -24,10 +24,19 @@ model = [
     "torch>=2.9,<3",
     "torchvision>=0.24,<0.25",
 ]
+adapt-model = [
+    "torch>=2.9,<3",
+]
+adapt-export = [
+    "torch>=2.9,<3",
+    "onnx>=1.17,<2",
+    "onnxruntime>=1.20,<2",
+]
 
 [project.scripts]
 pathlab-ai-data = "pathlab_ai_data.cli:main"
 pathlab-ai-model = "pathlab_ai_model.cli:main"
+pathlab-adapt = "pathlab_adapt.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
