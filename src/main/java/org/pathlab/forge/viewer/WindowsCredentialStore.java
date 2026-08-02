@@ -15,9 +15,21 @@ import java.util.Locale;
 import java.util.Optional;
 
 public final class WindowsCredentialStore implements CredentialStore {
-    private static final String TARGET = "PathLab Forge/Viewer desktop credential";
+    public static final String DEFAULT_TARGET = "PathLab Forge/Viewer desktop credential";
     private static final int CRED_TYPE_GENERIC = 1;
     private static final int CRED_PERSIST_LOCAL_MACHINE = 2;
+    private final String target;
+
+    public WindowsCredentialStore() {
+        this(DEFAULT_TARGET);
+    }
+
+    public WindowsCredentialStore(String target) {
+        if (target == null || target.isBlank() || target.length() > 240) {
+            throw new IllegalArgumentException("Windows credential target is invalid");
+        }
+        this.target = target;
+    }
 
     @Override
     public void write(String value) throws IOException {
@@ -27,7 +39,7 @@ public final class WindowsCredentialStore implements CredentialStore {
         blob.write(0, bytes, 0, bytes.length);
         var credential = new Credential();
         credential.type = CRED_TYPE_GENERIC;
-        credential.targetName = new WString(TARGET);
+        credential.targetName = new WString(target);
         credential.credentialBlobSize = bytes.length;
         credential.credentialBlob = blob;
         credential.persist = CRED_PERSIST_LOCAL_MACHINE;
@@ -43,7 +55,7 @@ public final class WindowsCredentialStore implements CredentialStore {
         requireWindows();
         var reference = new PointerByReference();
         if (!CredentialApi.INSTANCE.CredReadW(
-                new WString(TARGET), CRED_TYPE_GENERIC, 0, reference)) {
+                new WString(target), CRED_TYPE_GENERIC, 0, reference)) {
             if (Native.getLastError() == 1168) {
                 return Optional.empty();
             }
@@ -64,7 +76,7 @@ public final class WindowsCredentialStore implements CredentialStore {
     public void delete() throws IOException {
         requireWindows();
         if (!CredentialApi.INSTANCE.CredDeleteW(
-                        new WString(TARGET), CRED_TYPE_GENERIC, 0)
+                        new WString(target), CRED_TYPE_GENERIC, 0)
                 && Native.getLastError() != 1168) {
             throw new IOException("Windows Credential Manager delete failed: " + Native.getLastError());
         }

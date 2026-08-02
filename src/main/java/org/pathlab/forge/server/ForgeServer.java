@@ -123,7 +123,9 @@ public final class ForgeServer implements AutoCloseable {
         viewerPairingService = new ViewerPairingService(
                 Boolean.getBoolean("pathlab.forge.ephemeralViewerCredentials")
                         ? new EphemeralCredentialStore()
-                        : new WindowsCredentialStore());
+                        : new WindowsCredentialStore(System.getProperty(
+                                "pathlab.forge.viewerCredentialTarget",
+                                WindowsCredentialStore.DEFAULT_TARGET)));
     }
 
     public static ForgeServer start() throws IOException {
