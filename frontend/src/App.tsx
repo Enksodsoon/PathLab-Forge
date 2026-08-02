@@ -33,6 +33,7 @@ import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
 import { PivotWorkspace } from './PivotWorkspace'
 import { AiResearchWorkspace } from './AiResearchWorkspace'
+import { StudyPackWorkspace } from './StudyPackWorkspace'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
@@ -78,6 +79,7 @@ export function App() {
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
   const [pivotOpen, setPivotOpen] = useState(false)
   const [aiResearchOpen, setAiResearchOpen] = useState(false)
+  const [studyPackOpen, setStudyPackOpen] = useState(false)
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
 
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
@@ -510,6 +512,15 @@ export function App() {
     ? `/api/datasets/${encodeURIComponent(selected.id)}/preview/slide.dzi?revision=${encodeURIComponent(selected.configurationRevision || String(selected.selectedSeries))}&preview=${DIRECT_PREVIEW_VERSION}`
     : ''
 
+  if (studyPackOpen) {
+    return <StudyPackWorkspace datasets={datasets.map((dataset) => ({
+      id: dataset.id,
+      displayName: dataset.displayName,
+      viewerSlideId: viewerUpload?.artifactRevisionId === dataset.approvedArtifactRevision
+        ? viewerUpload.viewerSlideId : '',
+    }))} onClose={() => setStudyPackOpen(false)} />
+  }
+
   if (aiResearchOpen && selected && aiTileSource) {
     return (
       <AiResearchWorkspace
@@ -594,6 +605,7 @@ export function App() {
               onCreateAnnotation={createLocalAnnotation}
               onTraining={() => setPivotOpen(true)}
               onAiResearch={() => setAiResearchOpen(true)}
+              onStudyPack={() => setStudyPackOpen(true)}
               inspectorOpen={inspectorOpen}
               onInspector={() => setInspectorOpen((current) => !current)}
             />
@@ -901,6 +913,7 @@ function ViewerStage({
   onCreateAnnotation,
   onTraining,
   onAiResearch,
+  onStudyPack,
   inspectorOpen,
   onInspector,
 }: {
@@ -917,6 +930,7 @@ function ViewerStage({
   onCreateAnnotation: (geometry: string) => void
   onTraining: () => void
   onAiResearch: () => void
+  onStudyPack: () => void
   inspectorOpen: boolean
   onInspector: () => void
 }) {
@@ -957,6 +971,9 @@ function ViewerStage({
               </button>
               <button type="button" className="forge-training-button" onClick={onTraining}>
                 <GraduationCap /> PIVOT training
+              </button>
+              <button type="button" className="forge-training-button" onClick={onStudyPack}>
+                <GraduationCap /> Study Pack
               </button>
             </>
           ) : null}

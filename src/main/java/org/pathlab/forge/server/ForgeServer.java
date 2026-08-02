@@ -18,6 +18,10 @@ import java.nio.file.Files;
 import java.util.List;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationRepository;
+import org.pathlab.forge.adapt.AnkiPackageImporter;
+import org.pathlab.forge.adapt.StudyPackAuthoringService;
+import org.pathlab.forge.adapt.StudyPackRecord;
+import org.pathlab.forge.adapt.StudyPackRepository;
 import org.pathlab.forge.ai.AiResearchService;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
@@ -72,6 +76,9 @@ public final class ForgeServer implements AutoCloseable {
     private final PivotRepository pivotRepository;
     private final PivotCompiler pivotCompiler;
     private final PivotService pivotService;
+    private final StudyPackRepository studyPackRepository;
+    private final StudyPackAuthoringService studyPackAuthoringService = new StudyPackAuthoringService();
+    private final AnkiPackageImporter ankiPackageImporter = new AnkiPackageImporter();
     private final ViewerPairingService viewerPairingService;
     private volatile boolean launchTokenAvailable = true;
 
@@ -101,6 +108,7 @@ public final class ForgeServer implements AutoCloseable {
         pivotRepository = new PivotRepository(managedRoot);
         pivotCompiler = new PivotCompiler(pivotRepository, 512, 12);
         pivotService = new PivotService(pivotRepository);
+        studyPackRepository = new StudyPackRepository(managedRoot);
         viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
     }
 
@@ -395,6 +403,21 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteAnnotation(exchange, path);
+            } else if ("/api/v2/desktop/adapt/packs/pivot".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                createPivotStudyPack(exchange);
+            } else if ("/api/v2/desktop/adapt/imports/anki".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                importAnkiPackage(exchange);
+            } else if ("/api/v2/desktop/adapt/packs".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                listStudyPacks(exchange);
+            } else if ("/api/v2/desktop/adapt/packs".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                createStudyPack(exchange);
+            } else if (path.matches("/api/v2/desktop/adapt/packs/[a-f0-9]{64}/publish")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                publishStudyPack(exchange, path);
             } else if ("/api/v2/desktop/ai-research/status".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 aiResearchStatus(exchange);
@@ -600,6 +623,127 @@ public final class ForgeServer implements AutoCloseable {
                 200,
                 "application/json",
                 viewerUploadJson(viewerPairingService.uploadStatus()));
+    }
+
+    private void listStudyPacks(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            respond(
+                    exchange,
+                    200,
+                    "application/json",
+                    "{\"items\":[" + studyPackRepository.list().stream()
+                            .map(ForgeServer::studyPackJson)
+                            .collect(java.util.stream.Collectors.joining(",")) + "]}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    500,
+                    "application/json",
+                    "{\"error\":\"study_pack_read_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void createStudyPack(HttpExchange exchange) throws IOException {
+        var bytes = requireWriteBody(exchange, 4 * 1024 * 1024);
+        if (bytes == null) {
+            return;
+        }
+        try {
+            var pack = studyPackRepository.save(new String(bytes, StandardCharsets.UTF_8));
+            respond(exchange, 201, "application/json", studyPackJson(pack));
+        } catch (IOException | IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"study_pack_invalid\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void createPivotStudyPack(HttpExchange exchange) throws IOException {
+        var bytes = requireWriteBody(exchange, 65_536);
+        if (bytes == null) {
+            return;
+        }
+        try {
+            var input = new String(bytes, StandardCharsets.UTF_8);
+            var datasetId = requiredJsonString(input, "datasetId");
+            var dataset = repository.find(datasetId)
+                    .orElseThrow(() -> new IllegalArgumentException("PIVOT dataset was not found"));
+            var manifest = pivotRepository.findCurrent(dataset)
+                    .orElseThrow(() -> new IllegalArgumentException("Approved PIVOT manifest is unavailable"));
+            var pack = studyPackRepository.save(studyPackAuthoringService.fromApprovedPivot(
+                    manifest,
+                    requiredJsonString(input, "packKey"),
+                    requiredJsonInteger(input, "version"),
+                    requiredJsonString(input, "title"),
+                    requiredJsonString(input, "courseId"),
+                    requiredJsonString(input, "viewerSlideId"),
+                    requiredJsonString(input, "author"),
+                    requiredJsonString(input, "license"),
+                    requiredJsonString(input, "revision"),
+                    requiredJsonBoolean(input, "facultyApproved")));
+            respond(exchange, 201, "application/json", studyPackJson(pack));
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 422, "application/json", "{\"error\":\"pivot_study_pack_invalid\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void importAnkiPackage(HttpExchange exchange) throws IOException {
+        var bytes = requireWriteBody(exchange, 32 * 1024 * 1024);
+        if (bytes == null) {
+            return;
+        }
+        var upload = Files.createTempFile("pathlab-anki-upload-", ".apkg");
+        try {
+            Files.write(upload, bytes);
+            var items = ankiPackageImporter.read(upload).stream()
+                    .map(card -> "{\"id\":" + json(card.id()) + ",\"prompt\":"
+                            + json(card.prompt()) + ",\"answerKey\":" + json(card.answerKey())
+                            + ",\"keyOrigin\":\"imported\"}")
+                    .collect(java.util.stream.Collectors.joining(","));
+            respond(exchange, 200, "application/json", "{\"items\":[" + items + "]}");
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 422, "application/json", "{\"error\":\"anki_import_invalid\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        } finally {
+            Files.deleteIfExists(upload);
+        }
+    }
+
+    private void publishStudyPack(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var prefix = "/api/v2/desktop/adapt/packs/";
+        var checksum = path.substring(prefix.length(), path.length() - "/publish".length());
+        try {
+            var published = viewerPairingService.publishStudyPack(
+                    studyPackRepository.read(checksum));
+            respond(
+                    exchange,
+                    201,
+                    "application/json",
+                    "{\"id\":" + json(published.id())
+                            + ",\"packKey\":" + json(published.packKey())
+                            + ",\"version\":" + published.version()
+                            + ",\"checksum\":" + json(published.checksum())
+                            + ",\"masteryEligible\":" + published.masteryEligible()
+                            + ",\"status\":" + json(published.status()) + "}");
+        } catch (IOException | IllegalArgumentException | IllegalStateException error) {
+            respond(
+                    exchange,
+                    503,
+                    "application/json",
+                    "{\"error\":\"study_pack_publish_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
     }
 
     private void uploadApprovedArtifact(HttpExchange exchange, String id)
@@ -1859,6 +2003,29 @@ public final class ForgeServer implements AutoCloseable {
     }
 
     private boolean requireWrite(HttpExchange exchange) throws IOException {
+        if (!requireWriteHeaders(exchange)) {
+            return false;
+        }
+        if (exchange.getRequestBody().readNBytes(MAX_WRITE_BYTES + 1).length > MAX_WRITE_BYTES) {
+            respond(exchange, 413, "application/json", "{\"error\":\"request_too_large\"}");
+            return false;
+        }
+        return true;
+    }
+
+    private byte[] requireWriteBody(HttpExchange exchange, int maximum) throws IOException {
+        if (!requireWriteHeaders(exchange)) {
+            return null;
+        }
+        var bytes = exchange.getRequestBody().readNBytes(maximum + 1);
+        if (bytes.length > maximum) {
+            respond(exchange, 413, "application/json", "{\"error\":\"request_too_large\"}");
+            return null;
+        }
+        return bytes;
+    }
+
+    private boolean requireWriteHeaders(HttpExchange exchange) throws IOException {
         if (!requireAuthenticated(exchange)) {
             return false;
         }
@@ -1867,10 +2034,6 @@ public final class ForgeServer implements AutoCloseable {
         if (!constantTimeEquals(baseUri.toString(), origin)
                 || !constantTimeEquals(csrfToken, csrf)) {
             respond(exchange, 403, "application/json", "{\"error\":\"forbidden\"}");
-            return false;
-        }
-        if (exchange.getRequestBody().readNBytes(MAX_WRITE_BYTES + 1).length > MAX_WRITE_BYTES) {
-            respond(exchange, 413, "application/json", "{\"error\":\"request_too_large\"}");
             return false;
         }
         return true;
@@ -2063,6 +2226,15 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"detail\":" + json(upload.detail()) + "}";
     }
 
+    private static String studyPackJson(StudyPackRecord pack) {
+        return "{\"packKey\":" + json(pack.packKey())
+                + ",\"version\":" + pack.version()
+                + ",\"title\":" + json(pack.title())
+                + ",\"checksum\":" + json(pack.checksum())
+                + ",\"masteryEligible\":" + pack.masteryEligible()
+                + ",\"status\":\"immutable\"}";
+    }
+
     private static String annotationJson(AnnotationRecord annotation) {
         return "{\"id\":" + json(annotation.id())
                 + ",\"type\":" + json(annotation.type())
@@ -2222,6 +2394,37 @@ public final class ForgeServer implements AutoCloseable {
             }
         }
         return fallback;
+    }
+
+    private static String requiredJsonString(String body, String name) {
+        var match = java.util.regex.Pattern.compile(
+                        "\\\"" + java.util.regex.Pattern.quote(name)
+                                + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"")
+                .matcher(body);
+        if (!match.find()) {
+            throw new IllegalArgumentException("Study Pack request omitted " + name);
+        }
+        return match.group(1).replace("\\\"", "\"").replace("\\\\", "\\").trim();
+    }
+
+    private static int requiredJsonInteger(String body, String name) {
+        var match = java.util.regex.Pattern.compile(
+                        "\\\"" + java.util.regex.Pattern.quote(name) + "\\\"\\s*:\\s*([0-9]+)")
+                .matcher(body);
+        if (!match.find()) {
+            throw new IllegalArgumentException("Study Pack request omitted " + name);
+        }
+        return Integer.parseInt(match.group(1));
+    }
+
+    private static boolean requiredJsonBoolean(String body, String name) {
+        var match = java.util.regex.Pattern.compile(
+                        "\\\"" + java.util.regex.Pattern.quote(name) + "\\\"\\s*:\\s*(true|false)")
+                .matcher(body);
+        if (!match.find()) {
+            throw new IllegalArgumentException("Study Pack request omitted " + name);
+        }
+        return Boolean.parseBoolean(match.group(1));
     }
 
     private static String json(String value) {

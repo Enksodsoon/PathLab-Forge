@@ -222,6 +222,31 @@ public final class ViewerPairingService implements AutoCloseable {
         return uploadStatus;
     }
 
+    public synchronized ViewerStudyPack publishStudyPack(String studyPackJson)
+            throws IOException {
+        if (studyPackJson == null
+                || studyPackJson.isBlank()
+                || studyPackJson.length() > 4 * 1024 * 1024) {
+            throw new IllegalArgumentException("Study Pack is empty or too large");
+        }
+        var credential = storedCredential();
+        if (credential == null) {
+            throw new IllegalStateException("Connect to Viewer before publishing");
+        }
+        var response = sendJson(
+                credential.base().resolve("/api/v1/desktop/research/study-packs"),
+                studyPackJson,
+                "Bearer " + credential.token());
+        requireStatus(response, 201, "Viewer rejected the Study Pack");
+        return new ViewerStudyPack(
+                string(response.body(), "id"),
+                string(response.body(), "packKey"),
+                integer(response.body(), "version"),
+                string(response.body(), "checksum"),
+                booleanValue(response.body(), "masteryEligible"),
+                string(response.body(), "status"));
+    }
+
     private void upload(
             StoredCredential credential,
             ViewerCapabilities capabilities,
@@ -658,6 +683,16 @@ public final class ViewerPairingService implements AutoCloseable {
             return -1;
         }
         return Long.parseLong(match.group(1));
+    }
+
+    private static boolean booleanValue(String json, String key) throws IOException {
+        var pattern = Pattern.compile(
+                "\"" + Pattern.quote(key) + "\"\\s*:\\s*(true|false)");
+        var match = pattern.matcher(json);
+        if (!match.find()) {
+            throw new IOException("Viewer response omitted " + key);
+        }
+        return Boolean.parseBoolean(match.group(1));
     }
 
     @Override

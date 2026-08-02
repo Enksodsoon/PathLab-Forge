@@ -177,6 +177,30 @@ export interface PivotScore {
   session: PivotSession
 }
 
+export interface StudyPackRecord {
+  packKey: string
+  version: number
+  title: string
+  checksum: string
+  masteryEligible: boolean
+}
+
+export interface ViewerStudyPack {
+  id: string
+  packKey: string
+  version: number
+  checksum: string
+  masteryEligible: boolean
+  status: string
+}
+
+export interface ImportedStudyTask {
+  id: string
+  prompt: string
+  answerKey: string
+  keyOrigin: 'imported' | 'faculty-approved'
+}
+
 export interface AiResearchStatus {
   available: boolean
   busy: boolean
@@ -519,6 +543,54 @@ export async function endPivot(id: string) {
     `/api/v2/desktop/datasets/${encodeURIComponent(id)}/pivot/session/end`,
     { method: 'POST' },
   )
+}
+
+export async function studyPacks() {
+  return request<{ items: StudyPackRecord[] }>('/api/v2/desktop/adapt/packs')
+}
+
+export async function saveStudyPack(body: string) {
+  return request<StudyPackRecord>('/api/v2/desktop/adapt/packs', { method: 'POST', body })
+}
+
+export async function publishStudyPack(checksum: string) {
+  return request<ViewerStudyPack>(
+    `/api/v2/desktop/adapt/packs/${encodeURIComponent(checksum)}/publish`,
+    { method: 'POST' },
+  )
+}
+
+export async function exportPivotStudyPack(values: {
+  datasetId: string
+  packKey: string
+  version: number
+  title: string
+  courseId: string
+  viewerSlideId: string
+  author: string
+  license: string
+  revision: string
+  facultyApproved: boolean
+}) {
+  return request<StudyPackRecord>('/api/v2/desktop/adapt/packs/pivot', {
+    method: 'POST', body: JSON.stringify(values),
+  })
+}
+
+export async function importAnkiPackage(file: File) {
+  const headers = new Headers({
+    'X-Forge-CSRF': csrf,
+    Origin: window.location.origin,
+    'Content-Type': 'application/octet-stream',
+  })
+  const response = await fetch('/api/v2/desktop/adapt/imports/anki', {
+    method: 'POST', headers, body: file, credentials: 'same-origin',
+  })
+  const body = await response.json() as { items?: ImportedStudyTask[]; detail?: string; error?: string }
+  if (!response.ok || !body.items) {
+    throw new Error(body.detail || body.error || `Request failed (${response.status})`)
+  }
+  return body.items
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
