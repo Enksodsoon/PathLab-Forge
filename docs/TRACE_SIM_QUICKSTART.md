@@ -4,7 +4,7 @@
 
 Double-click `C:\Users\enkso\OneDrive\Documents\PathLab Forge\Start-TRACE-SIM-Demo.cmd`.
 
-The launcher verifies the selected model and manifest, starts only missing services, and opens:
+The launcher verifies the selected model and manifest, starts only missing services, authorizes the local Forge page for the opened browser, and opens:
 
 - Forge authoring: `http://127.0.0.1:51310/app`
 - Faculty research console: `http://127.0.0.1:5173/admin/research`

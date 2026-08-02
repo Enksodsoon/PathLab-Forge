@@ -67,7 +67,15 @@ Write-Host '  Faculty: http://127.0.0.1:5173/admin/research'
 Write-Host '  Learner: http://127.0.0.1:5173/study'
 
 if ($OpenBrowser) {
-    Start-Process 'http://127.0.0.1:51310/app'
+    $forgeOpenUrl = 'http://127.0.0.1:51310/app'
+    $forgeLog = Join-Path $forgeDataRoot 'trace-sim-forge.out.log'
+    if (Test-Path -LiteralPath $forgeLog) {
+        $authorizationLine = Get-Content -LiteralPath $forgeLog | Select-String -Pattern 'Authorize a new browser once with: (http://\S+)' | Select-Object -Last 1
+        if ($authorizationLine -and $authorizationLine.Matches.Count -gt 0) {
+            $forgeOpenUrl = $authorizationLine.Matches[0].Groups[1].Value
+        }
+    }
+    Start-Process $forgeOpenUrl
     Start-Process 'http://127.0.0.1:5173/admin/research'
     Start-Process 'http://127.0.0.1:5173/study'
 }
