@@ -2,7 +2,7 @@ import OpenSeadragon from 'openseadragon'
 import { memo, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
-import type { AnnotationRecord } from './api'
+import type { AiEvidenceRegion, AnnotationRecord } from './api'
 import {
   cropFromPoints,
   moveCrop,
@@ -64,6 +64,9 @@ export const SlideViewer = memo(function SlideViewer({
   selectedPoint,
   onSelectLocation,
   onViewportSettled,
+  evidenceRegions = [],
+  selectedEvidenceRegionId,
+  onEvidenceRegionSelect,
 }: {
   tileSource: string
   activeTool?: string
@@ -81,6 +84,9 @@ export const SlideViewer = memo(function SlideViewer({
   selectedPoint?: SourcePoint
   onSelectLocation?: (point: SourcePoint) => void
   onViewportSettled?: (snapshot: ViewportSnapshot) => void
+  evidenceRegions?: AiEvidenceRegion[]
+  selectedEvidenceRegionId?: string
+  onEvidenceRegionSelect?: (id: string) => void
 }) {
   const elementRef = useRef<HTMLDivElement>(null)
   const cropOverlayRef = useRef<HTMLDivElement>(null)
@@ -485,11 +491,72 @@ export const SlideViewer = memo(function SlideViewer({
         ),
       })
     }
+    for (const region of evidenceRegions) {
+      const topLeft = toImage(new OpenSeadragon.Point(region.x, region.y))
+      const bottomRight = toImage(new OpenSeadragon.Point(
+        region.x + region.width,
+        region.y + region.height,
+      ))
+      if (![topLeft.x, topLeft.y, bottomRight.x, bottomRight.y].every(Number.isFinite)) continue
+      const element = document.createElement('button')
+      element.type = 'button'
+      element.className = `forge-ai-evidence-overlay${region.id === selectedEvidenceRegionId ? ' selected' : ''}`
+      element.setAttribute('aria-label', `AI-suspected evidence region ${region.rank}`)
+      element.innerHTML = `<span>${region.rank}</span>`
+      element.addEventListener('click', () => onEvidenceRegionSelect?.(region.id))
+      viewer.addOverlay({
+        element,
+        location: viewer.viewport.imageToViewportRectangle(
+          topLeft.x,
+          topLeft.y,
+          Math.max(2, bottomRight.x - topLeft.x),
+          Math.max(2, bottomRight.y - topLeft.y),
+        ),
+      })
+    }
   }, [
     annotations,
     cropX,
     cropY,
     downsample,
+    sourceHeight,
+    sourceWidth,
+    tileSource,
+    evidenceRegions,
+    onEvidenceRegionSelect,
+    selectedEvidenceRegionId,
+  ])
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    const region = evidenceRegions.find((candidate) => candidate.id === selectedEvidenceRegionId)
+    if (!viewer || !region) return
+    const focus = () => {
+      if (!viewer.world.getItemCount()) return
+      const content = viewer.world.getItemAt(0)?.getContentSize()
+      const toImage = (x: number, y: number) => downsample > 0
+        ? new OpenSeadragon.Point((x - cropX) / downsample, (y - cropY) / downsample)
+        : new OpenSeadragon.Point(
+            x * Math.max(1, content?.x || sourceWidth) / sourceWidth,
+            y * Math.max(1, content?.y || sourceHeight) / sourceHeight,
+          )
+      const topLeft = toImage(region.x, region.y)
+      const bottomRight = toImage(region.x + region.width, region.y + region.height)
+      viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(
+        topLeft.x,
+        topLeft.y,
+        Math.max(2, bottomRight.x - topLeft.x),
+        Math.max(2, bottomRight.y - topLeft.y),
+      ), true)
+    }
+    viewer.addOnceHandler('open', focus)
+    focus()
+  }, [
+    cropX,
+    cropY,
+    downsample,
+    evidenceRegions,
+    selectedEvidenceRegionId,
     sourceHeight,
     sourceWidth,
     tileSource,

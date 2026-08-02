@@ -22,6 +22,93 @@ from .core import (
 from .wsi_bags import extract_kaiko_slide_features
 
 
+def build_suspected_regions(
+    tile_evidence: list[dict[str, Any]],
+    tile_pixels: int,
+    *,
+    maximum_regions: int = 5,
+) -> list[dict[str, Any]]:
+    """Cluster high positive MIL evidence into reviewable source-coordinate regions."""
+    if tile_pixels < 1 or maximum_regions < 1:
+        raise ValueError("Evidence-region dimensions must be positive")
+    positive = [
+        row for row in tile_evidence
+        if float(row.get("predicted_class_contribution", 0.0)) > 0.0
+    ]
+    if not positive:
+        return []
+    positive.sort(
+        key=lambda row: (
+            -float(row["predicted_class_contribution"]),
+            int(row["y"]),
+            int(row["x"]),
+        )
+    )
+    total = sum(float(row["predicted_class_contribution"]) for row in positive)
+    selected: list[dict[str, Any]] = []
+    covered = 0.0
+    for row in positive:
+        selected.append(row)
+        covered += float(row["predicted_class_contribution"])
+        if len(selected) >= 3 and (covered >= total * 0.80 or len(selected) >= 16):
+            break
+
+    remaining = list(selected)
+    clusters: list[list[dict[str, Any]]] = []
+    neighborhood = tile_pixels * 1.75
+    while remaining:
+        cluster = [remaining.pop(0)]
+        frontier = list(cluster)
+        while frontier:
+            current = frontier.pop()
+            adjacent = [
+                candidate for candidate in remaining
+                if abs(int(candidate["x"]) - int(current["x"])) <= neighborhood
+                and abs(int(candidate["y"]) - int(current["y"])) <= neighborhood
+            ]
+            for candidate in adjacent:
+                remaining.remove(candidate)
+                cluster.append(candidate)
+                frontier.append(candidate)
+        clusters.append(cluster)
+
+    ranked = sorted(
+        clusters,
+        key=lambda rows: (
+            -sum(float(row["predicted_class_contribution"]) for row in rows),
+            min(int(row["y"]) for row in rows),
+            min(int(row["x"]) for row in rows),
+        ),
+    )[:maximum_regions]
+    regions = []
+    leading_score = sum(
+        float(row["predicted_class_contribution"]) for row in ranked[0]
+    )
+    for rank, rows in enumerate(ranked, start=1):
+        x = min(int(row["x"]) for row in rows)
+        y = min(int(row["y"]) for row in rows)
+        right = max(int(row["x"]) + tile_pixels for row in rows)
+        bottom = max(int(row["y"]) + tile_pixels for row in rows)
+        score = sum(float(row["predicted_class_contribution"]) for row in rows)
+        regions.append({
+            "id": f"evidence-{rank}",
+            "rank": rank,
+            "x": x,
+            "y": y,
+            "width": right - x,
+            "height": bottom - y,
+            "tile_count": len(rows),
+            "score": score,
+            "relative_score": score / leading_score if leading_score else 0.0,
+            "maximum_attention": max(float(row["attention"]) for row in rows),
+            "maximum_contribution": max(
+                float(row["predicted_class_contribution"]) for row in rows
+            ),
+            "auto_selected": rank == 1,
+        })
+    return regions
+
+
 class PathLabPredictor:
     def __init__(self, model_root: Path) -> None:
         self.model_root = model_root.resolve()
@@ -243,7 +330,7 @@ class PathLabMilPredictor:
         )
         result.update(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "source": str(slide_path),
                 "source_sha256": sha256(slide_path),
                 "model_artifact_sha256": self.artifact_sha256,
@@ -253,6 +340,17 @@ class PathLabMilPredictor:
                 **extracted,
                 "runtime_seconds": time.perf_counter() - started,
             }
+        )
+        result["suspected_regions"] = build_suspected_regions(
+            result["tile_evidence"], int(result["source_tile_pixels"])
+        )
+        result["auto_selected_region_id"] = (
+            result["suspected_regions"][0]["id"]
+            if result["suspected_regions"] else None
+        )
+        result["region_interpretation"] = (
+            "Automatically clustered model evidence for research review; regions are "
+            "not confirmed disease boundaries or diagnostic annotations."
         )
         write_json_atomic(output_path, result)
         return result

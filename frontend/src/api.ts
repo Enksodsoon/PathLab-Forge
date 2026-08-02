@@ -177,6 +177,53 @@ export interface PivotScore {
   session: PivotSession
 }
 
+export interface AiResearchStatus {
+  available: boolean
+  busy: boolean
+  detail: string
+}
+
+export interface AiEvidenceRegion {
+  id: string
+  rank: number
+  x: number
+  y: number
+  width: number
+  height: number
+  tile_count: number
+  score: number
+  relative_score: number
+  maximum_attention: number
+  maximum_contribution: number
+  auto_selected: boolean
+}
+
+export interface AiResearchResult {
+  schema_version: number
+  label: string
+  coarse_group: string
+  confidence: number
+  needs_review: boolean
+  review: { required: boolean; confidence_threshold: number; reason: string }
+  probabilities: Record<string, number>
+  tile_count: number
+  source_tile_pixels: number
+  suspected_regions: AiEvidenceRegion[]
+  auto_selected_region_id: string | null
+  evidence_interpretation: string
+  region_interpretation: string
+  model: string
+  intended_use: string
+  runtime_seconds: number
+  source_coordinate_transform?: {
+    origin_x: number
+    origin_y: number
+    scale_x: number
+    scale_y: number
+    applied: boolean
+  }
+}
+
 let csrf = ''
 let datasetEtag = ''
 let datasetCache: Dataset[] | undefined
@@ -367,6 +414,23 @@ export async function annotations(id: string) {
     `/api/datasets/${encodeURIComponent(id)}/annotations`,
   )
   return body.annotations
+}
+
+export async function aiResearchStatus() {
+  return request<AiResearchStatus>('/api/v2/desktop/ai-research/status')
+}
+
+export async function aiResearchResult(id: string) {
+  return request<AiResearchResult>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/ai-research/result`,
+  )
+}
+
+export async function analyzeWithAi(id: string) {
+  return request<AiResearchResult>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/ai-research/analyze`,
+    { method: 'POST' },
+  )
 }
 
 export async function createAnnotation(

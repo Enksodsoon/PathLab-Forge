@@ -5,6 +5,7 @@ import {
 } from '@pathlab/viewer-ui'
 import {
   ArrowsOut,
+  Brain,
   CheckCircle,
   Crosshair,
   FolderOpen,
@@ -31,6 +32,7 @@ import type {
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
 import { PivotWorkspace } from './PivotWorkspace'
+import { AiResearchWorkspace } from './AiResearchWorkspace'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
@@ -75,6 +77,7 @@ export function App() {
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
   const [pivotOpen, setPivotOpen] = useState(false)
+  const [aiResearchOpen, setAiResearchOpen] = useState(false)
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
 
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
@@ -503,6 +506,19 @@ export function App() {
       ? api.artifactDziUrl(selected.id, pivotRevision.id)
       : `/api/datasets/${encodeURIComponent(selected.id)}/preview/slide.dzi?revision=${encodeURIComponent(selected.configurationRevision || String(selected.selectedSeries))}&preview=${DIRECT_PREVIEW_VERSION}`
     : ''
+  const aiTileSource = selected && selected.selectedSeries >= 0 && selected.width > 0
+    ? `/api/datasets/${encodeURIComponent(selected.id)}/preview/slide.dzi?revision=${encodeURIComponent(selected.configurationRevision || String(selected.selectedSeries))}&preview=${DIRECT_PREVIEW_VERSION}`
+    : ''
+
+  if (aiResearchOpen && selected && aiTileSource) {
+    return (
+      <AiResearchWorkspace
+        dataset={selected}
+        tileSource={aiTileSource}
+        onClose={() => setAiResearchOpen(false)}
+      />
+    )
+  }
 
   if (pivotOpen && selected && pivotTileSource) {
     return (
@@ -577,6 +593,7 @@ export function App() {
               onViewer={setViewer}
               onCreateAnnotation={createLocalAnnotation}
               onTraining={() => setPivotOpen(true)}
+              onAiResearch={() => setAiResearchOpen(true)}
               inspectorOpen={inspectorOpen}
               onInspector={() => setInspectorOpen((current) => !current)}
             />
@@ -883,6 +900,7 @@ function ViewerStage({
   onViewer,
   onCreateAnnotation,
   onTraining,
+  onAiResearch,
   inspectorOpen,
   onInspector,
 }: {
@@ -898,6 +916,7 @@ function ViewerStage({
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
   onCreateAnnotation: (geometry: string) => void
   onTraining: () => void
+  onAiResearch: () => void
   inspectorOpen: boolean
   onInspector: () => void
 }) {
@@ -932,9 +951,14 @@ function ViewerStage({
         </div>
         <div className="forge-viewer-header-actions">
           {dataset && tileSource ? (
-            <button type="button" className="forge-training-button" onClick={onTraining}>
-              <GraduationCap /> PIVOT training
-            </button>
+            <>
+              <button type="button" className="forge-ai-launch-button" onClick={onAiResearch}>
+                <Brain /> AI evidence
+              </button>
+              <button type="button" className="forge-training-button" onClick={onTraining}>
+                <GraduationCap /> PIVOT training
+              </button>
+            </>
           ) : null}
           <button
             type="button"

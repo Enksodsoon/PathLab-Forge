@@ -20,6 +20,7 @@ from pathlab_ai_model.inference import (
     PathLabMilPredictor,
     PathLabPredictor,
     _verify_mil_selection_provenance,
+    build_suspected_regions,
 )
 from pathlab_ai_model.mil import (
     GatedAttentionMil,
@@ -344,6 +345,24 @@ class PathLabAiModelTests(unittest.TestCase):
                     np.asarray([[0, 0], [224, 0], [448, 0]]),
                     np.asarray([0.8, 0.9]),
                 )
+
+    def test_mil_evidence_clusters_into_one_auto_selected_leading_region(self) -> None:
+        evidence = [
+            {"x": 0, "y": 0, "attention": 0.3, "predicted_class_contribution": 5.0},
+            {"x": 224, "y": 0, "attention": 0.2, "predicted_class_contribution": 4.0},
+            {"x": 4480, "y": 4480, "attention": 0.1, "predicted_class_contribution": 3.0},
+            {"x": 4704, "y": 4480, "attention": 0.1, "predicted_class_contribution": 2.0},
+            {"x": 9000, "y": 9000, "attention": 0.3, "predicted_class_contribution": -9.0},
+        ]
+        regions = build_suspected_regions(evidence, 224)
+        self.assertEqual(len(regions), 2)
+        self.assertEqual(regions[0]["id"], "evidence-1")
+        self.assertTrue(regions[0]["auto_selected"])
+        self.assertFalse(regions[1]["auto_selected"])
+        self.assertEqual(regions[0]["tile_count"], 2)
+        self.assertEqual(regions[0]["width"], 448)
+        self.assertEqual(sum(bool(row["auto_selected"]) for row in regions), 1)
+        self.assertEqual(build_suspected_regions([], 224), [])
 
     def test_mil_selection_provenance_detects_baseline_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.util.List;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationRepository;
+import org.pathlab.forge.ai.AiResearchService;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.ConversionService;
@@ -67,6 +68,7 @@ public final class ForgeServer implements AutoCloseable {
     private final SourceVerificationService sourceVerificationService;
     private final ConversionService conversionService;
     private final AnnotationRepository annotationRepository;
+    private final AiResearchService aiResearchService;
     private final PivotRepository pivotRepository;
     private final PivotCompiler pivotCompiler;
     private final PivotService pivotService;
@@ -95,6 +97,7 @@ public final class ForgeServer implements AutoCloseable {
         conversionService =
                 new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
         annotationRepository = new AnnotationRepository(managedRoot);
+        aiResearchService = new AiResearchService(repository, managedRoot);
         pivotRepository = new PivotRepository(managedRoot);
         pivotCompiler = new PivotCompiler(pivotRepository, 512, 12);
         pivotService = new PivotService(pivotRepository);
@@ -392,6 +395,15 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteAnnotation(exchange, path);
+            } else if ("/api/v2/desktop/ai-research/status".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                aiResearchStatus(exchange);
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/ai-research/result")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                aiResearchResult(exchange, pivotDatasetId(path, "/ai-research/result"));
+            } else if (path.matches("/api/v2/desktop/datasets/[^/]+/ai-research/analyze")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                analyzeWithAi(exchange, pivotDatasetId(path, "/ai-research/analyze"));
             } else if (path.matches("/api/v2/desktop/datasets/[^/]+/pivot")
                     && "GET".equals(exchange.getRequestMethod())) {
                 pivotStatus(exchange, pivotDatasetId(path, "/pivot"));
@@ -1447,6 +1459,70 @@ public final class ForgeServer implements AutoCloseable {
         exchange.sendResponseHeaders(204, -1);
     }
 
+    private void aiResearchStatus(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var status = aiResearchService.status();
+        respond(
+                exchange,
+                200,
+                "application/json",
+                "{\"available\":" + status.available()
+                        + ",\"busy\":" + status.busy()
+                        + ",\"detail\":" + json(status.detail()) + "}");
+    }
+
+    private void aiResearchResult(HttpExchange exchange, String id) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        if (repository.find(id).isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        var result = aiResearchService.result(id);
+        if (result.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"analysis_not_found\"}");
+            return;
+        }
+        respond(exchange, 200, "application/json", result.orElseThrow());
+    }
+
+    private void analyzeWithAi(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        if (repository.find(id).isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        try {
+            respond(exchange, 201, "application/json", aiResearchService.analyze(id));
+        } catch (IllegalArgumentException error) {
+            respond(
+                    exchange,
+                    422,
+                    "application/json",
+                    "{\"error\":\"invalid_ai_request\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        } catch (IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"ai_unavailable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        } catch (IOException error) {
+            respond(
+                    exchange,
+                    500,
+                    "application/json",
+                    "{\"error\":\"ai_analysis_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
     private void pivotStatus(HttpExchange exchange, String id) throws IOException {
         if (!requireAuthenticated(exchange)) {
             return;
@@ -2250,6 +2326,7 @@ public final class ForgeServer implements AutoCloseable {
         server.stop(0);
         sourceVerificationService.close();
         conversionService.close();
+        aiResearchService.close();
         viewerPairingService.close();
         executor.shutdownNow();
     }
