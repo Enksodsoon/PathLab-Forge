@@ -1,78 +1,101 @@
-# Active Task — Unannotated-WSI Evidence MIL v2
+# Active Task — PathLab ADAPT Approval-First Study Delivery
 
-Approved by the product owner on 2026-08-02. This task supersedes the completed
-BRACS data-preparation milestone. PIVOT remains a non-AI spatial-navigation
-baseline and is not the primary educational product.
+Approved by product owner on 2026-08-02. This task supersedes the completed
+Unannotated-WSI Evidence MIL v2 research milestone. BRACS lesion/MIL artifacts
+remain outside ADAPT and are not approved for product integration.
 
 ## Goal
 
-Build and validate a resource-feasible AI model that learns from public BRACS
-whole slides using slide labels only, then analyzes a new unannotated WSI and
-returns a prediction plus spatial teaching evidence without manual annotation.
+Build a faculty-controlled, content-agnostic educational research workflow
+across PathLab Forge and Viewer. ADAPT uses keyed or coordinate-retrieval tasks
+and pseudonymous learner telemetry. It never analyzes slide pixels, generates
+medical answer keys, makes clinical claims, or runs learner experiments before
+institutional approval.
 
-## Validated research model
+## Task 1 — Contracts and approval boundary
 
-- complete corrected BRACS development split: 392 train and 68 validation slides;
-- annotation-free tissue sampling at a fixed physical resolution;
-- patient-disjoint splits with the published patient-67 overlap corrected;
-- pathology-pretrained Kaiko ViT-S/16 384-D tile representations;
-- class-weighted gated-attention multiple-instance learning from slide labels;
-- validation-only temperature calibration and low-confidence review threshold;
-- TorchScript artifact with checksum-verified standalone inference;
-- raw SVS/OME-TIFF inference with ranked tile-coordinate evidence;
-- fine seven-class and coarse BT/AT/MT outputs.
+- Version Study Pack, task, event, prediction, model-manifest, coach, protocol,
+  and analysis-snapshot contracts.
+- Add faculty-authorized research resources and token-isolated learner routes.
+- Keep research disabled by default and forbid collection before consent.
 
-## Research comparison
+## Task 2 — Forge Study Pack authoring
 
-The locked WSI test split will be compared only after validation selection with:
+- Link existing Viewer slides without copying WSI data.
+- Generate coordinate tasks from approved PIVOT manifests.
+- Import QTI, Moodle XML, CSV, and Anki material with answer/source/author/
+  license/revision provenance.
+- Refuse keyed tasks missing an imported or faculty-approved key.
+- Store immutable pack versions and publish privately through pairing.
 
-1. majority-class baseline;
-2. mean-pooled Kaiko feature logistic baseline;
-3. gated-attention Kaiko MIL.
+## Task 3 — Viewer Study Mode
 
-Reported outcomes include accuracy, balanced accuracy, macro/weighted F1,
-top-2 accuracy, coarse-group accuracy, confusion matrices, per-class measures,
-selective coverage, and patient-cluster bootstrap confidence intervals.
+- Support pseudonymous invitation redemption, consent, adaptive cards,
+  measurement lockout, confidence/source checks, offline event batching,
+  restoration, withdrawal, and responsive mouse/touch/stylus use.
+- Keep keys and target coordinates server-side.
+- Use only deterministic, approved actions; fall back to fixed order on OOD,
+  uncertainty, runtime weakness, or model failure.
+
+## Task 4 — TRACE-Former research pipeline
+
+- Build deterministic OULAD, capped EdNet, and synthetic adapters with a
+  license ledger and learner-disjoint/time-forward splits.
+- Implement teacher, baseline, distillation, calibration, OOD, browser export,
+  Pareto selection, and resource gates.
+- Do not release an artifact or positive claim unless every prespecified gate
+  is measured and passes. Synthetic results validate software only.
+
+## Task 5 — Research and manuscript workflow
+
+- Freeze novelty queries and claim/source evidence.
+- Freeze protocols and analysis snapshots before normal-use evaluation.
+- Generate deterministic, traceable IMRaD drafts whose language is constrained
+  by study design and evidence state.
+- Missing or unmatched follow-up data must produce `inconclusive`.
+
+## Task 6 — Verification and delivery
+
+- Test schema compatibility, event idempotency, offline queues, restoration,
+  withdrawal, redaction, token isolation, answer leakage, accessibility,
+  browser/device behavior, and bounded resource use.
+- Keep implementation, local commits, PR, merge, deployment, and production
+  activation as separate gates. This task authorizes implementation and local
+  verification only.
 
 ## Fixed boundaries
 
-- Research and education only; no clinical or diagnostic claim.
-- Raw BRACS pixels, derived views, and trained artifacts remain outside Git.
-- The official test split is not used for hyperparameter selection or calibration.
-- A low-confidence result asks for human review; it is not converted into a
-  fabricated answer.
-- No slide-level performance claim is made until the locked WSI test is evaluated.
-- No cloud spending, upload, merge, production release, or deployment is implied.
+- Education/research only; no clinical diagnosis or treatment use.
+- No slide-pixel analysis or medical-answer generation.
+- No randomization, live experimentation, or causal claims.
+- No anonymous research-data access.
+- Released model weights are frozen; no online weight training.
+- Confidence/source heads remain shadow-only until approved real-data evidence.
+- `To our knowledge` is the strongest novelty wording until formal prior-art
+  review supports anything stronger.
+- No cloud spending, PR, merge, release, deployment, or activation.
 
-## Acceptance gates
+## Local implementation checkpoint — 2026-08-02
 
-1. WSI inventory contains all 547 official slides and records the leakage correction.
-2. No patient crosses train, validation, or test.
-3. Tissue sampling is deterministic, annotation-free, bounded, and MPP-aware.
-4. Model selection and calibration use validation only; test remains unavailable.
-5. Validation macro F1 is at least 0.65 and exceeds mean-pool; coarse accuracy is
-   at least 0.80, and the 0.65 selective-accuracy policy covers at least 30% of
-   slides before test evaluation is authorized.
-6. TorchScript probabilities and attention are finite and normalized.
-7. End-to-end MIL inference succeeds on a real unannotated BRACS SVS.
-8. Focused Python, static, and full Forge regression checks pass.
-9. Exact artifacts, hashes, metrics, environment, bias, and limitations are recorded.
-
-## Experiment result
-
-The complete corrected 460-slide development cohort was extracted and exactly
-verified. Five fixed validation-only candidates were trained. The selected model
-reached macro F1 0.4169, coarse accuracy 0.6765, and selective coverage 0.5147.
-It beat the mean-pool baseline and passed the review-policy gates, but failed the
-fixed macro-F1 and coarse-accuracy gates. The locked 87-slide test set therefore
-remains untouched and no slide-level performance claim is authorized.
-
-End-to-end inference nevertheless succeeded on a real unannotated BRACS SVS in
-6.07 seconds with checksum-verified selection provenance, calibrated
-probabilities, review behavior, and ranked spatial tile evidence. The pipeline
-is complete for continued research; this trained model is not approved for
-product integration.
-
-The fixed experiment is documented in
-`docs/research/BRACS_WSI_MIL_PROTOCOL.md`; measured acceptance evidence is in
-`docs/evidence/BRACS_WSI_MIL_ACCEPTANCE.md`.
+- Tasks 1–6 are implemented and locally verified on the isolated Forge and
+  Viewer ADAPT branches (`b77d499` and `c0ce4a8`, respectively).
+- Research mode remains disabled by default. TRACE delivery is fixed-order only;
+  every locally produced model manifest is `not_approved`.
+- Study Packs, invitations, consent, sessions, telemetry, withdrawal, protocol
+  freeze, coach fallback, evidence registries, analysis snapshots, and
+  deterministic manuscript artifacts have versioned, tested local workflows.
+- The formal novelty search, investigator signoff, institutional approval,
+  approved Safe-AI curriculum content, real OULAD/EdNet benchmark, approved
+  human follow-up analysis, and external coach-provider verification have not
+  been performed.
+- ONNX/ONNX Runtime and browser WebGPU/WASM execution, the actual 8-GB reference
+  device, Edge, tablet hardware, and physical assistive-technology checks remain
+  unverified and therefore cannot authorize adaptive delivery or efficacy,
+  novelty, capacity, deployment, or production-readiness claims.
+- Final local verification is `PASS_WITH_UNVERIFIED`: Forge passed 180 Java
+  tests (2 skipped), 43 frontend tests, and 138 AI-training tests; Viewer passed
+  475 backend tests (5 skipped), 251 frontend tests, and 12 research browser
+  tests. The bounded 150-session local contract completed with zero request
+  errors. This is not production-capacity or educational-efficacy evidence.
+- Detailed verification is recorded under `.superpowers/sdd/current`; PR review,
+  merge, deployment, and production activation remain separate future gates.
