@@ -29,10 +29,21 @@ public final class SourceVerificationService implements AutoCloseable {
                         Path.of(dataset.sourcePath()), dataset.sourceInventory())) {
             return CompletableFuture.completedFuture(dataset);
         }
-        return active.computeIfAbsent(
-                dataset.id(),
-                ignored -> CompletableFuture.supplyAsync(() -> verify(dataset), executor)
-                        .whenComplete((result, error) -> active.remove(dataset.id())));
+        var created = new CompletableFuture<LocalDataset>();
+        var existing = active.putIfAbsent(dataset.id(), created);
+        if (existing != null) {
+            return existing;
+        }
+        executor.execute(() -> {
+            try {
+                created.complete(verify(dataset));
+            } catch (RuntimeException error) {
+                created.completeExceptionally(error);
+            } finally {
+                active.remove(dataset.id(), created);
+            }
+        });
+        return created;
     }
 
     public LocalDataset await(String datasetId) throws IOException {
