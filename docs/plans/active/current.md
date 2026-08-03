@@ -1,16 +1,16 @@
-# Active Task — PathLab ADAPT Approval-First Study Delivery
+# Active Task — PathLab Teaching and Research AI Lab
 
-Approved by product owner on 2026-08-02. This task supersedes the completed
-Unannotated-WSI Evidence MIL v2 research milestone. BRACS lesion/MIL artifacts
-remain outside ADAPT and are not approved for product integration.
+Approved by the product owner on 2026-08-03. This task supersedes the earlier
+pixel-free ADAPT boundary while preserving its consent, provenance, Study Pack,
+TRACE, and research-integrity controls.
 
 ## Goal
 
-Build a faculty-controlled, content-agnostic educational research workflow
-across PathLab Forge and Viewer. ADAPT uses keyed or coordinate-retrieval tasks
-and pseudonymous learner telemetry. It never analyzes slide pixels, generates
-medical answer keys, makes clinical claims, or runs learner experiments before
-institutional approval.
+Build a CPU-only, one-job local research lab for teaching and retrospective
+research. It may run approved HistoQC, PIVOT, BRACS, bounded WSInfer, frozen
+foundation encoders, optional MONAI Label suggestions, TRACE, and a local
+source-grounded LLM. Outputs are evidence challengers, never diagnoses or answer
+keys.
 
 ## Task 1 — Contracts and approval boundary
 
@@ -66,14 +66,17 @@ institutional approval.
 ## Fixed boundaries
 
 - Education/research only; no clinical diagnosis or treatment use.
-- No slide-pixel analysis or medical-answer generation.
+- Pixel analysis is local, explicit, checksum-addressed, resource bounded, and
+  always marked `research_only` and `not_diagnostic`.
+- Synthetic pathology may test software but may not support diagnostic metrics.
+- The locked BRACS test remains sealed until the unchanged validation gates pass.
 - No randomization, live experimentation, or causal claims.
 - No anonymous research-data access.
 - Released model weights are frozen; no online weight training.
 - Confidence/source heads remain shadow-only until approved real-data evidence.
 - `To our knowledge` is the strongest novelty wording until formal prior-art
   review supports anything stronger.
-- No cloud spending, PR, merge, release, deployment, or activation.
+- No cloud spending, merge, deployment, clinical activation, or real learner use.
 
 ## Local implementation checkpoint — 2026-08-02
 

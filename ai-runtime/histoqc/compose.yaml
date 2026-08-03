@@ -1,0 +1,17 @@
+services:
+  histoqc:
+    image: "histotools/histoqc@${PATHLAB_HISTOQC_IMAGE_DIGEST:?Set an approved immutable image digest}"
+    network_mode: none
+    read_only: true
+    user: "65532:65532"
+    mem_limit: 3g
+    cpus: 3
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - "${PATHLAB_HISTOQC_INPUT:?Set the read-only input directory}:/input:ro"
+      - "${PATHLAB_HISTOQC_OUTPUT:?Set the private output directory}:/output:rw"
+    command: ["histoqc", "-o", "/output", "/input"]

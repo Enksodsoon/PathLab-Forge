@@ -16,6 +16,7 @@ vi.mock('../api', async () => {
   return {
     ...actual,
     aiResearchStatus: vi.fn(),
+    aiLabAdapters: vi.fn(),
     aiResearchResult: vi.fn(),
     analyzeWithAi: vi.fn(),
   }
@@ -47,13 +48,14 @@ const result: AiResearchResult = {
 }
 
 test('automatically focuses the strongest suspected region and permits region review', async () => {
-  vi.mocked(api.aiResearchStatus).mockResolvedValue({ available: true, busy: false, detail: 'Ready' })
+  vi.mocked(api.aiResearchStatus).mockResolvedValue({ available: true, busy: false, active_dataset_id: null, detail: 'Ready' })
+  vi.mocked(api.aiLabAdapters).mockResolvedValue({ research_only: true, not_diagnostic: true, one_job_at_a_time: true, items: [] })
   vi.mocked(api.aiResearchResult).mockResolvedValue(result)
 
   render(<AiResearchWorkspace dataset={dataset} tileSource="/slide.dzi" onClose={vi.fn()} />)
 
   expect(await screen.findByText('Focused: evidence-1')).toBeVisible()
-  expect(screen.getByText('Research output only.')).toBeVisible()
+  expect(screen.getByText(/Evidence Challenger/)).toBeVisible()
   expect(screen.getByText('2 distinct regions')).toBeVisible()
   expect(screen.getByText(/x 160 · y 320/)).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: /Evidence region 2/ }))
@@ -61,7 +63,8 @@ test('automatically focuses the strongest suspected region and permits region re
 })
 
 test('runs a new WSI analysis from the research bench', async () => {
-  vi.mocked(api.aiResearchStatus).mockResolvedValue({ available: true, busy: false, detail: 'Ready' })
+  vi.mocked(api.aiResearchStatus).mockResolvedValue({ available: true, busy: false, active_dataset_id: null, detail: 'Ready' })
+  vi.mocked(api.aiLabAdapters).mockResolvedValue({ research_only: true, not_diagnostic: true, one_job_at_a_time: true, items: [] })
   vi.mocked(api.aiResearchResult).mockRejectedValue(new Error('No result'))
   vi.mocked(api.analyzeWithAi).mockResolvedValue(result)
 

@@ -216,7 +216,17 @@ export interface ViewerSlideAssociation {
 export interface AiResearchStatus {
   available: boolean
   busy: boolean
+  active_dataset_id: string | null
   detail: string
+}
+
+export interface AiLabAdapterStatus {
+  id: 'histoqc' | 'pivot' | 'bracs' | 'wsinfer' | 'foundation' | 'monai-label' | 'local-llm'
+  available: boolean
+  detail: string
+  max_memory_mib: number
+  max_threads: number
+  activation: 'teacher-review' | 'shadow'
 }
 
 export interface AiEvidenceRegion {
@@ -456,6 +466,15 @@ export async function aiResearchStatus() {
   return request<AiResearchStatus>('/api/v2/desktop/ai-research/status')
 }
 
+export async function aiLabAdapters() {
+  return request<{
+    research_only: true
+    not_diagnostic: true
+    one_job_at_a_time: true
+    items: AiLabAdapterStatus[]
+  }>('/api/v2/desktop/ai-research/adapters')
+}
+
 export async function aiResearchResult(id: string) {
   return request<AiResearchResult>(
     `/api/v2/desktop/datasets/${encodeURIComponent(id)}/ai-research/result`,
@@ -467,6 +486,11 @@ export async function analyzeWithAi(id: string) {
     `/api/v2/desktop/datasets/${encodeURIComponent(id)}/ai-research/analyze`,
     { method: 'POST' },
   )
+}
+
+export async function cancelAiResearch() {
+  return request<{ cancel_requested: boolean }>('/api/v2/desktop/ai-research/cancel',
+    { method: 'POST' })
 }
 
 export async function createAnnotation(

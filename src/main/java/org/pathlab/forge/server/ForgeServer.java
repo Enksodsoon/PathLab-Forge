@@ -446,6 +446,12 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/v2/desktop/ai-research/status".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 aiResearchStatus(exchange);
+            } else if ("/api/v2/desktop/ai-research/adapters".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                aiResearchAdapters(exchange);
+            } else if ("/api/v2/desktop/ai-research/cancel".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                cancelAiResearch(exchange);
             } else if (path.matches("/api/v2/desktop/datasets/[^/]+/ai-research/result")
                     && "GET".equals(exchange.getRequestMethod())) {
                 aiResearchResult(exchange, pivotDatasetId(path, "/ai-research/result"));
@@ -1714,7 +1720,34 @@ public final class ForgeServer implements AutoCloseable {
                 "application/json",
                 "{\"available\":" + status.available()
                         + ",\"busy\":" + status.busy()
+                        + ",\"active_dataset_id\":" + (status.activeDatasetId() == null
+                                ? "null" : json(status.activeDatasetId()))
                         + ",\"detail\":" + json(status.detail()) + "}");
+    }
+
+    private void aiResearchAdapters(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var items = aiResearchService.adapters().stream()
+                .map(adapter -> "{\"id\":" + json(adapter.id())
+                        + ",\"available\":" + adapter.available()
+                        + ",\"detail\":" + json(adapter.detail())
+                        + ",\"max_memory_mib\":" + adapter.maxMemoryMiB()
+                        + ",\"max_threads\":" + adapter.maxThreads()
+                        + ",\"activation\":" + json(adapter.activation()) + "}")
+                .collect(java.util.stream.Collectors.joining(","));
+        respond(exchange, 200, "application/json",
+                "{\"research_only\":true,\"not_diagnostic\":true,\"one_job_at_a_time\":true,\"items\":[" + items + "]}");
+    }
+
+    private void cancelAiResearch(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var cancelled = aiResearchService.cancel();
+        respond(exchange, cancelled ? 202 : 409, "application/json",
+                "{\"cancel_requested\":" + cancelled + "}");
     }
 
     private void aiResearchResult(HttpExchange exchange, String id) throws IOException {

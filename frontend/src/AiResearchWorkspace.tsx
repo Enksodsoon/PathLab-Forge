@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type OpenSeadragon from 'openseadragon'
 
 import * as api from './api'
-import type { AiResearchResult, AiResearchStatus, Dataset } from './api'
+import type { AiLabAdapterStatus, AiResearchResult, AiResearchStatus, Dataset } from './api'
 import { SlideViewer } from './SlideViewer'
 
 interface AiResearchWorkspaceProps {
@@ -38,6 +38,7 @@ export function AiResearchWorkspace({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [viewer, setViewer] = useState<OpenSeadragon.Viewer | null>(null)
+  const [adapters, setAdapters] = useState<AiLabAdapterStatus[]>([])
 
   const acceptResult = useCallback((next: AiResearchResult) => {
     setResult(next)
@@ -58,6 +59,9 @@ export function AiResearchWorkspace({
     void api.aiResearchResult(dataset.id).then((next) => {
       if (!cancelled) acceptResult(next)
     }).catch(() => undefined)
+    void api.aiLabAdapters().then((next) => {
+      if (!cancelled) setAdapters(next.items)
+    }).catch(() => undefined)
     return () => { cancelled = true }
   }, [acceptResult, dataset.id])
 
@@ -71,6 +75,15 @@ export function AiResearchWorkspace({
       setError(message(nextError))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const cancel = async () => {
+    try {
+      await api.cancelAiResearch()
+      setError('Cancellation requested. The current checkpoint will record the cancelled run.')
+    } catch (nextError) {
+      setError(message(nextError))
     }
   }
 
@@ -105,11 +118,14 @@ export function AiResearchWorkspace({
         >
           <Play weight="fill" /> {busy ? 'Analyzing WSI…' : result ? 'Analyze again' : 'Analyze WSI'}
         </button>
+        {busy ? <button type="button" className="forge-ai-back" onClick={() => void cancel()}>
+          Cancel analysis
+        </button> : null}
       </header>
 
       <div className="forge-ai-warning" role="note">
         <Warning weight="fill" />
-        <span><strong>Research output only.</strong> Highlighted boxes are AI-suspected evidence—not confirmed disease or diagnostic boundaries.</span>
+        <span><strong>Evidence Challenger · research output only.</strong> Highlighted boxes are AI-suspected evidence—not confirmed disease or diagnostic boundaries.</span>
       </div>
 
       <section className="forge-ai-layout">
@@ -139,6 +155,17 @@ export function AiResearchWorkspace({
         </div>
 
         <aside className="forge-ai-results" aria-label="AI research result">
+          <details className="forge-ai-adapters">
+            <summary>Research adapters ({adapters.filter((adapter) => adapter.available).length}/{adapters.length} ready)</summary>
+            <ul>
+              {adapters.map((adapter) => (
+                <li key={adapter.id}>
+                  <strong>{adapter.id}</strong>
+                  <span>{adapter.available ? 'Ready' : 'Disabled'} · {adapter.max_threads} threads · {adapter.max_memory_mib} MiB cap</span>
+                </li>
+              ))}
+            </ul>
+          </details>
           <div className="forge-ai-result-status" aria-live="polite">
             {error ? <p className="forge-ai-error">{error}</p> : null}
             {!result ? (
