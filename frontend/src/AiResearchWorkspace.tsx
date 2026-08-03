@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type OpenSeadragon from 'openseadragon'
 
 import * as api from './api'
-import type { AiLabAdapterStatus, AiResearchResult, AiResearchStatus, Dataset } from './api'
+import type { AiLabAdapterStatus, AiResearchResult, AiResearchStatus, Dataset, MorphologyModelStatus } from './api'
 import { SlideViewer } from './SlideViewer'
 
 interface AiResearchWorkspaceProps {
@@ -39,6 +39,9 @@ export function AiResearchWorkspace({
   const [error, setError] = useState('')
   const [viewer, setViewer] = useState<OpenSeadragon.Viewer | null>(null)
   const [adapters, setAdapters] = useState<AiLabAdapterStatus[]>([])
+  const [morphologyModels, setMorphologyModels] = useState<MorphologyModelStatus[]>([])
+  const [stainProfile, setStainProfile] = useState('unknown')
+  const [stainConfirmed, setStainConfirmed] = useState(false)
 
   const acceptResult = useCallback((next: AiResearchResult) => {
     setResult(next)
@@ -61,6 +64,9 @@ export function AiResearchWorkspace({
     }).catch(() => undefined)
     void api.aiLabAdapters().then((next) => {
       if (!cancelled) setAdapters(next.items)
+    }).catch(() => undefined)
+    void api.morphologyCatalogue().then((next) => {
+      if (!cancelled) setMorphologyModels(next.models)
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [acceptResult, dataset.id])
@@ -107,7 +113,7 @@ export function AiResearchWorkspace({
           <ArrowLeft /> Back to Forge
         </button>
         <div>
-          <span><Flask /> PathLab AI research bench</span>
+          <span><Flask /> General morphology workbench</span>
           <h1>{dataset.displayName}</h1>
         </div>
         <button
@@ -127,6 +133,15 @@ export function AiResearchWorkspace({
         <Warning weight="fill" />
         <span><strong>Evidence Challenger · research output only.</strong> Highlighted boxes are AI-suspected evidence—not confirmed disease or diagnostic boundaries.</span>
       </div>
+
+      <section className="forge-ai-warning" aria-label="Morphology stain confirmation">
+        <span><strong>Stain profile</strong> Suggestions are never authoritative.</span>
+        <select aria-label="Stain profile" value={stainProfile} onChange={(event) => { setStainProfile(event.target.value); setStainConfirmed(false) }}>
+          <option value="unknown">Unknown — abstain</option><option value="he">H&amp;E</option><option value="ihc_dab">DAB-IHC</option><option value="pas">PAS</option><option value="masson_trichrome">Masson trichrome</option><option value="reticulin">Reticulin</option>
+        </select>
+        <label><input type="checkbox" disabled={stainProfile === 'unknown'} checked={stainConfirmed} onChange={(event) => setStainConfirmed(event.target.checked)} /> Teacher confirmed</label>
+        <small>{stainProfile === 'unknown' || !stainConfirmed ? 'Morphology indexing and retrieval must abstain.' : 'Confirmed for compatible, pinned encoder spaces only.'}</small>
+      </section>
 
       <section className="forge-ai-layout">
         <div className="forge-ai-viewer-panel">
@@ -165,6 +180,10 @@ export function AiResearchWorkspace({
                 </li>
               ))}
             </ul>
+          </details>
+          <details className="forge-ai-adapters">
+            <summary>Morphology encoder catalogue ({morphologyModels.filter((model) => model.enabled).length}/{morphologyModels.length} activated)</summary>
+            <ul>{morphologyModels.map((model) => <li key={model.id}><strong>{model.id}</strong><span>{model.activation} · {model.supported_stains.join(', ') || 'catalogue only'} · remote code disabled</span></li>)}</ul>
           </details>
           <div className="forge-ai-result-status" aria-live="polite">
             {error ? <p className="forge-ai-error">{error}</p> : null}

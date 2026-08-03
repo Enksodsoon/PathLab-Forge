@@ -21,7 +21,7 @@ final class AiLabAdapterRegistryTest {
         var statuses = AiLabAdapterRegistry.statuses(cli, model);
 
         assertEquals(
-                java.util.List.of("histoqc", "pivot", "bracs", "wsinfer", "foundation", "monai-label", "local-llm"),
+                java.util.List.of("histoqc", "pivot", "bracs", "wsinfer", "foundation", "morphology", "monai-label", "local-llm"),
                 statuses.stream().map(AiLabAdapterRegistry.AdapterStatus::id).toList());
         assertTrue(statuses.stream().filter(item -> item.id().equals("pivot")).findFirst().orElseThrow().available());
         assertTrue(statuses.stream().filter(item -> item.id().equals("bracs")).findFirst().orElseThrow().available());

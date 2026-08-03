@@ -28,6 +28,7 @@ import org.pathlab.forge.adapt.StudyPackRepository;
 import org.pathlab.forge.adapt.ViewerSlideAssociation;
 import org.pathlab.forge.adapt.ViewerSlideAssociationRepository;
 import org.pathlab.forge.ai.AiResearchService;
+import org.pathlab.forge.ai.MorphologyModelRouter;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.ConversionService;
@@ -449,6 +450,9 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/v2/desktop/ai-research/adapters".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 aiResearchAdapters(exchange);
+            } else if ("/api/v2/desktop/morphology/catalogue".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                morphologyCatalogue(exchange);
             } else if ("/api/v2/desktop/ai-research/cancel".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 cancelAiResearch(exchange);
@@ -1739,6 +1743,23 @@ public final class ForgeServer implements AutoCloseable {
                 .collect(java.util.stream.Collectors.joining(","));
         respond(exchange, 200, "application/json",
                 "{\"research_only\":true,\"not_diagnostic\":true,\"one_job_at_a_time\":true,\"items\":[" + items + "]}");
+    }
+
+    private void morphologyCatalogue(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var models = MorphologyModelRouter.catalogue().stream()
+                .map(model -> "{\"id\":" + json(model.id())
+                        + ",\"supported_stains\":[" + model.supportedStains().stream().map(ForgeServer::json).collect(java.util.stream.Collectors.joining(",")) + "]"
+                        + ",\"activation\":" + json(model.activation())
+                        + ",\"enabled\":" + model.enabled()
+                        + ",\"trust_remote_code\":" + model.trustRemoteCode() + "}")
+                .collect(java.util.stream.Collectors.joining(","));
+        respond(exchange, 200, "application/json",
+                "{\"schema\":\"pathlab-morphology-catalogue/v1\",\"research_only\":true,\"not_diagnostic\":true,"
+                        + "\"contains_diagnosis\":false,\"max_patches_per_wsi\":2048,\"max_exact_scope\":100000,"
+                        + "\"max_query_matches\":20,\"max_viewer_evidence\":5,\"models\":[" + models + "]}");
     }
 
     private void cancelAiResearch(HttpExchange exchange) throws IOException {

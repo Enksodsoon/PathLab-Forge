@@ -221,12 +221,20 @@ export interface AiResearchStatus {
 }
 
 export interface AiLabAdapterStatus {
-  id: 'histoqc' | 'pivot' | 'bracs' | 'wsinfer' | 'foundation' | 'monai-label' | 'local-llm'
+  id: 'histoqc' | 'pivot' | 'bracs' | 'wsinfer' | 'foundation' | 'morphology' | 'monai-label' | 'local-llm'
   available: boolean
   detail: string
   max_memory_mib: number
   max_threads: number
   activation: 'teacher-review' | 'shadow'
+}
+
+export interface MorphologyModelStatus {
+  id: string
+  supported_stains: string[]
+  activation: string
+  enabled: boolean
+  trust_remote_code: false
 }
 
 export interface AiEvidenceRegion {
@@ -473,6 +481,19 @@ export async function aiLabAdapters() {
     one_job_at_a_time: true
     items: AiLabAdapterStatus[]
   }>('/api/v2/desktop/ai-research/adapters')
+}
+
+export async function morphologyCatalogue() {
+  return request<{
+    research_only: true
+    not_diagnostic: true
+    contains_diagnosis: false
+    max_patches_per_wsi: 2048
+    max_exact_scope: 100000
+    max_query_matches: 20
+    max_viewer_evidence: 5
+    models: MorphologyModelStatus[]
+  }>('/api/v2/desktop/morphology/catalogue')
 }
 
 export async function aiResearchResult(id: string) {

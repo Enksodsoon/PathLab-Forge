@@ -12,6 +12,12 @@ foundation encoders, optional MONAI Label suggestions, TRACE, and a local
 source-grounded LLM. Outputs are evidence challengers, never diagnoses or answer
 keys.
 
+The generalized morphology milestone supersedes BRACS-centered development.
+Forge partitions bounded float16 feature indexes by pinned encoder,
+preprocessing version and teacher-confirmed stain (`he`, `ihc_dab`, `pas`,
+`masson_trichrome`, `reticulin`). Unknown or unconfirmed stains abstain.
+BRACS remains an optional breast Evidence Challenger plugin.
+
 ## Task 1 — Contracts and approval boundary
 
 - Version Study Pack, task, event, prediction, model-manifest, coach, protocol,
