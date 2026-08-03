@@ -88,7 +88,13 @@ final class DirectFinalOmeAssemblyTest {
         };
 
         var priorBudget = System.getProperty("pathlab.forge.secondsBudget.enabled");
+        var priorProcessors = System.getProperty("pathlab.forge.runtime.processors");
+        var priorMemory = System.getProperty("pathlab.forge.runtime.memoryBytes");
+        var priorWorkers = System.getProperty("pathlab.forge.rgb.workers");
         System.setProperty("pathlab.forge.secondsBudget.enabled", "false");
+        System.setProperty("pathlab.forge.runtime.processors", "6");
+        System.setProperty("pathlab.forge.runtime.memoryBytes", Long.toString(8L * 1024 * 1024 * 1024));
+        System.setProperty("pathlab.forge.rgb.workers", "5");
         try {
             try (var service = new ConversionService(
                     repository, engine, derivative, temporaryDirectory.resolve("managed"))) {
@@ -107,13 +113,23 @@ final class DirectFinalOmeAssemblyTest {
             } else {
                 System.setProperty("pathlab.forge.secondsBudget.enabled", priorBudget);
             }
+            restoreProperty("pathlab.forge.runtime.processors", priorProcessors);
+            restoreProperty("pathlab.forge.runtime.memoryBytes", priorMemory);
+            restoreProperty("pathlab.forge.rgb.workers", priorWorkers);
         }
 
         assertEquals(1, directAssemblies.get());
         assertEquals(0, optimizationRewrites.get());
         assertEquals(
-                ConversionService.parallelRgbWorkers(
-                        Runtime.getRuntime().availableProcessors(), 11, false),
+                ConversionService.parallelRgbWorkers(6, 5, false),
                 observedWorkers.get());
+    }
+
+    private static void restoreProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
+        }
     }
 }
