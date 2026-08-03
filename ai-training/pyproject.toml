@@ -8,8 +8,10 @@ version = "0.1.0"
 description = "Reproducible public pathology dataset preparation for PathLab Evidence Challenger"
 requires-python = ">=3.11"
 dependencies = [
+    "numpy>=2,<3",
     "openpyxl>=3.1,<4",
     "pillow>=10,<13",
+    "tifffile==2026.7.14",
 ]
 
 [project.optional-dependencies]

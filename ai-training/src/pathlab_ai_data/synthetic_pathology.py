@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import uuid
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFilter, TiffImagePlugin
+import numpy
+import tifffile
+from PIL import Image, ImageDraw, ImageFilter
 
 
 SYNTHETIC_ARTIFACTS = (
@@ -66,13 +69,49 @@ def generate_suite(output_directory: Path, *, width: int = 512, height: int = 38
     for index, artifact in enumerate(SYNTHETIC_ARTIFACTS):
         image = _apply(_base_image(width, height, seed), artifact)
         path = output_directory / f"synthetic-{artifact}.ome.tif"
-        info = TiffImagePlugin.ImageFileDirectory_v2()
-        info[270] = (
-            f'<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"><Image ID="Image:0" Name="synthetic-{artifact}">'
-            f'<Pixels ID="Pixels:0" DimensionOrder="XYZCT" Type="uint8" SizeX="{width}" SizeY="{height}" SizeZ="1" SizeC="3" SizeT="1"/>'
-            "</Image></OME>"
-        )
-        image.save(path, format="TIFF", compression="tiff_deflate", tiffinfo=info)
+        levels = [image]
+        while min(levels[-1].size) > 128 and len(levels) < 4:
+            current_width, current_height = levels[-1].size
+            levels.append(
+                levels[-1].resize(
+                    (max(1, current_width // 2), max(1, current_height // 2)),
+                    Image.Resampling.BILINEAR,
+                )
+            )
+        with tifffile.TiffWriter(path, bigtiff=True, ome=True) as writer:
+            writer.write(
+                numpy.asarray(levels[0]),
+                photometric="rgb",
+                tile=(128, 128),
+                compression="deflate",
+                subifds=len(levels) - 1,
+                resolution=(40_000, 40_000),
+                resolutionunit="CENTIMETER",
+                metadata={
+                    "axes": "YXS",
+                    "Name": f"synthetic-{artifact}",
+                    "PhysicalSizeX": 0.25,
+                    "PhysicalSizeXUnit": "µm",
+                    "PhysicalSizeY": 0.25,
+                    "PhysicalSizeYUnit": "µm",
+                    "UUID": str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"pathlab.synthetic-pathology/v1/{seed}/{width}/{height}/{artifact}",
+                        )
+                    ),
+                },
+            )
+            for level_index, level in enumerate(levels[1:], start=1):
+                writer.write(
+                    numpy.asarray(level),
+                    photometric="rgb",
+                    tile=(min(128, level.height), min(128, level.width)),
+                    compression="deflate",
+                    subfiletype=1,
+                    resolution=(40_000 / (2**level_index),) * 2,
+                    resolutionunit="CENTIMETER",
+                )
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         records.append({"artifact": artifact, "path": path.name, "sha256": digest, "synthetic": True, "diagnostic_evidence": False})
     corrupt_source = output_directory / "synthetic-blur.ome.tif"

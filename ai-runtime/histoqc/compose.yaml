@@ -1,8 +1,9 @@
 services:
   histoqc:
-    image: "histotools/histoqc@${PATHLAB_HISTOQC_IMAGE_DIGEST:?Set an approved immutable image digest}"
+    image: "histotools/histoqc@${PATHLAB_HISTOQC_IMAGE_DIGEST:-sha256:399f09ba85ffd0af9ddf2b2c2080ebf603d381479c6a48ff1638db6ee86e3f6a}"
     network_mode: none
     read_only: true
+    working_dir: /work
     user: "65532:65532"
     mem_limit: 3g
     cpus: 3
@@ -11,7 +12,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,uid=65532,gid=65532
+      - /work:rw,noexec,nosuid,size=64m,uid=65532,gid=65532
     volumes:
       - "${PATHLAB_HISTOQC_INPUT:?Set the read-only input directory}:/input:ro"
       - "${PATHLAB_HISTOQC_OUTPUT:?Set the private output directory}:/output:rw"
-    command: ["histoqc", "-o", "/output", "/input"]
+      - "./config_pathlab_synthetic.ini:/config/pathlab-synthetic.ini:ro"
+    command: ["histoqc", "-c", "/config/pathlab-synthetic.ini", "-n", "1", "-o", "/output", "/input/*.ome.tif"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
+import tifffile
 
 from pathlab_ai_data.synthetic_pathology import SYNTHETIC_ARTIFACTS, generate_suite
 
@@ -18,6 +19,9 @@ def test_generates_deterministic_nonclinical_ome_tiff_suite(tmp_path: Path) -> N
     with Image.open(tmp_path / "first" / "synthetic-fold.ome.tif") as image:
         assert image.size == (128, 128)
         assert "OME" in str(image.tag_v2[270])
+    with tifffile.TiffFile(tmp_path / "first" / "synthetic-fold.ome.tif") as slide:
+        assert slide.is_ome
+        assert slide.pages.first.is_tiled
 
 
 def test_rejects_unbounded_fixture_dimensions(tmp_path: Path) -> None:
