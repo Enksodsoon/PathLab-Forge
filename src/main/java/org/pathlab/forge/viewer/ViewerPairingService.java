@@ -79,7 +79,7 @@ public final class ViewerPairingService implements AutoCloseable {
                 base.resolve("/api/v1/desktop/pairings"),
                 "{\"deviceName\":\"PathLab Forge on Windows\",\"requestedScopes\":["
                         + "\"desktop:ingest\",\"slides:private:read\","
-                        + "\"annotations:sync\",\"desktop:research\"]}",
+                        + "\"annotations:sync\",\"slides:evidence:write\"]}",
                 "");
         requireStatus(response, 201, "Viewer rejected the pairing request");
         var body = response.body();
@@ -261,6 +261,24 @@ public final class ViewerPairingService implements AutoCloseable {
             throw new IOException("Viewer Study Pack identity or private status did not match");
         }
         return published;
+    }
+
+    public synchronized String publishMorphologyEvidence(String slideId, String candidateJson)
+            throws IOException {
+        if (slideId == null || !slideId.matches("[A-Za-z0-9._-]+")) {
+            throw new IllegalArgumentException("Viewer slide id is invalid");
+        }
+        if (candidateJson == null || candidateJson.isBlank() || candidateJson.length() > 1024 * 1024) {
+            throw new IllegalArgumentException("Morphology evidence is empty or too large");
+        }
+        var credential = storedCredential();
+        if (credential == null) throw new IllegalStateException("Connect to Viewer before sending evidence");
+        var response = sendJson(
+                credential.base().resolve("/api/v1/desktop/slides/" + slideId + "/ai-candidates"),
+                candidateJson,
+                "Bearer " + credential.token());
+        requireStatus(response, 201, "Viewer rejected morphology evidence");
+        return string(response.body(), "id");
     }
 
     private void upload(

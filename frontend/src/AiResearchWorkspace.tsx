@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type OpenSeadragon from 'openseadragon'
 
 import * as api from './api'
-import type { AiLabAdapterStatus, AiResearchResult, AiResearchStatus, Dataset, MorphologyModelStatus } from './api'
+import type { AiLabAdapterStatus, AiLabConnection, AiResearchResult, AiResearchStatus, Dataset, MorphologyModelStatus } from './api'
 import { SlideViewer } from './SlideViewer'
 
 interface AiResearchWorkspaceProps {
@@ -42,6 +42,9 @@ export function AiResearchWorkspace({
   const [morphologyModels, setMorphologyModels] = useState<MorphologyModelStatus[]>([])
   const [stainProfile, setStainProfile] = useState('unknown')
   const [stainConfirmed, setStainConfirmed] = useState(false)
+  const [aiLabConnection, setAiLabConnection] = useState<AiLabConnection>()
+  const [aiLabUrl, setAiLabUrl] = useState('')
+  const [pairingCode, setPairingCode] = useState('')
 
   const acceptResult = useCallback((next: AiResearchResult) => {
     setResult(next)
@@ -68,6 +71,9 @@ export function AiResearchWorkspace({
     void api.morphologyCatalogue().then((next) => {
       if (!cancelled) setMorphologyModels(next.models)
     }).catch(() => undefined)
+    void api.aiLabConnection().then((next) => {
+      if (!cancelled) { setAiLabConnection(next); setAiLabUrl(next.server_url) }
+    }).catch(() => undefined)
     return () => { cancelled = true }
   }, [acceptResult, dataset.id])
 
@@ -91,6 +97,20 @@ export function AiResearchWorkspace({
     } catch (nextError) {
       setError(message(nextError))
     }
+  }
+
+  const connectAiLab = async () => {
+    setBusy(true); setError('')
+    try { setAiLabConnection(await api.pairAiLab(aiLabUrl, pairingCode.trim().toUpperCase())); setPairingCode('') }
+    catch (nextError) { setError(message(nextError)) }
+    finally { setBusy(false) }
+  }
+
+  const disconnectAiLab = async () => {
+    setBusy(true); setError('')
+    try { await api.revokeAiLab(); setAiLabConnection(await api.aiLabConnection()) }
+    catch (nextError) { setError(message(nextError)) }
+    finally { setBusy(false) }
   }
 
   const probabilities = useMemo(() => Object.entries(result?.probabilities || {})
@@ -170,6 +190,10 @@ export function AiResearchWorkspace({
         </div>
 
         <aside className="forge-ai-results" aria-label="AI research result">
+          <details className="forge-ai-adapters" open={!aiLabConnection?.connected}>
+            <summary>PathLab AI control plane · {aiLabConnection?.connected ? 'Connected' : 'Not connected'}</summary>
+            {aiLabConnection?.connected ? <div className="forge-ai-connection"><span>{aiLabConnection.detail}</span><small>{aiLabConnection.server_url} · {aiLabConnection.scopes.length} least-privilege scopes</small><button type="button" className="forge-ai-back" disabled={busy} onClick={() => void disconnectAiLab()}>Remove local pairing</button></div> : <form className="forge-ai-connection" onSubmit={(event) => { event.preventDefault(); void connectAiLab() }}><label>PathLab AI URL<input type="url" required value={aiLabUrl} onChange={(event) => setAiLabUrl(event.target.value)} placeholder="https://pathlab.example"/></label><label>Pairing code<input required pattern="[0-9A-HJKMNP-TV-Z]{10}" value={pairingCode} onChange={(event) => setPairingCode(event.target.value)} placeholder="10 characters"/></label><button type="submit" className="forge-ai-run" disabled={busy}>Pair AI Lab worker</button></form>}
+          </details>
           <details className="forge-ai-adapters">
             <summary>Research adapters ({adapters.filter((adapter) => adapter.available).length}/{adapters.length} ready)</summary>
             <ul>

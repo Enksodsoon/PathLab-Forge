@@ -237,6 +237,16 @@ export interface MorphologyModelStatus {
   trust_remote_code: false
 }
 
+export interface AiLabConnection {
+  connected: boolean
+  server_url: string
+  scopes: string[]
+  busy: boolean
+  detail: string
+  research_only: true
+  not_diagnostic: true
+}
+
 export interface AiEvidenceRegion {
   id: string
   rank: number
@@ -494,6 +504,21 @@ export async function morphologyCatalogue() {
     max_viewer_evidence: 5
     models: MorphologyModelStatus[]
   }>('/api/v2/desktop/morphology/catalogue')
+}
+
+export async function aiLabConnection() {
+  return request<AiLabConnection>('/api/v2/desktop/ai-lab/connection')
+}
+
+export async function pairAiLab(serverUrl: string, code: string) {
+  return request<AiLabConnection>(
+    `/api/v2/desktop/ai-lab/connection?serverUrl=${encodeURIComponent(serverUrl)}&code=${encodeURIComponent(code)}`,
+    { method: 'POST' },
+  )
+}
+
+export async function revokeAiLab() {
+  return request<void>('/api/v2/desktop/ai-lab/connection', { method: 'DELETE' })
 }
 
 export async function aiResearchResult(id: string) {

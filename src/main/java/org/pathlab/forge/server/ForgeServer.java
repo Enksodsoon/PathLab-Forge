@@ -29,6 +29,7 @@ import org.pathlab.forge.adapt.ViewerSlideAssociation;
 import org.pathlab.forge.adapt.ViewerSlideAssociationRepository;
 import org.pathlab.forge.ai.AiResearchService;
 import org.pathlab.forge.ai.MorphologyModelRouter;
+import org.pathlab.forge.ai.PathLabAiBridge;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.ConversionService;
@@ -90,6 +91,7 @@ public final class ForgeServer implements AutoCloseable {
     private final AnkiPackageImporter ankiPackageImporter = new AnkiPackageImporter();
     private final QtiPackageImporter qtiPackageImporter = new QtiPackageImporter();
     private final ViewerPairingService viewerPairingService;
+    private final PathLabAiBridge pathLabAiBridge;
     private volatile boolean launchTokenAvailable = true;
 
     private ForgeServer(
@@ -127,6 +129,14 @@ public final class ForgeServer implements AutoCloseable {
                         : new WindowsCredentialStore(System.getProperty(
                                 "pathlab.forge.viewerCredentialTarget",
                                 WindowsCredentialStore.DEFAULT_TARGET)));
+        pathLabAiBridge = new PathLabAiBridge(
+                Boolean.getBoolean("pathlab.forge.ephemeralAiLabCredentials")
+                        ? new EphemeralCredentialStore()
+                        : new WindowsCredentialStore(System.getProperty(
+                                "pathlab.forge.aiLabCredentialTarget",
+                                "PathLab Forge/PathLab AI device credential")),
+                viewerPairingService,
+                managedRoot);
     }
 
     public static ForgeServer start() throws IOException {
@@ -453,6 +463,15 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/v2/desktop/morphology/catalogue".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 morphologyCatalogue(exchange);
+            } else if ("/api/v2/desktop/ai-lab/connection".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                aiLabConnection(exchange);
+            } else if ("/api/v2/desktop/ai-lab/connection".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                pairAiLab(exchange);
+            } else if ("/api/v2/desktop/ai-lab/connection".equals(path)
+                    && "DELETE".equals(exchange.getRequestMethod())) {
+                revokeAiLab(exchange);
             } else if ("/api/v2/desktop/ai-research/cancel".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 cancelAiResearch(exchange);
@@ -1762,6 +1781,42 @@ public final class ForgeServer implements AutoCloseable {
                         + "\"max_query_matches\":20,\"max_viewer_evidence\":5,\"models\":[" + models + "]}");
     }
 
+    private void aiLabConnection(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        try {
+            respond(exchange, 200, "application/json", aiLabConnectionJson(pathLabAiBridge.status()));
+        } catch (IOException error) {
+            respond(exchange, 500, "application/json", "{\"error\":\"ai_lab_connection_unavailable\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void pairAiLab(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) return;
+        try {
+            var value = pathLabAiBridge.pair(
+                    queryValue(exchange, "serverUrl", ""),
+                    queryValue(exchange, "code", "").toUpperCase(java.util.Locale.ROOT));
+            respond(exchange, 200, "application/json", aiLabConnectionJson(value));
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 422, "application/json", "{\"error\":\"ai_lab_pairing_failed\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void revokeAiLab(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) return;
+        pathLabAiBridge.revokeLocal();
+        exchange.sendResponseHeaders(204, -1);
+    }
+
+    private static String aiLabConnectionJson(PathLabAiBridge.Connection value) {
+        return "{\"connected\":" + value.connected()
+                + ",\"server_url\":" + json(value.serverUrl())
+                + ",\"scopes\":[" + value.scopes().stream().map(ForgeServer::json).collect(java.util.stream.Collectors.joining(",")) + "]"
+                + ",\"busy\":" + value.busy()
+                + ",\"detail\":" + json(value.detail())
+                + ",\"research_only\":true,\"not_diagnostic\":true}";
+    }
+
     private void cancelAiResearch(HttpExchange exchange) throws IOException {
         if (!requireWrite(exchange)) {
             return;
@@ -2652,6 +2707,7 @@ public final class ForgeServer implements AutoCloseable {
         server.stop(0);
         sourceVerificationService.close();
         conversionService.close();
+        pathLabAiBridge.close();
         aiResearchService.close();
         viewerPairingService.close();
         executor.shutdownNow();

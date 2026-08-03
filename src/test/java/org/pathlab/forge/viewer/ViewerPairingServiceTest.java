@@ -353,7 +353,7 @@ final class ViewerPairingServiceTest {
         if (path.equals("/api/v1/desktop/pairings")) {
             var request = new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-            assertTrue(request.contains("\"desktop:research\""));
+            assertTrue(request.contains("\"slides:evidence:write\""));
             status = 201;
             body = "{\"deviceCode\":\"device-code\",\"deviceSecret\":\"device-secret\","
                     + "\"userCode\":\"ABCD-EFGH\",\"verificationUrl\":\"http://127.0.0.1:8000"
@@ -362,14 +362,14 @@ final class ViewerPairingServiceTest {
         } else if (path.equals("/api/v1/desktop/pairings/exchange")) {
             status = 200;
             body = "{\"accessToken\":\"desktop-token\",\"scopes\":[\"desktop:ingest\","
-                    + "\"slides:private:read\",\"annotations:sync\"]}";
+                    + "\"slides:private:read\",\"annotations:sync\",\"slides:evidence:write\"]}";
         } else if (path.equals("/api/v1/desktop/credential/revoke")) {
             status = 204;
             body = "";
         } else if (path.equals("/api/v1/desktop/credential")) {
             status = 200;
             body = "{\"deviceName\":\"PathLab Forge on Windows\",\"scopes\":["
-                    + "\"desktop:ingest\",\"slides:private:read\",\"annotations:sync\"]}";
+                    + "\"desktop:ingest\",\"slides:private:read\",\"annotations:sync\",\"slides:evidence:write\"]}";
         } else {
             status = 404;
             body = "{\"detail\":\"not found\"}";
