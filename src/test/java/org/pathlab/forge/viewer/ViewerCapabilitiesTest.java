@@ -25,6 +25,13 @@ final class ViewerCapabilitiesTest {
                 "{\"ingestModes\":[\"ome-dynamic-v1\"],\"maxChunkBytes\":1}"));
     }
 
+    @Test
+    void futureOnlyProfileDoesNotEnableV1() throws Exception {
+        var future = ViewerCapabilities.parse(
+                document(2, true, true).replace("ome-dynamic-v1", "ome-dynamic-v2"));
+        assertFalse(future.supportsDynamicOme());
+    }
+
     private static String document(int factor, boolean nativeTiles, boolean persistedSha) {
         return "{\"ingestModes\":[\"prepared-v2\",\"ome-dynamic-v1\"],"
                 + "\"omeProfiles\":[{\"id\":\"ome-dynamic-v1\",\"pixelType\":\"uint8\","

@@ -322,6 +322,48 @@ final class ViewerPairingServiceTest {
                 + "\"slideSha256\":\"" + "f".repeat(64) + "\"}");
     }
 
+    @Test
+    void refusesToCreateAnIngestWhenTheExactCapabilityChanges() throws Exception {
+        var capabilityCalls = new AtomicInteger();
+        var createCalls = new AtomicInteger();
+        var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        viewer.createContext("/", exchange -> {
+            if (exchange.getRequestURI().getPath().equals("/api/v1/desktop/capabilities")) {
+                respond(
+                        exchange,
+                        200,
+                        capabilityCalls.getAndIncrement() == 0
+                                ? dynamicCapabilities()
+                                : "{\"ingestModes\":[\"prepared-v2\"],\"omeProfiles\":[],"
+                                        + "\"maxChunkBytes\":67108864,"
+                                        + "\"recommendedChunkBytes\":67108864}");
+            } else if (exchange.getRequestURI().getPath().contains("ingests")) {
+                createCalls.incrementAndGet();
+                respond(exchange, 500, "{\"detail\":\"must not be called\"}");
+            } else {
+                respond(exchange, 404, "{\"detail\":\"not found\"}");
+            }
+        });
+        viewer.start();
+        try {
+            var ome = Files.write(
+                    temporaryDirectory.resolve("changed-capability.ome.tif"),
+                    new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+            var revision = revision(ome, sha256(ome));
+            writeOmeStamp(revision, ome);
+            var store = new MemoryCredentialStore();
+            store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
+            try (var service = new ViewerPairingService(store)) {
+                service.startUpload("changed", revision, List.of(), 0, 0, 100, 50, 1);
+                awaitState(service, "FAILED");
+                assertEquals(2, capabilityCalls.get());
+                assertEquals(0, createCalls.get());
+            }
+        } finally {
+            viewer.stop(0);
+        }
+    }
+
     private void assertPersistedShaFailure(String readyBody) throws Exception {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
