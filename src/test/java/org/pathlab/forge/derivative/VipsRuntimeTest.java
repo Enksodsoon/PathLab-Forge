@@ -13,9 +13,11 @@ import org.junit.jupiter.api.io.TempDir;
 class VipsRuntimeTest {
     @Test
     void storesFactorTwoLevelsUntilTheFirstLevelFitsOneTile() {
+        assertEquals(0, VipsRuntime.expectedStoredSubifds(1024, 768, OmeDynamicProfile.V1));
         assertEquals(1, VipsRuntime.expectedStoredSubifds(2048, 1536, OmeDynamicProfile.V1));
-        assertEquals(2, VipsRuntime.expectedStoredSubifds(2049, 1536, OmeDynamicProfile.V1));
-        assertEquals(4, VipsRuntime.expectedStoredSubifds(8193, 4096, OmeDynamicProfile.V1));
+        assertEquals(1, VipsRuntime.expectedStoredSubifds(2049, 1536, OmeDynamicProfile.V1));
+        assertEquals(3, VipsRuntime.expectedStoredSubifds(8193, 4096, OmeDynamicProfile.V1));
+        assertEquals(12, VipsRuntime.maximumStoredSubifds(4096, 4096, OmeDynamicProfile.V1));
     }
 
     @TempDir

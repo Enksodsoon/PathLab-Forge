@@ -154,17 +154,22 @@ public final class VipsRuntime implements DerivativeEngine {
         requireField(omeTiff, "", "tile-width", Integer.toString(profile.tileSize()));
         requireField(omeTiff, "", "tile-height", Integer.toString(profile.tileSize()));
         requireField(omeTiff, "", "bits-per-sample", Integer.toString(profile.bitsPerSample()));
-        int expectedSubifds = expectedStoredSubifds(width, height, profile);
-        if (expectedSubifds == 0) {
+        int minimumSubifds = expectedStoredSubifds(width, height, profile);
+        if (minimumSubifds == 0) {
             return;
         }
         var subifds = imageDimension(omeTiff, "", "n-subifds");
-        if (subifds != expectedSubifds) {
+        if (subifds < minimumSubifds
+                || subifds > maximumStoredSubifds(width, height, profile)) {
             throw new IOException("Dynamic OME pyramid level count is invalid");
         }
         int expectedWidth = width;
         int expectedHeight = height;
-        for (int level = 0; level < expectedSubifds; level++) {
+        // libvips cannot open some legal QuPath overview IFDs once both image
+        // dimensions are much smaller than the fixed 512px TIFF tile. Validate
+        // every level required for complete Viewer coverage here; the Viewer
+        // independently indexes and validates all additional overview IFDs.
+        for (int level = 0; level < minimumSubifds; level++) {
             var previousWidth = expectedWidth;
             var previousHeight = expectedHeight;
             expectedWidth = ceilDivide(previousWidth, profile.pyramidFactor());
@@ -191,12 +196,24 @@ public final class VipsRuntime implements DerivativeEngine {
         int levels = 0;
         int nextWidth = width;
         int nextHeight = height;
-        while (Math.max(
-                        ceilDivide(nextWidth, profile.pyramidFactor()),
-                        ceilDivide(nextHeight, profile.pyramidFactor()))
-                > profile.tileSize()) {
-            nextWidth = ceilDivide(nextWidth, profile.pyramidFactor());
-            nextHeight = ceilDivide(nextHeight, profile.pyramidFactor());
+        int completeCoverageEdge = Math.multiplyExact(
+                profile.tileSize(), profile.pyramidFactor());
+        while (Math.max(nextWidth, nextHeight) > completeCoverageEdge) {
+            nextWidth = Math.max(1, nextWidth / profile.pyramidFactor());
+            nextHeight = Math.max(1, nextHeight / profile.pyramidFactor());
+            levels++;
+        }
+        return levels;
+    }
+
+    static int maximumStoredSubifds(
+            int width, int height, OmeDynamicProfile profile) {
+        int levels = 0;
+        int nextWidth = width;
+        int nextHeight = height;
+        while (Math.max(nextWidth, nextHeight) > 1) {
+            nextWidth = Math.max(1, nextWidth / profile.pyramidFactor());
+            nextHeight = Math.max(1, nextHeight / profile.pyramidFactor());
             levels++;
         }
         return levels;

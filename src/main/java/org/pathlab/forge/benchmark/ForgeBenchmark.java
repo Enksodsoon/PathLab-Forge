@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.pathlab.forge.conversion.BioFormatsEngine;
+import org.pathlab.forge.conversion.ArtifactRevisionFormat;
 import org.pathlab.forge.conversion.ConversionService;
 import org.pathlab.forge.conversion.SeriesInfo;
 import org.pathlab.forge.derivative.VipsRuntime;
@@ -73,7 +74,7 @@ public final class ForgeBenchmark {
                         crop[1],
                         crop[2],
                         crop[3]);
-                conversion.start(dataset.id());
+                conversion.start(dataset.id(), benchmarkFormat());
                 String observedStage = "";
                 long observedStageStartedAt = 0;
                 while (true) {
@@ -158,6 +159,18 @@ public final class ForgeBenchmark {
                 stageDurations);
         report.write(reportPath);
         return report;
+    }
+
+    static ArtifactRevisionFormat benchmarkFormat() {
+        var configured = System.getProperty(
+                "pathlab.forge.benchmark.format", ArtifactRevisionFormat.PREPARED_DZI_V2.name());
+        try {
+            return ArtifactRevisionFormat.valueOf(configured.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException error) {
+            throw new IllegalArgumentException(
+                    "pathlab.forge.benchmark.format must be OME_DYNAMIC_V1 or PREPARED_DZI_V2",
+                    error);
+        }
     }
 
     private static void recordFinalStage(
