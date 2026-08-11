@@ -504,7 +504,8 @@ export function App() {
   }
 
   useEffect(() => {
-    if (viewerUpload?.state !== 'UPLOADING') return
+    if (!viewerUpload || !['UPLOADING', 'VERIFYING_OME', 'SYNCING_RESULTS', 'RETRYING']
+      .includes(viewerUpload.state)) return
     const timer = window.setInterval(() => {
       void api.getViewerUpload().then((next) => {
         setViewerUpload(next)
@@ -664,15 +665,26 @@ export function App() {
       <button className="forge-feature-launcher" type="button" onClick={openFeatures}>
         Feature Center
       </button>
-      {selected && viewerUpload?.state === 'READY_PRIVATE' ? (
+      {connection?.connected && viewerUpload?.viewerSlideId
+        && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (
+        <a
+          className="forge-viewer-sync-launcher"
+          href={`${connection.viewerUrl.replace(/\/$/, '')}/admin/preview/${encodeURIComponent(viewerUpload.viewerSlideId)}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open private slide in Viewer
+        </a>
+      ) : null}
+      {viewerUpload && ['UPLOADING', 'VERIFYING_OME', 'RETRYING'].includes(viewerUpload.state) ? (
         <button
           className="forge-viewer-sync-launcher"
           type="button"
-          onClick={() => void api.syncViewer(selected.id)
+          onClick={() => void api.cancelViewerUpload()
             .then((next) => { setViewerUpload(next); setNotice(next.detail) })
             .catch((nextError) => setError(message(nextError)))}
         >
-          Sync annotations to Viewer
+          Cancel Viewer delivery
         </button>
       ) : null}
       {importOpen ? (
@@ -1951,7 +1963,8 @@ function ExportInspector({
         {' · '}
         Next conversion · Direct OME-TIFF
         {viewerUpload ? ` · ${viewerUpload.detail}` : ''}
-        {viewerUpload?.state === 'READY_PRIVATE' && viewerUpload.viewerSlideSha256
+        {['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload?.state || '')
+          && viewerUpload?.viewerSlideSha256
           ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
           : ''}
       </div>
@@ -1974,7 +1987,7 @@ function ExportInspector({
           ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve {current.format === 'OME_DYNAMIC_V1' ? 'direct OME' : 'compact DZI'}</button>
           : null}
         {dataset.approvedArtifactRevision
-          ? <button type="button" onClick={onUpload}>Upload to Viewer</button>
+          ? <button type="button" onClick={onUpload}>Deliver privately to Viewer</button>
           : !connection?.connected
           ? <button type="button" onClick={onConnect}>Connect Viewer</button>
           : null}

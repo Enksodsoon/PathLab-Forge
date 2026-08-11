@@ -32,7 +32,28 @@ dependencies {
 
 application {
     mainClass = "org.pathlab.forge.ForgeApp"
-    applicationDefaultJvmArgs = listOf("-Xmx512m")
+    val viewerOrigin = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
+        .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
+    applicationDefaultJvmArgs = listOf("-Xmx512m") + viewerOrigin.orNull
+        ?.let { listOf("-Dpathlab.forge.viewer.defaultOrigin=$it") }
+        .orEmpty()
+}
+
+tasks.register("productionDist") {
+    group = "distribution"
+    description = "Builds a release distribution with an explicit official Viewer origin."
+    dependsOn(tasks.installDist)
+    doFirst {
+        val configured = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
+            .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
+            .orNull
+        require(!configured.isNullOrBlank()) {
+            "Production packaging requires pathlab.forge.viewer.defaultOrigin"
+        }
+        require(configured.startsWith("https://")) {
+            "Production Viewer origin must use HTTPS"
+        }
+    }
 }
 
 val pnpmCommand = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "pnpm.cmd" else "pnpm"

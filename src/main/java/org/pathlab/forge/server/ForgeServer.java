@@ -45,6 +45,7 @@ import org.pathlab.forge.library.SourceVerificationService;
 import org.pathlab.forge.model.BatchId;
 import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
+import org.pathlab.forge.viewer.SqliteViewerDeliveryStore;
 import org.pathlab.forge.viewer.ViewerUploadStatus;
 import org.pathlab.forge.viewer.WindowsCredentialStore;
 
@@ -79,7 +80,7 @@ public final class ForgeServer implements AutoCloseable {
             Path managedRoot,
             ConversionEngine conversionEngine,
             DerivativeEngine derivativeEngine,
-            String sessionToken) {
+            String sessionToken) throws IOException {
         this.server = server;
         this.executor = executor;
         launchToken = LocalBrowserSession.randomToken();
@@ -99,7 +100,10 @@ public final class ForgeServer implements AutoCloseable {
                 new HeAnalysisService(repository, annotationRepository, conversionService, managedRoot),
                 () -> conversionService.activeConversionCount() > 0,
                 () -> featurePackManager.isInstalled("pathology-tools"));
-        viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
+        viewerPairingService = new ViewerPairingService(
+                new WindowsCredentialStore(),
+                new SqliteViewerDeliveryStore(
+                        managedRoot.toAbsolutePath().normalize().getParent().resolve("forge.db")));
     }
 
     public static ForgeServer start() throws IOException {
@@ -218,7 +222,26 @@ public final class ForgeServer implements AutoCloseable {
         httpServer.createContext("/", forgeServer::handle);
         httpServer.setExecutor(executor);
         httpServer.start();
+        forgeServer.resumePendingViewerDelivery();
         return forgeServer;
+    }
+
+    private void resumePendingViewerDelivery() {
+        for (var dataset : repository.list()) {
+            try {
+                var revision = conversionService.approvedRevision(dataset.id());
+                if (!viewerPairingService.hasResumableDelivery(revision.id())) {
+                    continue;
+                }
+                viewerPairingService.startUpload(
+                        dataset.displayName(), revision, annotationRepository.list(dataset.id()),
+                        dataset.cropX(), dataset.cropY(), dataset.cropWidth(), dataset.cropHeight(),
+                        dataset.downsample());
+                return;
+            } catch (IOException | IllegalStateException ignored) {
+                // Persisted state remains resumable; the UI exposes the paused reason.
+            }
+        }
     }
 
     static int recommendedHttpWorkers(int logicalProcessors) {
@@ -304,6 +327,9 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/viewer/upload".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 viewerUploadStatus(exchange);
+            } else if ("/api/viewer/upload/cancel".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                cancelViewerUpload(exchange);
             } else if ("/api/datasets".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 listDatasets(exchange);
             } else if ("/api/datasets/select".equals(path)
@@ -399,12 +425,6 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/upload".length()));
-            } else if (path.matches("/api/datasets/[^/]+/viewer-sync")
-                    && "POST".equals(exchange.getRequestMethod())) {
-                synchronizeViewer(
-                        exchange,
-                        path.substring(
-                                "/api/datasets/".length(), path.length() - "/viewer-sync".length()));
             } else if (path.matches("/api/datasets/[^/]+/annotations")
                     && "GET".equals(exchange.getRequestMethod())) {
                 listAnnotations(
@@ -1703,6 +1723,20 @@ public final class ForgeServer implements AutoCloseable {
                 + "]}";
     }
 
+    private void cancelViewerUpload(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            respond(exchange, 200, "application/json",
+                    viewerUploadJson(viewerPairingService.cancelUpload()));
+        } catch (IOException | IllegalStateException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"viewer_cancel_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
     private void artifactOmePreviewResource(HttpExchange exchange, String path)
             throws IOException {
         if (!requireAuthenticated(exchange)) {
@@ -1758,26 +1792,6 @@ public final class ForgeServer implements AutoCloseable {
                     "application/json",
                     "{\"error\":\"ome_preview_not_ready\",\"detail\":"
                             + json(error.getMessage()) + "}");
-        }
-    }
-
-    private void synchronizeViewer(HttpExchange exchange, String id) throws IOException {
-        if (!requireWrite(exchange)) {
-            return;
-        }
-        try {
-            var dataset = repository.find(id)
-                    .orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
-            var revision = conversionService.approvedRevision(id);
-            respond(exchange, 200, "application/json", viewerUploadJson(
-                    viewerPairingService.synchronizeAnnotations(
-                            revision,
-                            annotationRepository.list(id),
-                            dataset.cropX(), dataset.cropY(), dataset.cropWidth(), dataset.cropHeight(),
-                            dataset.downsample())));
-        } catch (IOException | IllegalStateException | IllegalArgumentException error) {
-            respond(exchange, 409, "application/json",
-                    "{\"error\":\"viewer_sync_conflict\",\"detail\":" + json(error.getMessage()) + "}");
         }
     }
 

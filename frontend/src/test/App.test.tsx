@@ -97,7 +97,6 @@ vi.mock('../api', () => ({
   installFeature: vi.fn(),
   disableFeature: vi.fn(),
   uninstallFeature: vi.fn(),
-  syncViewer: vi.fn(),
   startViewerPairing: vi.fn(async () => ({
     userCode: 'ABCD-EFGH',
     verificationUrl: 'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
@@ -115,6 +114,7 @@ vi.mock('../api', () => ({
   revokeViewerConnection: vi.fn(),
   uploadApprovedArtifact: vi.fn(),
   getViewerUpload: vi.fn(),
+  cancelViewerUpload: vi.fn(),
 }))
 
 beforeEach(() => {

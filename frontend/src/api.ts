@@ -109,13 +109,14 @@ export interface ViewerPairing {
 }
 
 export interface ViewerUpload {
-  state: 'IDLE' | 'UPLOADING' | 'READY_PRIVATE' | 'FAILED'
+  state: 'IDLE' | 'UPLOADING' | 'VERIFYING_OME' | 'IMAGE_READY'
+    | 'SYNCING_RESULTS' | 'COMPLETE' | 'RETRYING' | 'PAUSED' | 'FAILED' | 'CANCELLED'
   artifactRevisionId: string
   uploadedBytes: number
   totalBytes: number
   viewerSlideId: string
   viewerSlideSha256: string
-  uploadMode: 'OME_DYNAMIC' | 'PREPARED_V2' | ''
+  uploadMode: 'OME_DYNAMIC' | ''
   detail: string
 }
 
@@ -333,6 +334,10 @@ export async function getViewerUpload() {
   return request<ViewerUpload>('/api/viewer/upload')
 }
 
+export async function cancelViewerUpload() {
+  return request<ViewerUpload>('/api/viewer/upload/cancel', { method: 'POST' })
+}
+
 export async function revokeViewerConnection() {
   return request<void>('/api/viewer/connection/revoke', { method: 'POST' })
 }
@@ -364,13 +369,6 @@ export async function deleteAnnotation(id: string, annotationId: string) {
   return request<void>(
     `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}`,
     { method: 'DELETE' },
-  )
-}
-
-export async function syncViewer(id: string) {
-  return request<ViewerUpload>(
-    `/api/datasets/${encodeURIComponent(id)}/viewer-sync`,
-    { method: 'POST' },
   )
 }
 

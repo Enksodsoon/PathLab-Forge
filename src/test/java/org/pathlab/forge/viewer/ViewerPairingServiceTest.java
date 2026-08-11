@@ -59,12 +59,16 @@ final class ViewerPairingServiceTest {
     void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception {
         var receivedCreateBody = new AtomicReference<String>();
         var receivedPayload = new AtomicReference<byte[]>();
+        var receivedResults = new AtomicReference<byte[]>();
         var expectedSha = new AtomicReference<String>();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
+            } else if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, "{\"deviceName\":\"Forge\",\"scopes\":["
+                        + "\"desktop:ingest\",\"slides:private:read\",\"results:sync\"]}");
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
                 receivedCreateBody.set(new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
@@ -80,6 +84,17 @@ final class ViewerPairingServiceTest {
             } else if (path.equals("/api/v1/desktop/ingests/one")) {
                 respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
                         + "\"slideSha256\":\"" + expectedSha.get() + "\"}");
+            } else if (path.equals("/api/v2/desktop/slides/slide-one/result-deliveries")) {
+                respond(exchange, 201, "{\"id\":\"results-one\",\"uploadUrl\":"
+                        + "\"/api/v2/desktop/slides/slide-one/result-deliveries/results-one/content\"}");
+            } else if (path.endsWith("/result-deliveries/results-one/content")
+                    && exchange.getRequestMethod().equals("HEAD")) {
+                exchange.getResponseHeaders().set("Upload-Offset", "0");
+                exchange.sendResponseHeaders(200, -1);
+                exchange.close();
+            } else if (path.endsWith("/result-deliveries/results-one/content")) {
+                receivedResults.set(exchange.getRequestBody().readAllBytes());
+                respond(exchange, 202, "{\"status\":\"complete\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
             }
@@ -101,11 +116,11 @@ final class ViewerPairingServiceTest {
                         "case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5);
                 assertEquals("OME_DYNAMIC", started.uploadMode());
                 for (var attempt = 0;
-                        attempt < 100 && !"READY_PRIVATE".equals(service.uploadStatus().state());
+                        attempt < 100 && !"COMPLETE".equals(service.uploadStatus().state());
                         attempt++) {
                     Thread.sleep(25);
                 }
-                assertEquals("READY_PRIVATE", service.uploadStatus().state());
+                assertEquals("COMPLETE", service.uploadStatus().state());
                 assertEquals("OME_DYNAMIC", service.uploadStatus().uploadMode());
                 assertTrue(receivedCreateBody.get().contains("\"profile\":\"ome-dynamic-v1\""));
                 assertTrue(receivedCreateBody.get().contains("\"jpegQuality\":75"));
@@ -113,6 +128,7 @@ final class ViewerPairingServiceTest {
                 assertEquals(
                         HexFormat.of().formatHex(Files.readAllBytes(ome)),
                         HexFormat.of().formatHex(receivedPayload.get()));
+                assertTrue(receivedResults.get().length > 0);
             }
         } finally {
             viewer.stop(0);
@@ -169,9 +185,7 @@ final class ViewerPairingServiceTest {
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
                 service.startUpload("resume", revision, List.of(), 0, 0, 100, 50, 1);
-                awaitState(service, "FAILED");
-                service.startUpload("resume", revision, List.of(), 0, 0, 100, 50, 1);
-                awaitState(service, "READY_PRIVATE");
+                awaitState(service, "IMAGE_READY");
 
                 assertEquals(1, createCount.get());
                 assertEquals(2, patchCount.get());
@@ -238,9 +252,7 @@ final class ViewerPairingServiceTest {
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
                 service.startUpload("finalize", revision, List.of(), 0, 0, 100, 50, 1);
-                awaitState(service, "FAILED");
-                service.startUpload("finalize", revision, List.of(), 0, 0, 100, 50, 1);
-                awaitState(service, "READY_PRIVATE");
+                awaitState(service, "IMAGE_READY");
 
                 assertEquals(1, createCount.get());
                 assertEquals(2, patchCount.get());
@@ -318,6 +330,59 @@ final class ViewerPairingServiceTest {
     }
 
     @Test
+    void persistsQueuedDeliveryBeforeCreatingRemoteIngest() throws Exception {
+        var database = temporaryDirectory.resolve("delivery.db");
+        try (var deliveries = new SqliteViewerDeliveryStore(database)) {
+            var persistedBeforeCreate = new AtomicReference<Boolean>(false);
+            var expectedSha = new AtomicReference<String>();
+            var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            viewer.createContext("/", exchange -> {
+                var path = exchange.getRequestURI().getPath();
+                if (path.equals("/api/v1/desktop/capabilities")) {
+                    respond(exchange, 200, dynamicCapabilities());
+                } else if (path.equals("/api/v1/desktop/ome-ingests")) {
+                    persistedBeforeCreate.set(!deliveries.resumable().isEmpty());
+                    respond(exchange, 201, "{\"id\":\"durable-one\",\"uploadUrl\":"
+                            + "\"/api/v1/desktop/ingests/durable-one/content\"}");
+                } else if (path.endsWith("/content") && exchange.getRequestMethod().equals("HEAD")) {
+                    exchange.getResponseHeaders().set("Upload-Offset", "0");
+                    exchange.sendResponseHeaders(200, -1);
+                    exchange.close();
+                } else if (path.endsWith("/content")) {
+                    exchange.getRequestBody().readAllBytes();
+                    respond(exchange, 202, "{\"slideId\":null}");
+                } else if (path.equals("/api/v1/desktop/ingests/durable-one")) {
+                    respond(exchange, 200, "{\"status\":\"ready_private\","
+                            + "\"slideId\":\"slide-durable\",\"slideSha256\":\""
+                            + expectedSha.get() + "\"}");
+                } else {
+                    respond(exchange, 404, "{\"detail\":\"not found\"}");
+                }
+            });
+            viewer.start();
+            try {
+                var ome = Files.write(temporaryDirectory.resolve("durable.ome.tif"),
+                        new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+                var revision = revision(ome, sha256(ome));
+                expectedSha.set(revision.omeSha256());
+                writeOmeStamp(revision, ome);
+                var credentials = new MemoryCredentialStore();
+                credentials.write("http://127.0.0.1:" + viewer.getAddress().getPort()
+                        + "\ndesktop-token");
+                try (var service = new ViewerPairingService(credentials, deliveries)) {
+                    service.startUpload("durable", revision, List.of(), 0, 0, 100, 50, 1);
+                    awaitState(service, "IMAGE_READY");
+                    assertTrue(persistedBeforeCreate.get());
+                    assertEquals(ViewerDeliveryState.IMAGE_READY,
+                            deliveries.find(deliveries.resumable().get(0).id()).orElseThrow().state());
+                }
+            } finally {
+                viewer.stop(0);
+            }
+        }
+    }
+
+    @Test
     void rejectsReadyPrivateWhenThePersistedShaIsMissingOrDifferent() throws Exception {
         assertPersistedShaFailure("{\"status\":\"ready_private\",\"slideId\":\"slide-one\"}");
         assertPersistedShaFailure("{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
@@ -357,7 +422,7 @@ final class ViewerPairingServiceTest {
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
                 service.startUpload("changed", revision, List.of(), 0, 0, 100, 50, 1);
-                awaitState(service, "FAILED");
+                awaitState(service, "PAUSED");
                 assertEquals(2, capabilityCalls.get());
                 assertEquals(0, createCalls.get());
             }
@@ -372,6 +437,9 @@ final class ViewerPairingServiceTest {
             var path = exchange.getRequestURI().getPath();
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
+            } else if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, "{\"deviceName\":\"Forge\",\"scopes\":["
+                        + "\"desktop:ingest\",\"slides:private:read\",\"results:sync\"]}");
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
                 respond(exchange, 201, "{\"uploadUrl\":\"/api/v1/desktop/ingests/sha/content\"}");
             } else if (path.endsWith("/content")
@@ -399,7 +467,7 @@ final class ViewerPairingServiceTest {
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
                 service.startUpload("sha", revision, List.of(), 0, 0, 100, 50, 1);
-                awaitState(service, "FAILED");
+                awaitState(service, "PAUSED");
                 assertFalse(service.uploadStatus().detail().isBlank());
             }
         } finally {
