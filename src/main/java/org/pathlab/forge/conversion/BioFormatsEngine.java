@@ -226,14 +226,28 @@ public final class BioFormatsEngine implements ConversionEngine {
                 : workers;
         var regions = planRegions(
                 crop.x(), crop.y(), crop.width(), crop.height(), regionCount);
-        var completed = new AtomicInteger();
-        for (var index = 0; index < regions.size(); index++) {
-            var output = outputDirectory.resolve("region-%02d.ome.tif".formatted(index));
-            if (Files.isRegularFile(output) && Files.size(output) > 0) {
-                completed.incrementAndGet();
+        var progressTotal = regionProgressTotalUnits(
+                request.outputWidth(), request.outputHeight(), regions.size());
+        var lastProgress = new AtomicInteger(-1);
+        var progressReporter = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            var thread = new Thread(runnable, "pathlab-bioformats-progress");
+            thread.setDaemon(true);
+            return thread;
+        });
+        var sampleProgress = (Runnable) () -> {
+            try {
+                var written = regionBytes(outputDirectory, regions.size());
+                var completed = regionProgressCompletedUnits(written, progressTotal);
+                if (lastProgress.getAndSet(completed) != completed) {
+                    progress.accept(completed, progressTotal);
+                }
+            } catch (IOException | RuntimeException ignored) {
+                // Conversion remains authoritative; a later sample can recover UI progress.
             }
-        }
-        progress.accept(completed.get(), regions.size());
+        };
+        sampleProgress.run();
+        progressReporter.scheduleAtFixedRate(
+                sampleProgress, 500, 500, TimeUnit.MILLISECONDS);
         var executor = Executors.newFixedThreadPool(Math.min(workers, regions.size()), runnable -> {
             var thread = new Thread(runnable, "pathlab-bioformats-region");
             thread.setDaemon(true);
@@ -259,7 +273,7 @@ public final class BioFormatsEngine implements ConversionEngine {
                                     region.height(),
                                     false),
                             output);
-                    progress.accept(completed.incrementAndGet(), regions.size());
+                    sampleProgress.run();
                     return output;
                 });
             }
@@ -279,13 +293,46 @@ public final class BioFormatsEngine implements ConversionEngine {
                     throw new IOException("Parallel Bio-Formats rendering failed", cause);
                 }
             }
+            progress.accept(progressTotal, progressTotal);
             return List.copyOf(outputs);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new IOException("Parallel Bio-Formats rendering was interrupted", error);
         } finally {
+            progressReporter.shutdownNow();
             executor.shutdownNow();
         }
+    }
+
+    static int regionProgressTotalUnits(int outputWidth, int outputHeight, int regionCount) {
+        if (outputWidth < 1 || outputHeight < 1 || regionCount < 1) {
+            throw new IllegalArgumentException("Region progress geometry is invalid");
+        }
+        var pixels = Math.multiplyExact((long) outputWidth, outputHeight);
+        var mebibytes = (pixels + (1024L * 1024) - 1) / (1024L * 1024);
+        return Math.toIntExact(Math.max(regionCount, mebibytes));
+    }
+
+    static int regionProgressCompletedUnits(long writtenBytes, int totalUnits) {
+        if (totalUnits < 1) {
+            throw new IllegalArgumentException("Region progress total must be positive");
+        }
+        if (writtenBytes <= 0) {
+            return 0;
+        }
+        var mebibytes = 1L + (writtenBytes - 1L) / (1024L * 1024);
+        return (int) Math.min(totalUnits - 1L, mebibytes);
+    }
+
+    private static long regionBytes(Path outputDirectory, int regionCount) throws IOException {
+        long total = 0;
+        for (var index = 0; index < regionCount; index++) {
+            var output = outputDirectory.resolve("region-%02d.ome.tif".formatted(index));
+            if (Files.isRegularFile(output)) {
+                total = Math.addExact(total, Files.size(output));
+            }
+        }
+        return total;
     }
 
     static List<RenderRegion> planRegions(

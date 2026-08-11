@@ -2065,6 +2065,9 @@ function conversionCounter(dataset: Dataset) {
   const completed = dataset.completedUnits || 0
   const total = dataset.totalUnits || 0
   if (!total) return 'Preparing measurable work…'
+  if (dataset.stage === 'REGIONS_RENDERING') {
+    return `${completed.toLocaleString()} MiB written · ~${total.toLocaleString()} MiB stage estimate`
+  }
   const units = ({
     QUALITY_OVERVIEW: 'overview',
     QUALITY_ROIS: 'quality regions',
@@ -2072,7 +2075,6 @@ function conversionCounter(dataset: Dataset) {
     DZI_TILES: 'estimated pyramid tiles',
     DZI_VALIDATING: 'tile checks',
     PACKAGING: 'package files',
-    REGIONS_RENDERING: 'source regions',
     DIRECT_DZI_PREPARING: 'aligned regions',
   } as Record<string, string>)[dataset.stage || ''] || 'work units'
   return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`

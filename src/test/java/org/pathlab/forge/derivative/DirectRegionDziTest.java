@@ -42,8 +42,31 @@ final class DirectRegionDziTest {
         assertTrue(progress.stream().anyMatch(item -> item.stage().equals("DZI_VALIDATING")));
     }
 
+    @Test
+    void preservesExactOddGeometryWhenResampledRegionHeightsDiffer() throws Exception {
+        var runtime = VipsRuntime.discover(temporaryDirectory);
+        Assumptions.assumeTrue(runtime.available());
+        var regions = List.of(
+                patternedRegion("odd-00.png", 0, 1537, 768),
+                patternedRegion("odd-01.png", 37, 1537, 769));
+
+        var result = runtime.generateDziFromRegions(
+                regions,
+                temporaryDirectory.resolve("odd-derivative"),
+                1025,
+                1025,
+                1.5,
+                ignored -> {});
+
+        assertEquals(DziValidator.expectedTileCount(1025, 1025), result.tileCount());
+    }
+
     private Path patternedRegion(String name, int phase) throws Exception {
-        var image = new BufferedImage(1024, 512, BufferedImage.TYPE_INT_RGB);
+        return patternedRegion(name, phase, 1024, 512);
+    }
+
+    private Path patternedRegion(String name, int phase, int width, int height) throws Exception {
+        var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         for (var y = 0; y < image.getHeight(); y++) {
             for (var x = 0; x < image.getWidth(); x++) {
                 var red = (x / 5 + y / 7 + phase) & 0xff;

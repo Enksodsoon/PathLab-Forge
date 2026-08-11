@@ -2036,7 +2036,7 @@ public final class ConversionService implements AutoCloseable {
 
     static boolean canReuseVerifiedRegions(
             boolean directDzi, int outputHeight, int regionCount) {
-        return regionCount >= 2 && (!directDzi || outputHeight % regionCount == 0);
+        return outputHeight > 0 && regionCount >= 2;
     }
 
     private void validateOmeArtifact(

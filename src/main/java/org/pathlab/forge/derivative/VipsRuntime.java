@@ -663,6 +663,7 @@ public final class VipsRuntime implements DerivativeEngine {
         Files.createDirectories(outputRoot);
         var preparedRoot = outputRoot.resolve("direct-regions");
         var qualityRoot = outputRoot.resolve("direct-quality");
+        var paddedJoin = outputRoot.resolve("direct-padded.tif");
         try {
             progress.accept(new DerivativeProgress(
                     "DIRECT_DZI_PREPARING", 0, regions.size()));
@@ -678,22 +679,48 @@ public final class VipsRuntime implements DerivativeEngine {
                     prepared, qualityRoot, width, height, progress);
             var expectedTiles = DziValidator.expectedTileCount(width, height);
             progress.accept(new DerivativeProgress("DZI_TILES", 0, expectedTiles));
-            runWithProgress(
-                    List.of(
-                            "arrayjoin",
-                            serializeImageArray(prepared.paths()),
-                            outputRoot.resolve("slide.dz")
-                                    + directDziSaveOptions(
-                                            selection.quality(),
-                                            selection.encoderProfile()),
-                            "--across",
-                            "1"),
-                    percent -> progress.accept(new DerivativeProgress(
+            var updateDziProgress = (java.util.function.IntConsumer) percent -> progress.accept(
+                    new DerivativeProgress(
                             "DZI_TILES",
                             Math.min(
                                     expectedTiles,
                                     Math.round(expectedTiles * percent / 100.0)),
-                            expectedTiles)));
+                            expectedTiles));
+            if (prepared.heights().stream().distinct().count() == 1) {
+                runWithProgress(
+                        List.of(
+                                "arrayjoin",
+                                serializeImageArray(prepared.paths()),
+                                outputRoot.resolve("slide.dz")
+                                        + directDziSaveOptions(
+                                                selection.quality(),
+                                                selection.encoderProfile()),
+                                "--across",
+                                "1"),
+                        updateDziProgress);
+            } else {
+                run(List.of(
+                        "arrayjoin",
+                        serializeImageArray(prepared.paths()),
+                        paddedJoin + "[tile,tile-width=512,tile-height=512,"
+                                + "compression=jpeg,Q=95,bigtiff,properties=false]",
+                        "--across",
+                        "1"));
+                runWithProgress(
+                        List.of(
+                                "crop",
+                                paddedJoin.toString(),
+                                outputRoot.resolve("slide.dz")
+                                        + directDziSaveOptions(
+                                                selection.quality(),
+                                                selection.encoderProfile()),
+                                "0",
+                                "0",
+                                Integer.toString(width),
+                                Integer.toString(height)),
+                        updateDziProgress);
+                Files.deleteIfExists(paddedJoin);
+            }
             createDirectThumbnail(prepared, outputRoot.resolve("thumbnail.jpg"));
             deleteTree(preparedRoot);
             deleteTree(qualityRoot);
@@ -721,6 +748,7 @@ public final class VipsRuntime implements DerivativeEngine {
                     selection.minimumEdgeDetailRetention(),
                     selection.encoderProfile());
         } finally {
+            Files.deleteIfExists(paddedJoin);
             deleteTree(preparedRoot);
             deleteTree(qualityRoot);
             for (var quality : AdaptiveJpegQualitySelector.QUALITIES) {

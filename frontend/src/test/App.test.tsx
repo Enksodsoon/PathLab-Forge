@@ -794,7 +794,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   expect(screen.getByText('Fast DZI package')).toBeVisible()
   expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(11)
   expect(screen.getByText('Step 1 of 3')).toBeVisible()
-  expect(screen.getByText('2 of 10 source regions')).toBeVisible()
+  expect(screen.getByText('2 MiB written · ~10 MiB stage estimate')).toBeVisible()
   expect(screen.getByText('12c · 32gb')).toBeVisible()
   expect(screen.getByText(/Elapsed 14s · about 28s left in this phase/)).toBeVisible()
   expect(screen.getByTestId('forge-osd')).toHaveAttribute(

@@ -118,8 +118,20 @@ class BioFormatsParallelRegionsTest {
                 BioFormatsEngine.preferredRegionCount(
                         50_000, 50_000, 50_003, 5));
         assertTrue(ConversionService.canReuseVerifiedRegions(true, 31_087, 7));
-        assertTrue(!ConversionService.canReuseVerifiedRegions(true, 31_087, 4));
+        assertTrue(ConversionService.canReuseVerifiedRegions(true, 31_087, 4));
         assertTrue(ConversionService.canReuseVerifiedRegions(false, 31_087, 4));
+    }
+
+    @Test
+    void reportsGrowingRegionBytesBeforeAnyWholeRegionFinishes() {
+        var total = BioFormatsEngine.regionProgressTotalUnits(43_486, 43_097, 4);
+
+        assertTrue(total > 4);
+        assertEquals(0, BioFormatsEngine.regionProgressCompletedUnits(0, total));
+        assertEquals(128, BioFormatsEngine.regionProgressCompletedUnits(128L * 1024 * 1024, total));
+        assertEquals(
+                total - 1,
+                BioFormatsEngine.regionProgressCompletedUnits(Long.MAX_VALUE, total));
     }
 
     @Test
