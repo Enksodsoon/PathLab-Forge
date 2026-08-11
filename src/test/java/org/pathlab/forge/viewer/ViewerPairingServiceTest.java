@@ -39,6 +39,8 @@ final class ViewerPairingServiceTest {
             var pairing = service.start(base);
             assertEquals("ABCD-EFGH", pairing.userCode());
             assertEquals(base + "/admin/connect?code=ABCD-EFGH", pairing.verificationUrl());
+            assertEquals(pairing.verificationUrl(), pairing.verificationUrlComplete());
+            assertEquals(5, pairing.pollIntervalSeconds());
 
             var connection = service.exchange();
             assertTrue(connection.connected());

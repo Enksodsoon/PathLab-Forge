@@ -103,6 +103,8 @@ export interface ViewerConnection {
 export interface ViewerPairing {
   userCode: string
   verificationUrl: string
+  verificationUrlComplete: string
+  pollIntervalSeconds: number
   expiresAt: string
 }
 

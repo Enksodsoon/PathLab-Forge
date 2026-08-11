@@ -47,6 +47,7 @@ public final class ViewerPairingService implements AutoCloseable {
     };
     private final HttpClient client;
     private final CredentialStore credentialStore;
+    private final String defaultOrigin;
     private final ExecutorService uploadExecutor = Executors.newSingleThreadExecutor(runnable -> {
         var thread = new Thread(runnable, "pathlab-forge-viewer-upload");
         thread.setDaemon(true);
@@ -64,12 +65,21 @@ public final class ViewerPairingService implements AutoCloseable {
                         .version(HttpClient.Version.HTTP_1_1)
                         .followRedirects(HttpClient.Redirect.NEVER)
                         .build(),
-                credentialStore);
+                credentialStore,
+                System.getProperty(
+                        "pathlab.forge.viewer.defaultOrigin",
+                        "http://127.0.0.1:5173"));
     }
 
     ViewerPairingService(HttpClient client, CredentialStore credentialStore) {
+        this(client, credentialStore, "http://127.0.0.1:5173");
+    }
+
+    ViewerPairingService(
+            HttpClient client, CredentialStore credentialStore, String defaultOrigin) {
         this.client = client;
         this.credentialStore = credentialStore;
+        this.defaultOrigin = validateBase(defaultOrigin).toString();
     }
 
     public synchronized ViewerPairing start(String viewerUrl) throws IOException {
@@ -85,9 +95,20 @@ public final class ViewerPairingService implements AutoCloseable {
                 string(body, "deviceCode"),
                 string(body, "deviceSecret"));
         var userCode = string(body, "userCode");
+        var verificationUrl = body.contains("\"verificationUrlComplete\"")
+                ? string(body, "verificationUrlComplete")
+                : "";
+        if (verificationUrl.isBlank()) {
+            verificationUrl = base.resolve("/admin/connect?code=" + userCode).toString();
+        }
+        var pollIntervalSeconds = body.contains("\"pollIntervalSeconds\"")
+                ? integer(body, "pollIntervalSeconds")
+                : 5;
         return new ViewerPairing(
                 userCode,
-                base.resolve("/admin/connect?code=" + userCode).toString(),
+                verificationUrl,
+                verificationUrl,
+                Math.max(1, pollIntervalSeconds),
                 string(body, "expiresAt"));
     }
 
@@ -118,7 +139,7 @@ public final class ViewerPairingService implements AutoCloseable {
     public synchronized ViewerConnection status() throws IOException {
         var stored = credentialStore.read();
         if (stored.isEmpty()) {
-            return new ViewerConnection(false, "", "", List.of());
+            return new ViewerConnection(false, defaultOrigin, "", List.of());
         }
         var separator = stored.get().indexOf('\n');
         if (separator <= 0 || separator == stored.get().length() - 1) {

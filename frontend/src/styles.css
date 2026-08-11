@@ -79,3 +79,21 @@ button{cursor:pointer}
 .forge-feature-list article span {
   display: block;
 }
+
+.forge-pairing-qr {
+  display: grid;
+  place-items: center;
+  justify-self: center;
+  width: 176px;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: #fff;
+}
+
+.forge-pairing-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}

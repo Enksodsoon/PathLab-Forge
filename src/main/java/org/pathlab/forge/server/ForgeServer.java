@@ -648,6 +648,9 @@ public final class ForgeServer implements AutoCloseable {
                     "application/json",
                     "{\"userCode\":" + json(pairing.userCode())
                             + ",\"verificationUrl\":" + json(pairing.verificationUrl())
+                            + ",\"verificationUrlComplete\":"
+                            + json(pairing.verificationUrlComplete())
+                            + ",\"pollIntervalSeconds\":" + pairing.pollIntervalSeconds()
                             + ",\"expiresAt\":" + json(pairing.expiresAt()) + "}");
         } catch (IOException | IllegalArgumentException error) {
             respond(

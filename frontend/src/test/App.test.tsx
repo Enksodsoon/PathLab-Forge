@@ -101,6 +101,8 @@ vi.mock('../api', () => ({
   startViewerPairing: vi.fn(async () => ({
     userCode: 'ABCD-EFGH',
     verificationUrl: 'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
+    verificationUrlComplete: 'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
+    pollIntervalSeconds: 0.01,
     expiresAt: '2026-07-29T08:30:00Z',
   })),
   getViewerConnection: vi.fn(async () => ({
@@ -272,19 +274,22 @@ test('shows the short-lived Viewer verification code', async () => {
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced connection' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'Viewer address' }), {
     target: { value: 'http://127.0.0.1:8010' },
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
 
   expect(await screen.findByText('ABCD-EFGH')).toBeVisible()
   expect(screen.getByRole('link', { name: 'Open Viewer approval' })).toHaveAttribute(
     'href',
     'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
   )
+  expect(screen.getByRole('img', { name: 'Scan to approve this Forge device' }))
+    .toHaveAttribute('data-value', 'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH')
 })
 
-test('defaults local pairing to the Viewer web origin', async () => {
+test('uses one-click default pairing and hides custom origins under Advanced', async () => {
   render(<App />)
 
   await waitFor(() => {
@@ -293,10 +298,12 @@ test('defaults local pairing to the Viewer web origin', async () => {
   })
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
 
+  expect(screen.queryByRole('textbox', { name: 'Viewer address' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Connect to PathLab Viewer' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced connection' }))
   expect(screen.getByRole('textbox', { name: 'Viewer address' })).toHaveValue(
     'http://127.0.0.1:5173',
   )
-  expect(screen.getByRole('button', { name: 'Request pairing code' })).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Disconnect this device' })).not.toBeInTheDocument()
 })
 
@@ -332,37 +339,47 @@ test('shows connected account details and revokes only after confirmation', asyn
   expect(screen.getByRole('button', { name: 'Viewer account' })).toBeVisible()
 })
 
-test('keeps pairing retryable and explains pending approval', async () => {
-  vi.mocked(api.exchangeViewerPairing).mockRejectedValueOnce(new Error(
+test('polls pending pairing automatically without showing an error', async () => {
+  vi.mocked(api.exchangeViewerPairing).mockRejectedValue(new Error(
     'Viewer pairing is not approved yet (409): {"error":"PAIRING_PENDING"}',
   ))
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
   await screen.findByText('ABCD-EFGH')
-  fireEvent.click(screen.getByRole('button', { name: 'I approved this device' }))
+  await waitFor(() => expect(api.exchangeViewerPairing).toHaveBeenCalled())
+  expect(screen.queryByText(/Approval is still pending/)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'I approved this device' })).not.toBeInTheDocument()
+})
 
-  expect(await screen.findByText(
-    'Approval is still pending. Approve the code in Viewer, then try again.',
-  )).toBeVisible()
-  expect(screen.getByRole('button', { name: 'I approved this device' })).toBeVisible()
+test('closes pairing automatically after Viewer approval', async () => {
+  vi.mocked(api.exchangeViewerPairing).mockResolvedValueOnce({
+    connected: true,
+    viewerUrl: 'http://127.0.0.1:8010',
+    deviceName: 'PathLab Forge on Windows',
+    scopes: ['desktop:ingest'],
+  })
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
+
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Connect to Viewer' }))
+    .not.toBeInTheDocument())
+  expect(screen.getByRole('button', { name: 'PathLab Forge on Windows' })).toBeVisible()
 })
 
 test.each([
   ['pairing expired', 'This pairing code expired. Request a new code and approve it in Viewer.'],
   ['credential revoked (401)', 'The Viewer credential was revoked. Connect this device again.'],
 ])('explains retryable Viewer exchange failure: %s', async (failure, expected) => {
-  vi.mocked(api.exchangeViewerPairing).mockRejectedValueOnce(new Error(failure))
+  vi.mocked(api.exchangeViewerPairing).mockRejectedValue(new Error(failure))
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
-  await screen.findByText('ABCD-EFGH')
-  fireEvent.click(screen.getByRole('button', { name: 'I approved this device' }))
-
+  fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
   expect(await screen.findByText(expected)).toBeVisible()
-  expect(screen.getByRole('button', { name: 'I approved this device' })).toBeVisible()
 })
 
 test.each([
@@ -373,10 +390,10 @@ test.each([
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer account' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Request pairing code' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
 
   expect(await screen.findByText(expected)).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Request pairing code' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Connect to PathLab Viewer' })).toBeVisible()
 })
 
 test('updates dimensions and file size live while drawing and reshaping a crop', async () => {

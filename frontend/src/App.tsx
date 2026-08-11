@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type OpenSeadragon from 'openseadragon'
+import { renderSVG } from 'uqr'
 
 import * as api from './api'
 import type {
@@ -398,24 +399,47 @@ export function App() {
       setError('')
       const next = await api.startViewerPairing(viewerUrl)
       setPairing(next)
-      setNotice(`Approve Viewer code ${next.userCode}`)
+      setNotice(`Waiting for Viewer approval of ${next.userCode}`)
     } catch (nextError) {
       setError(viewerConnectionMessage(nextError))
     }
   }
 
-  const completePairing = async () => {
-    try {
-      const next = await api.exchangeViewerPairing()
-      setConnection(next)
-      setViewerUrl(next.viewerUrl)
-      setPairing(undefined)
-      setPairingOpen(false)
-      setNotice('PathLab Viewer connected with a revocable desktop credential')
-    } catch (nextError) {
-      setError(viewerConnectionMessage(nextError))
+  useEffect(() => {
+    if (!pairing) return undefined
+    let stopped = false
+    let busy = false
+    const poll = async () => {
+      if (busy || stopped) return
+      busy = true
+      try {
+        const next = await api.exchangeViewerPairing()
+        if (stopped) return
+        setConnection(next)
+        setViewerUrl(next.viewerUrl)
+        setPairing(undefined)
+        setPairingOpen(false)
+        setNotice('PathLab Viewer connected with a revocable desktop credential')
+      } catch (nextError) {
+        if (stopped) return
+        const normalized = message(nextError).toLowerCase()
+        if (!normalized.includes('pairing_pending') && !normalized.includes('not approved yet')) {
+          setError(viewerConnectionMessage(nextError))
+          setPairing(undefined)
+        }
+      } finally {
+        busy = false
+      }
     }
-  }
+    const timer = window.setInterval(
+      () => void poll(),
+      Math.max(10, pairing.pollIntervalSeconds * 1_000),
+    )
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [pairing])
 
   const disconnectViewer = async () => {
     try {
@@ -676,7 +700,6 @@ export function App() {
           connection={connection}
           onViewerUrl={setViewerUrl}
           onStart={() => void beginPairing()}
-          onComplete={() => void completePairing()}
           onDisconnect={() => void disconnectViewer()}
           onClose={() => setPairingOpen(false)}
         />
@@ -815,7 +838,6 @@ function ViewerPairingDialog({
   connection,
   onViewerUrl,
   onStart,
-  onComplete,
   onDisconnect,
   onClose,
 }: {
@@ -824,12 +846,18 @@ function ViewerPairingDialog({
   connection?: ViewerConnection
   onViewerUrl: (value: string) => void
   onStart: () => void
-  onComplete: () => void
   onDisconnect: () => void
   onClose: () => void
 }) {
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
+  const [advanced, setAdvanced] = useState(false)
   const connected = Boolean(connection?.connected)
+  const qr = useMemo(
+    () => pairing ? renderSVG(pairing.verificationUrlComplete, {
+      ecc: 'M', border: 3, pixelSize: 4, blackColor: '#181713', whiteColor: '#ffffff',
+    }) : '',
+    [pairing],
+  )
   return (
     <div className="forge-dialog-backdrop">
       <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-connect-title">
@@ -857,26 +885,35 @@ function ViewerPairingDialog({
           </>
         ) : !pairing ? (
           <>
-            <p>A short-lived browser approval creates a revocable Windows Credential Manager entry for this Forge device.</p>
-            <label>
-              Viewer address
-              <input
-                type="url"
-                value={viewerUrl}
-                onChange={(event) => onViewerUrl(event.target.value)}
-                placeholder="https://viewer.example"
-              />
-            </label>
-            <button className="forge-primary" type="button" onClick={onStart}>Request pairing code</button>
+            <p>Approve this device in Viewer. No VPN, port forwarding, or firewall setup is needed.</p>
+            {advanced ? (
+              <label>
+                Viewer address
+                <input
+                  type="url"
+                  value={viewerUrl}
+                  onChange={(event) => onViewerUrl(event.target.value)}
+                  placeholder="https://viewer.example"
+                />
+              </label>
+            ) : null}
+            <button className="forge-primary" type="button" onClick={onStart}>Connect to PathLab Viewer</button>
+            <button type="button" onClick={() => setAdvanced((value) => !value)}>Advanced connection</button>
           </>
         ) : (
           <>
             <div className="forge-pairing-code"><span>Verification code</span><strong>{pairing.userCode}</strong></div>
-            <a className="forge-primary" href={pairing.verificationUrl} target="_blank" rel="noreferrer">
+            <div
+              className="forge-pairing-qr"
+              role="img"
+              aria-label="Scan to approve this Forge device"
+              data-value={pairing.verificationUrlComplete}
+              dangerouslySetInnerHTML={{ __html: qr }}
+            />
+            <a className="forge-primary" href={pairing.verificationUrlComplete} target="_blank" rel="noreferrer">
               Open Viewer approval
             </a>
-            <button type="button" onClick={onComplete}>I approved this device</button>
-            <small>Expires {new Date(pairing.expiresAt).toLocaleTimeString()}</small>
+            <small>Waiting for approval · expires {new Date(pairing.expiresAt).toLocaleTimeString()}</small>
           </>
         )}
         <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
