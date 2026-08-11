@@ -31,7 +31,8 @@ Stop after these seven milestones and their local validation report. Do not add
 third-party plugins, arbitrary scripting, a dependency solver, cloud services,
 microservices, distributed workers, additional models, merge or deployment.
 
-New conversions use only the fastest measured `prepared-v2` direct-DZI path.
-Existing direct-OME artifacts remain readable, but Forge must not select that
-route or retry through a staging OME when direct DZI fails. Image-quality gates,
-artifact reuse, privacy and resumable upload remain regression contracts.
+New conversions use only the measured `ome-dynamic-v1` direct path. The governed
+same-slide release-candidate comparison found it 46.67% faster and 72.96% smaller
+than prepared-v2. Existing prepared artifacts remain readable, but Forge does not
+select or retry into that larger route. Image-quality gates, artifact reuse,
+privacy and resumable upload remain regression contracts.

@@ -163,17 +163,17 @@ public final class ForgeBenchmark {
 
     static ArtifactRevisionFormat benchmarkFormat() {
         var configured = System.getProperty(
-                "pathlab.forge.benchmark.format", ArtifactRevisionFormat.PREPARED_DZI_V2.name());
+                "pathlab.forge.benchmark.format", ArtifactRevisionFormat.OME_DYNAMIC_V1.name());
         try {
             var format = ArtifactRevisionFormat.valueOf(
                     configured.trim().toUpperCase(java.util.Locale.ROOT));
-            if (format != ArtifactRevisionFormat.PREPARED_DZI_V2) {
+            if (format != ArtifactRevisionFormat.OME_DYNAMIC_V1) {
                 throw new IllegalArgumentException("Alternative conversion route is disabled");
             }
             return format;
         } catch (IllegalArgumentException error) {
             throw new IllegalArgumentException(
-                    "pathlab.forge.benchmark.format must be PREPARED_DZI_V2",
+                    "pathlab.forge.benchmark.format must be OME_DYNAMIC_V1",
                     error);
         }
     }

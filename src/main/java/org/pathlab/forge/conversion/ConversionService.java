@@ -970,7 +970,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     public LocalDataset start(String id) throws IOException {
-        return start(id, ArtifactRevisionFormat.PREPARED_DZI_V2);
+        return start(id, ArtifactRevisionFormat.OME_DYNAMIC_V1);
     }
 
     public RgbRegion readRgbRegion(
@@ -1050,7 +1050,9 @@ public final class ConversionService implements AutoCloseable {
             progress.put(
                     id,
                     new ConversionProgress(
-                            "PACKAGE_COMMITTED",
+                            requestedFormat == ArtifactRevisionFormat.OME_DYNAMIC_V1
+                                    ? "OME_COMMITTED"
+                                    : "PACKAGE_COMMITTED",
                             1,
                             1,
                             System.currentTimeMillis(),
@@ -1187,7 +1189,7 @@ public final class ConversionService implements AutoCloseable {
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
         var requestedFormat = selectedConversionFormat(requestedFormats.getOrDefault(
-                dataset.id(), ArtifactRevisionFormat.PREPARED_DZI_V2));
+                dataset.id(), ArtifactRevisionFormat.OME_DYNAMIC_V1));
         var resumable = resumableRevision(dataset).filter(
                 candidate -> candidate.format() == requestedFormat);
         var revision = resumable.isPresent()
@@ -2011,7 +2013,7 @@ public final class ConversionService implements AutoCloseable {
     static ArtifactRevisionFormat selectedConversionFormat(
             ArtifactRevisionFormat requestedFormat) {
         java.util.Objects.requireNonNull(requestedFormat);
-        return ArtifactRevisionFormat.PREPARED_DZI_V2;
+        return ArtifactRevisionFormat.OME_DYNAMIC_V1;
     }
 
     static boolean shouldUseQuPathWriter(

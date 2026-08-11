@@ -449,7 +449,7 @@ test('updates dimensions and file size live while drawing and reshaping a crop',
   expect(screen.queryByText('Precise crop coordinates')).not.toBeInTheDocument()
   expect(screen.queryAllByRole('spinbutton')).toHaveLength(0)
   await screen.findByText('82,922 × 45,367')
-  expect(screen.getByText(/Estimated conversion data ≈/)).toBeVisible()
+  expect(screen.getByText(/Estimated direct OME-TIFF ≈/)).toBeVisible()
   expect(screen.getByText(/Expected range/)).toBeVisible()
   expect(screen.getByText(/Peak conversion workspace ≤/)).toBeVisible()
 
@@ -462,12 +462,12 @@ test('updates dimensions and file size live while drawing and reshaping a crop',
   fireEvent.click(screen.getByRole('button', { name: 'Draw crop on slide' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Test draw crop' }))
   expect(screen.getByText('5,668 × 5,520')).toBeVisible()
-  const drawnEstimate = screen.getByText(/Estimated conversion data ≈/).textContent
+  const drawnEstimate = screen.getByText(/Estimated direct OME-TIFF ≈/).textContent
   expect(drawnEstimate).toContain('live')
 
   fireEvent.click(screen.getByRole('button', { name: 'Test reshape crop' }))
   expect(screen.getByText('5,000 × 4,500')).toBeVisible()
-  expect(screen.getByText(/Estimated conversion data ≈/).textContent).not.toBe(drawnEstimate)
+  expect(screen.getByText(/Estimated direct OME-TIFF ≈/).textContent).not.toBe(drawnEstimate)
 
   fireEvent.change(screen.getByRole('combobox', { name: 'Downsample' }), { target: { value: '1.5' } })
 
@@ -807,7 +807,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   })).toHaveValue(11)
 })
 
-test('keeps old direct OME results readable while new conversions use fast DZI', async () => {
+test('uses direct OME for new conversions and keeps direct results readable', async () => {
   const direct: api.Dataset = {
     id: 'direct-ome-slide',
     displayName: 'Direct OME slide.vsi',
@@ -879,8 +879,8 @@ test('keeps old direct OME results readable while new conversions use fast DZI',
   render(<App />)
 
   await waitFor(() => expect(screen.getByText('Viewer connected').parentElement)
-    .toHaveTextContent('Next conversion · Fast DZI package'))
-  expect(screen.getByRole('button', { name: 'Convert with fastest DZI path' })).toBeVisible()
+    .toHaveTextContent('Next conversion · Direct OME-TIFF'))
+  expect(screen.getByRole('button', { name: 'Convert to direct OME-TIFF' })).toBeVisible()
   const result = await screen.findByRole('region', { name: 'Converted slide result' })
   expect(within(result).getByText('Direct OME-TIFF')).toBeVisible()
   expect(within(result).getByText('104.9 MB')).toBeVisible()
@@ -1278,7 +1278,7 @@ test('replaces the estimate with compact DZI size and quality evidence after con
     target: { value: '4' },
   })
 
-  expect(await screen.findByText('Estimated conversion data ≈ 23.8 MB')).toBeVisible()
+  expect(await screen.findByText('Estimated direct OME-TIFF ≈ 23.8 MB')).toBeVisible()
   expect(screen.queryByText(/Compared with/)).not.toBeInTheDocument()
   expect(api.estimate).toHaveBeenCalledWith(
     'measured-slide',
@@ -1328,7 +1328,7 @@ test('shows one actionable size quality conflict without changing the crop', asy
   const panel = await screen.findByRole('alert')
   expect(within(panel).getByText('Compact DZI could not meet the 1.25× size limit')).toBeVisible()
   expect(within(panel).getByText(/Your current crop is preserved/)).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Convert with fastest DZI path' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Convert to direct OME-TIFF' })).toBeVisible()
   expect(screen.getByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
     '/api/datasets/compact-conflict/preview/slide.dzi?revision=conflict-config&preview=responsive-v2',

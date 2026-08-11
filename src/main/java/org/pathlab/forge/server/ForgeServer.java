@@ -1845,7 +1845,7 @@ public final class ForgeServer implements AutoCloseable {
         return "{\"connected\":" + connection.connected()
                 + ",\"viewerUrl\":" + json(connection.viewerUrl())
                 + ",\"deviceName\":" + json(connection.deviceName())
-                + ",\"conversionMode\":" + json("PREPARED_DZI_V2")
+                + ",\"conversionMode\":" + json("OME_DYNAMIC_V1")
                 + ",\"scopes\":["
                 + connection.scopes().stream()
                         .map(ForgeServer::json)

@@ -15,14 +15,14 @@ final class ForgeBenchmarkTest {
 
     @Test
     void defaultsToTheOnlySupportedDirectProfile() {
-        assertEquals(ArtifactRevisionFormat.PREPARED_DZI_V2, ForgeBenchmark.benchmarkFormat());
-        System.setProperty("pathlab.forge.benchmark.format", "prepared_dzi_v2");
-        assertEquals(ArtifactRevisionFormat.PREPARED_DZI_V2, ForgeBenchmark.benchmarkFormat());
+        assertEquals(ArtifactRevisionFormat.OME_DYNAMIC_V1, ForgeBenchmark.benchmarkFormat());
+        System.setProperty("pathlab.forge.benchmark.format", "ome_dynamic_v1");
+        assertEquals(ArtifactRevisionFormat.OME_DYNAMIC_V1, ForgeBenchmark.benchmarkFormat());
     }
 
     @Test
     void rejectsEveryAlternativeRoute() {
-        System.setProperty("pathlab.forge.benchmark.format", "ome_dynamic_v1");
+        System.setProperty("pathlab.forge.benchmark.format", "prepared_dzi_v2");
         assertThrows(IllegalArgumentException.class, ForgeBenchmark::benchmarkFormat);
     }
 }

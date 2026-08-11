@@ -1672,7 +1672,7 @@ function ExportInspector({
     && (current.format === 'OME_DYNAMIC_V1' ? current.omeBytes > 0 : current.packageBytes > 0)
     ? current
     : undefined
-  const directOmePlanned = false
+  const directOmePlanned = true
 
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
@@ -1874,7 +1874,7 @@ function ExportInspector({
             ) : displayedEstimate ? (
               <>
                 <b>
-                  Estimated conversion data ≈ {formatBytes(displayedEstimate.fileBytes)}
+                  Estimated direct OME-TIFF ≈ {formatBytes(displayedEstimate.fileBytes)}
                   {estimateIsLive ? ' · live' : ''}
                 </b>
                 <small>
@@ -1884,7 +1884,7 @@ function ExportInspector({
                 </small>
               </>
             ) : (
-              <b role="status">Calculating conversion estimate…</b>
+              <b role="status">Calculating direct OME-TIFF estimate…</b>
             )}
             <small>
               Peak conversion workspace ≤ {displayedEstimate
@@ -1912,7 +1912,7 @@ function ExportInspector({
       <div className="forge-help" role="status">
         <strong>{connection?.connected ? 'Viewer connected' : 'Viewer not connected'}</strong>
         {' · '}
-        Next conversion · Fast DZI package
+        Next conversion · Direct OME-TIFF
         {viewerUpload ? ` · ${viewerUpload.detail}` : ''}
         {viewerUpload?.state === 'READY_PRIVATE' && viewerUpload.viewerSlideSha256
           ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
@@ -1929,7 +1929,7 @@ function ExportInspector({
         {CANCELLABLE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>
-              Convert with fastest DZI path
+              Convert to direct OME-TIFF
             </button>}
         {current?.status === 'READY'
           && (current.packageBytes > 0 || current.format === 'OME_DYNAMIC_V1')
