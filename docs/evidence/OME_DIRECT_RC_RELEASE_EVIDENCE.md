@@ -62,7 +62,7 @@ switch. Temporary process trees are terminated on success and failure.
 - Viewer frontend: 226 passed; ESLint and production TypeScript/Vite build passed.
 - Viewer Ruff and strict MyPy passed; a fresh database migrated to Alembic head
   `20260730_0014`.
-- Forge Gradle `clean check installDist` passed: 151 tests, 0 failures, 2 skipped.
+- Forge Gradle `clean check installDist` passed: 153 tests, 0 failures, 2 skipped.
 - Forge frontend: 33 passed; production bundle gate passed.
 - Forge repository policy scan passed.
 - Installed runtime browser smoke reached `/app`, rendered library/import/viewer and
