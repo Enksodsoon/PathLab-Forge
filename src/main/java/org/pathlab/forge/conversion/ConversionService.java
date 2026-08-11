@@ -1180,7 +1180,7 @@ public final class ConversionService implements AutoCloseable {
                 dataset.cropHeight(),
                 dataset.downsample(),
                 dataset.sourceBytes(),
-                dataset.format() == DatasetFormat.OME_TIFF);
+                dataset.format().isSingleFileTiff());
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
@@ -1456,7 +1456,7 @@ public final class ConversionService implements AutoCloseable {
                                 Math.min(bytes, projectedBytes),
                                 projectedBytes));
                     finalOmeWritten = true;
-                } else if (dataset.format() == DatasetFormat.OME_TIFF
+                } else if (dataset.format().isSingleFileTiff()
                         && derivativeEngine.supportsOmeRendering()) {
                     derivativeEngine.renderOme(request, rendered);
                 } else if (useParallelRgb(dataset, request)) {

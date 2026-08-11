@@ -69,6 +69,24 @@ final class SqliteDatasetRepositoryTest {
     }
 
     @Test
+    void reloadsAPreviouslyPersistedSvsDataset() throws Exception {
+        var database = temporaryDirectory.resolve("forge.db");
+        var legacy = temporaryDirectory.resolve("library.properties");
+        var source = temporaryDirectory.resolve("legacy.svs");
+        Files.write(source, new byte[] {'I', 'I', 42, 0});
+        var dataset = new LocalDataset(
+                "legacy-svs", "legacy.svs", source.toString(), 4,
+                DatasetFormat.SVS, DatasetStatus.READY, "ready", "", "");
+
+        try (var repository = new SqliteDatasetRepository(database, legacy)) {
+            repository.save(dataset);
+        }
+        try (var restarted = new SqliteDatasetRepository(database, legacy)) {
+            assertEquals(DatasetFormat.SVS, restarted.find("legacy-svs").orElseThrow().format());
+        }
+    }
+
+    @Test
     void persistsConversionQueueOrderAndConfigurationSnapshot() throws Exception {
         var database = temporaryDirectory.resolve("forge.db");
         var legacy = temporaryDirectory.resolve("library.properties");

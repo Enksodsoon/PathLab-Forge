@@ -786,7 +786,7 @@ function ImportDialog({
       <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-import-title">
         <span>Local pathology project</span>
         <h2 id="forge-import-title">Import slides</h2>
-        <p>Select several OME-TIFF/VSI files, or recursively discover a project folder. VSI companion ETS files are grouped automatically.</p>
+        <p>Select several SVS/OME-TIFF/VSI files, or recursively discover a project folder. VSI companion ETS files are grouped automatically.</p>
         <button className="forge-primary" type="button" onClick={onChoose}>Choose slide files…</button>
         <button type="button" onClick={onChooseFolder}>Choose project folder…</button>
         <div className="forge-dialog-divider"><span>or enter its full local path</span></div>
@@ -796,7 +796,7 @@ function ImportDialog({
             type="text"
             value={path}
             onChange={(event) => onPath(event.target.value)}
-            placeholder="C:\path\slide.vsi"
+            placeholder="C:\path\slide.svs"
           />
         </label>
         <div className="forge-dialog-actions">
@@ -935,7 +935,7 @@ function SlideNavigator({
           <div className="forge-empty-nav">
             <Crosshair aria-hidden="true" />
             <strong>No local slides</strong>
-            <span>Import an OME-TIFF or select one VSI; Forge finds its matching ETS tree.</span>
+            <span>Import an SVS, OME-TIFF or VSI; Forge finds matching VSI companions.</span>
           </div>
         )}
       </nav>
@@ -1005,7 +1005,7 @@ function ViewerStage({
       <header className="forge-viewer-header">
         <div>
           <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
-          <span>{dataset ? `${dataset.format === 'VSI' ? 'VSI / ETS' : 'OME-TIFF'} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
+          <span>{dataset ? `${datasetFormatLabel(dataset.format)} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
         <button
           type="button"
@@ -1054,7 +1054,7 @@ function ViewerStage({
         <div className="forge-stage-empty">
           <span className="forge-tissue-mark"><Crosshair /></span>
           <h1>{dataset ? 'Preparing slide preview' : 'Your slides, ready at launch'}</h1>
-          <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import an OME-TIFF or a VSI. The slide panel remains visible so image-series selection and conversion feel like one viewer workflow.'}</p>
+          <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import an SVS, OME-TIFF or VSI. The slide panel remains visible so image-series selection and conversion feel like one viewer workflow.'}</p>
         </div>
       )}
       {converting && dataset ? (
@@ -1591,7 +1591,7 @@ function ExportInspector({
         { x: parsed.x, y: parsed.y, width: parsed.width, height: parsed.height },
         parsed.downsample,
         dataset.sourceBytes,
-        dataset.format === 'OME_TIFF',
+        dataset.format === 'OME_TIFF' || dataset.format === 'SVS',
       )
     : null
   const displayedEstimate = draftMatchesSaved ? savedEstimate : draftEstimate ?? liveEstimate
@@ -1696,7 +1696,7 @@ function ExportInspector({
   return (
     <section className="forge-inspector-section">
       <div className="forge-source-summary">
-        <span>{dataset.format === 'VSI' ? 'VSI with matched ETS' : 'OME-TIFF'}</span>
+        <span>{dataset.format === 'VSI' ? 'VSI with matched ETS' : dataset.format === 'SVS' ? 'SVS whole slide' : 'OME-TIFF'}</span>
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
@@ -2026,6 +2026,12 @@ function conversionCounter(dataset: Dataset) {
     DIRECT_DZI_PREPARING: 'aligned regions',
   } as Record<string, string>)[dataset.stage || ''] || 'work units'
   return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`
+}
+
+function datasetFormatLabel(format: Dataset['format']) {
+  if (format === 'VSI') return 'VSI / ETS'
+  if (format === 'SVS') return 'SVS'
+  return 'OME-TIFF'
 }
 
 function formatRate(value: number, stage?: string) {

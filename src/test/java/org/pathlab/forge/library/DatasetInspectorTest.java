@@ -28,6 +28,18 @@ final class DatasetInspectorTest {
     }
 
     @Test
+    void reloadsAndInspectsLegacySvsDatasetsWithoutBreakingNewImports() throws Exception {
+        var source = temporaryDirectory.resolve("legacy.svs");
+        Files.write(source, new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+
+        var dataset = new DatasetInspector().inspect(source);
+
+        assertEquals(DatasetFormat.SVS, dataset.format());
+        assertEquals(DatasetStatus.READY, dataset.status());
+        assertTrue(dataset.detail().contains("SVS"));
+    }
+
+    @Test
     void rejectsAnOmeTiffExtensionWithWrongSignature() throws Exception {
         var source = temporaryDirectory.resolve("case.ome.tif");
         Files.writeString(source, "not a TIFF");

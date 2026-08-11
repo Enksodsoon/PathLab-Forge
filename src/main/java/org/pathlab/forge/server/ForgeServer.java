@@ -841,7 +841,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     422,
                     "application/json",
-                    "{\"error\":\"path_required\",\"detail\":\"Enter a local OME-TIFF or VSI path\"}");
+                    "{\"error\":\"path_required\",\"detail\":\"Enter a local SVS, OME-TIFF or VSI path\"}");
             return;
         }
         try {
@@ -1050,7 +1050,7 @@ public final class ForgeServer implements AutoCloseable {
                     height,
                     downsample,
                     dataset.sourceBytes(),
-                    dataset.format() == org.pathlab.forge.library.DatasetFormat.OME_TIFF);
+                    dataset.format().isSingleFileTiff());
             respond(
                     exchange,
                     200,
@@ -1068,8 +1068,7 @@ public final class ForgeServer implements AutoCloseable {
                                             height,
                                             downsample,
                                             dataset.sourceBytes(),
-                                            dataset.format()
-                                                    == org.pathlab.forge.library.DatasetFormat.OME_TIFF)
+                                            dataset.format().isSingleFileTiff())
                             + "}");
         } catch (IllegalArgumentException error) {
             respond(
@@ -1627,7 +1626,7 @@ public final class ForgeServer implements AutoCloseable {
                         dataset.cropHeight(),
                         dataset.downsample(),
                         dataset.sourceBytes(),
-                        dataset.format() == org.pathlab.forge.library.DatasetFormat.OME_TIFF)
+                        dataset.format().isSingleFileTiff())
                 : null;
         return "{\"id\":" + json(dataset.id())
                 + ",\"displayName\":" + json(dataset.displayName())

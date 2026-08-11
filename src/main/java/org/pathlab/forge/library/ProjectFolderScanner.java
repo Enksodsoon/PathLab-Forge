@@ -35,6 +35,9 @@ public final class ProjectFolderScanner {
 
     private static boolean isPrimarySlide(Path path) {
         var name = path.getFileName().toString().toLowerCase(Locale.ROOT);
-        return name.endsWith(".vsi") || name.endsWith(".ome.tif") || name.endsWith(".ome.tiff");
+        return name.endsWith(".vsi")
+                || name.endsWith(".svs")
+                || name.endsWith(".ome.tif")
+                || name.endsWith(".ome.tiff");
     }
 }
