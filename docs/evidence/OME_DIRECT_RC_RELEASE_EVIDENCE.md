@@ -110,3 +110,11 @@ public installer.
 Machine-readable source-safe metrics are in `ome-direct-rc-metrics.json`. Private raw
 reports, fixture identifiers, coordinates, hashes, generated artifacts, and process
 logs remain outside Git.
+
+The self-contained interactive report is in `interactive-report/report.html`; its
+canonical payload and reproducible DuckDB transformation are stored beside it. The
+payload, source linkage, 17-block reading order, three charts, four metric cards, and
+one fidelity table pass structural verification. Browser QA identified a shared
+portable-reader issue on Windows: the sticky `100vw` header exceeds the layout by the
+vertical-scrollbar width on long reports. The report remains usable, but the packaged
+horizontal-overflow gate is therefore recorded as unresolved rather than claimed green.

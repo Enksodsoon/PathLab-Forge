@@ -1,0 +1,244 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Direct OME Release Candidate",
+    "description": "Interactive comparison of direct OME delivery and the prepared-v2 workflow.",
+    "generatedAt": "2026-08-11T08:21:47Z",
+    "cards": [
+      {
+        "id": "speed_improvement",
+        "description": "Reduction in conversion-to-package-ready wall time against prepared-v2.",
+        "dataset": "headline_metrics",
+        "sourceId": "release_metrics",
+        "metrics": [
+          {"label": "Faster conversion", "field": "speedImprovement", "format": "percent"}
+        ]
+      },
+      {
+        "id": "storage_improvement",
+        "description": "Reduction in retained derivative bytes against prepared-v2.",
+        "dataset": "headline_metrics",
+        "sourceId": "release_metrics",
+        "metrics": [
+          {"label": "Less retained storage", "field": "storageImprovement", "format": "percent"}
+        ]
+      },
+      {
+        "id": "quality_floor",
+        "description": "Lowest SSIM observed across 64 governed native-resolution ROIs.",
+        "dataset": "headline_metrics",
+        "sourceId": "release_metrics",
+        "metrics": [
+          {"label": "Minimum SSIM", "field": "minimumSsim", "format": "number"}
+        ]
+      },
+      {
+        "id": "concurrency_errors",
+        "description": "Tile-request failures through the 50-client protocol-level smoke.",
+        "dataset": "headline_metrics",
+        "sourceId": "release_metrics",
+        "metrics": [
+          {"label": "Concurrency errors", "field": "concurrencyErrors", "format": "number"}
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "conversion_time",
+        "title": "Conversion wall time by workflow",
+        "subtitle": "Same host and real VSI/ETS source; seconds to package-ready.",
+        "type": "bar",
+        "dataset": "workflow_comparison",
+        "sourceId": "release_metrics",
+        "valueFormat": "number",
+        "encodings": {
+          "x": {"field": "workflow", "type": "nominal", "label": "Workflow"},
+          "y": {"field": "conversionSeconds", "type": "quantitative", "label": "Seconds"},
+          "tooltip": [
+            {"field": "conversionSeconds", "type": "quantitative", "label": "Conversion seconds"},
+            {"field": "retainedGigabytes", "type": "quantitative", "label": "Retained GB"},
+            {"field": "workspaceGigabytes", "type": "quantitative", "label": "Workspace GB"}
+          ]
+        }
+      },
+      {
+        "id": "retained_storage",
+        "title": "Retained derivative storage by workflow",
+        "subtitle": "Same real source and codec profile; decimal gigabytes retained after conversion.",
+        "type": "bar",
+        "dataset": "workflow_comparison",
+        "sourceId": "release_metrics",
+        "valueFormat": "number",
+        "encodings": {
+          "x": {"field": "workflow", "type": "nominal", "label": "Workflow"},
+          "y": {"field": "retainedGigabytes", "type": "quantitative", "label": "Retained GB"},
+          "tooltip": [
+            {"field": "workspaceGigabytes", "type": "quantitative", "label": "Workspace GB"},
+            {"field": "peakRssGigabytes", "type": "quantitative", "label": "Peak process-tree GB"}
+          ]
+        }
+      },
+      {
+        "id": "tile_concurrency",
+        "title": "Tile latency by concurrency tier",
+        "subtitle": "Worst observed p95 across three deterministic trials; all tiers returned zero errors.",
+        "type": "bar",
+        "dataset": "concurrency",
+        "sourceId": "release_metrics",
+        "valueFormat": "number",
+        "encodings": {
+          "x": {"field": "clients", "type": "nominal", "label": "Concurrent clients"},
+          "y": {"field": "p95Ms", "type": "quantitative", "label": "p95 latency (ms)"},
+          "tooltip": [
+            {"field": "p99Ms", "type": "quantitative", "label": "p99 ms"},
+            {"field": "errors", "type": "quantitative", "label": "Errors"}
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "quality_gate",
+        "title": "Real-slide fidelity gate",
+        "subtitle": "64 deterministic native-resolution ROIs.",
+        "dataset": "fidelity",
+        "sourceId": "release_metrics",
+        "defaultSort": {"field": "metric", "direction": "asc"},
+        "columns": [
+          {"field": "metric", "label": "Metric", "type": "text"},
+          {"field": "observed", "label": "Observed", "format": "number"},
+          {"field": "gate", "label": "Required gate", "type": "text"},
+          {"field": "result", "label": "Result", "type": "text"}
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "release_metrics",
+        "label": "Direct OME release-candidate metrics",
+        "path": "docs/evidence/interactive-report/source.sql"
+      }
+    ],
+    "blocks": [
+      {"id": "title", "type": "markdown", "body": "# Direct OME Release Candidate"},
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "sourceId": "release_metrics",
+        "body": "## Executive Summary\n\n- **Direct OME materially improves the existing workflow.** Real-file conversion was 46.67% faster and retained 72.96% fewer derivative bytes than prepared-v2.\n- **Quality remained inside the established release gate.** All 64 governed ROIs passed SSIM, Delta E00, and edge-detail requirements.\n- **Delivery stayed reliable in the tested envelope.** Three direct and three fallback process trials passed, and the 1, 10, 25, and 50-client tile smokes returned zero errors.\n- **The change reuses the existing product model.** Direct slides retain one OME and zero persistent DZI files while prepared-v2 remains the automatic compatibility fallback."
+      },
+      {
+        "id": "headline_strip",
+        "type": "metric-strip",
+        "cardIds": ["speed_improvement", "storage_improvement", "quality_floor", "concurrency_errors"]
+      },
+      {
+        "id": "conversion_finding",
+        "type": "markdown",
+        "sourceId": "release_metrics",
+        "body": "## Direct conversion removes the expensive derivative stage\n\nThe real VSI/ETS comparison reached package-ready in 199.8 seconds with direct OME versus 374.6 seconds with prepared-v2. The 46.67% reduction clears the 30% release objective. This gain comes from producing and retaining the canonical factor-2 OME instead of building a second persistent DZI package."
+      },
+      {"id": "conversion_chart_block", "type": "chart", "chartId": "conversion_time"},
+      {
+        "id": "storage_finding",
+        "type": "markdown",
+        "sourceId": "release_metrics",
+        "body": "## One canonical artifact sharply reduces storage overhead\n\nDirect OME retained 500 MB compared with 1.85 GB for prepared-v2, a 72.96% reduction. Managed conversion workspace also fell from 3.18 GB to 500 MB. Peak process-tree memory changed only slightly, so storage and workspace—not peak RSS—are the strongest resource improvements."
+      },
+      {"id": "storage_chart_block", "type": "chart", "chartId": "retained_storage"},
+      {
+        "id": "quality_finding",
+        "type": "markdown",
+        "sourceId": "release_metrics",
+        "body": "## Measured image fidelity remains acceptable\n\nThe governed real-slide comparison covered 64 deterministic native-resolution ROIs. Minimum SSIM was 0.971986, maximum per-ROI mean Delta E00 was 1.837467, and minimum edge-detail retention was 1.0. Each result passed the existing pathlab-visual-v1 artifact gate."
+      },
+      {"id": "quality_table_block", "type": "table", "tableId": "quality_gate"},
+      {
+        "id": "concurrency_finding",
+        "type": "markdown",
+        "sourceId": "release_metrics",
+        "body": "## Native tile delivery stays stable through 50 concurrent clients\n\nAll tested concurrency tiers completed without tile errors. Worst observed p95 increased from 26.0 ms at one client to 234.8 ms at 50 clients. This is encouraging capacity evidence, but it is not a certification for 300 simultaneous students."
+      },
+      {"id": "concurrency_chart_block", "type": "chart", "chartId": "tile_concurrency"},
+      {
+        "id": "recommendations",
+        "type": "markdown",
+        "body": "## Recommended next steps\n\n1. Keep direct OME enabled only when the exact Q75/factor-2 capability profile matches.\n2. Preserve prepared-v2 and the joint rollback flag as the compatibility and operational safety path.\n3. Run a realistic 300-student zoom-and-pan load test before production activation.\n4. Monitor cold virtual-level latency, CPU, RSS, file handles, database connections, and cache hit rate during that test."
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further questions\n\n- Does the same performance advantage hold across additional scanner vendors and unusually sparse or deep pyramids?\n- At what student concurrency does the first bottleneck move from tile delivery to network bandwidth, authentication, or database connections?"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "sourceId": "release_metrics",
+        "body": "## Caveats and assumptions\n\nThe real-file comparison covers one eligible private VSI/ETS source on one Windows host. Concurrency results are protocol-level tile smokes through 50 clients, not a 300-student browser certification. Q75 is lossy but passed the established fidelity gate. Unsupported profiles continue through prepared-v2."
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-11T08:21:47Z",
+    "status": "ready",
+    "datasets": {
+      "headline_metrics": [
+        {
+          "speedImprovement": 0.4667,
+          "storageImprovement": 0.7296,
+          "minimumSsim": 0.9719863124132546,
+          "concurrencyErrors": 0,
+          "realSlideCount": 1,
+          "deterministicTrials": 3,
+          "roiCount": 64,
+          "maximumClientsTested": 50
+        }
+      ],
+      "workflow_comparison": [
+        {
+          "workflow": "Direct OME",
+          "conversionSeconds": 199.788,
+          "retainedGigabytes": 0.500309132,
+          "workspaceGigabytes": 0.500312729,
+          "peakRssGigabytes": 4.110106624,
+          "codec": "JPEG Q75",
+          "pyramidFactor": 2,
+          "realSlideCount": 1
+        },
+        {
+          "workflow": "Prepared-v2",
+          "conversionSeconds": 374.619,
+          "retainedGigabytes": 1.850400059,
+          "workspaceGigabytes": 3.175606914,
+          "peakRssGigabytes": 4.172959744,
+          "codec": "JPEG derivatives",
+          "pyramidFactor": 2,
+          "realSlideCount": 1
+        }
+      ],
+      "concurrency": [
+        {"clients": "1", "p95Ms": 25.977, "p99Ms": 25.977, "errors": 0, "trials": 3, "delivery": "native JPEG"},
+        {"clients": "10", "p95Ms": 51.862, "p99Ms": 51.862, "errors": 0, "trials": 3, "delivery": "native JPEG"},
+        {"clients": "25", "p95Ms": 132.164, "p99Ms": 134.687, "errors": 0, "trials": 3, "delivery": "native JPEG"},
+        {"clients": "50", "p95Ms": 234.788, "p99Ms": 244.617, "errors": 0, "trials": 3, "delivery": "native JPEG"}
+      ],
+      "fidelity": [
+        {"metric": "Minimum SSIM", "observed": 0.9719863124132546, "gate": ">= 0.970", "result": "PASS", "roiCount": 64, "profile": "pathlab-visual-v1"},
+        {"metric": "Mean Delta E00", "observed": 1.8374669090427977, "gate": "<= 2.5", "result": "PASS", "roiCount": 64, "profile": "pathlab-visual-v1"},
+        {"metric": "Minimum edge retention", "observed": 1.0, "gate": ">= 0.90", "result": "PASS", "roiCount": 64, "profile": "pathlab-visual-v1"}
+      ]
+    },
+    "accessIssues": []
+  },
+  "sources": [
+    {
+      "id": "release_metrics",
+      "label": "Direct OME release-candidate metrics",
+      "path": "docs/evidence/interactive-report/source.sql",
+      "description": "Reviewed aggregate measurements for direct OME, prepared-v2, fidelity, regressions, and tile concurrency. Private fixture identities and raw logs are excluded."
+    }
+  ]
+}
