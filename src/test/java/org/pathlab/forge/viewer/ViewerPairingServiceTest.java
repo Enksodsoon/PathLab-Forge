@@ -410,6 +410,7 @@ final class ViewerPairingServiceTest {
                 + "\"omeProfiles\":[{\"id\":\"ome-dynamic-v1\",\"pixelType\":\"uint8\","
                 + "\"channels\":3,\"colorSpace\":\"sRGB\",\"tileWidth\":512,"
                 + "\"tileHeight\":512,\"pyramidFactor\":2,\"compression\":\"jpeg\","
+                + "\"jpegQuality\":75,"
                 + "\"tiffKinds\":[\"classic\",\"bigtiff\"],\"nativeJpegTiles\":true,"
                 + "\"persistedSha256\":true}],\"maxChunkBytes\":67108864,"
                 + "\"recommendedChunkBytes\":67108864,\"maxUploadBytes\":5368709120}";

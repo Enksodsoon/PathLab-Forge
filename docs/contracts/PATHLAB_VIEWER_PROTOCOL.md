@@ -43,7 +43,7 @@ Expected response concepts:
 
 Forge checks capabilities before conversion and repeats the check immediately
 before ingest creation. Direct OME requires the exact structured
-`ome-dynamic-v1` profile: RGB uint8/sRGB, three channels, 512-pixel JPEG tiles,
+`ome-dynamic-v1` profile: RGB uint8/sRGB, three channels, 512-pixel JPEG Q75 tiles,
 factor 2, classic TIFF and BigTIFF, native JPEG tiles, persisted SHA
 acknowledgement, and an accepted artifact size. Missing, partial, malformed, or
 future-only profiles select `prepared-v2`.

@@ -39,6 +39,17 @@ single-tile level. Forge now requires complete Viewer coverage, bounds maximum d
 and validates every required native level. Viewer independently indexes and validates
 all stored levels before readiness.
 
+The governed selector chose 64 deterministic native-resolution tissue, background,
+high-variance, and tile-seam ROIs. Each source ROI was decoded losslessly with
+Bio-Formats and compared with the direct OME through the governed benchmark metric
+code. Minimum SSIM was 0.971986, maximum per-ROI mean Delta E00 was 1.837467, and
+minimum edge-detail retention was 1.0. This passes the
+existing `pathlab-visual-v1` artifact gate (SSIM at least 0.970, per-ROI mean Delta E00
+at most 2.5, edge-detail retention at least 0.90). P95 Delta E00 was recorded as a
+diagnostic, not substituted for that established gate. Stored native JPEG quantization
+tables exactly matched standard Q75 with 4:2:0 subsampling, confirming that the
+advertised and persisted profile matches the produced artifact.
+
 ## Concurrency and recovery
 
 Across the three deterministic process trials, the 1, 10, 25, and 50-client tile
@@ -56,18 +67,30 @@ profiles, artifact reuse, source revalidation, corrupted/truncated Viewer ingest
 storage admission, credential revocation, and the joint advertisement/acceptance kill
 switch. Temporary process trees are terminated on success and failure.
 
+Viewer repeats file identity checks after all-tile JPEG validation and re-hashes the
+atomically installed destination before committing readiness. A mutation injected
+during quality validation is rejected, closing the persisted-SHA race.
+
+Queued artifact format is stored in Forge SQLite and restored before scheduler
+dispatch, so a queued direct request cannot silently become prepared-v2 after restart.
+Capability parsing is structural JSON with duplicate detection; unrelated nested
+objects, wrong types, partial profiles, future IDs, and TIFF-kind supersets fail closed.
+
 ## Repository and product gates
 
-- Viewer backend: 437 passed, 4 skipped.
+- Viewer backend: 441 passed, 4 skipped.
 - Viewer frontend: 226 passed; ESLint and production TypeScript/Vite build passed.
 - Viewer Ruff and strict MyPy passed; a fresh database migrated to Alembic head
   `20260730_0014`.
-- Forge Gradle `clean check installDist` passed: 153 tests, 0 failures, 2 skipped.
+- Forge Gradle `clean check installDist` passed: 155 tests, 0 failures, 2 skipped.
 - Forge frontend: 33 passed; production bundle gate passed.
 - Forge repository policy scan passed.
 - Installed runtime browser smoke reached `/app`, rendered library/import/viewer and
   connection controls, opened and cancelled the real pairing dialog, and emitted no
   browser console errors.
+- A final rebuilt-runtime process trial repeated direct upload, Forge restart, Viewer
+  restart, native tile delivery, rollback, and prepared fallback after Q75 was added
+  to exact capability negotiation. All concurrency tiers again returned zero errors.
 
 ## Local launch
 

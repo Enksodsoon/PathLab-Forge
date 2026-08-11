@@ -1078,6 +1078,7 @@ public final class ConversionService implements AutoCloseable {
                 nextPosition,
                 dataset.configurationRevision(),
                 System.currentTimeMillis(),
+                requestedFormat.name(),
                 "Waiting for an available conversion slot"));
         var queued = dataset.withPreparation(
                 DatasetStatus.QUEUED,
@@ -1126,6 +1127,18 @@ public final class ConversionService implements AutoCloseable {
                 repository.save(queued.withPreparation(
                         DatasetStatus.READY_TO_CONVERT,
                         "Queue settings changed; review and queue this slide again",
+                        queued.outputPath(),
+                        queued.sha256()));
+                continue;
+            }
+            try {
+                requestedFormats.put(
+                        queued.id(), ArtifactRevisionFormat.valueOf(entry.requestedFormat()));
+            } catch (IllegalArgumentException invalidFormat) {
+                repository.deleteQueueEntry(entry.datasetId());
+                repository.save(queued.withPreparation(
+                        DatasetStatus.READY_TO_CONVERT,
+                        "Queued artifact format is unsupported; queue this slide again",
                         queued.outputPath(),
                         queued.sha256()));
                 continue;

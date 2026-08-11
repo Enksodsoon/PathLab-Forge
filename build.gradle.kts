@@ -23,6 +23,7 @@ java {
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.18.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
     testImplementation(platform("org.junit:junit-bom:5.14.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")

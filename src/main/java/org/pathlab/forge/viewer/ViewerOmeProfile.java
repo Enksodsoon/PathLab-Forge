@@ -11,6 +11,7 @@ public record ViewerOmeProfile(
         int tileHeight,
         int pyramidFactor,
         String compression,
+        int jpegQuality,
         Set<String> tiffKinds,
         boolean nativeJpegTiles,
         boolean persistedSha256) {
@@ -27,7 +28,8 @@ public record ViewerOmeProfile(
                 && tileHeight == 512
                 && pyramidFactor == 2
                 && "jpeg".equals(compression)
-                && tiffKinds.containsAll(Set.of("classic", "bigtiff"))
+                && jpegQuality == 75
+                && tiffKinds.equals(Set.of("classic", "bigtiff"))
                 && nativeJpegTiles
                 && persistedSha256;
     }

@@ -16,7 +16,7 @@ import java.util.Optional;
 import java.util.function.UnaryOperator;
 
 public final class SqliteDatasetRepository implements DatasetRepository, AutoCloseable {
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 3;
     private final Connection connection;
 
     public SqliteDatasetRepository(Path database, Path legacyProperties) throws IOException {
@@ -82,8 +82,20 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                       queue_position INTEGER NOT NULL UNIQUE,
                       configuration_revision TEXT NOT NULL,
                       created_at INTEGER NOT NULL,
+                      requested_format TEXT NOT NULL DEFAULT 'PREPARED_DZI_V2',
                       wait_reason TEXT NOT NULL
                     )""");
+            var hasRequestedFormat = false;
+            try (var columns = statement.executeQuery("PRAGMA table_info(conversion_queue)")) {
+                while (columns.next()) {
+                    hasRequestedFormat |= "requested_format".equals(columns.getString("name"));
+                }
+            }
+            if (!hasRequestedFormat) {
+                statement.execute(
+                        "ALTER TABLE conversion_queue ADD COLUMN requested_format "
+                                + "TEXT NOT NULL DEFAULT 'PREPARED_DZI_V2'");
+            }
             statement.execute("""
                     INSERT INTO forge_meta(key, value) VALUES ('schema_version', '%d')
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -319,6 +331,7 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                         rows.getLong("queue_position"),
                         rows.getString("configuration_revision"),
                         rows.getLong("created_at"),
+                        rows.getString("requested_format"),
                         rows.getString("wait_reason")));
             }
             return List.copyOf(entries);
@@ -330,18 +343,22 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
     @Override
     public synchronized void saveQueueEntry(ConversionQueueEntry entry) throws IOException {
         try (var statement = connection.prepareStatement("""
-                INSERT INTO conversion_queue VALUES (?,?,?,?,?)
+                INSERT INTO conversion_queue(
+                  dataset_id, queue_position, configuration_revision, created_at,
+                  requested_format, wait_reason) VALUES (?,?,?,?,?,?)
                 ON CONFLICT(dataset_id) DO UPDATE SET
                   queue_position=excluded.queue_position,
                   configuration_revision=excluded.configuration_revision,
                   created_at=excluded.created_at,
+                  requested_format=excluded.requested_format,
                   wait_reason=excluded.wait_reason
                 """)) {
             statement.setString(1, entry.datasetId());
             statement.setLong(2, entry.position());
             statement.setString(3, entry.configurationRevision());
             statement.setLong(4, entry.createdAt());
-            statement.setString(5, entry.waitReason());
+            statement.setString(5, entry.requestedFormat());
+            statement.setString(6, entry.waitReason());
             statement.executeUpdate();
         } catch (SQLException error) {
             throw new IOException("Unable to save conversion queue", error);

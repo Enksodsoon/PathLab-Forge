@@ -73,7 +73,7 @@ final class SqliteDatasetRepositoryTest {
         var database = temporaryDirectory.resolve("forge.db");
         var legacy = temporaryDirectory.resolve("library.properties");
         var queued = new ConversionQueueEntry(
-                "dataset-1", 7, "config-abc", 1234L, "Waiting for memory");
+                "dataset-1", 7, "config-abc", 1234L, "OME_DYNAMIC_V1", "Waiting for memory");
 
         try (var repository = new SqliteDatasetRepository(database, legacy)) {
             repository.saveQueueEntry(queued);
