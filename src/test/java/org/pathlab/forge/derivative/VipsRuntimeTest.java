@@ -29,6 +29,25 @@ class VipsRuntimeTest {
         assertEquals(6, VipsRuntime.minimumStoredSubifds(76_717, 52_837, OmeDynamicProfile.V1));
     }
 
+    @Test
+    void acceptsLegalFloorRoundedQuPathPyramidAcrossConsecutiveLevels() throws Exception {
+        var levels = List.of(
+                new VipsRuntime.PyramidDimension(21_651, 21_548),
+                new VipsRuntime.PyramidDimension(10_825, 10_774),
+                new VipsRuntime.PyramidDimension(5_412, 5_387),
+                new VipsRuntime.PyramidDimension(2_706, 2_693),
+                new VipsRuntime.PyramidDimension(1_353, 1_346));
+
+        VipsRuntime.validateFactorPyramid(43_303, 43_097, levels, 2);
+
+        var invalid = List.of(
+                new VipsRuntime.PyramidDimension(21_651, 21_548),
+                new VipsRuntime.PyramidDimension(10_824, 10_774));
+        assertThrows(
+                IOException.class,
+                () -> VipsRuntime.validateFactorPyramid(43_303, 43_097, invalid, 2));
+    }
+
     @TempDir
     Path temporaryDirectory;
 

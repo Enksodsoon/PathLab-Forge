@@ -169,32 +169,20 @@ public final class VipsRuntime implements DerivativeEngine {
                             + ".."
                             + maximumStoredSubifds(width, height, profile));
         }
-        int expectedWidth = width;
-        int expectedHeight = height;
+        var pyramidDimensions = new ArrayList<PyramidDimension>(minimumSubifds);
         // libvips cannot open some legal QuPath overview IFDs once both image
         // dimensions are much smaller than the fixed 512px TIFF tile. Validate
         // every level required for complete Viewer coverage here; the Viewer
         // independently indexes and validates all additional overview IFDs.
         for (int level = 0; level < minimumSubifds; level++) {
-            var previousWidth = expectedWidth;
-            var previousHeight = expectedHeight;
-            expectedWidth = ceilDivide(previousWidth, profile.pyramidFactor());
-            expectedHeight = ceilDivide(previousHeight, profile.pyramidFactor());
             var selector = "[subifd=" + level + "]";
-            if (!matchesFactorDimension(
-                            previousWidth,
-                            imageDimension(omeTiff, selector, "width"),
-                            profile.pyramidFactor())
-                    || !matchesFactorDimension(
-                            previousHeight,
-                            imageDimension(omeTiff, selector, "height"),
-                            profile.pyramidFactor())) {
-                throw new IOException("Dynamic OME pyramid geometry is not factor "
-                        + profile.pyramidFactor());
-            }
+            pyramidDimensions.add(new PyramidDimension(
+                    imageDimension(omeTiff, selector, "width"),
+                    imageDimension(omeTiff, selector, "height")));
             requireField(omeTiff, selector, "tile-width", Integer.toString(profile.tileSize()));
             requireField(omeTiff, selector, "tile-height", Integer.toString(profile.tileSize()));
         }
+        validateFactorPyramid(width, height, pyramidDimensions, profile.pyramidFactor());
     }
 
     static int expectedStoredSubifds(
@@ -244,6 +232,44 @@ public final class VipsRuntime implements DerivativeEngine {
     private static boolean matchesFactorDimension(int full, int reduced, int factor) {
         return reduced == Math.max(1, full / factor)
                 || reduced == ceilDivide(full, factor);
+    }
+
+    static void validateFactorPyramid(
+            int width,
+            int height,
+            List<PyramidDimension> levels,
+            int factor)
+            throws IOException {
+        var previousWidth = width;
+        var previousHeight = height;
+        for (var level = 0; level < levels.size(); level++) {
+            var current = levels.get(level);
+            if (!matchesFactorDimension(previousWidth, current.width(), factor)
+                    || !matchesFactorDimension(previousHeight, current.height(), factor)) {
+                throw new IOException("Dynamic OME pyramid geometry is not factor "
+                        + factor
+                        + " at subIFD "
+                        + level
+                        + ": "
+                        + previousWidth
+                        + "x"
+                        + previousHeight
+                        + " -> "
+                        + current.width()
+                        + "x"
+                        + current.height());
+            }
+            previousWidth = current.width();
+            previousHeight = current.height();
+        }
+    }
+
+    record PyramidDimension(int width, int height) {
+        PyramidDimension {
+            if (width < 1 || height < 1) {
+                throw new IllegalArgumentException("Pyramid dimensions must be positive");
+            }
+        }
     }
 
     @Override
