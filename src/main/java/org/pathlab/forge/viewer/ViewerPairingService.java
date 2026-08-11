@@ -178,9 +178,12 @@ public final class ViewerPairingService implements AutoCloseable {
         var capabilities = viewerCapabilities(credential);
         var dynamic = capabilities.supportsDynamicOme()
                 && "ome-dynamic-v1".equals(revision.omeProfile())
+                && revision.format()
+                        == org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
                 && revision.omeJpegQuality() == 75
                 && Files.isRegularFile(Path.of(revision.omePath()))
-                && ArtifactIntegrityStamp.matchesOme(revision);
+                && ArtifactIntegrityStamp.matchesOme(revision)
+                && capabilities.accepts(Files.size(Path.of(revision.omePath())));
         var artifactPath = Path.of(dynamic ? revision.omePath() : revision.packagePath());
         var integrityMatches = dynamic
                 ? ArtifactIntegrityStamp.matchesOme(revision)
@@ -198,6 +201,7 @@ public final class ViewerPairingService implements AutoCloseable {
                 revision.id(),
                 0,
                 total,
+                "",
                 "",
                 uploadMode,
                 dynamic ? "Creating direct OME ingest" : "Creating prepared ingest");
@@ -222,6 +226,15 @@ public final class ViewerPairingService implements AutoCloseable {
         return uploadStatus;
     }
 
+    public boolean supportsExactDynamicOme() {
+        try {
+            var credential = storedCredential();
+            return credential != null && viewerCapabilities(credential).supportsDynamicOme();
+        } catch (IOException | RuntimeException unavailable) {
+            return false;
+        }
+    }
+
     private void upload(
             StoredCredential credential,
             ViewerCapabilities capabilities,
@@ -238,6 +251,13 @@ public final class ViewerPairingService implements AutoCloseable {
             double downsample) {
         try {
             var length = Files.size(artifactPath);
+            if (dynamic) {
+                capabilities = viewerCapabilities(credential);
+                if (!capabilities.supportsDynamicOme() || !capabilities.accepts(length)) {
+                    throw new IOException(
+                            "Viewer direct OME capability changed before upload creation");
+                }
+            }
             var manifest = dynamic ? "" : tarText(artifactPath, "manifest.json", 16 * 1024 * 1024);
             var derivativeBytes = dynamic ? -1 : optionalLong(manifest, "derivativeBytes");
             var derivativeFileCount = dynamic ? -1 : optionalLong(manifest, "fileCount");
@@ -339,6 +359,7 @@ public final class ViewerPairingService implements AutoCloseable {
                         offset,
                         length,
                         stringOrEmpty(response.body(), "slideId"),
+                        "",
                         uploadMode,
                         offset == length
                                 ? "Viewer is finalizing the " + (dynamic ? "OME-TIFF" : "prepared package")
@@ -360,6 +381,15 @@ public final class ViewerPairingService implements AutoCloseable {
                             statusResponse, 200, "Viewer could not recover ingest finalization");
                     if (statusResponse.body().contains("\"status\":\"ready_private\"")) {
                         var slideId = string(statusResponse.body(), "slideId");
+                        var slideSha256 = stringOrEmpty(statusResponse.body(), "slideSha256");
+                        var expectedSha256 = dynamic
+                                ? revision.omeSha256()
+                                : revision.packageSha256();
+                        if (slideSha256.isBlank()
+                                || !expectedSha256.equalsIgnoreCase(slideSha256)) {
+                            throw new IOException(
+                                    "Viewer persisted SHA-256 did not match the approved artifact");
+                        }
                         syncAnnotations(
                                 credential,
                                 slideId,
@@ -376,6 +406,7 @@ public final class ViewerPairingService implements AutoCloseable {
                                 length,
                                 length,
                                 slideId,
+                                slideSha256,
                                 uploadMode,
                                 annotations.isEmpty()
                                         ? "Viewer private slide is ready"
@@ -401,6 +432,7 @@ public final class ViewerPairingService implements AutoCloseable {
                     uploadStatus.uploadedBytes(),
                     uploadStatus.totalBytes(),
                     uploadStatus.viewerSlideId(),
+                    uploadStatus.viewerSlideSha256(),
                     uploadStatus.uploadMode(),
                     error.getMessage() == null ? "Viewer upload failed" : error.getMessage());
         }
@@ -641,10 +673,7 @@ public final class ViewerPairingService implements AutoCloseable {
             return ViewerCapabilities.legacy();
         }
         try {
-            return new ViewerCapabilities(
-                    Set.copyOf(strings(response.body(), "ingestModes")),
-                    integer(response.body(), "maxChunkBytes"),
-                    integer(response.body(), "recommendedChunkBytes"));
+            return ViewerCapabilities.parse(response.body());
         } catch (IOException | IllegalArgumentException error) {
             return ViewerCapabilities.legacy();
         }

@@ -56,13 +56,14 @@ export interface ArtifactRevision {
   id: string
   name?: string
   status: 'CONVERTING' | 'READY' | 'APPROVED' | 'FAILED'
-  format?: 'LEGACY_OME' | 'PREPARED_DZI_V2'
+  format?: 'LEGACY_OME' | 'OME_DYNAMIC_V1' | 'PREPARED_DZI_V2'
   createdAt: number
   outputWidth: number
   outputHeight: number
   omePath: string
   packagePath: string
   omeSha256: string
+  omeProfile?: string
   omeBytes: number
   dziBytes: number
   packageBytes: number
@@ -110,6 +111,7 @@ export interface ViewerUpload {
   uploadedBytes: number
   totalBytes: number
   viewerSlideId: string
+  viewerSlideSha256: string
   uploadMode: 'OME_DYNAMIC' | 'PREPARED_V2' | ''
   detail: string
 }

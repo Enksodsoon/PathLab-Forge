@@ -87,6 +87,31 @@ public final class ArtifactIntegrityStamp {
         }
     }
 
+    static void writeOme(ArtifactRevision revision) throws IOException {
+        var ome = Path.of(revision.omePath());
+        requireFile(ome);
+        var values = new Properties();
+        values.setProperty("omeSha256", revision.omeSha256());
+        values.setProperty("packageSha256", "");
+        values.setProperty("omeProfile", revision.omeProfile());
+        values.setProperty("omeJpegQuality", Integer.toString(revision.omeJpegQuality()));
+        record(values, "ome", ome);
+        var file = stampFile(revision);
+        var partial = file.resolveSibling(FILE_NAME + ".partial");
+        try (var output = Files.newOutputStream(partial)) {
+            values.store(output, "PathLab Forge verified direct OME identity");
+        }
+        try {
+            Files.move(
+                    partial,
+                    file,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
     private static boolean unchanged(Path file, Properties values, String prefix)
             throws IOException {
         if (!Files.isRegularFile(file)) {

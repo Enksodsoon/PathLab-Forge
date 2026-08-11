@@ -565,6 +565,8 @@ export function App() {
               cropDraft={cropDraft}
               cropEditing={cropEditing}
               capabilities={capabilities}
+              connection={connection}
+              viewerUpload={viewerUpload}
               onTool={(tool) => {
                 setCropEditing(false)
                 setActiveTool(tool)
@@ -1037,6 +1039,8 @@ function Inspector({
   cropDraft,
   cropEditing,
   capabilities,
+  connection,
+  viewerUpload,
   onTool,
   onCropDraft,
   onCropEditing,
@@ -1064,6 +1068,8 @@ function Inspector({
   cropDraft?: CropBox
   cropEditing: boolean
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
+  connection?: ViewerConnection
+  viewerUpload?: api.ViewerUpload
   onTool: (tool: string) => void
   onCropDraft: (box: CropBox) => void
   onCropEditing: (editing: boolean) => void
@@ -1113,6 +1119,8 @@ function Inspector({
           series={series}
           current={current}
           capabilities={capabilities}
+          connection={connection}
+          viewerUpload={viewerUpload}
           cropDraft={cropDraft}
           cropEditing={cropEditing}
           onCropDraft={onCropDraft}
@@ -1371,6 +1379,8 @@ function ExportInspector({
   series,
   current,
   capabilities,
+  connection,
+  viewerUpload,
   cropDraft,
   cropEditing,
   onCropDraft,
@@ -1391,6 +1401,8 @@ function ExportInspector({
   series: SeriesInfo[]
   current?: ArtifactRevision
   capabilities?: Awaited<ReturnType<typeof api.capabilities>>
+  connection?: ViewerConnection
+  viewerUpload?: api.ViewerUpload
   cropDraft?: CropBox
   cropEditing: boolean
   onCropDraft: (box: CropBox) => void
@@ -1765,6 +1777,17 @@ function ExportInspector({
           : dataset.detail}
       </p>
       {series.length ? <p className="forge-help" role="status">{dataset.detail}</p> : null}
+      <div className="forge-help" role="status">
+        <strong>{connection?.connected ? 'Viewer connected' : 'Viewer not connected'}</strong>
+        {' · '}
+        {current?.format === 'OME_DYNAMIC_V1'
+          ? 'Factor-2 direct OME selected'
+          : 'Prepared compatibility package selected'}
+        {viewerUpload ? ` · ${viewerUpload.detail}` : ''}
+        {viewerUpload?.state === 'READY_PRIVATE' && viewerUpload.viewerSlideSha256
+          ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
+          : ''}
+      </div>
       {dataset.status === 'FAILED' && dataset.detail.includes('DZI_SIZE_QUALITY_CONFLICT') ? (
         <div className="forge-compact-conflict" role="alert">
           <strong>Compact DZI could not meet the 1.25× size limit</strong>
@@ -1777,12 +1800,14 @@ function ExportInspector({
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>Convert current revision</button>}
         {current?.status === 'READY'
-          && current.packageBytes > 0
+          && (current.packageBytes > 0 || current.format === 'OME_DYNAMIC_V1')
           && dataset.approvedArtifactRevision !== current.id
-          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve compact DZI</button>
+          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve {current.format === 'OME_DYNAMIC_V1' ? 'direct OME' : 'compact DZI'}</button>
           : null}
         {dataset.approvedArtifactRevision
           ? <button type="button" onClick={onUpload}>Upload to Viewer</button>
+          : !connection?.connected
+          ? <button type="button" onClick={onConnect}>Connect Viewer</button>
           : null}
         {!ACTIVE_STATUSES.has(dataset.status)
           ? <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove from library</button>

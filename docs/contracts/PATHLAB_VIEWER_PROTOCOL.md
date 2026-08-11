@@ -41,7 +41,18 @@ Expected response concepts:
 - current usable storage;
 - tus upload endpoint.
 
-Forge checks capabilities before packaging for a server.
+Forge checks capabilities before conversion and repeats the check immediately
+before ingest creation. Direct OME requires the exact structured
+`ome-dynamic-v1` profile: RGB uint8/sRGB, three channels, 512-pixel JPEG tiles,
+factor 2, classic TIFF and BigTIFF, native JPEG tiles, persisted SHA
+acknowledgement, and an accepted artifact size. Missing, partial, malformed, or
+future-only profiles select `prepared-v2`.
+
+### Direct OME reservation
+
+`POST /api/v1/desktop/ome-ingests` declares the exact profile, dimensions,
+downsample, JPEG quality, byte length, and local SHA-256. Viewer independently
+validates the request against its enabled profile before accepting bytes.
 
 ### Prepared-slide reservation
 
@@ -75,7 +86,8 @@ Upload with `PATCH /api/v1/desktop/ingests/{id}` and `Upload-Offset`. Forge uses
 the capability-advertised chunk size, streams each chunk with a bounded buffer,
 and falls back to 16 MiB for older Viewers.
 
-A failed network upload must never cause local reconversion when a valid package still exists.
+A failed network upload must never cause local reconversion when a valid OME or
+prepared package still exists.
 
 ### Status
 
@@ -96,7 +108,9 @@ failed
 The final upload only transitions to `finalizing`. A single bounded Viewer worker
 claims and validates it asynchronously; `HEAD` and status requests never perform
 finalization. `ready_private` means the derivative was atomically installed and
-committed to the private library.
+committed to the private library. The ready response includes the SHA-256 of the
+persisted final artifact. Forge fails closed unless it exactly matches the local
+OME or prepared package selected for upload.
 
 ### Private preview
 

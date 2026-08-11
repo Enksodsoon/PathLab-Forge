@@ -70,6 +70,31 @@ class ArtifactReuseTest {
         assertFalse(ConversionService.isReusableArtifact(dataset, request, revision));
     }
 
+    @Test
+    void reusesAValidatedDirectOmeWithoutACompatibilityPackage() throws Exception {
+        var dataset = configured();
+        var request = new ConversionRequest(
+                Path.of(dataset.sourcePath()), 3, 0, 0, 72_792, 66_004,
+                72_792, 66_004, 1.5);
+        var root = temporaryDirectory.resolve("direct-artifact");
+        Files.createDirectories(root);
+        var ome = Files.writeString(root.resolve("export.ome.tif"), "verified direct ome");
+        var revision = new ArtifactRevision(
+                "22222222-2222-2222-2222-222222222222",
+                dataset.id(), dataset.configurationRevision(), dataset.sourceFingerprint(),
+                System.currentTimeMillis(), ArtifactRevisionStatus.READY,
+                ArtifactRevisionFormat.OME_DYNAMIC_V1,
+                ome.toString(), root.resolve("derivative").toString(),
+                root.resolve("absent.plslide").toString(), sha256(ome), "",
+                request.outputWidth(), request.outputHeight(), "ome-dynamic-v1", 75, 0,
+                "Direct conversion", "");
+
+        assertTrue(ConversionService.isReusableArtifact(dataset, request, revision));
+        assertTrue(ArtifactIntegrityStamp.matchesOme(revision));
+        Files.writeString(ome, "mutated");
+        assertFalse(ConversionService.isReusableArtifact(dataset, request, revision));
+    }
+
     private static LocalDataset configured() {
         return new LocalDataset(
                         "dataset-reuse",

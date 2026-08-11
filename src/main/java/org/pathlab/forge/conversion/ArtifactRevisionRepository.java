@@ -23,6 +23,15 @@ public final class ArtifactRevisionRepository {
 
     public ArtifactRevision create(LocalDataset dataset, int outputWidth, int outputHeight)
             throws IOException {
+        return create(dataset, outputWidth, outputHeight, ArtifactRevisionFormat.PREPARED_DZI_V2);
+    }
+
+    public ArtifactRevision create(
+            LocalDataset dataset,
+            int outputWidth,
+            int outputHeight,
+            ArtifactRevisionFormat format)
+            throws IOException {
         if (dataset.configurationRevision().isBlank()) {
             throw new IllegalStateException("Select an export configuration first");
         }
@@ -39,7 +48,7 @@ public final class ArtifactRevisionRepository {
                 dataset.sourceFingerprint(),
                 System.currentTimeMillis(),
                 ArtifactRevisionStatus.CONVERTING,
-                ArtifactRevisionFormat.PREPARED_DZI_V2,
+                format,
                 root.resolve("export.ome.tif").toString(),
                 root.resolve("derivative").toString(),
                 root.resolve("slide.plslide").toString(),

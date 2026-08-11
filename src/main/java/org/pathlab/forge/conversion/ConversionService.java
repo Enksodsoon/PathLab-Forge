@@ -50,6 +50,7 @@ public final class ConversionService implements AutoCloseable {
     private final Map<String, Future<?>> activePreviewBuilds = new ConcurrentHashMap<>();
     private final Map<String, String> previewBuildErrors = new ConcurrentHashMap<>();
     private final Map<String, ConversionProgress> progress = new ConcurrentHashMap<>();
+    private final Map<String, ArtifactRevisionFormat> requestedFormats = new ConcurrentHashMap<>();
     private final java.util.Set<Path> cleanedPreviewRoots =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.Set<Path> scheduledPreviewCleanups =
@@ -688,10 +689,16 @@ public final class ConversionService implements AutoCloseable {
         }
         var ome = Path.of(revision.omePath());
         var packagePath = Path.of(revision.packagePath());
-        if (!Files.isRegularFile(packagePath)
-                || !ArtifactIntegrityStamp.matches(revision)
-                || (Files.exists(ome) && !revision.omeSha256().equals(sha256(ome)))
-                || !revision.packageSha256().equals(sha256(packagePath))) {
+        var direct = revision.format() == ArtifactRevisionFormat.OME_DYNAMIC_V1;
+        var valid = direct
+                ? Files.isRegularFile(ome)
+                        && ArtifactIntegrityStamp.matchesOme(revision)
+                        && revision.omeSha256().equals(sha256(ome))
+                : Files.isRegularFile(packagePath)
+                        && ArtifactIntegrityStamp.matches(revision)
+                        && (!Files.exists(ome) || revision.omeSha256().equals(sha256(ome)))
+                        && revision.packageSha256().equals(sha256(packagePath));
+        if (!valid) {
             throw new IllegalStateException("Artifact files changed after validation");
         }
         artifactRepository.save(revision.approved(System.currentTimeMillis()));
@@ -966,7 +973,12 @@ public final class ConversionService implements AutoCloseable {
     }
 
     public LocalDataset start(String id) throws IOException {
+        return start(id, ArtifactRevisionFormat.PREPARED_DZI_V2);
+    }
+
+    public LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
         var dataset = requireDataset(id);
+        requestedFormats.put(id, java.util.Objects.requireNonNull(requestedFormat));
         if (dataset.status() == DatasetStatus.QUEUED
                 || dataset.status() == DatasetStatus.WAITING_RESOURCES
                 || dataset.status() == DatasetStatus.CONVERTING
@@ -1017,9 +1029,11 @@ public final class ConversionService implements AutoCloseable {
                 request = fastRequest;
             }
         }
-        var reusable = reusableArtifact(dataset, request);
+        var reusable = reusableArtifact(dataset, request, requestedFormat);
         if (reusable != null) {
-            var detail = "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
+            var detail = requestedFormat == ArtifactRevisionFormat.OME_DYNAMIC_V1
+                    ? "Instant cache hit: verified direct OME-TIFF reused"
+                    : "Instant cache hit: verified OME-TIFF, DZI and upload package reused";
             progress.put(
                     id,
                     new ConversionProgress(
@@ -1144,11 +1158,15 @@ public final class ConversionService implements AutoCloseable {
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
-        var resumable = resumableRevision(dataset);
+        var requestedFormat = requestedFormats.getOrDefault(
+                dataset.id(), ArtifactRevisionFormat.PREPARED_DZI_V2);
+        var resumable = resumableRevision(dataset).filter(
+                candidate -> candidate.format() == requestedFormat);
         var revision = resumable.isPresent()
                 ? resumable.get()
                 : artifactRepository.create(
-                        dataset, request.outputWidth(), request.outputHeight());
+                        dataset, request.outputWidth(), request.outputHeight(), requestedFormat);
+        requestedFormats.remove(dataset.id());
         var converting = dataset.withArtifactRevision(
                 DatasetStatus.CONVERTING,
                 revision.id().equals(dataset.currentArtifactRevision())
@@ -1209,7 +1227,9 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private ArtifactRevision reusableArtifact(
-            LocalDataset dataset, ConversionRequest request) throws IOException {
+            LocalDataset dataset,
+            ConversionRequest request,
+            ArtifactRevisionFormat requestedFormat) throws IOException {
         if (!Boolean.parseBoolean(
                 System.getProperty("pathlab.forge.artifactReuse.enabled", "true"))) {
             return null;
@@ -1218,12 +1238,15 @@ public final class ConversionService implements AutoCloseable {
             var current = artifactRepository
                     .find(dataset.id(), dataset.currentArtifactRevision())
                     .orElse(null);
-            if (current != null && isReusableArtifact(dataset, request, current)) {
+            if (current != null
+                    && current.format() == requestedFormat
+                    && isReusableArtifact(dataset, request, current)) {
                 return current;
             }
         }
         for (var historical : artifactRepository.list(dataset.id())) {
-            if (isReusableArtifact(dataset, request, historical)) {
+            if (historical.format() == requestedFormat
+                    && isReusableArtifact(dataset, request, historical)) {
                 return historical;
             }
         }
@@ -1239,11 +1262,26 @@ public final class ConversionService implements AutoCloseable {
                 || revision.outputHeight() != request.outputHeight()
                 || (revision.status() != ArtifactRevisionStatus.READY
                         && revision.status() != ArtifactRevisionStatus.APPROVED)
-                || revision.omeSha256().isBlank()
-                || revision.packageSha256().isBlank()) {
+                || revision.omeSha256().isBlank()) {
             return false;
         }
         var ome = Path.of(revision.omePath());
+        if (revision.format() == ArtifactRevisionFormat.OME_DYNAMIC_V1) {
+            if (!Files.isRegularFile(ome)) {
+                return false;
+            }
+            if (ArtifactIntegrityStamp.matchesOme(revision)) {
+                return true;
+            }
+            var verified = revision.omeSha256().equals(sha256(ome));
+            if (verified) {
+                ArtifactIntegrityStamp.writeOme(revision);
+            }
+            return verified;
+        }
+        if (revision.packageSha256().isBlank()) {
+            return false;
+        }
         var preparedPackage = Path.of(revision.packagePath());
         var packageIndex = preparedPackage.resolveSibling(
                 preparedPackage.getFileName() + ".index");
@@ -1583,6 +1621,27 @@ public final class ConversionService implements AutoCloseable {
                 repository.save(dataset.withConversion(
                         DatasetStatus.CONVERSION_READY,
                         "Validated RGB OME-BigTIFF ready; libvips is required for DZI",
+                        output.toString(),
+                        digest,
+                        dataset.selectedSeries(),
+                        dataset.width(),
+                        dataset.height(),
+                        dataset.downsample(),
+                        dataset.estimatedOutputBytes()));
+                return;
+            }
+            if (revision.format() == ArtifactRevisionFormat.OME_DYNAMIC_V1) {
+                if (regionRoot != null) {
+                    deleteTree(outputDirectory, regionRoot);
+                    regionRoot = null;
+                }
+                var readyRevision = revision.ready(digest, "");
+                artifactRepository.save(readyRevision);
+                ArtifactIntegrityStamp.writeOme(readyRevision);
+                updateProgress(dataset.id(), "OME_COMMITTED", 1, 1);
+                repository.save(dataset.withConversion(
+                        DatasetStatus.PACKAGE_READY,
+                        "Validated factor-2 direct OME ready for Viewer verification",
                         output.toString(),
                         digest,
                         dataset.selectedSeries(),

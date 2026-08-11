@@ -1,30 +1,23 @@
-# Active Task — Forge ↔ PathLab Viewer Local Connection
+# Active Task — Direct OME Delivery Release Candidate
 
-Approved by the product owner on 2026-07-31. This milestone supersedes the batch/crop task as the single active task while preserving all completed preview-pyramid, queue, crop and conversion behavior from `00f4399`.
+Supersedes the previous local-pipeline task by explicit product-owner direction.
 
 ## Goal
 
-Prove a complete, private, local connection from Forge to the PathLab Viewer development stack:
+Complete one clean, locally committed Forge-to-Viewer release candidate using
+exact `ome-dynamic-v1` factor-2 negotiation, direct resumable OME upload,
+persisted SHA-256 acknowledgement, native Viewer tiles, and automatic
+`prepared-v2` compatibility fallback.
 
-- repair inspection while background source verification is still running;
-- make pairing, connected-account details and credential revocation one coherent lifecycle;
-- prefer direct OME transport only for a Viewer advertising `ome-dynamic-v1` and an artifact matching the approved integrity/profile;
-- retain prepared-v2 as the compatibility fallback without reconversion;
-- validate pairing, upload, private preview, tile delivery, fallback and disconnect locally.
+## Required gates
 
-## Fixed boundaries
+1. Preserve a clean pre-AI/TRACE/teaching Forge lineage.
+2. Negotiate the complete V1 profile before conversion and again before upload.
+3. Produce only the validated factor-2 OME for the accepted direct path.
+4. Fail closed unless Viewer returns `ready_private` and the exact persisted SHA.
+5. Maintain prepared-v2 fallback, restart/resume, privacy, storage, and library behavior.
+6. Prove the real Forge-process-to-Viewer-process flow with deterministic and eligible real files.
+7. Run fidelity, performance, concurrency, full regression, and launchable Windows runtime gates.
 
-- Forge baseline: `codex/forge-ome-preview-pyramid` at `00f4399`.
-- Viewer baseline: `codex/ome-shared-cache-impl` at `e58634f`.
-- `87ccbad` and `5be079c` are implementation references only; their branch is not merged.
-- The Viewer `/api/v1/desktop` interface and database schema remain unchanged.
-- No public upload, automatic publication, push, merge, PR mutation, OCI deployment or production test.
-- A failed upload reuses the existing artifact and upload offset; it never triggers reconversion.
-
-## Ordered work
-
-1. Add deterministic red/green regressions for inspect-before-digest and digest-before-inspect, then merge verification results into the latest dataset state atomically.
-2. Make the connection dialog state-aware, default local pairing to `http://127.0.0.1:5173`, and revoke the desktop credential before clearing local state.
-3. Port capability selection, approved direct OME profile validation, prepared fallback and same-process resumable retry.
-4. Add Viewer web tests for pairing-code validation, approval, and sign-in-required behavior.
-5. Run focused and complete Forge/Viewer checks plus isolated local browser acceptance; restore any pre-existing Forge runtime.
+No AI, TRACE, teaching, Classroom, Jpegli, deployment, push, merge, signing, or
+production activation belongs to this task.

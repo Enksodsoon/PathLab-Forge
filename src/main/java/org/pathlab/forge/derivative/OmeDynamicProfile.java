@@ -12,7 +12,7 @@ public record OmeDynamicProfile(
         boolean stripSensitiveMetadata,
         int defaultJpegQuality) {
     public static final OmeDynamicProfile V1 = new OmeDynamicProfile(
-            "ome-dynamic-v1", 512, 4, "jpeg", "sRGB", 8, true, 75);
+            "ome-dynamic-v1", 512, 2, "jpeg", "sRGB", 8, true, 75);
 
     public OmeDynamicProfile {
         id = requireText(id, "id");

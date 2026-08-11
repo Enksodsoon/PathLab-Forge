@@ -57,12 +57,12 @@ final class ViewerPairingServiceTest {
     void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception {
         var receivedCreateBody = new AtomicReference<String>();
         var receivedPayload = new AtomicReference<byte[]>();
+        var expectedSha = new AtomicReference<String>();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
             if (path.equals("/api/v1/desktop/capabilities")) {
-                respond(exchange, 200, "{\"ingestModes\":[\"prepared-v2\",\"ome-dynamic-v1\"],"
-                        + "\"maxChunkBytes\":67108864,\"recommendedChunkBytes\":67108864}");
+                respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
                 receivedCreateBody.set(new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
@@ -76,7 +76,8 @@ final class ViewerPairingServiceTest {
                 receivedPayload.set(exchange.getRequestBody().readAllBytes());
                 respond(exchange, 202, "{\"slideId\":null}");
             } else if (path.equals("/api/v1/desktop/ingests/one")) {
-                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\"}");
+                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
+                        + "\"slideSha256\":\"" + expectedSha.get() + "\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
             }
@@ -87,6 +88,7 @@ final class ViewerPairingServiceTest {
                     temporaryDirectory.resolve("export.ome.tif"),
                     new byte[] {'I', 'I', 42, 0, 1, 2, 3});
             var sha = sha256(ome);
+            expectedSha.set(sha);
             var revision = revision(ome, sha);
             writeOmeStamp(revision, ome);
             var store = new MemoryCredentialStore();
@@ -122,12 +124,12 @@ final class ViewerPairingServiceTest {
         var patchCount = new AtomicInteger();
         var resumeOffset = new AtomicInteger();
         var resumedPayload = new AtomicReference<byte[]>();
+        var expectedSha = new AtomicReference<String>();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
             if (path.equals("/api/v1/desktop/capabilities")) {
-                respond(exchange, 200, "{\"ingestModes\":[\"ome-dynamic-v1\"],"
-                        + "\"maxChunkBytes\":67108864,\"recommendedChunkBytes\":67108864}");
+                respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
                 createCount.incrementAndGet();
                 respond(exchange, 201, "{\"uploadUrl\":\"/api/v1/desktop/ingests/resume/content\"}");
@@ -148,7 +150,8 @@ final class ViewerPairingServiceTest {
                     respond(exchange, 202, "{\"slideId\":null}");
                 }
             } else if (path.equals("/api/v1/desktop/ingests/resume")) {
-                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-resumed\"}");
+                respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-resumed\","
+                        + "\"slideSha256\":\"" + expectedSha.get() + "\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
             }
@@ -158,6 +161,7 @@ final class ViewerPairingServiceTest {
             var bytes = new byte[] {'I', 'I', 42, 0, 1, 2, 3};
             var ome = Files.write(temporaryDirectory.resolve("resume.ome.tif"), bytes);
             var revision = revision(ome, sha256(ome));
+            expectedSha.set(revision.omeSha256());
             writeOmeStamp(revision, ome);
             var store = new MemoryCredentialStore();
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
@@ -183,13 +187,13 @@ final class ViewerPairingServiceTest {
         var createCount = new AtomicInteger();
         var patchCount = new AtomicInteger();
         var finalizationChecks = new AtomicInteger();
+        var expectedSha = new AtomicReference<String>();
         var length = 7;
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
             if (path.equals("/api/v1/desktop/capabilities")) {
-                respond(exchange, 200, "{\"ingestModes\":[\"ome-dynamic-v1\"],"
-                        + "\"maxChunkBytes\":67108864,\"recommendedChunkBytes\":67108864}");
+                respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
                 createCount.incrementAndGet();
                 respond(exchange, 201, "{\"uploadUrl\":\"/api/v1/desktop/ingests/finalize/content\"}");
@@ -213,7 +217,8 @@ final class ViewerPairingServiceTest {
                 if (finalizationChecks.getAndIncrement() == 0) {
                     respond(exchange, 200, "{\"status\":\"failed\",\"errorCode\":\"FINALIZER_FAILED\"}");
                 } else {
-                    respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-finalized\"}");
+                    respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-finalized\","
+                            + "\"slideSha256\":\"" + expectedSha.get() + "\"}");
                 }
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
@@ -225,6 +230,7 @@ final class ViewerPairingServiceTest {
                     temporaryDirectory.resolve("finalize.ome.tif"),
                     new byte[] {'I', 'I', 42, 0, 1, 2, 3});
             var revision = revision(ome, sha256(ome));
+            expectedSha.set(revision.omeSha256());
             writeOmeStamp(revision, ome);
             var store = new MemoryCredentialStore();
             store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
@@ -251,7 +257,7 @@ final class ViewerPairingServiceTest {
                 "a".repeat(64),
                 System.currentTimeMillis(),
                 ArtifactRevisionStatus.APPROVED,
-                ArtifactRevisionFormat.PREPARED_DZI_V2,
+                ArtifactRevisionFormat.OME_DYNAMIC_V1,
                 ome.toString(),
                 temporaryDirectory.resolve("derivative").toString(),
                 temporaryDirectory.resolve("absent.plslide").toString(),
@@ -307,6 +313,16 @@ final class ViewerPairingServiceTest {
         exchange.sendResponseHeaders(status, bytes.length);
         exchange.getResponseBody().write(bytes);
         exchange.close();
+    }
+
+    private static String dynamicCapabilities() {
+        return "{\"ingestModes\":[\"prepared-v2\",\"ome-dynamic-v1\"],"
+                + "\"omeProfiles\":[{\"id\":\"ome-dynamic-v1\",\"pixelType\":\"uint8\","
+                + "\"channels\":3,\"colorSpace\":\"sRGB\",\"tileWidth\":512,"
+                + "\"tileHeight\":512,\"pyramidFactor\":2,\"compression\":\"jpeg\","
+                + "\"tiffKinds\":[\"classic\",\"bigtiff\"],\"nativeJpegTiles\":true,"
+                + "\"persistedSha256\":true}],\"maxChunkBytes\":67108864,"
+                + "\"recommendedChunkBytes\":67108864,\"maxUploadBytes\":5368709120}";
     }
 
     private static String sha256(Path path) throws Exception {

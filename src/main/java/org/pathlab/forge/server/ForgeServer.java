@@ -934,7 +934,11 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     202,
                     "application/json",
-                    datasetJson(conversionService.start(id)));
+                    datasetJson(conversionService.start(
+                            id,
+                            viewerPairingService.supportsExactDynamicOme()
+                                    ? org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
+                                    : org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2)));
         } catch (IllegalArgumentException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
         } catch (IllegalStateException error) {
@@ -1560,6 +1564,7 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"uploadedBytes\":" + upload.uploadedBytes()
                 + ",\"totalBytes\":" + upload.totalBytes()
                 + ",\"viewerSlideId\":" + json(upload.viewerSlideId())
+                + ",\"viewerSlideSha256\":" + json(upload.viewerSlideSha256())
                 + ",\"uploadMode\":" + json(upload.uploadMode())
                 + ",\"detail\":" + json(upload.detail()) + "}";
     }
@@ -1587,10 +1592,19 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"derivativePath\":" + json(revision.derivativePath())
                 + ",\"packagePath\":" + json(revision.packagePath())
                 + ",\"omeSha256\":" + json(revision.omeSha256())
-                + ",\"omeBytes\":" + manifestLong(manifest, "stagingOmeBytes")
+                + ",\"omeBytes\":"
+                + (revision.format()
+                                == org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
+                        ? regularFileSize(revision.omePath())
+                        : manifestLong(manifest, "stagingOmeBytes"))
                 + ",\"dziBytes\":" + manifestLong(manifest, "derivativeBytes")
                 + ",\"packageBytes\":" + regularFileSize(revision.packagePath())
-                + ",\"jpegQuality\":" + manifestLong(manifest, "quality")
+                + ",\"jpegQuality\":"
+                + (revision.format()
+                                == org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
+                        ? revision.omeJpegQuality()
+                        : manifestLong(manifest, "quality"))
+                + ",\"omeProfile\":" + json(revision.omeProfile())
                 + ",\"minimumWindowedSsim\":" + manifestDouble(manifest, "minimumWindowedSsim")
                 + ",\"maximumRoiMeanDeltaE00\":" + manifestDouble(manifest, "maximumRoiMeanDeltaE00")
                 + ",\"minimumEdgeDetailRetention\":" + manifestDouble(manifest, "minimumEdgeDetailRetention")
