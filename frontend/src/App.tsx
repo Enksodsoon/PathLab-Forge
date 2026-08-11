@@ -1147,6 +1147,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
     : ''
   const counter = conversionCounter(dataset)
   const filledTiles = Math.max(1, Math.round(48 * phase.percent / 100))
+  const indeterminate = phase.indeterminate === true
   return (
     <div className="forge-conversion-progress" aria-live="polite">
       <div className="forge-conversion-heading">
@@ -1167,10 +1168,10 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
       </div>
       <strong>{phase.label}</strong>
       <p>{dataset.detail}</p>
-      <progress aria-label="Conversion progress" max="100" value={phase.percent} />
+      <progress aria-label="Conversion progress" max="100" value={indeterminate ? undefined : phase.percent} />
       <div className="forge-conversion-progress-copy">
         <span>Step {phase.step} of {stages.length}</span>
-        <span>{phase.percent}%</span>
+        <span>{indeterminate ? 'Finalizing…' : `${phase.percent}%`}</span>
       </div>
       <ol aria-label="Conversion stages">
         {stages.map((label, index) => (
@@ -2018,6 +2019,7 @@ function QueueDock({
   const queued = active.filter((dataset) => ['QUEUED', 'WAITING_RESOURCES'].includes(dataset.status))
   const ready = datasets.filter((dataset) => QUEUEABLE_STATUSES.has(dataset.status))
   const phase = converting ? conversionPhase(converting) : undefined
+  const indeterminate = phase?.indeterminate === true
   return (
     <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
       <span className="forge-queue-mark" />
@@ -2036,8 +2038,12 @@ function QueueDock({
               ? ` · ~${formatDuration(converting.estimatedRemainingMs)} left`
               : ''}
           </span>
-          <progress aria-label={`${converting.displayName} conversion progress`} max="100" value={phase.percent} />
-          <strong>{phase.percent}%</strong>
+          <progress
+            aria-label={`${converting.displayName} conversion progress`}
+            max="100"
+            value={indeterminate ? undefined : phase.percent}
+          />
+          <strong>{indeterminate ? 'Finalizing…' : `${phase.percent}%`}</strong>
         </label>
       ) : null}
       {isError ? <button type="button" onClick={onClearError}>Dismiss</button> : null}
@@ -2045,7 +2051,20 @@ function QueueDock({
   )
 }
 
-function conversionPhase(dataset: Dataset, directOme = false) {
+function conversionPhase(dataset: Dataset, directOme = false): {
+  step: number
+  percent: number
+  label: string
+  indeterminate?: boolean
+} {
+  if (dataset.stage === 'OPTIMIZING_OME') {
+    return {
+      step: 1,
+      percent: 75,
+      label: 'Finalizing OME-TIFF pyramid',
+      indeterminate: true,
+    }
+  }
   const direct = directOme || dataset.stage === 'DIRECT_OME'
   if (direct) {
     const unitProgress = (dataset.totalUnits || 0) > 0
@@ -2112,6 +2131,7 @@ function conversionPhase(dataset: Dataset, directOme = false) {
 }
 
 function conversionCounter(dataset: Dataset) {
+  if (dataset.stage === 'OPTIMIZING_OME') return 'Final pyramid is still being written and flushed…'
   const completed = dataset.completedUnits || 0
   const total = dataset.totalUnits || 0
   if (!total) return 'Preparing measurable work…'
@@ -2176,7 +2196,7 @@ function statusLabel(status: string) {
     QUEUED: 'Queued',
     WAITING_RESOURCES: 'Waiting for resources',
     CONVERTING: 'Converting locally',
-    OPTIMIZING_OME: 'Rendering staging image',
+    OPTIMIZING_OME: 'Finalizing OME-TIFF',
     VALIDATING: 'Verifying staging image',
     GENERATING_DZI: 'Generating compact DZI',
     DZI_READY: 'Packaging',

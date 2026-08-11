@@ -948,6 +948,42 @@ test('uses direct OME stages instead of DZI packaging stages during conversion',
   expect(screen.queryByText('Packaging')).not.toBeInTheDocument()
 })
 
+test('shows direct OME pyramid finalization as active instead of frozen at a fixed percent', async () => {
+  const finalizing: api.Dataset = {
+    id: 'direct-finalizing', displayName: 'Large slide.vsi', sourceBytes: 1_000,
+    format: 'VSI', status: 'OPTIMIZING_OME', detail: 'Writing the final OME pyramid directly from bounded source tiles',
+    outputPath: '', sha256: '', selectedSeries: 0, width: 37_800, height: 34_366,
+    downsample: 1, estimatedOutputBytes: 1_000, projectedFileBytes: 500,
+    projectedFileLowerBytes: 250, projectedFileUpperBytes: 1_000,
+    cropX: 0, cropY: 0, cropWidth: 37_800, cropHeight: 34_366,
+    sourceFingerprint: 'direct-finalizing-source', configurationRevision: 'direct-finalizing-config',
+    currentArtifactRevision: 'direct-finalizing-artifact', approvedArtifactRevision: '',
+    stage: 'OPTIMIZING_OME', completedUnits: 1_299_034_800, totalUnits: 1_299_034_800,
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[finalizing], {
+    conversionRuntime: 'QuPath test', derivativeRuntime: 'libvips test',
+    vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([finalizing])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'direct-finalizing-artifact', approvedRevision: '', revisions: [{
+      id: 'direct-finalizing-artifact', status: 'CONVERTING', format: 'OME_DYNAMIC_V1',
+      createdAt: Date.now(), outputWidth: 37_800, outputHeight: 34_366,
+      omePath: '', packagePath: '', omeSha256: '', omeBytes: 0, dziBytes: 0,
+      packageBytes: 0, jpegQuality: 0, minimumWindowedSsim: 0,
+      maximumRoiMeanDeltaE00: 0, minimumEdgeDetailRetention: 0,
+      encoderProfile: '', packageSha256: '', failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  expect((await screen.findAllByText('Finalizing OME-TIFF pyramid'))[0]).toBeVisible()
+  expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).not.toHaveAttribute('value')
+  expect(screen.getAllByText('Finalizing…')[0]).toBeVisible()
+  expect(screen.queryByText('75%')).not.toBeInTheDocument()
+})
+
 test('refreshes annotations and artifacts only for the selected active slide', async () => {
   const base: api.Dataset = {
     id: 'active-one',
