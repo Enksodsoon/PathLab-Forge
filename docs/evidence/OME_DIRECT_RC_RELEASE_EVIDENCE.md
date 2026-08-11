@@ -46,7 +46,10 @@ smokes returned zero errors. Worst observed p95 values were 25.977, 51.862, 132.
 and 234.788 ms respectively; worst p99 values were 25.977, 51.862, 134.687, and
 244.617 ms.
 
-Focused recovery checks cover upload interruption with offset resume, retry of failed
+The maintained process harness also restarts Forge after conversion and before upload,
+proving approved artifact reuse and persisted credential recovery, then restarts Viewer
+and re-reads the native direct tile before exercising fallback. Focused recovery checks
+cover upload interruption with offset resume, retry of failed
 finalization without recreating or retransmitting an artifact, exact persisted-SHA
 match, rejection of missing/mismatched persisted SHA, malformed or incomplete exact
 profiles, artifact reuse, source revalidation, corrupted/truncated Viewer ingest,

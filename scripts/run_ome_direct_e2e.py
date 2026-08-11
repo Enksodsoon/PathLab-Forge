@@ -409,11 +409,12 @@ def main() -> int:
             f"-Dpathlab.forge.port={forge_port} "
             f"-Dpathlab.forge.viewerCredentialTarget=PathLab-Forge-OME-RC-{forge_port}"
         )
+        forge_command = [
+            str(arguments.forge_script), "--serve", "--no-browser", "--data-root",
+            str(root / "forge-data"),
+        ]
         forge_process = Process(
-            [
-                str(arguments.forge_script), "--serve", "--no-browser", "--data-root",
-                str(root / "forge-data"),
-            ],
+            forge_command,
             cwd=arguments.forge_script.parent,
             env=forge_env,
             label="Forge",
@@ -428,6 +429,18 @@ def main() -> int:
         dataset_id, direct = convert(forge, source)
         if direct["format"] != "OME_DYNAMIC_V1" or direct["packageBytes"] != 0:
             raise RuntimeError("Forge did not select the direct-only artifact")
+        forge_process.close()
+        processes.remove(forge_process)
+        forge_process = Process(
+            forge_command,
+            cwd=arguments.forge_script.parent,
+            env=forge_env,
+            label="Forge restarted",
+        )
+        processes.append(forge_process)
+        line = forge_process.wait_for("Authorize a new browser once with:")
+        forge = Client(forge_base)
+        authorize_forge(forge, line.split(": ", 1)[1])
         direct_upload = upload(forge, dataset_id)
         if direct_upload["viewerSlideSha256"] != direct["omeSha256"]:
             raise RuntimeError("persisted direct OME SHA mismatch")
@@ -468,6 +481,11 @@ def main() -> int:
         viewer = Client(viewer_base)
         wait_http(viewer, "/livez")
         viewer_login(viewer)
+        restarted_tile = viewer.bytes(
+            f"/api/v1/admin/slides/{slide_id}/preview/slide_files/10/0_0.jpg"
+        )
+        if not restarted_tile.startswith(b"\xff\xd8"):
+            raise RuntimeError("direct tile was unavailable after Viewer restart")
         fallback = reconvert(forge, dataset_id)
         if fallback["format"] != "PREPARED_DZI_V2" or fallback["packageBytes"] <= 0:
             raise RuntimeError("Forge did not generate prepared-v2 after rollback")
