@@ -113,7 +113,9 @@ final class DirectFinalOmeAssemblyTest {
         assertEquals(0, optimizationRewrites.get());
         assertEquals(
                 ConversionService.parallelRgbWorkers(
-                        Runtime.getRuntime().availableProcessors(), 11, false),
+                        Runtime.getRuntime().availableProcessors(),
+                        org.pathlab.forge.runtime.RuntimeProfile.system().maxConversionWorkers(),
+                        false),
                 observedWorkers.get());
     }
 }

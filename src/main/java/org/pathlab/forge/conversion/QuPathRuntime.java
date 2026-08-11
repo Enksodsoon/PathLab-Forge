@@ -15,6 +15,7 @@ import java.util.function.LongConsumer;
 import java.util.stream.Stream;
 import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.runtime.ChildProcessContainment;
+import org.pathlab.forge.runtime.RuntimeProfile;
 import org.pathlab.forge.derivative.OmeDynamicProfile;
 
 final class QuPathRuntime {
@@ -167,8 +168,8 @@ final class QuPathRuntime {
             Path output) {
         return List.of(
                 javaExecutable.toString(),
-                "-XX:ActiveProcessorCount=6",
-                "-Xmx4g",
+                "-XX:ActiveProcessorCount=" + RuntimeProfile.system().quPathProcessors(),
+                "-Xmx" + Math.max(1, RuntimeProfile.system().quPathHeapBytes() / (1024 * 1024)) + "m",
                 "-Djava.awt.headless=true",
                 "-cp",
                 appDirectory + java.io.File.separator + "*",

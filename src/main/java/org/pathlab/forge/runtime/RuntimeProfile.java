@@ -8,6 +8,11 @@ public record RuntimeProfile(
         long vipsCacheBytes,
         int vipsCacheFiles,
         int vipsCacheOperations,
+        int quPathProcessors,
+        long quPathHeapBytes,
+        int previewReaderSessions,
+        long previewReaderCacheBytes,
+        int bioFormatsDirectReaders,
         long idleMainJvmBytes,
         long processTreeLimitBytes,
         long workerStopAvailableBytes,
@@ -23,6 +28,11 @@ public record RuntimeProfile(
                 || vipsCacheBytes < 1
                 || vipsCacheFiles < 1
                 || vipsCacheOperations < 1
+                || quPathProcessors < 1
+                || quPathHeapBytes < 1
+                || previewReaderSessions < 1
+                || previewReaderCacheBytes < 1
+                || bioFormatsDirectReaders < 1
                 || idleMainJvmBytes < 1
                 || processTreeLimitBytes < 1
                 || pauseAvailableBytes < 1
@@ -34,12 +44,17 @@ public record RuntimeProfile(
     public static RuntimeProfile target() {
         return new RuntimeProfile(
                 "8gb-6core",
-                5,
+                2,
                 640 * MIB,
-                5,
-                1_024 * MIB,
-                192,
-                128,
+                2,
+                256 * MIB,
+                96,
+                64,
+                2,
+                2 * GIB,
+                1,
+                128 * MIB,
+                1,
                 512 * MIB,
                 5_500 * MIB,
                 1_250 * MIB,
@@ -78,21 +93,55 @@ public record RuntimeProfile(
         if (logicalProcessors < 1 || physicalMemoryBytes < GIB) {
             throw new IllegalArgumentException("Detected hardware capacity is invalid");
         }
-        var cpuWorkers = Math.min(
-                12,
-                Math.min(
-                        Math.max(1, logicalProcessors - 1),
-                        Math.max(1, 4 + logicalProcessors / 3)));
-        var memoryWorkers = Math.max(
-                1,
-                Math.toIntExact(Math.min(
-                        12,
-                        Math.max(1, (physicalMemoryBytes - 3 * GIB) / (768 * MIB)))));
-        var workers = Math.min(cpuWorkers, memoryWorkers);
-        var vipsConcurrency = Math.min(16, Math.max(1, logicalProcessors - 1));
-        var vipsCacheBytes = Math.min(
-                4 * GIB,
-                Math.max(1_024 * MIB, physicalMemoryBytes / 12));
+        var reservedCpu = Math.max(1, logicalProcessors - 1);
+        int workers;
+        int quPathProcessors;
+        long quPathHeapBytes;
+        int vipsConcurrency;
+        long vipsCacheBytes;
+        int previewSessions;
+        long previewCacheBytes;
+        int directReaders;
+        if (physicalMemoryBytes < 8 * GIB) {
+            workers = 1;
+            quPathProcessors = 1;
+            quPathHeapBytes = GIB;
+            vipsConcurrency = 1;
+            vipsCacheBytes = 128 * MIB;
+            previewSessions = 1;
+            previewCacheBytes = 96 * MIB;
+            directReaders = 1;
+        } else if (physicalMemoryBytes < 16 * GIB) {
+            workers = 2;
+            quPathProcessors = 2;
+            quPathHeapBytes = 2 * GIB;
+            vipsConcurrency = 2;
+            vipsCacheBytes = 256 * MIB;
+            previewSessions = 1;
+            previewCacheBytes = 128 * MIB;
+            directReaders = 1;
+        } else if (physicalMemoryBytes < 32 * GIB) {
+            workers = 4;
+            quPathProcessors = 4;
+            quPathHeapBytes = 3 * GIB;
+            vipsConcurrency = 4;
+            vipsCacheBytes = 512 * MIB;
+            previewSessions = 2;
+            previewCacheBytes = 256 * MIB;
+            directReaders = 2;
+        } else {
+            workers = 6;
+            quPathProcessors = 6;
+            quPathHeapBytes = 4 * GIB;
+            vipsConcurrency = 6;
+            vipsCacheBytes = GIB;
+            previewSessions = 2;
+            previewCacheBytes = 256 * MIB;
+            directReaders = 2;
+        }
+        workers = Math.min(workers, reservedCpu);
+        quPathProcessors = Math.min(quPathProcessors, reservedCpu);
+        vipsConcurrency = Math.min(vipsConcurrency, reservedCpu);
         var processTreeLimit = Math.min(
                 physicalMemoryBytes - Math.min(2 * GIB, physicalMemoryBytes / 4),
                 physicalMemoryBytes * 7 / 10);
@@ -107,8 +156,13 @@ public record RuntimeProfile(
                 640 * MIB,
                 vipsConcurrency,
                 vipsCacheBytes,
-                Math.min(512, 192 + Math.max(0, workers - 5) * 32),
-                Math.min(384, 128 + Math.max(0, vipsConcurrency - 5) * 16),
+                Math.min(256, 64 + workers * 16),
+                Math.min(192, 48 + vipsConcurrency * 8),
+                quPathProcessors,
+                quPathHeapBytes,
+                previewSessions,
+                previewCacheBytes,
+                directReaders,
                 512 * MIB,
                 Math.max(2 * GIB, processTreeLimit),
                 workerStopBytes,

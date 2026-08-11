@@ -21,9 +21,10 @@ final class ForgeServerTest {
     Path temp;
 
     @Test
-    void reservesHttpWorkersForAppApisWhileTwoTilesAreDecoded() {
+    void boundsHttpWorkersToDetectedProcessors() {
         assertEquals(6, ForgeServer.recommendedHttpWorkers(6));
-        assertEquals(12, ForgeServer.recommendedHttpWorkers(24));
+        assertEquals(8, ForgeServer.recommendedHttpWorkers(24));
+        assertEquals(2, ForgeServer.recommendedHttpWorkers(1));
     }
 
     @Test

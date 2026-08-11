@@ -123,6 +123,26 @@ export interface AnnotationRecord {
   label: string
   color: string
   createdAt: number
+  parentId: string
+  classification: string
+  updatedAt: number
+  revision: number
+}
+
+export interface FeaturePack {
+  id: string
+  version: string
+  name: string
+  kind: string
+  state: 'NOT_PUBLISHED' | 'AVAILABLE' | 'INSTALLED' | 'DISABLED' | 'UNAVAILABLE' | 'INCOMPATIBLE'
+  downloadBytes: number
+  installedBytes: number
+  minimumMemoryBytes: number
+  minimumProcessors: number
+  pretrained: boolean
+  trainingOnly: boolean
+  license: string
+  detail: string
 }
 
 let csrf = ''
@@ -337,6 +357,35 @@ export async function deleteAnnotation(id: string, annotationId: string) {
   return request<void>(
     `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}`,
     { method: 'DELETE' },
+  )
+}
+
+export async function syncViewer(id: string) {
+  return request<ViewerUpload>(
+    `/api/datasets/${encodeURIComponent(id)}/viewer-sync`,
+    { method: 'POST' },
+  )
+}
+
+export async function features(refresh = false) {
+  return request<{ features: FeaturePack[] }>(`/api/features${refresh ? '?refresh=true' : ''}`)
+}
+
+export async function installFeature(id: string) {
+  return request<FeaturePack>(`/api/features/${encodeURIComponent(id)}/install`, { method: 'POST' })
+}
+
+export async function disableFeature(id: string) {
+  return request<void>(`/api/features/${encodeURIComponent(id)}/disable`, { method: 'POST' })
+}
+
+export async function uninstallFeature(id: string) {
+  return request<void>(`/api/features/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function annotationMeasurements(id: string, annotationId: string) {
+  return request<{ annotationId: string; units: 'pixels'; values: Record<string, number> }>(
+    `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}/measurements`,
   )
 }
 

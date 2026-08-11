@@ -33,8 +33,6 @@ public final class ConversionService implements AutoCloseable {
     // encounters MAX_PATH while creating slide_files/<level> directories.
     private static final String PREVIEW_CACHE_VERSION = "pv5";
     private static final long PARALLEL_RGB_MINIMUM_PIXELS = 250_000_000L;
-    private static final int MAX_READER_SESSIONS = 2;
-    private static final long READER_SESSION_BYTES = 256L * 1024 * 1024;
     private final DatasetRepository repository;
     private final ConversionEngine engine;
     private final DerivativeEngine derivativeEngine;
@@ -59,6 +57,8 @@ public final class ConversionService implements AutoCloseable {
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final ExecutorService conversionExecutor;
     private final int maximumConcurrentConversions;
+    private final int maximumReaderSessions;
+    private final long readerSessionBytes;
     private final java.util.concurrent.ScheduledExecutorService memorySampler =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 var thread = new Thread(runnable, "pathlab-memory-sampler");
@@ -78,6 +78,9 @@ public final class ConversionService implements AutoCloseable {
         this.artifactRepository = new ArtifactRevisionRepository(this.managedRoot);
         this.seriesMetadataCache = new SeriesMetadataCache(this.managedRoot);
         this.quPathRuntime = QuPathRuntime.discover();
+        var runtimeProfile = org.pathlab.forge.runtime.RuntimeProfile.system();
+        maximumReaderSessions = runtimeProfile.previewReaderSessions();
+        readerSessionBytes = runtimeProfile.previewReaderCacheBytes();
         maximumConcurrentConversions = recommendedConcurrentConversions(
                 org.pathlab.forge.runtime.RuntimeProfile.configuredLogicalProcessors(),
                 org.pathlab.forge.runtime.RuntimeProfile.system().processTreeLimitBytes());
@@ -89,14 +92,9 @@ public final class ConversionService implements AutoCloseable {
                     return thread;
                 });
         memorySampler.scheduleAtFixedRate(
-                this::sampleActiveMemory,
+                this::maintenanceTick,
                 0,
-                200,
-                java.util.concurrent.TimeUnit.MILLISECONDS);
-        memorySampler.scheduleWithFixedDelay(
-                this::dispatchQueuedSafely,
-                100,
-                500,
+                1_000,
                 java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
@@ -494,7 +492,7 @@ public final class ConversionService implements AutoCloseable {
         if (existing != null) {
             return existing;
         }
-        if (readerSessions.size() >= MAX_READER_SESSIONS) {
+        if (readerSessions.size() >= maximumReaderSessions) {
             var oldest = readerSessions.entrySet().stream()
                     .min(Comparator.comparingLong(
                             entry -> entry.getValue().lastAccessNanos()))
@@ -502,7 +500,7 @@ public final class ConversionService implements AutoCloseable {
                     .orElseThrow();
             evictReaderSession(oldest);
         }
-        var opened = new ReaderSession(READER_SESSION_BYTES);
+        var opened = new ReaderSession(readerSessionBytes);
         readerSessions.put(key, opened);
         readerSourcePaths.put(key, Path.of(dataset.sourcePath()).toAbsolutePath().normalize());
         return opened;
@@ -974,6 +972,21 @@ public final class ConversionService implements AutoCloseable {
 
     public LocalDataset start(String id) throws IOException {
         return start(id, ArtifactRevisionFormat.PREPARED_DZI_V2);
+    }
+
+    public RgbRegion readRgbRegion(
+            String id, int x, int y, int width, int height) throws IOException {
+        var dataset = requireDataset(id);
+        if (dataset.selectedSeries() < 0) {
+            throw new IllegalStateException("Inspect and select an image series before analysis");
+        }
+        if (x < 0 || y < 0 || width < 1 || height < 1
+                || (long) x + width > dataset.width()
+                || (long) y + height > dataset.height()) {
+            throw new IllegalArgumentException("Analysis region is outside the selected series");
+        }
+        return engine.readRgbRegion(
+                Path.of(dataset.sourcePath()), dataset.selectedSeries(), x, y, width, height);
     }
 
     public LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
@@ -1991,7 +2004,7 @@ public final class ConversionService implements AutoCloseable {
                     sameStage ? current.stageStartedAt() : now,
                     Math.max(
                             current == null ? 0 : current.peakWorkingSetBytes(),
-                            currentWorkingSet()),
+                            current == null ? 0 : current.peakWorkingSetBytes()),
                     org.pathlab.forge.runtime.RuntimeProfile.system().name(),
                     current == null ? "" : current.cacheHitReason());
         });
@@ -2015,6 +2028,11 @@ public final class ConversionService implements AutoCloseable {
                 Math.max(current.peakWorkingSetBytes(), workingSet),
                 current.resourceProfile(),
                 current.cacheHitReason()));
+    }
+
+    private void maintenanceTick() {
+        sampleActiveMemory();
+        dispatchQueuedSafely();
     }
 
     private boolean useDirectFinalOme(ConversionRequest request) {

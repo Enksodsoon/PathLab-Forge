@@ -1,23 +1,35 @@
-# Active Task — Direct OME Delivery Release Candidate
+# Active Task — Modular Capability Release
 
-Supersedes the previous local-pipeline task by explicit product-owner direction.
+Supersedes the completed direct-OME release-candidate brief by explicit
+product-owner direction on 2026-08-11.
 
-## Goal
+## Fixed endpoint
 
-Complete one clean, locally committed Forge-to-Viewer release candidate using
-exact `ome-dynamic-v1` factor-2 negotiation, direct resumable OME upload,
-persisted SHA-256 acknowledgement, native Viewer tiles, and automatic
-`prepared-v2` compatibility fallback.
+Deliver a lightweight Forge base plus a signed, offline-by-default Feature
+Center. The base owns WSI inspection, direct preview, annotations, geometry
+measurements, conversion, validation and upload. Optional Pathology Tools and
+Classical Analysis packs are downloaded only after an explicit user action.
 
-## Required gates
+AI is not a core feature. Forge bundles no weights or training runtime. At most
+one separately downloaded pretrained research model may be published after
+license, provenance, resource and deterministic self-test gates pass. Training
+Lab is a separate advanced pack using user-provided labelled data.
 
-1. Preserve a clean pre-AI/TRACE/teaching Forge lineage.
-2. Negotiate the complete V1 profile before conversion and again before upload.
-3. Produce only the validated factor-2 OME for the accepted direct path.
-4. Fail closed unless Viewer returns `ready_private` and the exact persisted SHA.
-5. Maintain prepared-v2 fallback, restart/resume, privacy, storage, and library behavior.
-6. Prove the real Forge-process-to-Viewer-process flow with deterministic and eligible real files.
-7. Run fidelity, performance, concurrency, full regression, and launchable Windows runtime gates.
+## Milestones
 
-No AI, TRACE, teaching, Classroom, Jpegli, deployment, push, merge, signing, or
-production activation belongs to this task.
+1. Remove redundant preview work and finish adaptive runtime limits.
+2. Add signed catalog, staged installation, self-test, rollback and uninstall.
+3. Add bounded raw-region, PathObject, measurement and analysis-run contracts.
+4. Add the Pathology Tools pack boundary: hierarchy, H&E, stains and TMA.
+5. Add the Classical Analysis pack boundary: tissue/cells/classifier/QC/registration.
+6. Add the optional pretrained-AI and Training Lab availability gates.
+7. Add explicit private Viewer synchronization with conflict-safe verification.
+
+## Stop rule
+
+Stop after these seven milestones and their local validation report. Do not add
+third-party plugins, arbitrary scripting, a dependency solver, cloud services,
+microservices, distributed workers, additional models, merge or deployment.
+
+The exact `ome-dynamic-v1` direct path, prepared-v2 fallback, image-quality
+gates, artifact reuse, privacy and resumable upload remain regression contracts.

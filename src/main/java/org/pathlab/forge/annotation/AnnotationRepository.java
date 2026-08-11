@@ -49,7 +49,12 @@ public final class AnnotationRepository {
                     properties.getProperty(prefix + "geometry", ""),
                     properties.getProperty(prefix + "label", ""),
                     properties.getProperty(prefix + "color", "#f3b33d"),
-                    Long.parseLong(properties.getProperty(prefix + "createdAt", "0"))));
+                    Long.parseLong(properties.getProperty(prefix + "createdAt", "0")),
+                    properties.getProperty(prefix + "parentId", ""),
+                    properties.getProperty(prefix + "classification", ""),
+                    Long.parseLong(properties.getProperty(
+                            prefix + "updatedAt", properties.getProperty(prefix + "createdAt", "0"))),
+                    Long.parseLong(properties.getProperty(prefix + "revision", "1"))));
         }
         result.sort(Comparator.comparingLong(AnnotationRecord::createdAt));
         return List.copyOf(result);
@@ -87,8 +92,51 @@ public final class AnnotationRepository {
         properties.setProperty(prefix + "label", record.label());
         properties.setProperty(prefix + "color", record.color());
         properties.setProperty(prefix + "createdAt", Long.toString(record.createdAt()));
+        properties.setProperty(prefix + "updatedAt", Long.toString(record.updatedAt()));
+        properties.setProperty(prefix + "revision", Long.toString(record.revision()));
         write(datasetId, properties);
         return record;
+    }
+
+    public synchronized AnnotationRecord updateMetadata(
+            String datasetId,
+            String annotationId,
+            String parentId,
+            String classification,
+            long expectedRevision)
+            throws IOException {
+        if (parentId == null || parentId.length() > 64
+                || (!parentId.isBlank() && !parentId.matches("[0-9a-fA-F-]{36}"))) {
+            throw new IllegalArgumentException("Annotation parent is invalid");
+        }
+        if (classification == null || classification.length() > 120) {
+            throw new IllegalArgumentException("Annotation classification is too long");
+        }
+        var current = list(datasetId).stream()
+                .filter(annotation -> annotation.id().equals(annotationId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Annotation was not found"));
+        if (current.revision() != expectedRevision) {
+            throw new IllegalStateException("Annotation revision changed");
+        }
+        if (!parentId.isBlank() && parentId.equals(annotationId)) {
+            throw new IllegalArgumentException("Annotation cannot be its own parent");
+        }
+        if (!parentId.isBlank() && list(datasetId).stream().noneMatch(item -> item.id().equals(parentId))) {
+            throw new IllegalArgumentException("Annotation parent was not found");
+        }
+        var updated = new AnnotationRecord(
+                current.id(), current.type(), current.geometry(), current.label(), current.color(),
+                current.createdAt(), parentId, classification.strip(), System.currentTimeMillis(),
+                current.revision() + 1);
+        var properties = read(datasetId);
+        var prefix = "annotation." + annotationId + ".";
+        properties.setProperty(prefix + "parentId", updated.parentId());
+        properties.setProperty(prefix + "classification", updated.classification());
+        properties.setProperty(prefix + "updatedAt", Long.toString(updated.updatedAt()));
+        properties.setProperty(prefix + "revision", Long.toString(updated.revision()));
+        write(datasetId, properties);
+        return updated;
     }
 
     public synchronized boolean delete(String datasetId, String annotationId) throws IOException {

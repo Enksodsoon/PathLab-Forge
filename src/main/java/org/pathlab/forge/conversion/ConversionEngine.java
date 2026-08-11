@@ -38,6 +38,12 @@ public interface ConversionEngine extends AutoCloseable {
         throw new IOException("This conversion engine does not support series thumbnails");
     }
 
+    default RgbRegion readRgbRegion(
+            Path source, int seriesIndex, int x, int y, int width, int height)
+            throws IOException {
+        throw new IOException("This conversion engine does not support raw RGB regions");
+    }
+
     default void closeDirectSource(Path source) throws IOException {
         // Engines without persistent direct readers have nothing to release.
     }

@@ -6,4 +6,13 @@ public record AnnotationRecord(
         String geometry,
         String label,
         String color,
-        long createdAt) {}
+        long createdAt,
+        String parentId,
+        String classification,
+        long updatedAt,
+        long revision) {
+    public AnnotationRecord(
+            String id, String type, String geometry, String label, String color, long createdAt) {
+        this(id, type, geometry, label, color, createdAt, "", "", createdAt, 1);
+    }
+}

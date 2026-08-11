@@ -102,6 +102,8 @@ tasks.withType<Test>().configureEach {
         "pathlab.forge.test.ome.width",
         "pathlab.forge.test.ome.height",
         "pathlab.forge.test.fullDzi",
+        "pathlab.forge.test.heSource",
+        "pathlab.forge.test.runtimeRoot",
     ).forEach { name ->
         System.getProperty(name)?.let { value -> systemProperty(name, value) }
     }

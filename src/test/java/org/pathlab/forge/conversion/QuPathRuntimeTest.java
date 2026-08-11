@@ -36,8 +36,8 @@ class QuPathRuntimeTest {
                 Path.of("export.partial.ome.tif"));
 
         assertEquals("java.exe", command.get(0));
-        assertTrue(command.contains("-XX:ActiveProcessorCount=6"));
-        assertTrue(command.contains("-Xmx4g"));
+        assertTrue(command.contains("-XX:ActiveProcessorCount=2"));
+        assertTrue(command.contains("-Xmx2048m"));
         assertTrue(command.contains("--compression=JPEG"));
         assertTrue(command.contains("--tile-size=512"));
         assertTrue(command.contains("--pyramid-scale=2"));

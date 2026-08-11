@@ -84,6 +84,18 @@ vi.mock('../api', () => ({
   annotations: vi.fn(async () => []),
   createAnnotation: vi.fn(),
   deleteAnnotation: vi.fn(),
+  features: vi.fn(async () => ({ features: [
+    {
+      id: 'pathology-tools', version: '', name: 'Pathology Tools', kind: 'PATHOLOGY',
+      state: 'NOT_PUBLISHED', downloadBytes: 0, installedBytes: 0,
+      minimumMemoryBytes: 0, minimumProcessors: 0, pretrained: false,
+      trainingOnly: false, license: '', detail: 'Not published',
+    },
+  ] })),
+  installFeature: vi.fn(),
+  disableFeature: vi.fn(),
+  uninstallFeature: vi.fn(),
+  syncViewer: vi.fn(),
   startViewerPairing: vi.fn(async () => ({
     userCode: 'ABCD-EFGH',
     verificationUrl: 'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH',
@@ -109,6 +121,33 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('region', { name: 'Whole-slide viewer' })).toBeVisible()
   expect(screen.getByText('Your slides, ready at launch')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
+})
+
+test('keeps optional features offline until Feature Center is opened', async () => {
+  render(<App />)
+
+  expect(await screen.findByRole('button', { name: 'Feature Center' })).toBeVisible()
+  expect(api.features).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Feature Center' }))
+
+  expect(await screen.findByRole('heading', { name: 'Feature Center' })).toBeVisible()
+  expect(api.features).toHaveBeenCalledWith(false)
+  expect(screen.getByText('Pathology Tools')).toBeVisible()
+})
+
+test('disables an installed feature without uninstalling its files', async () => {
+  vi.mocked(api.features).mockResolvedValue({ features: [{
+    id: 'pathology-tools', version: '1.0.0', name: 'Pathology Tools', kind: 'PATHOLOGY',
+    state: 'INSTALLED', downloadBytes: 12, installedBytes: 24,
+    minimumMemoryBytes: 0, minimumProcessors: 1, pretrained: false,
+    trainingOnly: false, license: 'Apache-2.0', detail: 'Installed and verified',
+  }] })
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Feature Center' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Disable' }))
+
+  await waitFor(() => expect(api.disableFeature).toHaveBeenCalledWith('pathology-tools'))
+  expect(api.uninstallFeature).not.toHaveBeenCalled()
 })
 
 test('keeps the viewer visible by collapsing the navigator on compact browser widths', async () => {

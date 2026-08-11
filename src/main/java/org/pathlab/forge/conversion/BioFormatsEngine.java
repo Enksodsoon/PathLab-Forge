@@ -680,9 +680,14 @@ public final class BioFormatsEngine implements ConversionEngine {
             return existing.primary();
         }
         try {
-            var opened = new DirectReaderPool(
-                    new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key),
-                    new DirectReader(runtimeRoot.resolve("bioformats_package.jar"), key));
+            var count = org.pathlab.forge.runtime.RuntimeProfile.system()
+                    .bioFormatsDirectReaders();
+            var readers = new DirectReader[count];
+            for (var index = 0; index < count; index++) {
+                readers[index] = new DirectReader(
+                        runtimeRoot.resolve("bioformats_package.jar"), key);
+            }
+            var opened = new DirectReaderPool(readers);
             directReaders.put(key, opened);
             return opened.primary();
         } catch (ReflectiveOperationException error) {
@@ -693,6 +698,25 @@ public final class BioFormatsEngine implements ConversionEngine {
     private synchronized DirectReader directTileReader(Path source) throws IOException {
         directReader(source);
         return directReaders.get(source.toAbsolutePath().normalize()).next();
+    }
+
+    @Override
+    public RgbRegion readRgbRegion(
+            Path source, int seriesIndex, int x, int y, int width, int height)
+            throws IOException {
+        var pixels = Math.multiplyExact(width, height);
+        if (x < 0 || y < 0 || width < 1 || height < 1 || pixels > 4_194_304) {
+            throw new IOException("Raw RGB analysis region exceeds the bounded reader limit");
+        }
+        var image = directReader(source).read(seriesIndex, 0, x, y, width, height);
+        var rgb = new byte[Math.multiplyExact(pixels, 3)];
+        for (var index = 0; index < pixels; index++) {
+            var value = image.getRGB(index % width, index / width);
+            rgb[index * 3] = (byte) (value >>> 16);
+            rgb[index * 3 + 1] = (byte) (value >>> 8);
+            rgb[index * 3 + 2] = (byte) value;
+        }
+        return new RgbRegion(x, y, width, height, rgb);
     }
 
     @Override

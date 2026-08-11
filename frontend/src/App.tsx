@@ -72,6 +72,9 @@ export function App() {
   const [connection, setConnection] = useState<ViewerConnection>()
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
+  const [featureOpen, setFeatureOpen] = useState(false)
+  const [features, setFeatures] = useState<api.FeaturePack[]>([])
+  const [featureLoading, setFeatureLoading] = useState(false)
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
 
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
@@ -492,6 +495,36 @@ export function App() {
     effectiveCapacityBytes: 512 * 1024 ** 3,
   }), [datasets])
 
+  const loadFeatures = async (catalogRefresh = false) => {
+    setFeatureLoading(true)
+    try {
+      setFeatures((await api.features(catalogRefresh)).features)
+    } catch (nextError) {
+      setError(message(nextError))
+    } finally {
+      setFeatureLoading(false)
+    }
+  }
+
+  const openFeatures = () => {
+    setFeatureOpen(true)
+    void loadFeatures()
+  }
+
+  const changeFeature = async (feature: api.FeaturePack) => {
+    setFeatureLoading(true)
+    try {
+      if (feature.state === 'INSTALLED') await api.disableFeature(feature.id)
+      else if (feature.state === 'DISABLED') await api.uninstallFeature(feature.id)
+      else await api.installFeature(feature.id)
+      setFeatures((await api.features()).features)
+    } catch (nextError) {
+      setError(message(nextError))
+    } finally {
+      setFeatureLoading(false)
+    }
+  }
+
   const rail = (
     <PathLabProductRail
       productName="Forge"
@@ -604,6 +637,20 @@ export function App() {
           )}
         />
       </div>
+      <button className="forge-feature-launcher" type="button" onClick={openFeatures}>
+        Feature Center
+      </button>
+      {selected && viewerUpload?.state === 'READY_PRIVATE' ? (
+        <button
+          className="forge-viewer-sync-launcher"
+          type="button"
+          onClick={() => void api.syncViewer(selected.id)
+            .then((next) => { setViewerUpload(next); setNotice(next.detail) })
+            .catch((nextError) => setError(message(nextError)))}
+        >
+          Sync annotations to Viewer
+        </button>
+      ) : null}
       {importOpen ? (
         <ImportDialog
           path={importPath}
@@ -634,7 +681,63 @@ export function App() {
           onClose={() => setPairingOpen(false)}
         />
       ) : null}
+      {featureOpen ? (
+        <FeatureCenter
+          features={features}
+          loading={featureLoading}
+          onRefresh={() => void loadFeatures(true)}
+          onChange={(feature) => void changeFeature(feature)}
+          onClose={() => setFeatureOpen(false)}
+        />
+      ) : null}
     </>
+  )
+}
+
+function FeatureCenter({
+  features,
+  loading,
+  onRefresh,
+  onChange,
+  onClose,
+}: {
+  features: api.FeaturePack[]
+  loading: boolean
+  onRefresh: () => void
+  onChange: (feature: api.FeaturePack) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="forge-dialog-backdrop" role="presentation">
+      <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-labelledby="feature-center-title">
+        <span>Optional capabilities</span>
+        <h2 id="feature-center-title">Feature Center</h2>
+        <p>Forge stays small. Approved pathology and research tools install only when requested.</p>
+        <div className="forge-feature-list">
+          {features.map((feature) => (
+            <article key={feature.id}>
+              <div>
+                <small>{feature.kind}{feature.pretrained ? ' · pretrained' : ''}{feature.trainingOnly ? ' · training only' : ''}</small>
+                <strong>{feature.name}</strong>
+                <p>{feature.detail}</p>
+                {feature.downloadBytes ? <span>{formatBytes(feature.downloadBytes)} download · {formatBytes(feature.installedBytes)} installed</span> : null}
+              </div>
+              <button
+                type="button"
+                disabled={loading || !['AVAILABLE', 'INSTALLED', 'DISABLED'].includes(feature.state)}
+                onClick={() => onChange(feature)}
+              >
+                {feature.state === 'INSTALLED' ? 'Disable' : feature.state === 'DISABLED' ? 'Uninstall' : feature.state === 'AVAILABLE' ? 'Install' : feature.state.replaceAll('_', ' ').toLowerCase()}
+              </button>
+            </article>
+          ))}
+          {!features.length ? <p role="status">{loading ? 'Checking installed features…' : 'No features are published.'}</p> : null}
+        </div>
+        <button type="button" disabled={loading} onClick={onRefresh}>Refresh signed catalog</button>
+        <small>No catalog request is made during normal startup.</small>
+        <button className="forge-dialog-close" type="button" onClick={onClose}>Close</button>
+      </section>
+    </div>
   )
 }
 

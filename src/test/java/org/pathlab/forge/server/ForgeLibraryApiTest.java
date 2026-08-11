@@ -88,31 +88,17 @@ final class ForgeLibraryApiTest {
             var dataset = repository.list().get(0);
             write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
 
-            var preparing = client.send(
+            var direct = client.send(
                     HttpRequest.newBuilder(server.baseUri().resolve(
                                     "/api/datasets/" + dataset.id() + "/preview/slide.dzi"))
                             .GET().build(),
                     HttpResponse.BodyHandlers.ofString());
-            assertEquals(202, preparing.statusCode());
-            assertEquals("preparing", preparing.headers()
+            assertEquals(200, direct.statusCode());
+            assertEquals("direct", direct.headers()
                     .firstValue("x-pathlab-preview-mode").orElseThrow());
-            assertTrue(buildStarted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertFalse(buildStarted.await(100, java.util.concurrent.TimeUnit.MILLISECONDS));
             assertEquals(0, directReads.get());
-
             finishBuild.countDown();
-            HttpResponse<String> ready = preparing;
-            for (var attempt = 0; attempt < 50 && ready.statusCode() != 200; attempt++) {
-                Thread.sleep(20);
-                ready = client.send(
-                        HttpRequest.newBuilder(server.baseUri().resolve(
-                                        "/api/datasets/" + dataset.id() + "/preview/slide.dzi"))
-                                .GET().build(),
-                        HttpResponse.BodyHandlers.ofString());
-            }
-            assertEquals(200, ready.statusCode());
-            assertEquals("persistent", ready.headers()
-                    .firstValue("x-pathlab-preview-mode").orElseThrow());
-            assertEquals(0, directReads.get());
         }
     }
 

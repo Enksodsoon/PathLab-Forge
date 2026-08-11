@@ -11,10 +11,15 @@ final class RuntimeProfileTest {
     void targetProfileBoundsSixCoreEightGigabyteDevice() {
         var profile = RuntimeProfile.target();
 
-        assertEquals(5, profile.maxConversionWorkers());
+        assertEquals(2, profile.maxConversionWorkers());
         assertEquals(640L * 1024 * 1024, profile.bioFormatsHeapBytes());
-        assertEquals(5, profile.vipsConcurrency());
-        assertEquals(1_024L * 1024 * 1024, profile.vipsCacheBytes());
+        assertEquals(2, profile.vipsConcurrency());
+        assertEquals(256L * 1024 * 1024, profile.vipsCacheBytes());
+        assertEquals(2, profile.quPathProcessors());
+        assertEquals(2L * 1024 * 1024 * 1024, profile.quPathHeapBytes());
+        assertEquals(1, profile.previewReaderSessions());
+        assertEquals(128L * 1024 * 1024, profile.previewReaderCacheBytes());
+        assertEquals(1, profile.bioFormatsDirectReaders());
         assertEquals(5_500L * 1024 * 1024, profile.processTreeLimitBytes());
         assertFalse(profile.mayLaunchWorker(1_249L * 1024 * 1024));
         assertTrue(profile.mayLaunchWorker(1_250L * 1024 * 1024));
@@ -26,10 +31,22 @@ final class RuntimeProfileTest {
         var profile = RuntimeProfile.adaptive(12, 32L * 1024 * 1024 * 1024);
 
         assertEquals("adaptive-12c-32gb", profile.name());
-        assertEquals(8, profile.maxConversionWorkers());
-        assertEquals(11, profile.vipsConcurrency());
+        assertEquals(6, profile.maxConversionWorkers());
+        assertEquals(6, profile.vipsConcurrency());
         assertTrue(profile.vipsCacheBytes() > RuntimeProfile.target().vipsCacheBytes());
         assertTrue(profile.processTreeLimitBytes() > RuntimeProfile.target().processTreeLimitBytes());
+    }
+
+    @Test
+    void keepsSmallMachinesResponsiveAndScalesMonotonically() {
+        var four = RuntimeProfile.adaptive(4, 4L * 1024 * 1024 * 1024);
+        var eight = RuntimeProfile.adaptive(6, 8L * 1024 * 1024 * 1024);
+        var sixteen = RuntimeProfile.adaptive(8, 16L * 1024 * 1024 * 1024);
+
+        assertEquals(1, four.maxConversionWorkers());
+        assertEquals(128L * 1024 * 1024, four.vipsCacheBytes());
+        assertTrue(four.maxConversionWorkers() <= eight.maxConversionWorkers());
+        assertTrue(eight.maxConversionWorkers() <= sixteen.maxConversionWorkers());
     }
 
     @Test

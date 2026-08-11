@@ -390,16 +390,6 @@ public final class ViewerPairingService implements AutoCloseable {
                             throw new IOException(
                                     "Viewer persisted SHA-256 did not match the approved artifact");
                         }
-                        syncAnnotations(
-                                credential,
-                                slideId,
-                                revision,
-                                annotations,
-                                cropX,
-                                cropY,
-                                cropWidth,
-                                cropHeight,
-                                downsample);
                         uploadStatus = new ViewerUploadStatus(
                                 "READY_PRIVATE",
                                 revision.id(),
@@ -410,7 +400,7 @@ public final class ViewerPairingService implements AutoCloseable {
                                 uploadMode,
                                 annotations.isEmpty()
                                         ? "Viewer private slide is ready"
-                                        : "Viewer private slide and annotations are synchronized");
+                                        : "Viewer private slide is ready; annotation sync is manual");
                         activeUpload = null;
                         break;
                     }
@@ -436,6 +426,54 @@ public final class ViewerPairingService implements AutoCloseable {
                     uploadStatus.uploadMode(),
                     error.getMessage() == null ? "Viewer upload failed" : error.getMessage());
         }
+    }
+
+    public synchronized ViewerUploadStatus synchronizeAnnotations(
+            ArtifactRevision revision,
+            List<AnnotationRecord> annotations,
+            int cropX,
+            int cropY,
+            int cropWidth,
+            int cropHeight,
+            double downsample)
+            throws IOException {
+        if (!"READY_PRIVATE".equals(uploadStatus.state())
+                || uploadStatus.viewerSlideId().isBlank()
+                || !uploadStatus.artifactRevisionId().equals(revision.id())) {
+            throw new IllegalStateException("Upload this exact artifact before synchronizing annotations");
+        }
+        var credential = storedCredential();
+        if (credential == null) {
+            throw new IllegalStateException("Connect to Viewer before synchronizing annotations");
+        }
+        var existingRequest = HttpRequest.newBuilder(credential.base().resolve(
+                        "/api/v1/desktop/slides/" + uploadStatus.viewerSlideId() + "/annotations"))
+                .timeout(Duration.ofSeconds(30))
+                .header("Authorization", "Bearer " + credential.token())
+                .GET()
+                .build();
+        var existing = send(existingRequest);
+        requireStatus(existing, 200, "Viewer annotation conflict check failed");
+        if (integer(existing.body(), "total") != 0) {
+            throw new IOException(
+                    "Viewer annotations already exist; Forge will not overwrite remote edits");
+        }
+        syncAnnotations(
+                credential,
+                uploadStatus.viewerSlideId(),
+                revision,
+                annotations,
+                cropX,
+                cropY,
+                cropWidth,
+                cropHeight,
+                downsample);
+        uploadStatus = new ViewerUploadStatus(
+                uploadStatus.state(), uploadStatus.artifactRevisionId(),
+                uploadStatus.uploadedBytes(), uploadStatus.totalBytes(),
+                uploadStatus.viewerSlideId(), uploadStatus.viewerSlideSha256(),
+                uploadStatus.uploadMode(), "Viewer private annotations synchronized and verified");
+        return uploadStatus;
     }
 
     private void syncAnnotations(

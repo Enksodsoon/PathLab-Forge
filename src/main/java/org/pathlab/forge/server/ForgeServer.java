@@ -18,12 +18,19 @@ import java.nio.file.Files;
 import java.util.List;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationRepository;
+import org.pathlab.forge.analysis.GeometryMeasurements;
+import org.pathlab.forge.analysis.AnalysisJob;
+import org.pathlab.forge.analysis.AnalysisJobService;
+import org.pathlab.forge.analysis.HeAnalysisService;
 import org.pathlab.forge.conversion.BioFormatsEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.ConversionService;
 import org.pathlab.forge.conversion.SeriesInfo;
 import org.pathlab.forge.derivative.DerivativeEngine;
 import org.pathlab.forge.derivative.VipsRuntime;
+import org.pathlab.forge.feature.CapabilityRegistry;
+import org.pathlab.forge.feature.FeaturePackDescriptor;
+import org.pathlab.forge.feature.FeaturePackManager;
 import org.pathlab.forge.library.DatasetInspectionException;
 import org.pathlab.forge.library.DatasetInspector;
 import org.pathlab.forge.library.DatasetPicker;
@@ -58,6 +65,9 @@ public final class ForgeServer implements AutoCloseable {
     private final SourceVerificationService sourceVerificationService;
     private final ConversionService conversionService;
     private final AnnotationRepository annotationRepository;
+    private final FeaturePackManager featurePackManager;
+    private final CapabilityRegistry capabilityRegistry;
+    private final AnalysisJobService analysisJobService;
     private final ViewerPairingService viewerPairingService;
     private volatile boolean launchTokenAvailable = true;
 
@@ -83,6 +93,12 @@ public final class ForgeServer implements AutoCloseable {
         conversionService =
                 new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
         annotationRepository = new AnnotationRepository(managedRoot);
+        featurePackManager = new FeaturePackManager(managedRoot.toAbsolutePath().normalize().getParent());
+        capabilityRegistry = new CapabilityRegistry(featurePackManager);
+        analysisJobService = new AnalysisJobService(
+                new HeAnalysisService(repository, annotationRepository, conversionService, managedRoot),
+                () -> conversionService.activeConversionCount() > 0,
+                () -> featurePackManager.isInstalled("pathology-tools"));
         viewerPairingService = new ViewerPairingService(new WindowsCredentialStore());
     }
 
@@ -209,7 +225,7 @@ public final class ForgeServer implements AutoCloseable {
         if (logicalProcessors < 1) {
             throw new IllegalArgumentException("Detected CPU capacity is invalid");
         }
-        return Math.max(6, Math.min(12, logicalProcessors));
+        return Math.max(2, Math.min(8, logicalProcessors));
     }
 
     public URI baseUri() {
@@ -253,6 +269,26 @@ public final class ForgeServer implements AutoCloseable {
                 session(exchange);
             } else if ("/api/capabilities".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 capabilities(exchange);
+            } else if ("/api/features".equals(path) && "GET".equals(exchange.getRequestMethod())) {
+                features(exchange);
+            } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}/install")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                installFeature(exchange, path);
+            } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}/disable")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                disableFeature(exchange, path);
+            } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}")
+                    && "DELETE".equals(exchange.getRequestMethod())) {
+                uninstallFeature(exchange, path);
+            } else if ("/api/analysis/jobs".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                createAnalysisJob(exchange);
+            } else if (path.matches("/api/analysis/jobs/[0-9a-fA-F-]{36}")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                analysisJob(exchange, path);
+            } else if (path.matches("/api/analysis/jobs/[0-9a-fA-F-]{36}/cancel")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                cancelAnalysisJob(exchange, path);
             } else if ("/api/viewer/connection".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 viewerConnection(exchange);
@@ -360,6 +396,12 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/upload".length()));
+            } else if (path.matches("/api/datasets/[^/]+/viewer-sync")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                synchronizeViewer(
+                        exchange,
+                        path.substring(
+                                "/api/datasets/".length(), path.length() - "/viewer-sync".length()));
             } else if (path.matches("/api/datasets/[^/]+/annotations")
                     && "GET".equals(exchange.getRequestMethod())) {
                 listAnnotations(
@@ -374,6 +416,15 @@ public final class ForgeServer implements AutoCloseable {
                         path.substring(
                                 "/api/datasets/".length(),
                                 path.length() - "/annotations".length()));
+            } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+/measurements")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                annotationMeasurements(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/measurements.csv")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                annotationMeasurementsCsv(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
+                    && "PATCH".equals(exchange.getRequestMethod())) {
+                updateAnnotation(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteAnnotation(exchange, path);
@@ -409,6 +460,110 @@ public final class ForgeServer implements AutoCloseable {
         setSessionCookie(exchange);
         exchange.getResponseHeaders().set("Location", "/app");
         exchange.sendResponseHeaders(303, -1);
+    }
+
+    private void features(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            var refresh = "true".equalsIgnoreCase(queryValue(exchange, "refresh", "false"));
+            var packs = refresh ? featurePackManager.refresh() : featurePackManager.list();
+            respond(exchange, 200, "application/json", featuresJson(packs));
+        } catch (IOException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"feature_catalog_unavailable\",\"detail\":"
+                            + json(error.getMessage()) + ",\"features\":"
+                            + featuresJson(featurePackManager.list()) + "}");
+        }
+    }
+
+    private void installFeature(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var id = path.substring("/api/features/".length(), path.length() - "/install".length());
+        try {
+            respond(exchange, 200, "application/json",
+                    featureJson(featurePackManager.install(id)));
+        } catch (IOException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"feature_install_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void uninstallFeature(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var id = path.substring("/api/features/".length());
+        try {
+            featurePackManager.uninstall(id);
+            exchange.sendResponseHeaders(204, -1);
+        } catch (IOException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"feature_uninstall_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void disableFeature(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var id = path.substring("/api/features/".length(), path.length() - "/disable".length());
+        try {
+            featurePackManager.disable(id);
+            exchange.sendResponseHeaders(204, -1);
+        } catch (IOException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"feature_disable_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void createAnalysisJob(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var moduleId = queryValue(exchange, "moduleId", "");
+        if (!"pathology.he".equals(moduleId)) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"unsupported_analysis_module\"}");
+            return;
+        }
+        try {
+            var job = analysisJobService.submitHe(
+                    queryValue(exchange, "datasetId", ""),
+                    queryValue(exchange, "annotationId", ""),
+                    optionalDoubleQuery(exchange, "hematoxylinThreshold", 0.15),
+                    optionalDoubleQuery(exchange, "eosinThreshold", 0.15));
+            respond(exchange, 202, "application/json", analysisJobJson(job));
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"analysis_unavailable\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void analysisJob(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        try {
+            respond(exchange, 200, "application/json",
+                    analysisJobJson(analysisJobService.get(path.substring("/api/analysis/jobs/".length()))));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"analysis_job_not_found\"}");
+        }
+    }
+
+    private void cancelAnalysisJob(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var id = path.substring("/api/analysis/jobs/".length(), path.length() - "/cancel".length());
+        try {
+            respond(exchange, 200, "application/json", analysisJobJson(analysisJobService.cancel(id)));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 404, "application/json", "{\"error\":\"analysis_job_not_found\"}");
+        }
     }
 
     private void appResource(HttpExchange exchange) throws IOException {
@@ -1206,6 +1361,11 @@ public final class ForgeServer implements AutoCloseable {
                 serveCachedPreview(exchange, id, relative, cached.orElseThrow());
                 return;
             }
+            if (conversionService.supportsDirectPreview()) {
+                exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "direct");
+                serveDirectPreview(exchange, id, relative);
+                return;
+            }
             var state = conversionService.ensurePreviewAsync(id);
             if (state.status().equals("BUILDING")) {
                 exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "preparing");
@@ -1223,11 +1383,6 @@ public final class ForgeServer implements AutoCloseable {
                         409,
                         "application/json",
                         "{\"error\":\"preview_failed\",\"detail\":" + json(state.detail()) + "}");
-                return;
-            }
-            if (conversionService.supportsDirectPreview()) {
-                exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "direct");
-                serveDirectPreview(exchange, id, relative);
                 return;
             }
             var preview = conversionService.preview(id);
@@ -1547,6 +1702,150 @@ public final class ForgeServer implements AutoCloseable {
                 + "]}";
     }
 
+    private void synchronizeViewer(HttpExchange exchange, String id) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        try {
+            var dataset = repository.find(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
+            var revision = conversionService.approvedRevision(id);
+            respond(exchange, 200, "application/json", viewerUploadJson(
+                    viewerPairingService.synchronizeAnnotations(
+                            revision,
+                            annotationRepository.list(id),
+                            dataset.cropX(), dataset.cropY(), dataset.cropWidth(), dataset.cropHeight(),
+                            dataset.downsample())));
+        } catch (IOException | IllegalStateException | IllegalArgumentException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"viewer_sync_conflict\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void updateAnnotation(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) {
+            return;
+        }
+        var identifiers = annotationIdentifiers(path, "");
+        try {
+            var updated = annotationRepository.updateMetadata(
+                    identifiers[0], identifiers[1],
+                    queryValue(exchange, "parentId", ""),
+                    queryValue(exchange, "classification", ""),
+                    Long.parseLong(queryValue(exchange, "revision", "0")));
+            respond(exchange, 200, "application/json", annotationJson(updated));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"invalid_annotation\",\"detail\":" + json(error.getMessage()) + "}");
+        } catch (IllegalStateException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"annotation_conflict\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void annotationMeasurements(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var identifiers = annotationIdentifiers(path, "/measurements");
+        var annotation = annotationRepository.list(identifiers[0]).stream()
+                .filter(item -> item.id().equals(identifiers[1]))
+                .findFirst();
+        if (annotation.isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"annotation_not_found\"}");
+            return;
+        }
+        var values = GeometryMeasurements.measure(annotation.get().type(), annotation.get().geometry());
+        respond(exchange, 200, "application/json", measurementsJson(annotation.get(), values));
+    }
+
+    private void annotationMeasurementsCsv(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var datasetId = path.substring("/api/datasets/".length(), path.length() - "/measurements.csv".length());
+        if (repository.find(datasetId).isEmpty()) {
+            respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
+            return;
+        }
+        var rows = new StringBuilder("annotation_id,type,classification,metric,value,unit\r\n");
+        for (var annotation : annotationRepository.list(datasetId)) {
+            for (var value : GeometryMeasurements.measure(annotation.type(), annotation.geometry()).entrySet()) {
+                var unit = value.getKey().endsWith("Px2") ? "px2" : value.getKey().endsWith("Px") ? "px" : "";
+                rows.append(csv(annotation.id())).append(',').append(csv(annotation.type())).append(',')
+                        .append(csv(annotation.classification())).append(',').append(csv(value.getKey())).append(',')
+                        .append(value.getValue()).append(',').append(csv(unit)).append("\r\n");
+            }
+        }
+        exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=measurements.csv");
+        respond(exchange, 200, "text/csv; charset=utf-8", rows.toString());
+    }
+
+    private static String[] annotationIdentifiers(String path, String suffix) {
+        var remainder = path.substring("/api/datasets/".length(), path.length() - suffix.length());
+        var separator = remainder.indexOf("/annotations/");
+        return new String[] {
+            remainder.substring(0, separator),
+            remainder.substring(separator + "/annotations/".length())
+        };
+    }
+
+    private static String measurementsJson(
+            AnnotationRecord annotation, java.util.Map<String, Double> values) {
+        return "{\"annotationId\":" + json(annotation.id()) + ",\"units\":\"pixels\",\"values\":{"
+                + values.entrySet().stream()
+                        .map(entry -> json(entry.getKey()) + ":" + entry.getValue())
+                        .collect(java.util.stream.Collectors.joining(","))
+                + "}}";
+    }
+
+    private static String csv(String value) {
+        return "\"" + value.replace("\"", "\"\"") + "\"";
+    }
+
+    private String featuresJson(List<FeaturePackDescriptor> features) {
+        return "{\"features\":["
+                + features.stream().map(ForgeServer::featureJson)
+                        .collect(java.util.stream.Collectors.joining(","))
+                + "],\"capabilities\":["
+                + capabilityRegistry.list().stream()
+                        .map(item -> "{\"id\":" + json(item.id())
+                                + ",\"provider\":" + json(item.provider())
+                                + ",\"state\":" + json(item.state())
+                                + ",\"detail\":" + json(item.detail()) + "}")
+                        .collect(java.util.stream.Collectors.joining(","))
+                + "]}";
+    }
+
+    private static String featureJson(FeaturePackDescriptor feature) {
+        return "{\"id\":" + json(feature.id())
+                + ",\"version\":" + json(feature.version())
+                + ",\"name\":" + json(feature.name())
+                + ",\"kind\":" + json(feature.kind())
+                + ",\"state\":" + json(feature.state())
+                + ",\"downloadBytes\":" + feature.downloadBytes()
+                + ",\"installedBytes\":" + feature.installedBytes()
+                + ",\"minimumMemoryBytes\":" + feature.minimumMemoryBytes()
+                + ",\"minimumProcessors\":" + feature.minimumProcessors()
+                + ",\"pretrained\":" + feature.pretrained()
+                + ",\"trainingOnly\":" + feature.trainingOnly()
+                + ",\"license\":" + json(feature.license())
+                + ",\"detail\":" + json(feature.detail()) + "}";
+    }
+
+    private static String analysisJobJson(AnalysisJob job) {
+        return "{\"id\":" + json(job.id())
+                + ",\"moduleId\":" + json(job.moduleId())
+                + ",\"datasetId\":" + json(job.datasetId())
+                + ",\"annotationId\":" + json(job.annotationId())
+                + ",\"status\":" + json(job.status())
+                + ",\"progress\":" + job.progress()
+                + ",\"detail\":" + json(job.detail())
+                + ",\"createdAt\":" + job.createdAt()
+                + ",\"startedAt\":" + job.startedAt()
+                + ",\"finishedAt\":" + job.finishedAt() + "}";
+    }
+
     private static String viewerConnectionJson(ViewerConnection connection) {
         return "{\"connected\":" + connection.connected()
                 + ",\"viewerUrl\":" + json(connection.viewerUrl())
@@ -1575,7 +1874,11 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"geometry\":" + json(annotation.geometry())
                 + ",\"label\":" + json(annotation.label())
                 + ",\"color\":" + json(annotation.color())
-                + ",\"createdAt\":" + annotation.createdAt() + "}";
+                + ",\"createdAt\":" + annotation.createdAt()
+                + ",\"parentId\":" + json(annotation.parentId())
+                + ",\"classification\":" + json(annotation.classification())
+                + ",\"updatedAt\":" + annotation.updatedAt()
+                + ",\"revision\":" + annotation.revision() + "}";
     }
 
     private static String artifactRevisionJson(
@@ -1830,6 +2133,7 @@ public final class ForgeServer implements AutoCloseable {
         server.stop(0);
         sourceVerificationService.close();
         conversionService.close();
+        analysisJobService.close();
         viewerPairingService.close();
         executor.shutdownNow();
     }

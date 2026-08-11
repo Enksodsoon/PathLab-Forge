@@ -1,6 +1,7 @@
 package org.pathlab.forge.derivative;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,10 +47,10 @@ class VipsRuntimeTest {
                 Path.of("vips.exe"), List.of("dzsave", "input.tif", "output"));
 
         assertEquals("vips.exe", command.get(0));
-        assertEquals("--vips-concurrency=5", command.get(1));
-        assertEquals("--vips-cache-max-memory=1073741824", command.get(2));
-        assertEquals("--vips-cache-max-files=192", command.get(3));
-        assertEquals("--vips-cache-max=128", command.get(4));
+        assertEquals("--vips-concurrency=2", command.get(1));
+        assertEquals("--vips-cache-max-memory=268435456", command.get(2));
+        assertEquals("--vips-cache-max-files=96", command.get(3));
+        assertEquals("--vips-cache-max=64", command.get(4));
         assertEquals(List.of("dzsave", "input.tif", "output"), command.subList(5, 8));
     }
 
@@ -81,7 +82,7 @@ class VipsRuntimeTest {
                     Path.of("vips.exe"), List.of("dzsave", "input.tif", "output"));
 
             assertEquals("--vips-concurrency=5", command.get(1));
-            assertTrue(VipsRuntime.parallelQualityProfiles());
+            assertFalse(VipsRuntime.parallelQualityProfiles());
         } finally {
             restoreProperty("pathlab.forge.runtime.processors", previousProcessors);
             restoreProperty("pathlab.forge.runtime.memoryBytes", previousMemory);
@@ -96,7 +97,7 @@ class VipsRuntimeTest {
                 5);
 
         assertEquals("--vips-concurrency=1", command.get(1));
-        assertEquals("--vips-cache-max-memory=214748364", command.get(2));
+        assertEquals("--vips-cache-max-memory=67108864", command.get(2));
         assertEquals("--vips-cache-max-files=32", command.get(3));
         assertEquals("crop", command.get(5));
     }
