@@ -985,7 +985,9 @@ function ViewerStage({
   const converting = Boolean(dataset && CONVERSION_STATUSES.has(dataset.status))
   const inspecting = dataset?.status === 'INSPECTING'
   const tileSource = showingConvertedResult && !cropEditing && dataset && revision
-    ? api.artifactDziUrl(dataset.id, revision.id)
+    ? revision.format === 'OME_DYNAMIC_V1'
+      ? api.artifactOmePreviewUrl(dataset.id, revision.id)
+      : api.artifactDziUrl(dataset.id, revision.id)
     : dataset && dataset.selectedSeries >= 0 && [
         'READY_TO_CONVERT',
         'PACKAGE_READY',
@@ -1323,7 +1325,7 @@ function RevisionHistory({
             const directOme = revision.format === 'OME_DYNAMIC_V1'
             const filesAvailable = (directOme ? revision.omeBytes : revision.packageBytes) > 0
               && ['READY', 'APPROVED'].includes(revision.status)
-            const canView = filesAvailable && !directOme
+            const canView = filesAvailable
             const isCurrent = revision.id === dataset.currentArtifactRevision
             const isViewing = revision.id === viewingRevisionId
             const isApproved = revision.id === dataset.approvedArtifactRevision
@@ -1407,7 +1409,7 @@ function RevisionHistory({
                         >
                           {isViewing ? 'Viewing now' : 'View slide'}
                         </button>
-                        {canView ? (
+                        {canView && !directOme ? (
                           <a href={api.artifactPackageUrl(dataset.id, revision.id)}>
                             Download
                           </a>
@@ -1737,25 +1739,23 @@ function ExportInspector({
               {' · '}{readyCurrent.status === 'APPROVED' ? 'Approved' : 'Ready for review'}
             </small>
           </div>
-          {readyCurrent.format !== 'OME_DYNAMIC_V1' ? (
-            <>
-              <a
-                className={viewingRevisionId === readyCurrent.id ? 'forge-primary' : 'forge-download'}
-                href="#dzi-viewer"
-                onClick={() => onViewRevision(readyCurrent.id)}
-              >
-                View converted slide
-              </a>
+          <>
+            <a
+              className={viewingRevisionId === readyCurrent.id ? 'forge-primary' : 'forge-download'}
+              href="#dzi-viewer"
+              onClick={() => onViewRevision(readyCurrent.id)}
+            >
+              View converted slide
+            </a>
+            {readyCurrent.format !== 'OME_DYNAMIC_V1' ? (
               <a
                 className="forge-download"
                 href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}
               >
                 Download {formatBytes(readyCurrent.packageBytes)} package
               </a>
-            </>
-          ) : (
-            <small>Validated locally · approve to enable private Viewer upload</small>
-          )}
+            ) : <small>Validated locally · approve to enable private Viewer upload</small>}
+          </>
         </section>
       ) : null}
       {!series.length ? (

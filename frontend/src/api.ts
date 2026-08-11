@@ -301,6 +301,10 @@ export function artifactDziUrl(id: string, revision: string) {
   return `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/derivative/slide.dzi`
 }
 
+export function artifactOmePreviewUrl(id: string, revision: string) {
+  return `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/ome-preview/slide.dzi`
+}
+
 export async function getViewerConnection() {
   return request<ViewerConnection>('/api/viewer/connection')
 }

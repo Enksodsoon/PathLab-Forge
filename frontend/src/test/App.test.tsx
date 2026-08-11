@@ -80,6 +80,8 @@ vi.mock('../api', () => ({
     `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/package`,
   artifactDziUrl: (id: string, revision: string) =>
     `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/derivative/slide.dzi`,
+  artifactOmePreviewUrl: (id: string, revision: string) =>
+    `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/ome-preview/slide.dzi`,
   approve: vi.fn(),
   annotations: vi.fn(async () => []),
   createAnnotation: vi.fn(),
@@ -885,6 +887,11 @@ test('uses direct OME for new conversions and keeps direct results readable', as
   expect(within(result).getByText('Direct OME-TIFF')).toBeVisible()
   expect(within(result).getByText('104.9 MB')).toBeVisible()
   expect(within(result).queryByText(/DZI package/)).not.toBeInTheDocument()
+  fireEvent.click(within(result).getByRole('link', { name: 'View converted slide' }))
+  expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source',
+    '/api/datasets/direct-ome-slide/artifacts/direct-artifact/ome-preview/slide.dzi',
+  )
 })
 
 test('uses direct OME stages instead of DZI packaging stages during conversion', async () => {

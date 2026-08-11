@@ -11,7 +11,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Properties;
+import org.pathlab.forge.conversion.ArtifactRevision;
+import org.pathlab.forge.conversion.ArtifactRevisionFormat;
+import org.pathlab.forge.conversion.ArtifactRevisionRepository;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.DirectTileSource;
 import org.pathlab.forge.conversion.SeriesInfo;
@@ -24,6 +30,99 @@ import org.pathlab.forge.library.PropertiesDatasetRepository;
 final class ForgeLibraryApiTest {
     @TempDir
     Path tempDirectory;
+
+    @Test
+    void servesVerifiedDirectOmeArtifactsWithoutBuildingPersistentDzi() throws Exception {
+        var source = Files.write(
+                tempDirectory.resolve("source.ome.tif"), new byte[] {'I', 'I', 42, 0, 1});
+        var managed = tempDirectory.resolve("managed-direct-ome");
+        var repository = new PropertiesDatasetRepository(tempDirectory.resolve("direct-ome.properties"));
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        var tileReads = new java.util.concurrent.atomic.AtomicInteger();
+        var artifactSource = new java.util.concurrent.atomic.AtomicReference<Path>();
+        ConversionEngine engine = new ConversionEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String runtimeDescription() { return "direct OME viewer test"; }
+            @Override public List<SeriesInfo> inspect(Path ignored) {
+                return List.of(new SeriesInfo(0, "Tissue", 1000, 500, 3, 1, 1, "uint8", 0.25, 0.25, "µm"));
+            }
+            @Override public void convert(Path ignored, int series, Path output) {}
+            @Override public boolean supportsDirectTiles() { return true; }
+            @Override public DirectTileSource directTileSource(Path selected, int series) {
+                artifactSource.set(selected);
+                assertEquals(0, series);
+                return new DirectTileSource(800, 400, 512);
+            }
+            @Override public byte[] readDirectTile(
+                    Path selected, int series, int level, int x, int y) {
+                artifactSource.set(selected);
+                tileReads.incrementAndGet();
+                return new byte[] {1, 2, 3};
+            }
+        };
+        DerivativeEngine derivatives = new DerivativeEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String description() { return "unused derivative runtime"; }
+            @Override public void optimizeOme(Path input, Path output, int width, int height) {}
+            @Override public DerivativeInfo generateDzi(
+                    Path input, Path output, int width, int height) {
+                throw new AssertionError("Direct OME viewing must not generate persistent DZI");
+            }
+        };
+
+        try (var server = ForgeServer.start(
+                repository, () -> List.of(source), managed, engine, derivatives)) {
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var csrf = session.headers().firstValue("x-forge-csrf").orElseThrow();
+            write(client, server, csrf, "/api/datasets/select", "POST");
+            var dataset = repository.list().get(0);
+            write(client, server, csrf, "/api/datasets/" + dataset.id() + "/inspect", "POST");
+            for (var attempt = 0; attempt < 100; attempt++) {
+                dataset = repository.find(dataset.id()).orElseThrow();
+                if (!dataset.configurationRevision().isBlank()) {
+                    break;
+                }
+                Thread.sleep(20);
+            }
+
+            var artifacts = new ArtifactRevisionRepository(managed);
+            var revision = artifacts.create(dataset, 800, 400, ArtifactRevisionFormat.OME_DYNAMIC_V1);
+            var ome = Files.writeString(Path.of(revision.omePath()), "verified direct OME");
+            revision = revision.ready(sha256(ome), "");
+            artifacts.save(revision);
+            writeOmeStamp(revision);
+            var route = "/api/datasets/" + dataset.id() + "/artifacts/" + revision.id()
+                    + "/ome-preview/";
+
+            var descriptor = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve(route + "slide.dzi")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, descriptor.statusCode());
+            assertTrue(descriptor.body().contains("Width=\"800\" Height=\"400\""));
+            assertEquals("direct-ome", descriptor.headers()
+                    .firstValue("x-pathlab-preview-mode").orElseThrow());
+            var tileUri = server.baseUri().resolve(route + "slide_files/10/0_0.jpg");
+            var tile = client.send(
+                    HttpRequest.newBuilder(tileUri).GET().build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            var cachedTile = client.send(
+                    HttpRequest.newBuilder(tileUri).GET().build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, tile.statusCode());
+            assertEquals(List.of((byte) 1, (byte) 2, (byte) 3),
+                    java.util.stream.IntStream.range(0, tile.body().length)
+                            .mapToObj(index -> tile.body()[index]).toList());
+            assertEquals(200, cachedTile.statusCode());
+            assertEquals(1, tileReads.get());
+            assertEquals(ome.toAbsolutePath().normalize(),
+                    artifactSource.get().toAbsolutePath().normalize());
+        }
+    }
 
     @Test
     void preparesOmeViewerPyramidBeforeServingTilesInsteadOfDirectDecoding() throws Exception {
@@ -374,6 +473,26 @@ final class ForgeLibraryApiTest {
             assertTrue(Files.isRegularFile(Path.of(converted.outputPath())));
             assertEquals(64, converted.sha256().length());
         }
+    }
+
+    private static void writeOmeStamp(ArtifactRevision revision) throws Exception {
+        var ome = Path.of(revision.omePath());
+        var values = new Properties();
+        values.setProperty("omeSha256", revision.omeSha256());
+        values.setProperty("packageSha256", "");
+        values.setProperty("omeProfile", revision.omeProfile());
+        values.setProperty("omeJpegQuality", Integer.toString(revision.omeJpegQuality()));
+        values.setProperty("omeSize", Long.toString(Files.size(ome)));
+        values.setProperty("omeModified", Long.toString(Files.getLastModifiedTime(ome).toMillis()));
+        try (var output = Files.newOutputStream(
+                ome.getParent().resolve("artifact.integrity.properties"))) {
+            values.store(output, "Test direct OME identity");
+        }
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
     }
 
     private static HttpResponse<String> write(

@@ -480,6 +480,63 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    public DirectTileSource directArtifactPreview(String id, String revisionId)
+            throws IOException {
+        var opened = directArtifactSource(id, revisionId);
+        var existing = directSources.get(opened.key());
+        if (existing != null) {
+            return existing;
+        }
+        var source = engine.directTileSource(opened.path(), 0);
+        var raced = directSources.putIfAbsent(opened.key(), source);
+        return raced == null ? source : raced;
+    }
+
+    public byte[] directArtifactPreviewTile(
+            String id, String revisionId, int level, int tileX, int tileY)
+            throws IOException {
+        var opened = directArtifactSource(id, revisionId);
+        var session = ensureReaderSession(opened.key(), opened.path());
+        try {
+            return session.tile(
+                    new ReaderSession.TileKey(0, level, tileX, tileY),
+                    () -> engine.readDirectTile(opened.path(), 0, level, tileX, tileY));
+        } catch (IOException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IOException("Direct OME preview tile read failed", error);
+        }
+    }
+
+    private ArtifactPreviewSource directArtifactSource(String id, String revisionId)
+            throws IOException {
+        requireDataset(id);
+        evictIdleReaderSessions();
+        var key = "artifact|" + id + "|" + revisionId;
+        var cached = readerSourcePaths.get(key);
+        if (cached != null) {
+            return new ArtifactPreviewSource(key, cached);
+        }
+        var revision = artifactRepository
+                .find(id, revisionId)
+                .orElseThrow(() -> new IllegalArgumentException("Artifact revision was not found"));
+        if (revision.format() != ArtifactRevisionFormat.OME_DYNAMIC_V1
+                || (revision.status() != ArtifactRevisionStatus.READY
+                        && revision.status() != ArtifactRevisionStatus.APPROVED)
+                || !ArtifactIntegrityStamp.matchesOme(revision)) {
+            throw new IllegalStateException("Direct OME artifact is not verified for viewing");
+        }
+        var path = Path.of(revision.omePath()).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(path)) {
+            throw new IllegalStateException("Direct OME artifact is unavailable");
+        }
+        ensureReaderSession(key, path);
+        return new ArtifactPreviewSource(key, path);
+    }
+
+    private record ArtifactPreviewSource(String key, Path path) {}
+
     private static String readerSessionKey(LocalDataset dataset) {
         return dataset.id() + "|" + dataset.sourceFingerprint() + "|" + dataset.selectedSeries();
     }
@@ -487,6 +544,11 @@ public final class ConversionService implements AutoCloseable {
     private synchronized ReaderSession ensureReaderSession(LocalDataset dataset)
             throws IOException {
         var key = readerSessionKey(dataset);
+        return ensureReaderSession(key, Path.of(dataset.sourcePath()).toAbsolutePath().normalize());
+    }
+
+    private synchronized ReaderSession ensureReaderSession(String key, Path source)
+            throws IOException {
         var existing = readerSessions.get(key);
         if (existing != null) {
             return existing;
@@ -501,7 +563,7 @@ public final class ConversionService implements AutoCloseable {
         }
         var opened = new ReaderSession(readerSessionBytes);
         readerSessions.put(key, opened);
-        readerSourcePaths.put(key, Path.of(dataset.sourcePath()).toAbsolutePath().normalize());
+        readerSourcePaths.put(key, source);
         return opened;
     }
 

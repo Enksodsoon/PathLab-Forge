@@ -369,6 +369,9 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/rename")
                     && "POST".equals(exchange.getRequestMethod())) {
                 renameArtifact(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/ome-preview/.+")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                artifactOmePreviewResource(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/derivative/.+")
                     && "GET".equals(exchange.getRequestMethod())) {
                 artifactDerivativeResource(exchange, path);
@@ -1695,6 +1698,64 @@ public final class ForgeServer implements AutoCloseable {
                         .map(ForgeServer::annotationJson)
                         .collect(java.util.stream.Collectors.joining(","))
                 + "]}";
+    }
+
+    private void artifactOmePreviewResource(HttpExchange exchange, String path)
+            throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        var remainder = path.substring("/api/datasets/".length());
+        var artifactSeparator = remainder.indexOf("/artifacts/");
+        var previewSeparator = remainder.indexOf("/ome-preview/");
+        var datasetId = remainder.substring(0, artifactSeparator);
+        var revisionId = remainder.substring(
+                artifactSeparator + "/artifacts/".length(), previewSeparator);
+        var relative = remainder.substring(previewSeparator + "/ome-preview/".length());
+        if (!relative.matches("slide\\.dzi|slide_files/\\d+/\\d+_\\d+\\.jpg")) {
+            respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+            return;
+        }
+        try {
+            if (immutableNotModified(
+                    exchange, "direct-ome-v1|" + revisionId + "|" + relative)) {
+                return;
+            }
+            var source = conversionService.directArtifactPreview(datasetId, revisionId);
+            exchange.getResponseHeaders().set("X-PathLab-Preview-Mode", "direct-ome");
+            exchange.getResponseHeaders().set(
+                    "X-PathLab-Preview-Geometry", source.width() + "x" + source.height());
+            if (relative.equals("slide.dzi")) {
+                var descriptor = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                        + "<Image xmlns=\"http://schemas.microsoft.com/deepzoom/2008\""
+                        + " Format=\"jpg\" Overlap=\"0\" TileSize=\"" + source.tileSize() + "\">"
+                        + "<Size Width=\"" + source.width() + "\" Height=\"" + source.height()
+                        + "\"/></Image>";
+                respond(exchange, 200, "application/xml; charset=utf-8", descriptor);
+                return;
+            }
+            var matcher = java.util.regex.Pattern
+                    .compile("slide_files/(\\d+)/(\\d+)_(\\d+)\\.jpg")
+                    .matcher(relative);
+            if (!matcher.matches()) {
+                respond(exchange, 404, "application/json", "{\"error\":\"asset_not_found\"}");
+                return;
+            }
+            var tile = conversionService.directArtifactPreviewTile(
+                    datasetId,
+                    revisionId,
+                    Integer.parseInt(matcher.group(1)),
+                    Integer.parseInt(matcher.group(2)),
+                    Integer.parseInt(matcher.group(3)));
+            respond(exchange, 200, "image/jpeg", tile);
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            respond(
+                    exchange,
+                    409,
+                    "application/json",
+                    "{\"error\":\"ome_preview_not_ready\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
     }
 
     private void synchronizeViewer(HttpExchange exchange, String id) throws IOException {
