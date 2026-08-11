@@ -19,7 +19,14 @@ class BioFormatsParallelRegionsTest {
     }
 
     @Test
-    void keepsDirectOmeAndPreparedPackageWritersOnSeparateRoutes() {
+    void locksEveryNewConversionRequestToTheFastDirectOmeRoute() {
+        assertEquals(
+                ArtifactRevisionFormat.PREPARED_DZI_V2,
+                ConversionService.selectedConversionFormat(ArtifactRevisionFormat.OME_DYNAMIC_V1));
+        assertEquals(
+                ArtifactRevisionFormat.PREPARED_DZI_V2,
+                ConversionService.selectedConversionFormat(ArtifactRevisionFormat.PREPARED_DZI_V2));
+
         assertTrue(ConversionService.shouldUseQuPathWriter(
                 ArtifactRevisionFormat.OME_DYNAMIC_V1, true));
         assertTrue(!ConversionService.shouldUseQuPathWriter(

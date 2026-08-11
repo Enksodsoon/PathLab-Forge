@@ -622,9 +622,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     200,
                     "application/json",
-                    viewerConnectionJson(
-                            viewerPairingService.status(),
-                            viewerPairingService.supportsExactDynamicOme()));
+                    viewerConnectionJson(viewerPairingService.status()));
         } catch (IOException | RuntimeException error) {
             respond(
                     exchange,
@@ -666,9 +664,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     200,
                     "application/json",
-                    viewerConnectionJson(
-                            viewerPairingService.exchange(),
-                            viewerPairingService.supportsExactDynamicOme()));
+                    viewerConnectionJson(viewerPairingService.exchange()));
         } catch (IOException | IllegalStateException error) {
             respond(
                     exchange,
@@ -1092,11 +1088,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     202,
                     "application/json",
-                    datasetJson(conversionService.start(
-                            id,
-                            viewerPairingService.supportsExactDynamicOme()
-                                    ? org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
-                                    : org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2)));
+                    datasetJson(conversionService.start(id)));
         } catch (IllegalArgumentException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
         } catch (IllegalStateException error) {
@@ -1849,15 +1841,11 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"finishedAt\":" + job.finishedAt() + "}";
     }
 
-    private static String viewerConnectionJson(
-            ViewerConnection connection, boolean supportsExactDynamicOme) {
+    private static String viewerConnectionJson(ViewerConnection connection) {
         return "{\"connected\":" + connection.connected()
                 + ",\"viewerUrl\":" + json(connection.viewerUrl())
                 + ",\"deviceName\":" + json(connection.deviceName())
-                + ",\"conversionMode\":" + json(
-                        connection.connected() && supportsExactDynamicOme
-                                ? "OME_DYNAMIC_V1"
-                                : "PREPARED_DZI_V2")
+                + ",\"conversionMode\":" + json("PREPARED_DZI_V2")
                 + ",\"scopes\":["
                 + connection.scopes().stream()
                         .map(ForgeServer::json)

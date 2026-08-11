@@ -990,7 +990,8 @@ public final class ConversionService implements AutoCloseable {
 
     public LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
         var dataset = requireDataset(id);
-        requestedFormats.put(id, java.util.Objects.requireNonNull(requestedFormat));
+        requestedFormat = selectedConversionFormat(requestedFormat);
+        requestedFormats.put(id, requestedFormat);
         if (dataset.status() == DatasetStatus.QUEUED
                 || dataset.status() == DatasetStatus.WAITING_RESOURCES
                 || dataset.status() == DatasetStatus.CONVERTING
@@ -1145,7 +1146,9 @@ public final class ConversionService implements AutoCloseable {
             }
             try {
                 requestedFormats.put(
-                        queued.id(), ArtifactRevisionFormat.valueOf(entry.requestedFormat()));
+                        queued.id(),
+                        selectedConversionFormat(
+                                ArtifactRevisionFormat.valueOf(entry.requestedFormat())));
             } catch (IllegalArgumentException invalidFormat) {
                 repository.deleteQueueEntry(entry.datasetId());
                 repository.save(queued.withPreparation(
@@ -1183,8 +1186,8 @@ public final class ConversionService implements AutoCloseable {
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
-        var requestedFormat = requestedFormats.getOrDefault(
-                dataset.id(), ArtifactRevisionFormat.PREPARED_DZI_V2);
+        var requestedFormat = selectedConversionFormat(requestedFormats.getOrDefault(
+                dataset.id(), ArtifactRevisionFormat.PREPARED_DZI_V2));
         var resumable = resumableRevision(dataset).filter(
                 candidate -> candidate.format() == requestedFormat);
         var revision = resumable.isPresent()
@@ -1702,75 +1705,17 @@ public final class ConversionService implements AutoCloseable {
                 if (directDziRegions == null || directDziRegions.size() < 2) {
                     throw new IOException("Direct DZI region checkpoint is incomplete");
                 }
-                try {
-                    derivativeInfo = derivativeEngine.generateDziFromRegions(
-                            directDziRegions,
-                            derivativePartial,
-                            request.outputWidth(),
-                            request.outputHeight(),
-                            request.downsample(),
-                            derivativeProgress -> updateProgress(
-                                    dataset.id(),
-                                    derivativeProgress.stage(),
-                                    derivativeProgress.completedUnits(),
-                                    derivativeProgress.totalUnits()));
-                } catch (IOException directFailure) {
-                    System.err.println(
-                            "PathLab Forge: direct DZI path unavailable; using staging OME fallback: "
-                                    + concise(directFailure.getMessage()));
-                    useDirectDzi = false;
-                    deleteTree(outputDirectory, derivativePartial);
-                    repository.save(dataset.withConversion(
-                            DatasetStatus.OPTIMIZING_OME,
-                            "Direct DZI was unavailable; safely falling back to staging OME",
-                            dataset.outputPath(),
-                            dataset.sha256(),
-                            dataset.selectedSeries(),
-                            dataset.width(),
-                            dataset.height(),
-                            dataset.downsample(),
-                            dataset.estimatedOutputBytes()));
-                    updateProgress(dataset.id(), "DIRECT_DZI_FALLBACK", 0, 1);
-                    derivativeEngine.assembleRegions(directDziRegions, rendered);
-                    derivativeEngine.optimizeOme(
-                            rendered,
-                            partial,
-                            request.outputWidth(),
-                            request.outputHeight());
-                    Files.deleteIfExists(rendered);
-                    verifyTiff(partial);
-                    validateOmeArtifact(
-                            revision.format(),
-                            partial,
-                            request.outputWidth(),
-                            request.outputHeight());
-                    OutputSizeGuard.requireSuitable(
-                            Files.size(partial),
-                            dataset.sourceBytes(),
-                            request.outputWidth(),
-                            request.outputHeight(),
-                            request.downsample());
-                    digest = sha256(partial);
-                    atomicReplace(partial, output);
-                    saveCheckpoint(
-                            checkpoints,
-                            revision,
-                            StageCheckpoint.Stage.OME_VERIFIED,
-                            1,
-                            1);
-                    updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
-                    deleteTree(outputDirectory, derivativePartial);
-                    derivativeInfo = derivativeEngine.generateDzi(
-                            output,
-                            derivativePartial,
-                            request.outputWidth(),
-                            request.outputHeight(),
-                            derivativeProgress -> updateProgress(
-                                    dataset.id(),
-                                    derivativeProgress.stage(),
-                                    derivativeProgress.completedUnits(),
-                                    derivativeProgress.totalUnits()));
-                }
+                derivativeInfo = derivativeEngine.generateDziFromRegions(
+                        directDziRegions,
+                        derivativePartial,
+                        request.outputWidth(),
+                        request.outputHeight(),
+                        request.downsample(),
+                        derivativeProgress -> updateProgress(
+                                dataset.id(),
+                                derivativeProgress.stage(),
+                                derivativeProgress.completedUnits(),
+                                derivativeProgress.totalUnits()));
             } else {
                 derivativeInfo = derivativeEngine.generateDzi(
                         output,
@@ -2061,6 +2006,12 @@ public final class ConversionService implements AutoCloseable {
                                 "pathlab.forge.directDzi.enabled", "true")),
                 derivativeEngine.supportsDirectDziFromRegions(),
                 useParallelRgb(dataset, request));
+    }
+
+    static ArtifactRevisionFormat selectedConversionFormat(
+            ArtifactRevisionFormat requestedFormat) {
+        java.util.Objects.requireNonNull(requestedFormat);
+        return ArtifactRevisionFormat.PREPARED_DZI_V2;
     }
 
     static boolean shouldUseQuPathWriter(

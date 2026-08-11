@@ -1086,7 +1086,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
   const routeLabel = conversionRouteLabel(dataset, directOme)
   const stages = directOme
     ? ['Rendering OME-TIFF', 'Validating OME-TIFF', 'Ready for review']
-    : ['Rendering', 'Selecting compact quality', 'Generating DZI', 'Quality check', 'Packaging']
+    : ['Read source', 'Encode & validate', 'Package']
   const fallbackElapsed = useElapsed(revision?.createdAt)
   const elapsed = dataset.elapsedMs
     ? formatDuration(dataset.elapsedMs)
@@ -1672,8 +1672,7 @@ function ExportInspector({
     && (current.format === 'OME_DYNAMIC_V1' ? current.omeBytes > 0 : current.packageBytes > 0)
     ? current
     : undefined
-  const directOmePlanned = connection?.connected
-    && connection.conversionMode === 'OME_DYNAMIC_V1'
+  const directOmePlanned = false
 
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
@@ -1875,7 +1874,7 @@ function ExportInspector({
             ) : displayedEstimate ? (
               <>
                 <b>
-                  Estimated {directOmePlanned ? 'direct OME-TIFF' : 'temporary staging'} ≈ {formatBytes(displayedEstimate.fileBytes)}
+                  Estimated conversion data ≈ {formatBytes(displayedEstimate.fileBytes)}
                   {estimateIsLive ? ' · live' : ''}
                 </b>
                 <small>
@@ -1885,7 +1884,7 @@ function ExportInspector({
                 </small>
               </>
             ) : (
-              <b role="status">Calculating staging estimate…</b>
+              <b role="status">Calculating conversion estimate…</b>
             )}
             <small>
               Peak conversion workspace ≤ {displayedEstimate
@@ -1913,9 +1912,7 @@ function ExportInspector({
       <div className="forge-help" role="status">
         <strong>{connection?.connected ? 'Viewer connected' : 'Viewer not connected'}</strong>
         {' · '}
-        {directOmePlanned
-          ? 'Next conversion · Direct OME-TIFF'
-          : 'Next conversion · Prepared Viewer package'}
+        Next conversion · Fast DZI package
         {viewerUpload ? ` · ${viewerUpload.detail}` : ''}
         {viewerUpload?.state === 'READY_PRIVATE' && viewerUpload.viewerSlideSha256
           ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
@@ -1932,7 +1929,7 @@ function ExportInspector({
         {CANCELLABLE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
           : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>
-              {directOmePlanned ? 'Convert to direct OME-TIFF' : 'Convert and prepare Viewer package'}
+              Convert with fastest DZI path
             </button>}
         {current?.status === 'READY'
           && (current.packageBytes > 0 || current.format === 'OME_DYNAMIC_V1')
@@ -2026,7 +2023,7 @@ function conversionPhase(dataset: Dataset, directOme = false) {
     OPTIMIZING_OME: { step: 1, percent: 42, label: 'Rendering temporary staging pyramid' },
     VALIDATING: { step: 1, percent: 60, label: 'Verifying rendered staging image' },
     GENERATING_DZI: { step: 2, percent: 72, label: 'Selecting compact JPEG quality' },
-    DZI_READY: { step: 5, percent: 93, label: 'Quality passed · packaging compact DZI' },
+    DZI_READY: { step: 3, percent: 93, label: 'Quality passed · packaging compact DZI' },
   } as Record<string, { step: number; percent: number; label: string }>)[dataset.status]
     || { step: 1, percent: 0, label: 'Preparing conversion' }
   const unitProgress = (dataset.totalUnits || 0) > 0
@@ -2038,7 +2035,6 @@ function conversionPhase(dataset: Dataset, directOme = false) {
     REGIONS_VERIFIED: { step: 1, base: 35, span: 0, label: 'RGB regions verified · assembling staging image' },
     DIRECT_DZI_SOURCE_READY: { step: 1, base: 35, span: 0, label: 'Source regions ready · bypassing temporary OME' },
     DIRECT_DZI_PREPARING: { step: 1, base: 35, span: 25, label: 'Globally aligning regions for direct DZI' },
-    DIRECT_DZI_FALLBACK: { step: 1, base: 35, span: 0, label: 'Using safe staging fallback' },
     ASSEMBLING_OME: { step: 1, base: 35, span: 0, label: 'Assembling exact slide geometry' },
     DIRECT_OME: { step: 1, base: 5, span: 50, label: 'Rendering temporary staging pyramid' },
     OPTIMIZING_OME: { step: 1, base: 45, span: 0, label: 'Rendering temporary staging pyramid' },
@@ -2047,12 +2043,12 @@ function conversionPhase(dataset: Dataset, directOme = false) {
     QUALITY_OVERVIEW: { step: 2, base: 65, span: 2, label: 'Mapping representative tissue' },
     QUALITY_ROIS: { step: 2, base: 67, span: 8, label: 'Reading 64 quality regions in parallel' },
     QUALITY_CANDIDATES: { step: 2, base: 75, span: 3, label: 'Selecting the smallest quality-safe JPEG' },
-    GENERATING_DZI: { step: 3, base: 78, span: 0, label: 'Starting compact DZI encoder' },
-    DZI_TILES: { step: 3, base: 78, span: 12, label: 'Encoding the Deep Zoom tile pyramid' },
-    DZI_VALIDATING: { step: 4, base: 90, span: 3, label: 'Checking tile geometry and integrity' },
-    DZI_LEDGER_VERIFIED: { step: 5, base: 93, span: 0, label: 'Quality passed · preparing package' },
-    PACKAGING: { step: 5, base: 93, span: 7, label: 'Writing the saved DZI package' },
-    PACKAGE_COMMITTED: { step: 5, base: 100, span: 0, label: 'Package committed' },
+    GENERATING_DZI: { step: 2, base: 78, span: 0, label: 'Starting compact DZI encoder' },
+    DZI_TILES: { step: 2, base: 78, span: 12, label: 'Encoding the Deep Zoom tile pyramid' },
+    DZI_VALIDATING: { step: 2, base: 90, span: 3, label: 'Checking tile geometry and integrity' },
+    DZI_LEDGER_VERIFIED: { step: 2, base: 93, span: 0, label: 'Quality passed · preparing package' },
+    PACKAGING: { step: 3, base: 93, span: 7, label: 'Writing the saved DZI package' },
+    PACKAGE_COMMITTED: { step: 3, base: 100, span: 0, label: 'Package committed' },
   } as Record<string, { step: number; base: number; span: number; label: string }>)[dataset.stage || '']
   if (measuredStage) {
     return {
@@ -2086,13 +2082,13 @@ function conversionRouteLabel(dataset: Dataset, directOme: boolean) {
   if (directOme) return 'Direct OME-TIFF'
   if (['REGIONS_RENDERING', 'REGIONS_VERIFIED', 'DIRECT_DZI_SOURCE_READY', 'DIRECT_DZI_PREPARING']
     .includes(dataset.stage || '')) {
-    return 'Prepared Viewer package · Direct DZI'
+    return 'Fast DZI package'
   }
-  if (['DIRECT_DZI_FALLBACK', 'ASSEMBLING_OME', 'OPTIMIZING_OME', 'VALIDATING_OME', 'OME_VERIFIED']
+  if (['ASSEMBLING_OME', 'OPTIMIZING_OME', 'VALIDATING_OME', 'OME_VERIFIED']
     .includes(dataset.stage || '')) {
-    return 'Prepared Viewer package · Staging OME'
+    return 'Fast DZI package'
   }
-  return 'Prepared Viewer package'
+  return 'Fast DZI package'
 }
 
 function datasetFormatLabel(format: Dataset['format']) {
