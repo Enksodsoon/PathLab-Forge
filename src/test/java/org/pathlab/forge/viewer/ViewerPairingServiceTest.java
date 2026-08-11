@@ -315,6 +315,54 @@ final class ViewerPairingServiceTest {
         exchange.close();
     }
 
+    @Test
+    void rejectsReadyPrivateWhenThePersistedShaIsMissingOrDifferent() throws Exception {
+        assertPersistedShaFailure("{\"status\":\"ready_private\",\"slideId\":\"slide-one\"}");
+        assertPersistedShaFailure("{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
+                + "\"slideSha256\":\"" + "f".repeat(64) + "\"}");
+    }
+
+    private void assertPersistedShaFailure(String readyBody) throws Exception {
+        var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        viewer.createContext("/", exchange -> {
+            var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/capabilities")) {
+                respond(exchange, 200, dynamicCapabilities());
+            } else if (path.equals("/api/v1/desktop/ome-ingests")) {
+                respond(exchange, 201, "{\"uploadUrl\":\"/api/v1/desktop/ingests/sha/content\"}");
+            } else if (path.endsWith("/content")
+                    && exchange.getRequestMethod().equals("HEAD")) {
+                exchange.getResponseHeaders().set("Upload-Offset", "0");
+                exchange.sendResponseHeaders(200, -1);
+                exchange.close();
+            } else if (path.endsWith("/content")) {
+                exchange.getRequestBody().readAllBytes();
+                respond(exchange, 202, "{\"slideId\":null}");
+            } else if (path.equals("/api/v1/desktop/ingests/sha")) {
+                respond(exchange, 200, readyBody);
+            } else {
+                respond(exchange, 404, "{\"detail\":\"not found\"}");
+            }
+        });
+        viewer.start();
+        try {
+            var ome = Files.write(
+                    temporaryDirectory.resolve("sha-" + viewer.getAddress().getPort() + ".ome.tif"),
+                    new byte[] {'I', 'I', 42, 0, 1, 2, 3});
+            var revision = revision(ome, sha256(ome));
+            writeOmeStamp(revision, ome);
+            var store = new MemoryCredentialStore();
+            store.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
+            try (var service = new ViewerPairingService(store)) {
+                service.startUpload("sha", revision, List.of(), 0, 0, 100, 50, 1);
+                awaitState(service, "FAILED");
+                assertFalse(service.uploadStatus().detail().isBlank());
+            }
+        } finally {
+            viewer.stop(0);
+        }
+    }
+
     private static String dynamicCapabilities() {
         return "{\"ingestModes\":[\"prepared-v2\",\"ome-dynamic-v1\"],"
                 + "\"omeProfiles\":[{\"id\":\"ome-dynamic-v1\",\"pixelType\":\"uint8\","

@@ -138,7 +138,15 @@ class Process:
 
     def close(self) -> None:
         if self.process.poll() is None:
-            self.process.terminate()
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
+                    capture_output=True,
+                    check=False,
+                    text=True,
+                )
+            else:
+                self.process.terminate()
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:

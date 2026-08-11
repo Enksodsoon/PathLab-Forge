@@ -1,0 +1,35 @@
+{
+  "schema": "pathlab-ome-direct-rc-metrics/v1",
+  "deterministicTrials": 3,
+  "directTrialsPassed": 3,
+  "preparedFallbackTrialsPassed": 3,
+  "realSlide": {
+    "sourceDisclosure": "private-user-provided-vsi",
+    "directPackageReadyMs": 199788,
+    "preparedPackageReadyMs": 374619,
+    "speedImprovementPercent": 46.67,
+    "directRetainedArtifactBytes": 500309132,
+    "preparedRetainedArtifactBytes": 1850400059,
+    "storageImprovementPercent": 72.96,
+    "directPeakProcessTreeBytes": 4110106624,
+    "preparedPeakProcessTreeBytes": 4172959744,
+    "directPeakWorkspaceBytes": 500312729,
+    "preparedPeakWorkspaceBytes": 3175606914
+  },
+  "tileConcurrency": {
+    "1": {"errors": 0, "maxP95Ms": 25.977, "maxP99Ms": 25.977},
+    "10": {"errors": 0, "maxP95Ms": 51.862, "maxP99Ms": 51.862},
+    "25": {"errors": 0, "maxP95Ms": 132.164, "maxP99Ms": 134.687},
+    "50": {"errors": 0, "maxP95Ms": 234.788, "maxP99Ms": 244.617}
+  },
+  "regressions": {
+    "viewerBackendPassed": 437,
+    "viewerBackendSkipped": 4,
+    "viewerFrontendPassed": 226,
+    "forgeJavaPassed": 149,
+    "forgeJavaSkipped": 2,
+    "forgeFrontendPassed": 33
+  },
+  "privateRawEvidenceCommitted": false,
+  "pushMergeDeployPerformed": false
+}
