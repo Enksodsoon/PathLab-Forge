@@ -113,8 +113,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     static int recommendedConcurrentConversions(int logicalProcessors, long processTreeLimitBytes) {
-        var gib = 1024L * 1024 * 1024;
-        return logicalProcessors >= 12 && processTreeLimitBytes >= 16 * gib ? 2 : 1;
+        return 1;
     }
 
     public ConversionEngine engine() {
@@ -1193,19 +1192,19 @@ public final class ConversionService implements AutoCloseable {
                 : artifactRepository.create(
                         dataset, request.outputWidth(), request.outputHeight(), requestedFormat);
         requestedFormats.remove(dataset.id());
+        var directDzi = useDirectDziFromRegions(requestedFormat, dataset, request);
+        var profileName = org.pathlab.forge.runtime.RuntimeProfile.system().name();
         var converting = dataset.withArtifactRevision(
                 DatasetStatus.CONVERTING,
                 revision.id().equals(dataset.currentArtifactRevision())
                         ? "Resuming last verified conversion checkpoint"
-                        : quPathRuntime.supports(dataset.format())
-                        ? "Direct tiled OME export using "
-                                + org.pathlab.forge.runtime.RuntimeProfile.system().name()
-                        : useParallelRgb(dataset, request)
-                        ? "Lightning RGB: decoding "
-                                + parallelRgbWorkers(Path.of(dataset.sourcePath()))
-                                + " image regions in parallel with "
-                                + org.pathlab.forge.runtime.RuntimeProfile.system().name()
-                        : "Exporting QuPath-style rendered RGB with JPEG compression",
+                        : conversionStartDetail(
+                                requestedFormat,
+                                shouldUseQuPathWriter(
+                                        requestedFormat,
+                                        quPathRuntime.supports(dataset.format())),
+                                directDzi,
+                                profileName),
                 "",
                 "",
                 revision.id());
@@ -1418,7 +1417,8 @@ public final class ConversionService implements AutoCloseable {
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
             var request = request(dataset);
-            var useDirectDzi = useDirectDziFromRegions(dataset, request);
+            var useDirectDzi = useDirectDziFromRegions(
+                    revision.format(), dataset, request);
             String digest = "";
             var resumeOme = existingCheckpoint != null
                     && !useDirectDzi
@@ -1428,7 +1428,8 @@ public final class ConversionService implements AutoCloseable {
                             >= StageCheckpoint.Stage.OME_VERIFIED.ordinal()
                     && Files.isRegularFile(output);
             if (!resumeOme) {
-                if (!useDirectDzi && quPathRuntime.supports(dataset.format())) {
+                if (shouldUseQuPathWriter(
+                        revision.format(), quPathRuntime.supports(dataset.format()))) {
                     repository.save(dataset.withConversion(
                         DatasetStatus.OPTIMIZING_OME,
                         "Writing the final OME pyramid directly from bounded source tiles",
@@ -1461,7 +1462,7 @@ public final class ConversionService implements AutoCloseable {
                     derivativeEngine.renderOme(request, rendered);
                 } else if (useParallelRgb(dataset, request)) {
                 regionRoot = outputDirectory.resolve("regions.partial");
-                List<Path> regions;
+                List<Path> regions = null;
                 if (existingCheckpoint != null
                         && existingCheckpoint.stage() == StageCheckpoint.Stage.REGIONS_VERIFIED
                         && existingCheckpoint.configurationRevision()
@@ -1470,14 +1471,16 @@ public final class ConversionService implements AutoCloseable {
                     try (var files = Files.list(regionRoot)) {
                         regions = files.filter(Files::isRegularFile).sorted().toList();
                     }
-                    if (regions.size() < 2) {
-                        throw new IOException("Verified region checkpoint is incomplete");
+                    if (!canReuseVerifiedRegions(
+                            useDirectDzi, request.outputHeight(), regions.size())) {
+                        regions = null;
                     }
-                } else {
+                }
+                if (regions == null) {
                     var resumePartialRegions = matchingCheckpoint
-                            && existingCheckpoint.stage().ordinal()
-                                    >= StageCheckpoint.Stage.REGIONS_RENDERING.ordinal();
-                    if (!resumePartialRegions) {
+                        && existingCheckpoint.stage().ordinal()
+                                >= StageCheckpoint.Stage.REGIONS_RENDERING.ordinal();
+                    if (!resumePartialRegions || useDirectDzi) {
                         deleteTree(outputDirectory, regionRoot);
                     }
                     Files.createDirectories(regionRoot);
@@ -1581,12 +1584,20 @@ public final class ConversionService implements AutoCloseable {
                     dataset.estimatedOutputBytes()));
                 updateProgress(dataset.id(), "VALIDATING_OME", 0, 1);
                 verifyTiff(partial);
-                derivativeEngine.validateOmeProfile(
-                        partial,
-                        request.outputWidth(),
-                        request.outputHeight(),
-                        OmeDynamicProfile.V1,
-                        OmeDynamicProfile.V1.defaultJpegQuality());
+                try {
+                    validateOmeArtifact(
+                            revision.format(),
+                            partial,
+                            request.outputWidth(),
+                            request.outputHeight());
+                } catch (IOException invalidOme) {
+                    var diagnostic = quarantineInvalidOme(outputDirectory, partial);
+                    throw new IOException(
+                            invalidOme.getMessage()
+                                    + "; invalid output preserved at "
+                                    + diagnostic,
+                            invalidOme);
+                }
                 OutputSizeGuard.requireSuitable(
                         Files.size(partial),
                         dataset.sourceBytes(),
@@ -1610,20 +1621,13 @@ public final class ConversionService implements AutoCloseable {
             } else {
                 try {
                     verifyTiff(output);
-                    derivativeEngine.validateOmeProfile(
+                    validateOmeArtifact(
+                            revision.format(),
                             output,
                             request.outputWidth(),
-                            request.outputHeight(),
-                            OmeDynamicProfile.V1,
-                            OmeDynamicProfile.V1.defaultJpegQuality());
+                            request.outputHeight());
                 } catch (IOException invalidOme) {
-                    var quarantine = outputDirectory.resolve("quarantine");
-                    Files.createDirectories(quarantine);
-                    Files.move(
-                            output,
-                            quarantine.resolve(
-                                    "invalid-ome-" + System.currentTimeMillis() + ".tif"),
-                            StandardCopyOption.REPLACE_EXISTING);
+                    var diagnostic = quarantineInvalidOme(outputDirectory, output);
                     var recoverableRegions = outputDirectory.resolve("regions.partial");
                     if (Files.isDirectory(recoverableRegions)) {
                         try (var files = Files.list(recoverableRegions)) {
@@ -1638,7 +1642,11 @@ public final class ConversionService implements AutoCloseable {
                             }
                         }
                     }
-                    throw invalidOme;
+                    throw new IOException(
+                            invalidOme.getMessage()
+                                    + "; invalid output preserved at "
+                                    + diagnostic,
+                            invalidOme);
                 }
                 digest = sha256(output);
                 updateProgress(dataset.id(), "OME_VERIFIED", 1, 1);
@@ -1723,21 +1731,19 @@ public final class ConversionService implements AutoCloseable {
                             dataset.downsample(),
                             dataset.estimatedOutputBytes()));
                     updateProgress(dataset.id(), "DIRECT_DZI_FALLBACK", 0, 1);
-                    derivativeEngine.assembleRegionsFinal(
-                            directDziRegions,
+                    derivativeEngine.assembleRegions(directDziRegions, rendered);
+                    derivativeEngine.optimizeOme(
+                            rendered,
                             partial,
                             request.outputWidth(),
-                            request.outputHeight(),
-                            request.downsample(),
-                            OmeDynamicProfile.V1,
-                            OmeDynamicProfile.V1.defaultJpegQuality());
+                            request.outputHeight());
+                    Files.deleteIfExists(rendered);
                     verifyTiff(partial);
-                    derivativeEngine.validateOmeProfile(
+                    validateOmeArtifact(
+                            revision.format(),
                             partial,
                             request.outputWidth(),
-                            request.outputHeight(),
-                            OmeDynamicProfile.V1,
-                            OmeDynamicProfile.V1.defaultJpegQuality());
+                            request.outputHeight());
                     OutputSizeGuard.requireSuitable(
                             Files.size(partial),
                             dataset.sourceBytes(),
@@ -2045,12 +2051,81 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private boolean useDirectDziFromRegions(
-            LocalDataset dataset, ConversionRequest request) {
-        return Boolean.parseBoolean(
+            ArtifactRevisionFormat format,
+            LocalDataset dataset,
+            ConversionRequest request) {
+        return shouldUseDirectDzi(
+                format,
+                Boolean.parseBoolean(
                         System.getProperty(
-                                "pathlab.forge.directDzi.enabled", "false"))
-                && derivativeEngine.supportsDirectDziFromRegions()
-                && useParallelRgb(dataset, request);
+                                "pathlab.forge.directDzi.enabled", "true")),
+                derivativeEngine.supportsDirectDziFromRegions(),
+                useParallelRgb(dataset, request));
+    }
+
+    static boolean shouldUseQuPathWriter(
+            ArtifactRevisionFormat format, boolean quPathSupported) {
+        return format == ArtifactRevisionFormat.OME_DYNAMIC_V1 && quPathSupported;
+    }
+
+    static boolean shouldUseDirectDzi(
+            ArtifactRevisionFormat format,
+            boolean enabled,
+            boolean derivativeSupported,
+            boolean parallelRgbSupported) {
+        return format == ArtifactRevisionFormat.PREPARED_DZI_V2
+                && enabled
+                && derivativeSupported
+                && parallelRgbSupported;
+    }
+
+    static boolean requiresDynamicOmeProfile(ArtifactRevisionFormat format) {
+        return format == ArtifactRevisionFormat.OME_DYNAMIC_V1;
+    }
+
+    static boolean canReuseVerifiedRegions(
+            boolean directDzi, int outputHeight, int regionCount) {
+        return regionCount >= 2 && (!directDzi || outputHeight % regionCount == 0);
+    }
+
+    private void validateOmeArtifact(
+            ArtifactRevisionFormat format, Path ome, int width, int height)
+            throws IOException {
+        if (requiresDynamicOmeProfile(format)) {
+            derivativeEngine.validateOmeProfile(
+                    ome,
+                    width,
+                    height,
+                    OmeDynamicProfile.V1,
+                    OmeDynamicProfile.V1.defaultJpegQuality());
+            return;
+        }
+        derivativeEngine.validateOmeGeometry(ome, width, height);
+    }
+
+    static String conversionStartDetail(
+            ArtifactRevisionFormat format,
+            boolean quPathWriter,
+            boolean directDzi,
+            String profileName) {
+        if (format == ArtifactRevisionFormat.OME_DYNAMIC_V1 && quPathWriter) {
+            return "Direct tiled OME export using " + profileName;
+        }
+        if (format == ArtifactRevisionFormat.PREPARED_DZI_V2 && directDzi) {
+            return "Prepared package direct DZI: decoding aligned bounded image regions with "
+                    + profileName;
+        }
+        return "Prepared package staging export with bounded JPEG compression";
+    }
+
+    private static Path quarantineInvalidOme(Path outputDirectory, Path invalidOme)
+            throws IOException {
+        var quarantine = outputDirectory.resolve("quarantine");
+        Files.createDirectories(quarantine);
+        var diagnostic = quarantine.resolve(
+                "invalid-ome-" + System.currentTimeMillis() + ".tif");
+        Files.move(invalidOme, diagnostic, StandardCopyOption.REPLACE_EXISTING);
+        return diagnostic;
     }
 
     private boolean useParallelRgb(LocalDataset dataset, ConversionRequest request) {

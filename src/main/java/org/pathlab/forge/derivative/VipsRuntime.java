@@ -154,14 +154,20 @@ public final class VipsRuntime implements DerivativeEngine {
         requireField(omeTiff, "", "tile-width", Integer.toString(profile.tileSize()));
         requireField(omeTiff, "", "tile-height", Integer.toString(profile.tileSize()));
         requireField(omeTiff, "", "bits-per-sample", Integer.toString(profile.bitsPerSample()));
-        int minimumSubifds = expectedStoredSubifds(width, height, profile);
+        int minimumSubifds = minimumStoredSubifds(width, height, profile);
         if (minimumSubifds == 0) {
             return;
         }
         var subifds = imageDimension(omeTiff, "", "n-subifds");
         if (subifds < minimumSubifds
                 || subifds > maximumStoredSubifds(width, height, profile)) {
-            throw new IOException("Dynamic OME pyramid level count is invalid");
+            throw new IOException(
+                    "Dynamic OME pyramid level count is invalid: found "
+                            + subifds
+                            + ", require "
+                            + minimumSubifds
+                            + ".."
+                            + maximumStoredSubifds(width, height, profile));
         }
         int expectedWidth = width;
         int expectedHeight = height;
@@ -204,6 +210,18 @@ public final class VipsRuntime implements DerivativeEngine {
             levels++;
         }
         return levels;
+    }
+
+    static int minimumStoredSubifds(
+            int width, int height, OmeDynamicProfile profile) {
+        var completeStoredLevels = expectedStoredSubifds(width, height, profile);
+        if (completeStoredLevels == 0) {
+            return 0;
+        }
+        // The Viewer can synthesize one terminal factor-two level from the
+        // smallest stored overview. Requiring every earlier level still rejects
+        // truncated or factor-four pyramids while accepting bounded QuPath output.
+        return Math.max(1, completeStoredLevels - 1);
     }
 
     static int maximumStoredSubifds(
@@ -749,10 +767,6 @@ public final class VipsRuntime implements DerivativeEngine {
         }
         if (targetHeights.stream().mapToInt(Integer::intValue).sum() != height) {
             throw new IOException("Direct DZI regions do not match the target height");
-        }
-        if (targetHeights.stream().distinct().count() != 1) {
-            throw new IOException(
-                    "Direct DZI requires uniformly aligned region heights");
         }
         return new PreparedRegions(List.copyOf(prepared), List.copyOf(targetHeights));
     }

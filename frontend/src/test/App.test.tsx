@@ -791,6 +791,7 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   render(<App />)
 
   expect((await screen.findAllByText('Reading source regions in parallel'))[0]).toBeVisible()
+  expect(screen.getByText('Prepared Viewer package · Direct DZI')).toBeVisible()
   expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).toHaveValue(11)
   expect(screen.getByText('Step 1 of 5')).toBeVisible()
   expect(screen.getByText('2 of 10 source regions')).toBeVisible()

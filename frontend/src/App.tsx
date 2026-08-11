@@ -1083,6 +1083,7 @@ function PreviewLoading({ title, detail }: { title: string; detail: string }) {
 function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?: ArtifactRevision }) {
   const directOme = revision?.format === 'OME_DYNAMIC_V1' || dataset.stage === 'DIRECT_OME'
   const phase = conversionPhase(dataset, directOme)
+  const routeLabel = conversionRouteLabel(dataset, directOme)
   const stages = directOme
     ? ['Rendering OME-TIFF', 'Validating OME-TIFF', 'Ready for review']
     : ['Rendering', 'Selecting compact quality', 'Generating DZI', 'Quality check', 'Packaging']
@@ -1098,7 +1099,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
   return (
     <div className="forge-conversion-progress" aria-live="polite">
       <div className="forge-conversion-heading">
-        <span className="forge-conversion-kicker">{directOme ? 'Direct OME-TIFF' : 'Prepared Viewer package'}</span>
+        <span className="forge-conversion-kicker">{routeLabel}</span>
         <span>{dataset.resourceProfile?.replace('adaptive-', '').replaceAll('-', ' · ') || 'minimum-safe profile'}</span>
       </div>
       <div className="forge-tile-reader" aria-hidden="true">
@@ -2079,6 +2080,19 @@ function conversionCounter(dataset: Dataset) {
     DIRECT_DZI_PREPARING: 'aligned regions',
   } as Record<string, string>)[dataset.stage || ''] || 'work units'
   return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`
+}
+
+function conversionRouteLabel(dataset: Dataset, directOme: boolean) {
+  if (directOme) return 'Direct OME-TIFF'
+  if (['REGIONS_RENDERING', 'REGIONS_VERIFIED', 'DIRECT_DZI_SOURCE_READY', 'DIRECT_DZI_PREPARING']
+    .includes(dataset.stage || '')) {
+    return 'Prepared Viewer package · Direct DZI'
+  }
+  if (['DIRECT_DZI_FALLBACK', 'ASSEMBLING_OME', 'OPTIMIZING_OME', 'VALIDATING_OME', 'OME_VERIFIED']
+    .includes(dataset.stage || '')) {
+    return 'Prepared Viewer package · Staging OME'
+  }
+  return 'Prepared Viewer package'
 }
 
 function datasetFormatLabel(format: Dataset['format']) {

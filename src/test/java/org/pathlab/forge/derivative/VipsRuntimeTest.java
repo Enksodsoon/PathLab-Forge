@@ -21,6 +21,14 @@ class VipsRuntimeTest {
         assertEquals(12, VipsRuntime.maximumStoredSubifds(4096, 4096, OmeDynamicProfile.V1));
     }
 
+    @Test
+    void allowsOneTerminalViewerLevelToRemainVirtual() {
+        assertEquals(0, VipsRuntime.minimumStoredSubifds(1024, 768, OmeDynamicProfile.V1));
+        assertEquals(1, VipsRuntime.minimumStoredSubifds(2049, 1536, OmeDynamicProfile.V1));
+        assertEquals(2, VipsRuntime.minimumStoredSubifds(8193, 4096, OmeDynamicProfile.V1));
+        assertEquals(6, VipsRuntime.minimumStoredSubifds(76_717, 52_837, OmeDynamicProfile.V1));
+    }
+
     @TempDir
     Path temporaryDirectory;
 
@@ -163,7 +171,7 @@ class VipsRuntimeTest {
     }
 
     @Test
-    void distributesNonIntegerResampleGeometryWithoutCroppingOrAddingRows() {
+    void supportsNonUniformDirectDziRegionsWithoutCroppingOrAddingRows() {
         var heights = VipsRuntime.targetRegionHeights(
                 List.of(7_512, 7_512, 7_512, 7_512, 7_512, 7_512, 7_512, 7_511),
                 50_078);
@@ -171,6 +179,7 @@ class VipsRuntimeTest {
         assertEquals(8, heights.size());
         assertEquals(50_078, heights.stream().mapToInt(Integer::intValue).sum());
         assertEquals(List.of(6_260, 6_260, 6_260, 6_259, 6_260, 6_260, 6_260, 6_259), heights);
+        assertTrue(heights.stream().distinct().count() > 1);
     }
 
     @Test

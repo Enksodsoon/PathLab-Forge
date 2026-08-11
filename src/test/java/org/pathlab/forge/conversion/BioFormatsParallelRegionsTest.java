@@ -10,11 +10,39 @@ import org.pathlab.forge.library.DatasetFormat;
 
 class BioFormatsParallelRegionsTest {
     @Test
-    void onlyEnablesTwoHeavyJobsWhenHardwareHasUsefulHeadroom() {
+    void serializesFullSlideConversionsOnEveryHardwareProfile() {
         var gib = 1024L * 1024 * 1024;
         assertEquals(1, ConversionService.recommendedConcurrentConversions(8, 16 * gib));
         assertEquals(1, ConversionService.recommendedConcurrentConversions(12, 12 * gib));
-        assertEquals(2, ConversionService.recommendedConcurrentConversions(12, 16 * gib));
+        assertEquals(1, ConversionService.recommendedConcurrentConversions(12, 16 * gib));
+        assertEquals(1, ConversionService.recommendedConcurrentConversions(32, 64 * gib));
+    }
+
+    @Test
+    void keepsDirectOmeAndPreparedPackageWritersOnSeparateRoutes() {
+        assertTrue(ConversionService.shouldUseQuPathWriter(
+                ArtifactRevisionFormat.OME_DYNAMIC_V1, true));
+        assertTrue(!ConversionService.shouldUseQuPathWriter(
+                ArtifactRevisionFormat.PREPARED_DZI_V2, true));
+
+        assertTrue(ConversionService.shouldUseDirectDzi(
+                ArtifactRevisionFormat.PREPARED_DZI_V2, true, true, true));
+        assertTrue(!ConversionService.shouldUseDirectDzi(
+                ArtifactRevisionFormat.OME_DYNAMIC_V1, true, true, true));
+        assertTrue(!ConversionService.shouldUseDirectDzi(
+                ArtifactRevisionFormat.PREPARED_DZI_V2, false, true, true));
+        assertTrue(ConversionService.requiresDynamicOmeProfile(
+                ArtifactRevisionFormat.OME_DYNAMIC_V1));
+        assertTrue(!ConversionService.requiresDynamicOmeProfile(
+                ArtifactRevisionFormat.PREPARED_DZI_V2));
+
+        var prepared = ConversionService.conversionStartDetail(
+                ArtifactRevisionFormat.PREPARED_DZI_V2,
+                false,
+                true,
+                "adaptive-12c-32gb");
+        assertTrue(prepared.contains("direct DZI"));
+        assertTrue(!prepared.contains("Direct tiled OME"));
     }
 
     @Test
@@ -82,6 +110,9 @@ class BioFormatsParallelRegionsTest {
                 5,
                 BioFormatsEngine.preferredRegionCount(
                         50_000, 50_000, 50_003, 5));
+        assertTrue(ConversionService.canReuseVerifiedRegions(true, 31_087, 7));
+        assertTrue(!ConversionService.canReuseVerifiedRegions(true, 31_087, 4));
+        assertTrue(ConversionService.canReuseVerifiedRegions(false, 31_087, 4));
     }
 
     @Test

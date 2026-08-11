@@ -217,7 +217,7 @@ public final class BioFormatsEngine implements ConversionEngine {
         var directFinalResample = request.downsample() == 1.0
                 || Boolean.parseBoolean(
                         System.getProperty(
-                                "pathlab.forge.directDzi.enabled", "false"))
+                                "pathlab.forge.directDzi.enabled", "true"))
                 || Boolean.getBoolean("pathlab.forge.directFinalDownsample")
                 || Boolean.getBoolean("pathlab.forge.experimentalNativeFallback");
         var regionCount = directFinalResample
