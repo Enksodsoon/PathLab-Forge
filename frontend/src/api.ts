@@ -97,6 +97,7 @@ export interface ViewerConnection {
   viewerUrl: string
   deviceName: string
   scopes: string[]
+  conversionMode?: 'OME_DYNAMIC_V1' | 'PREPARED_DZI_V2'
 }
 
 export interface ViewerPairing {

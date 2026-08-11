@@ -1081,7 +1081,11 @@ function PreviewLoading({ title, detail }: { title: string; detail: string }) {
 }
 
 function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?: ArtifactRevision }) {
-  const phase = conversionPhase(dataset)
+  const directOme = revision?.format === 'OME_DYNAMIC_V1' || dataset.stage === 'DIRECT_OME'
+  const phase = conversionPhase(dataset, directOme)
+  const stages = directOme
+    ? ['Rendering OME-TIFF', 'Validating OME-TIFF', 'Ready for review']
+    : ['Rendering', 'Selecting compact quality', 'Generating DZI', 'Quality check', 'Packaging']
   const fallbackElapsed = useElapsed(revision?.createdAt)
   const elapsed = dataset.elapsedMs
     ? formatDuration(dataset.elapsedMs)
@@ -1094,7 +1098,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
   return (
     <div className="forge-conversion-progress" aria-live="polite">
       <div className="forge-conversion-heading">
-        <span className="forge-conversion-kicker">Adaptive compact DZI</span>
+        <span className="forge-conversion-kicker">{directOme ? 'Direct OME-TIFF' : 'Prepared Viewer package'}</span>
         <span>{dataset.resourceProfile?.replace('adaptive-', '').replaceAll('-', ' · ') || 'minimum-safe profile'}</span>
       </div>
       <div className="forge-tile-reader" aria-hidden="true">
@@ -1113,11 +1117,11 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
       <p>{dataset.detail}</p>
       <progress aria-label="Conversion progress" max="100" value={phase.percent} />
       <div className="forge-conversion-progress-copy">
-        <span>Step {phase.step} of 5</span>
+        <span>Step {phase.step} of {stages.length}</span>
         <span>{phase.percent}%</span>
       </div>
       <ol aria-label="Conversion stages">
-        {['Rendering', 'Selecting compact quality', 'Generating DZI', 'Quality check', 'Packaging'].map((label, index) => (
+        {stages.map((label, index) => (
           <li className={index + 1 < phase.step ? 'complete' : index + 1 === phase.step ? 'active' : ''} key={label}>
             <i />
             <span>{label}</span>
@@ -1309,14 +1313,16 @@ function RevisionHistory({
         <strong>{revisions.length}</strong>
       </div>
       <p className="forge-help">
-        Each completed conversion keeps its own package and viewer. Rename useful versions,
+        Each completed conversion keeps its verified OME-TIFF or Viewer package. Rename useful versions,
         compare them here, or delete versions you no longer need.
       </p>
       {revisions.length ? (
         <div className="forge-history-list">
           {revisions.map((revision, index) => {
-            const filesAvailable = revision.packageBytes > 0
+            const directOme = revision.format === 'OME_DYNAMIC_V1'
+            const filesAvailable = (directOme ? revision.omeBytes : revision.packageBytes) > 0
               && ['READY', 'APPROVED'].includes(revision.status)
+            const canView = filesAvailable && !directOme
             const isCurrent = revision.id === dataset.currentArtifactRevision
             const isViewing = revision.id === viewingRevisionId
             const isApproved = revision.id === dataset.approvedArtifactRevision
@@ -1383,19 +1389,24 @@ function RevisionHistory({
                     <>
                       <div className="forge-history-metrics">
                         <span><b>{revision.outputWidth.toLocaleString()} × {revision.outputHeight.toLocaleString()}</b> pixels</span>
-                        <span><b>{revision.packageBytes ? formatBytes(revision.packageBytes) : 'No package'}</b> stored</span>
+                        <span>
+                          <b>{filesAvailable
+                            ? formatBytes(directOme ? revision.omeBytes : revision.packageBytes)
+                            : 'No output'}</b>{' '}
+                          {directOme ? 'direct OME-TIFF' : 'Viewer package'}
+                        </span>
                         {revision.jpegQuality > 0 ? <span><b>Q{revision.jpegQuality}</b> JPEG</span> : null}
                       </div>
                       <div className="forge-history-actions">
                         <button
                           className={isViewing ? 'active' : ''}
                           type="button"
-                          disabled={!filesAvailable}
+                          disabled={!canView}
                           onClick={() => onView(revision.id)}
                         >
                           {isViewing ? 'Viewing now' : 'View slide'}
                         </button>
-                        {filesAvailable ? (
+                        {canView ? (
                           <a href={api.artifactPackageUrl(dataset.id, revision.id)}>
                             Download
                           </a>
@@ -1655,11 +1666,13 @@ function ExportInspector({
   const cropAreaPercent = selected && draftValid
     ? Math.min(100, parsed.width * parsed.height / (selected.width * selected.height) * 100)
     : 0
-  const packagedCurrent = current
+  const readyCurrent = current
     && ['READY', 'APPROVED'].includes(current.status)
-    && current.packageBytes > 0
+    && (current.format === 'OME_DYNAMIC_V1' ? current.omeBytes > 0 : current.packageBytes > 0)
     ? current
     : undefined
+  const directOmePlanned = connection?.connected
+    && connection.conversionMode === 'OME_DYNAMIC_V1'
 
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
@@ -1709,30 +1722,40 @@ function ExportInspector({
           View original slide
         </a>
       ) : null}
-      {packagedCurrent ? (
+      {readyCurrent ? (
         <section className="forge-result-card" aria-label="Converted slide result">
           <div>
-            <span>Converted DZI package</span>
-            <strong>{formatBytes(packagedCurrent.packageBytes)}</strong>
+            <span>{readyCurrent.format === 'OME_DYNAMIC_V1' ? 'Direct OME-TIFF' : 'Prepared Viewer package'}</span>
+            <strong>{formatBytes(readyCurrent.format === 'OME_DYNAMIC_V1'
+              ? readyCurrent.omeBytes
+              : readyCurrent.packageBytes)}</strong>
             <small>
-              {packagedCurrent.outputWidth.toLocaleString()} × {packagedCurrent.outputHeight.toLocaleString()}
-              {' · '}JPEG Q{packagedCurrent.jpegQuality}
-              {' · '}{packagedCurrent.status === 'APPROVED' ? 'Approved' : 'Ready for review'}
+              {readyCurrent.outputWidth.toLocaleString()} × {readyCurrent.outputHeight.toLocaleString()}
+              {readyCurrent.format === 'OME_DYNAMIC_V1'
+                ? ` · ${readyCurrent.omeProfile || 'canonical pyramid'}`
+                : ` · JPEG Q${readyCurrent.jpegQuality}`}
+              {' · '}{readyCurrent.status === 'APPROVED' ? 'Approved' : 'Ready for review'}
             </small>
           </div>
-          <a
-            className={viewingRevisionId === packagedCurrent.id ? 'forge-primary' : 'forge-download'}
-            href="#dzi-viewer"
-            onClick={() => onViewRevision(packagedCurrent.id)}
-          >
-            View converted slide
-          </a>
-          <a
-            className="forge-download"
-            href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}
-          >
-            Download {formatBytes(packagedCurrent.packageBytes)} package
-          </a>
+          {readyCurrent.format !== 'OME_DYNAMIC_V1' ? (
+            <>
+              <a
+                className={viewingRevisionId === readyCurrent.id ? 'forge-primary' : 'forge-download'}
+                href="#dzi-viewer"
+                onClick={() => onViewRevision(readyCurrent.id)}
+              >
+                View converted slide
+              </a>
+              <a
+                className="forge-download"
+                href={`/api/datasets/${encodeURIComponent(dataset.id)}/package`}
+              >
+                Download {formatBytes(readyCurrent.packageBytes)} package
+              </a>
+            </>
+          ) : (
+            <small>Validated locally · approve to enable private Viewer upload</small>
+          )}
         </section>
       ) : null}
       {!series.length ? (
@@ -1822,7 +1845,13 @@ function ExportInspector({
           <div className="forge-output-summary">
             <span>Projected output</span>
             <strong>{projectedWidth.toLocaleString()} × {projectedHeight.toLocaleString()}</strong>
-            {draftMatchesSaved && current && ['READY', 'APPROVED'].includes(current.status) && current.packageBytes > 0 ? (
+            {draftMatchesSaved && current?.format === 'OME_DYNAMIC_V1'
+              && ['READY', 'APPROVED'].includes(current.status) && current.omeBytes > 0 ? (
+              <>
+                <b>Direct OME-TIFF {formatBytes(current.omeBytes)}</b>
+                <small>{current.omeProfile || 'Canonical pyramid'} · validated for private Viewer upload</small>
+              </>
+            ) : draftMatchesSaved && current && ['READY', 'APPROVED'].includes(current.status) && current.packageBytes > 0 ? (
               <>
                 <b>Compact DZI package {formatBytes(current.packageBytes)}</b>
                 <small>
@@ -1845,7 +1874,7 @@ function ExportInspector({
             ) : displayedEstimate ? (
               <>
                 <b>
-                  Estimated temporary staging ≈ {formatBytes(displayedEstimate.fileBytes)}
+                  Estimated {directOmePlanned ? 'direct OME-TIFF' : 'temporary staging'} ≈ {formatBytes(displayedEstimate.fileBytes)}
                   {estimateIsLive ? ' · live' : ''}
                 </b>
                 <small>
@@ -1883,9 +1912,9 @@ function ExportInspector({
       <div className="forge-help" role="status">
         <strong>{connection?.connected ? 'Viewer connected' : 'Viewer not connected'}</strong>
         {' · '}
-        {current?.format === 'OME_DYNAMIC_V1'
-          ? 'Factor-2 direct OME selected'
-          : 'Prepared compatibility package selected'}
+        {directOmePlanned
+          ? 'Next conversion · Direct OME-TIFF'
+          : 'Next conversion · Prepared Viewer package'}
         {viewerUpload ? ` · ${viewerUpload.detail}` : ''}
         {viewerUpload?.state === 'READY_PRIVATE' && viewerUpload.viewerSlideSha256
           ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
@@ -1901,7 +1930,9 @@ function ExportInspector({
       <div className="forge-action-stack">
         {CANCELLABLE_STATUSES.has(dataset.status)
           ? <button type="button" onClick={onCancel}>Cancel conversion</button>
-          : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>Convert current revision</button>}
+          : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>
+              {directOmePlanned ? 'Convert to direct OME-TIFF' : 'Convert and prepare Viewer package'}
+            </button>}
         {current?.status === 'READY'
           && (current.packageBytes > 0 || current.format === 'OME_DYNAMIC_V1')
           && dataset.approvedArtifactRevision !== current.id
@@ -1966,7 +1997,29 @@ function QueueDock({
   )
 }
 
-function conversionPhase(dataset: Dataset) {
+function conversionPhase(dataset: Dataset, directOme = false) {
+  const direct = directOme || dataset.stage === 'DIRECT_OME'
+  if (direct) {
+    const unitProgress = (dataset.totalUnits || 0) > 0
+      ? Math.min(1, (dataset.completedUnits || 0) / dataset.totalUnits!)
+      : 0
+    const measured = ({
+      DIRECT_OME: { step: 1, base: 5, span: 70, label: 'Rendering canonical OME-TIFF' },
+      OPTIMIZING_OME: { step: 1, base: 75, span: 5, label: 'Optimizing OME-TIFF pyramid' },
+      VALIDATING_OME: { step: 2, base: 80, span: 18, label: 'Validating canonical OME-TIFF' },
+      OME_VERIFIED: { step: 3, base: 100, span: 0, label: 'Direct OME-TIFF ready for review' },
+    } as Record<string, { step: number; base: number; span: number; label: string }>)[dataset.stage || '']
+    if (measured) {
+      return {
+        step: measured.step,
+        percent: Math.round(measured.base + measured.span * unitProgress),
+        label: measured.label,
+      }
+    }
+    return dataset.status === 'VALIDATING'
+      ? { step: 2, percent: 85, label: 'Validating canonical OME-TIFF' }
+      : { step: 1, percent: 15, label: 'Rendering canonical OME-TIFF' }
+  }
   const phase = ({
     CONVERTING: { step: 1, percent: 15, label: 'Rendering selected area' },
     OPTIMIZING_OME: { step: 1, percent: 42, label: 'Rendering temporary staging pyramid' },

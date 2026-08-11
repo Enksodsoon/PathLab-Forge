@@ -622,7 +622,9 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     200,
                     "application/json",
-                    viewerConnectionJson(viewerPairingService.status()));
+                    viewerConnectionJson(
+                            viewerPairingService.status(),
+                            viewerPairingService.supportsExactDynamicOme()));
         } catch (IOException | RuntimeException error) {
             respond(
                     exchange,
@@ -664,7 +666,9 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     200,
                     "application/json",
-                    viewerConnectionJson(viewerPairingService.exchange()));
+                    viewerConnectionJson(
+                            viewerPairingService.exchange(),
+                            viewerPairingService.supportsExactDynamicOme()));
         } catch (IOException | IllegalStateException error) {
             respond(
                     exchange,
@@ -1845,10 +1849,15 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"finishedAt\":" + job.finishedAt() + "}";
     }
 
-    private static String viewerConnectionJson(ViewerConnection connection) {
+    private static String viewerConnectionJson(
+            ViewerConnection connection, boolean supportsExactDynamicOme) {
         return "{\"connected\":" + connection.connected()
                 + ",\"viewerUrl\":" + json(connection.viewerUrl())
                 + ",\"deviceName\":" + json(connection.deviceName())
+                + ",\"conversionMode\":" + json(
+                        connection.connected() && supportsExactDynamicOme
+                                ? "OME_DYNAMIC_V1"
+                                : "PREPARED_DZI_V2")
                 + ",\"scopes\":["
                 + connection.scopes().stream()
                         .map(ForgeServer::json)

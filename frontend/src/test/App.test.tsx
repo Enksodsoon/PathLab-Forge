@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { vi } from 'vitest'
+import { beforeEach, vi } from 'vitest'
 
 import * as api from '../api'
 import { App } from '../App'
@@ -112,6 +112,16 @@ vi.mock('../api', () => ({
   uploadApprovedArtifact: vi.fn(),
   getViewerUpload: vi.fn(),
 }))
+
+beforeEach(() => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: false,
+    viewerUrl: '',
+    deviceName: '',
+    scopes: [],
+    conversionMode: 'PREPARED_DZI_V2',
+  })
+})
 
 test('launches directly into the Viewer Canvas Focus shell', async () => {
   render(<App />)
@@ -796,6 +806,123 @@ test('shows conversion progress and keeps viewer controls locked until validatio
   })).toHaveValue(11)
 })
 
+test('shows the direct OME workflow when the connected Viewer negotiates it', async () => {
+  const direct: api.Dataset = {
+    id: 'direct-ome-slide',
+    displayName: 'Direct OME slide.vsi',
+    sourceBytes: 1_500_000_000,
+    format: 'VSI',
+    status: 'READY',
+    detail: 'Canonical OME-TIFF validated',
+    outputPath: 'C:\\exports\\direct.ome.tif',
+    sha256: 'direct-ome-hash',
+    selectedSeries: 0,
+    width: 16_000,
+    height: 12_000,
+    downsample: 2,
+    estimatedOutputBytes: 500_000_000,
+    projectedFileBytes: 100_000_000,
+    projectedFileLowerBytes: 80_000_000,
+    projectedFileUpperBytes: 150_000_000,
+    cropX: 0,
+    cropY: 0,
+    cropWidth: 16_000,
+    cropHeight: 12_000,
+    sourceFingerprint: 'direct-source',
+    configurationRevision: 'direct-configuration',
+    currentArtifactRevision: 'direct-artifact',
+    approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[direct], {
+    conversionRuntime: 'Bio-Formats test',
+    derivativeRuntime: 'libvips test',
+    vsiConversion: true,
+    dziGeneration: true,
+    downsamples: [1, 2, 4, 8],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([direct])
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: true,
+    viewerUrl: 'https://viewer.example',
+    deviceName: 'PathLab Viewer',
+    scopes: ['slides:write'],
+    conversionMode: 'OME_DYNAMIC_V1',
+  })
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'direct-artifact',
+    approvedRevision: '',
+    revisions: [{
+      id: 'direct-artifact',
+      status: 'READY',
+      format: 'OME_DYNAMIC_V1',
+      createdAt: Date.now(),
+      outputWidth: 8_000,
+      outputHeight: 6_000,
+      omePath: 'C:\\exports\\direct.ome.tif',
+      packagePath: '',
+      omeSha256: 'direct-ome-hash',
+      omeProfile: 'canonical-factor-2',
+      omeBytes: 110_000_000,
+      dziBytes: 0,
+      packageBytes: 0,
+      jpegQuality: 0,
+      minimumWindowedSsim: 0,
+      maximumRoiMeanDeltaE00: 0,
+      minimumEdgeDetailRetention: 0,
+      encoderProfile: '',
+      packageSha256: '',
+      failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  await waitFor(() => expect(screen.getByText('Viewer connected').parentElement)
+    .toHaveTextContent('Next conversion · Direct OME-TIFF'))
+  expect(screen.getByRole('button', { name: 'Convert to direct OME-TIFF' })).toBeVisible()
+  const result = await screen.findByRole('region', { name: 'Converted slide result' })
+  expect(within(result).getByText('Direct OME-TIFF')).toBeVisible()
+  expect(within(result).getByText('104.9 MB')).toBeVisible()
+  expect(within(result).queryByText(/DZI package/)).not.toBeInTheDocument()
+})
+
+test('uses direct OME stages instead of DZI packaging stages during conversion', async () => {
+  const directConverting: api.Dataset = {
+    id: 'direct-converting', displayName: 'Direct converting.vsi', sourceBytes: 1_000,
+    format: 'VSI', status: 'OPTIMIZING_OME', detail: 'Writing canonical pyramid',
+    outputPath: '', sha256: '', selectedSeries: 0, width: 1_000, height: 500,
+    downsample: 1, estimatedOutputBytes: 1_000, projectedFileBytes: 500,
+    projectedFileLowerBytes: 250, projectedFileUpperBytes: 1_000,
+    cropX: 0, cropY: 0, cropWidth: 1_000, cropHeight: 500,
+    sourceFingerprint: 'direct-converting-source', configurationRevision: 'direct-config',
+    currentArtifactRevision: 'direct-converting-artifact', approvedArtifactRevision: '',
+    stage: 'DIRECT_OME', completedUnits: 4, totalUnits: 10,
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[directConverting], {
+    conversionRuntime: 'Bio-Formats test', derivativeRuntime: 'libvips test',
+    vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([directConverting])
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'direct-converting-artifact', approvedRevision: '', revisions: [{
+      id: 'direct-converting-artifact', status: 'CONVERTING', format: 'OME_DYNAMIC_V1',
+      createdAt: Date.now(), outputWidth: 1_000, outputHeight: 500,
+      omePath: '', packagePath: '', omeSha256: '', omeBytes: 0, dziBytes: 0,
+      packageBytes: 0, jpegQuality: 0, minimumWindowedSsim: 0,
+      maximumRoiMeanDeltaE00: 0, minimumEdgeDetailRetention: 0,
+      encoderProfile: '', packageSha256: '', failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  expect(await screen.findByText('Direct OME-TIFF')).toBeVisible()
+  expect(screen.getByText('Step 1 of 3')).toBeVisible()
+  expect(screen.getAllByText('Rendering canonical OME-TIFF')[0]).toBeVisible()
+  expect(screen.queryByText('Generating DZI')).not.toBeInTheDocument()
+  expect(screen.queryByText('Packaging')).not.toBeInTheDocument()
+})
+
 test('refreshes annotations and artifacts only for the selected active slide', async () => {
   const base: api.Dataset = {
     id: 'active-one',
@@ -1200,7 +1327,7 @@ test('shows one actionable size quality conflict without changing the crop', asy
   const panel = await screen.findByRole('alert')
   expect(within(panel).getByText('Compact DZI could not meet the 1.25× size limit')).toBeVisible()
   expect(within(panel).getByText(/Your current crop is preserved/)).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Convert current revision' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Convert and prepare Viewer package' })).toBeVisible()
   expect(screen.getByTestId('forge-osd')).toHaveAttribute(
     'data-tile-source',
     '/api/datasets/compact-conflict/preview/slide.dzi?revision=conflict-config&preview=responsive-v2',
