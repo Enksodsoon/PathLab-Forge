@@ -1,17 +1,23 @@
 package org.pathlab.forge.conversion;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pathlab.forge.derivative.DerivativeEngine;
+import org.pathlab.forge.derivative.DerivativeInfo;
+import org.pathlab.forge.derivative.OmeDynamicProfile;
 import org.pathlab.forge.library.DatasetFormat;
 import org.pathlab.forge.library.DatasetStatus;
 import org.pathlab.forge.library.LocalDataset;
+import org.pathlab.forge.library.PropertiesDatasetRepository;
 
 class ArtifactReuseTest {
     @TempDir
@@ -93,6 +99,70 @@ class ArtifactReuseTest {
         assertTrue(ArtifactIntegrityStamp.matchesOme(revision));
         Files.writeString(ome, "mutated");
         assertFalse(ConversionService.isReusableArtifact(dataset, request, revision));
+    }
+
+    @Test
+    void restoresTheDatasetApprovalPointerWhenReusingAnApprovedArtifact() throws Exception {
+        var dataset = configured();
+        var revisionId = "33333333-3333-3333-3333-333333333333";
+        var revision = new ArtifactRevision(
+                revisionId,
+                dataset.id(), dataset.configurationRevision(), dataset.sourceFingerprint(),
+                System.currentTimeMillis(), ArtifactRevisionStatus.READY,
+                ArtifactRevisionFormat.OME_DYNAMIC_V1,
+                temporaryDirectory.resolve("export.ome.tif").toString(),
+                temporaryDirectory.resolve("derivative").toString(),
+                temporaryDirectory.resolve("absent.plslide").toString(), "a".repeat(64), "",
+                48_528, 44_002, "ome-dynamic-v1", 75, 0, "Direct conversion", "");
+        var cached = dataset.withArtifactRevision(
+                DatasetStatus.PACKAGE_READY, "cache hit", revision.omePath(),
+                revision.omeSha256(), revisionId);
+
+        var restored = ConversionService.restoreReusableApproval(
+                cached, revision.approved(System.currentTimeMillis()));
+
+        assertEquals(revisionId, restored.currentArtifactRevision());
+        assertEquals(revisionId, restored.approvedArtifactRevision());
+    }
+
+    @Test
+    void rejectsAHashValidDirectOmeWhenItsViewerPyramidProfileIsIncomplete() throws Exception {
+        var repository = new PropertiesDatasetRepository(temporaryDirectory.resolve("library.properties"));
+        ConversionEngine engine = new ConversionEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String runtimeDescription() { return "reuse profile test"; }
+            @Override public List<SeriesInfo> inspect(Path source) { return List.of(); }
+            @Override public void convert(Path source, int series, Path output) { }
+        };
+        DerivativeEngine derivatives = new DerivativeEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String description() { return "incomplete pyramid fixture"; }
+            @Override public void validateOmeProfile(
+                    Path ome, int width, int height, OmeDynamicProfile profile, int quality)
+                    throws java.io.IOException {
+                throw new java.io.IOException("Dynamic OME pyramid level count is invalid");
+            }
+            @Override public void optimizeOme(Path input, Path output, int width, int height) { }
+            @Override public DerivativeInfo generateDzi(
+                    Path input, Path output, int width, int height) {
+                throw new AssertionError("DZI generation is not used");
+            }
+        };
+        var revision = new ArtifactRevision(
+                "44444444-4444-4444-4444-444444444444", "dataset", "config", "a".repeat(64),
+                System.currentTimeMillis(), ArtifactRevisionStatus.READY,
+                ArtifactRevisionFormat.OME_DYNAMIC_V1,
+                temporaryDirectory.resolve("export.ome.tif").toString(),
+                temporaryDirectory.resolve("derivative").toString(),
+                temporaryDirectory.resolve("absent.plslide").toString(), "b".repeat(64), "",
+                11_423, 7_822, "ome-dynamic-v1", 75, 0, "Direct conversion", "");
+        var request = new ConversionRequest(Path.of("source.svs"), 0, 0, 0,
+                17_135, 11_733, 17_135, 11_733, 1.5);
+
+        try (var service = new ConversionService(
+                repository, engine, derivatives, temporaryDirectory.resolve("managed"))) {
+            assertFalse(service.validatesReusableProfile(revision, request));
+        }
     }
 
     private static LocalDataset configured() {

@@ -595,7 +595,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         }
     }
 
-    private static boolean transientFailure(String detail) {
+    static boolean transientFailure(String detail) {
         var lower = detail.toLowerCase(java.util.Locale.ROOT);
         return lower.contains("503")
                 || lower.contains("502")
@@ -603,7 +603,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 || lower.contains("connection")
                 || lower.contains("timed out")
                 || lower.contains("interrupted")
-                || lower.contains("finalization failed")
+                || lower.contains("finalization failed: finalizer_failed")
                 || lower.contains("empty or too large");
     }
 
