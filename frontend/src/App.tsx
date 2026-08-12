@@ -5,6 +5,7 @@ import {
 import {
   ArrowsOut,
   ArrowsClockwise,
+  CaretDown,
   CheckCircle,
   CloudArrowUp,
   Crosshair,
@@ -25,7 +26,7 @@ import {
   Wrench,
 } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, Ref } from 'react'
+import type { FormEvent, ReactNode, Ref } from 'react'
 import type OpenSeadragon from 'openseadragon'
 import { renderSVG } from 'uqr'
 
@@ -374,7 +375,7 @@ export function App() {
       const next = await api.getViewerConnection()
       setConnection(next)
       setNotice(next.connected
-        ? 'Viewer connection refreshed — choose a Viewer destination to open its live library'
+        ? 'Viewer connection checked — remote library remains server-managed'
         : 'Connect to PathLab Viewer before opening its private library')
       if (!next.connected) connect()
     } catch (nextError) {
@@ -853,7 +854,13 @@ function ForgeProductRail({
     <aside className="library-app-rail" aria-label="Product navigation" data-canvas-region="icon-rail">
       <div className="library-rail-brand">
         <div className="brand brand-library" aria-label="PathLab Forge">
-          <span className="brand-mark brand-mark-layers"><Crosshair aria-hidden="true" /></span>
+          <span className="brand-mark brand-mark-forge">
+            <svg aria-hidden="true" viewBox="0 0 32 32" fill="none">
+              <path d="M7 5.5h9.8c5.6 0 8.7 2.7 8.7 7.3 0 4.8-3.4 7.7-9.2 7.7h-4.1V27H7V5.5Z" fill="currentColor" opacity=".34" />
+              <path d="M10 5.5v21.2M10 8h7c3.5 0 5.6 1.7 5.6 4.8 0 3.2-2.2 5.1-5.8 5.1H10" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
+              <path d="m19.7 20.1 4.8 2.4-4.8 2.4-4.8-2.4 4.8-2.4Z" fill="currentColor" />
+            </svg>
+          </span>
           <span>PathLab</span><span className="brand-product">Forge</span>
         </div>
       </div>
@@ -875,8 +882,8 @@ function ForgeProductRail({
           <div className="library-storage-copy"><span>Storage</span><strong>{formatBytes(storage.usableBytes)} available</strong></div>
           <div className="library-storage-track" role="meter" aria-label="Usable storage remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}><span style={{ width: `${remaining}%` }} /></div>
         </section>
-        <button type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={onTheme}>
-          {theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}<span>{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
+        <button type="button" aria-label={`${theme === 'dark' ? 'Dark' : 'Light'} theme. Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={onTheme}>
+          {theme === 'dark' ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}<span>{theme === 'dark' ? 'Dark theme' : 'Light theme'}</span>
         </button>
         <button type="button" aria-label={accountLabel} onClick={onSecurity}><Key aria-hidden="true" /><span>{accountLabel}</span></button>
         <button type="button" aria-label={signOutLabel} onClick={onSignOut}><SignOut aria-hidden="true" /><span>{signOutLabel}</span></button>
@@ -1151,11 +1158,17 @@ function SlideNavigator({
         <div className="forge-viewer-library-status">
           <span className={connection?.connected ? 'connected' : ''} />
           <strong>{connection?.connected ? connection.deviceName : 'Viewer not connected'}</strong>
-          <small>{connection?.connected ? 'Remote files stay private in Viewer' : 'Connect once to open private Viewer destinations'}</small>
+          <small>{connection?.connected ? 'Remote files stay private and server-managed in Viewer' : 'Connect once to open private Viewer destinations'}</small>
         </div>
-        <button className="forge-sync-viewer" type="button" onClick={connection?.connected ? onSync : onConnect}>
-          <ArrowsClockwise /> {connection?.connected ? 'Sync Viewer connection' : 'Connect to Viewer'}
+        <button className="forge-sync-viewer" type="button" aria-label={connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'} onClick={connection?.connected ? onSync : onConnect}>
+          <ArrowsClockwise /> {connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'}
         </button>
+        {connection?.connected ? (
+          <div className="forge-viewer-sync-boundary" role="status">
+            <strong>Two-way file sync unavailable</strong>
+            <span>Current Viewer desktop API supports verified upload and status, but no library listing, download, or change feed. Use destinations below to open authoritative Viewer files.</span>
+          </div>
+        ) : null}
         <nav aria-label="Viewer destinations">
           {SERVER_DESTINATIONS.map((destination) => (
             connection?.connected ? (
@@ -1194,7 +1207,7 @@ function SlideNavigator({
       <section className="forge-local-folders" aria-label="Local folders">
         <div className="forge-folder-actions">
           <button type="button" onClick={() => setNewFolder((current) => current ? '' : 'New folder')}><Plus /> New folder</button>
-          <button type="button" onClick={onSync}><ArrowsClockwise /> Sync Viewer</button>
+          <button type="button" onClick={onSync}><ArrowsClockwise /> Open Viewer</button>
         </div>
         {newFolder ? (
           <form onSubmit={(event) => { event.preventDefault(); const name = newFolder.trim(); if (name) { onCreateFolder(name); setActiveFolder(name); setNewFolder('') } }}>
@@ -1228,7 +1241,10 @@ function SlideNavigator({
           const thumbnailSeries = Math.max(0, dataset.selectedSeries)
           return (
           <div key={dataset.id} className={`forge-slide-row${dataset.id === selectedId ? ' active' : ''}`}>
-            <input type="checkbox" aria-label={`Select ${dataset.displayName}`} checked={checked.has(dataset.id)} onChange={() => toggle(dataset.id)} />
+            <label className="forge-check">
+              <input type="checkbox" aria-label={`Select ${dataset.displayName}`} checked={checked.has(dataset.id)} onChange={() => toggle(dataset.id)} />
+              <span className="forge-check-control" aria-hidden="true"><CheckCircle /></span>
+            </label>
             <button type="button" onClick={() => onSelect(dataset.id)}>
               <span className="forge-slide-thumbnail"><img src={`/api/datasets/${encodeURIComponent(dataset.id)}/series/${thumbnailSeries}/thumbnail?v=${encodeURIComponent(dataset.sourceFingerprint.slice(0, 24))}`} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} /></span>
               <span className="forge-slide-copy">
@@ -1979,13 +1995,18 @@ function ExportInspector({
     ? current
     : undefined
   const directOmePlanned = true
-  const deliverableRevision = Boolean(
+  const deliverableArtifact = Boolean(
     readyCurrent
     && readyCurrent.id === dataset.approvedArtifactRevision
     && readyCurrent.format === 'OME_DYNAMIC_V1'
     && readyCurrent.omeProfile === 'ome-dynamic-v1'
     && readyCurrent.jpegQuality === 75
     && readyCurrent.omeBytes > 0,
+  )
+  const deliverableRevision = Boolean(
+    connection?.connected
+    && connection.conversionMode === 'OME_DYNAMIC_V1'
+    && deliverableArtifact,
   )
   const workflowStep = CANCELLABLE_STATUSES.has(dataset.status)
       ? 3
@@ -2031,15 +2052,15 @@ function ExportInspector({
 
   return (
     <section className="forge-inspector-section">
-      <ConversionWorkflow currentStep={workflowStep} complete={viewerUpload?.state === 'COMPLETE'} />
-      <div className="forge-source-summary">
+      <ConversionWorkflow currentStep={workflowStep} complete={viewerUpload?.state === 'COMPLETE'}>
+      <div className="forge-source-summary workflow-only-step-1">
         <span>{dataset.format === 'VSI' ? 'VSI with matched ETS' : dataset.format === 'SVS' ? 'SVS whole slide' : 'OME-TIFF'}</span>
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
       {viewingRevisionId ? (
         <a
-          className="forge-primary"
+          className="forge-primary workflow-only-step-4"
           href="#dzi-viewer"
           onClick={onViewSource}
         >
@@ -2047,7 +2068,7 @@ function ExportInspector({
         </a>
       ) : null}
       {readyCurrent ? (
-        <section className="forge-result-card" aria-label="Converted slide result">
+        <section className="forge-result-card workflow-only-step-4" aria-label="Converted slide result">
           <div>
             <span>{readyCurrent.format === 'OME_DYNAMIC_V1' ? 'Direct OME-TIFF' : 'Prepared Viewer package'}</span>
             <strong>{formatBytes(readyCurrent.format === 'OME_DYNAMIC_V1'
@@ -2084,7 +2105,7 @@ function ExportInspector({
       ) : null}
       {!series.length ? (
         <button
-          className="forge-primary"
+          className="forge-primary workflow-only-step-1"
           type="button"
           disabled={dataset.status === 'INSPECTING'}
           onClick={onInspect}
@@ -2093,7 +2114,7 @@ function ExportInspector({
         </button>
       ) : (
         <form className="forge-export-form" onSubmit={submit}>
-          <fieldset className="forge-series-picker">
+          <fieldset className="forge-series-picker workflow-only-step-1">
             <legend>Image series</legend>
             <div role="list" aria-label="Image series">
               {series.filter((item) => item.rgbPlane).map((item) => {
@@ -2129,7 +2150,7 @@ function ExportInspector({
             </div>
             {seriesLoading ? <small role="status">Opening selected series in the viewer…</small> : null}
           </fieldset>
-          <div className="forge-crop-panel">
+          <div className="forge-crop-panel workflow-only-step-2">
             <div className="forge-section-heading">
               <div>
                 <h3>Export area</h3>
@@ -2157,7 +2178,7 @@ function ExportInspector({
               ) : null}
             </div>
           </div>
-          <label>Downsample
+          <label className="workflow-only-step-2">Downsample
             <select
               name="downsample"
               value={draft.downsample}
@@ -2166,7 +2187,7 @@ function ExportInspector({
               {(capabilities?.downsamples || [1, 1.5, 2, 4, 8, 16, 32]).map((value) => <option value={value} key={value}>{value}×</option>)}
             </select>
           </label>
-          <div className="forge-output-summary">
+          <div className="forge-output-summary workflow-only-step-2">
             <span>Projected output</span>
             <strong>{projectedWidth.toLocaleString()} × {projectedHeight.toLocaleString()}</strong>
             {draftMatchesSaved && current?.format === 'OME_DYNAMIC_V1'
@@ -2216,24 +2237,24 @@ function ExportInspector({
                 : 'calculating…'}
             </small>
           </div>
-          {!draftValid ? <p className="forge-field-error">Crop must stay inside the selected image series.</p> : null}
+          {!draftValid ? <p className="forge-field-error workflow-only-step-2">Crop must stay inside the selected image series.</p> : null}
           {draftValid && projectedPixels > 250_000_000 ? (
-            <p className="forge-help" role="status">
+            <p className="forge-help workflow-only-step-2" role="status">
               Exact-resolution export: {(projectedPixels / 1_000_000_000).toFixed(2)} billion pixels.
               This preserves the selected {parsed.downsample}× scale but cannot meet the one-minute
               target on the 8 GB / 6-core profile.
             </p>
           ) : null}
-          <button className="forge-primary" type="submit" disabled={!draftValid}>Apply crop & export settings</button>
+          <button className="forge-primary workflow-only-step-2" type="submit" disabled={!draftValid}>Apply crop & export settings</button>
         </form>
       )}
-      <p className="forge-help">
+      <p className="forge-help workflow-only-step-3">
         {series.length
           ? `${series.length} top-level image${series.length === 1 ? '' : 's'} · ${series.reduce((total, item) => total + item.resolutionCount, 0)} flattened resolution${series.reduce((total, item) => total + item.resolutionCount, 0) === 1 ? '' : 's'}`
           : dataset.detail}
       </p>
-      {series.length ? <p className="forge-help" role="status">{dataset.detail}</p> : null}
-      <div className="forge-help" role="status">
+      {series.length ? <p className="forge-help workflow-only-step-3" role="status">{dataset.detail}</p> : null}
+      <div className="forge-help workflow-only-step-5" role="status">
         <strong>{connection?.connected ? 'Viewer connected' : 'Viewer not connected'}</strong>
         {' · '}
         Next conversion · Direct OME-TIFF
@@ -2243,14 +2264,18 @@ function ExportInspector({
           ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
           : ''}
       </div>
-      {dataset.approvedArtifactRevision && !deliverableRevision ? (
-        <div className="forge-format-notice" role="status">
-          <strong>Update needed before Viewer delivery</strong>
-          <span>This approved result uses an older package format. Convert once with the current direct OME-TIFF workflow; Forge will keep the older result in History.</span>
+      {dataset.approvedArtifactRevision && connection?.connected && !deliverableRevision ? (
+        <div className="forge-format-notice workflow-only-step-5" role="status">
+          <strong>{readyCurrent?.format === 'OME_DYNAMIC_V1' && connection?.connected
+            ? 'Viewer update required'
+            : 'Update needed before Viewer delivery'}</strong>
+          <span>{readyCurrent?.format === 'OME_DYNAMIC_V1' && connection?.connected
+            ? 'This Viewer does not advertise the exact ome-dynamic-v1 ingest profile. Forge will not start an upload that the server must reject.'
+            : 'This approved result uses an older package format. Convert once with the current direct OME-TIFF workflow; Forge will keep the older result in History.'}</span>
         </div>
       ) : null}
       {dataset.status === 'FAILED' && dataset.detail.includes('DZI_SIZE_QUALITY_CONFLICT') ? (
-        <div className="forge-compact-conflict" role="alert">
+        <div className="forge-compact-conflict workflow-only-step-3" role="alert">
           <strong>Compact DZI could not meet the 1.25× size limit</strong>
           <p>{dataset.detail}</p>
           <p>Your current crop is preserved. Change the crop or downsample, then retry conversion.</p>
@@ -2258,24 +2283,25 @@ function ExportInspector({
       ) : null}
       <div className="forge-action-stack">
         {CANCELLABLE_STATUSES.has(dataset.status)
-          ? <button type="button" onClick={onCancel}>Cancel conversion</button>
-          : <button className="forge-primary" type="button" disabled={!series.length} onClick={onConvert}>
+          ? <button className="workflow-only-step-3" type="button" onClick={onCancel}>Cancel conversion</button>
+          : <button className="forge-primary workflow-only-step-3" type="button" disabled={!series.length} onClick={onConvert}>
               Convert to direct OME-TIFF
             </button>}
         {current?.status === 'READY'
           && (current.packageBytes > 0 || current.format === 'OME_DYNAMIC_V1')
           && dataset.approvedArtifactRevision !== current.id
-          ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve {current.format === 'OME_DYNAMIC_V1' ? 'direct OME' : 'compact DZI'}</button>
+          ? <button className="forge-approve workflow-only-step-4" type="button" onClick={onApprove}><CheckCircle /> Approve {current.format === 'OME_DYNAMIC_V1' ? 'direct OME' : 'compact DZI'}</button>
           : null}
         {deliverableRevision
-          ? <button type="button" onClick={onUpload}>Deliver privately to Viewer</button>
+          ? <button className="workflow-only-step-5" type="button" onClick={onUpload}>Deliver privately to Viewer</button>
           : !connection?.connected
-          ? <button type="button" onClick={onConnect}>Connect Viewer</button>
-          : null}
-        {!ACTIVE_STATUSES.has(dataset.status)
-          ? <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove from library</button>
+          ? <button className="workflow-only-step-5" type="button" onClick={onConnect}>Connect Viewer</button>
           : null}
       </div>
+      </ConversionWorkflow>
+      {!ACTIVE_STATUSES.has(dataset.status)
+        ? <button className="forge-danger forge-remove-slide" type="button" onClick={onRemove}><Trash /> Remove from library</button>
+        : null}
     </section>
   )
 }
@@ -2430,7 +2456,17 @@ function conversionCounter(dataset: Dataset) {
   return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`
 }
 
-function ConversionWorkflow({ currentStep, complete }: { currentStep: number; complete: boolean }) {
+function ConversionWorkflow({
+  currentStep,
+  complete,
+  children,
+}: {
+  currentStep: number
+  complete: boolean
+  children: ReactNode
+}) {
+  const [openStep, setOpenStep] = useState(currentStep)
+  useEffect(() => setOpenStep(currentStep), [currentStep])
   const steps = [
     ['Inspect', 'Choose the image series'],
     ['Region', 'Set crop and scale'],
@@ -2439,8 +2475,8 @@ function ConversionWorkflow({ currentStep, complete }: { currentStep: number; co
     ['Deliver', 'Send privately to Viewer'],
   ]
   return (
-    <section className="forge-workflow" aria-label="Conversion workflow">
-      <header><strong>Slide workflow</strong><span>One continuous path</span></header>
+    <section className="forge-workflow" aria-label="Conversion workflow" data-open-step={openStep}>
+      <header><strong>Slide workflow</strong><span>Complete one step at a time</span></header>
       <ol>
         {steps.map(([label, detail], index) => {
           const number = index + 1
@@ -2449,11 +2485,22 @@ function ConversionWorkflow({ currentStep, complete }: { currentStep: number; co
           return (
             <li className={done ? 'complete' : active ? 'active' : ''} key={label} aria-current={active ? 'step' : undefined}>
               <i>{done ? <CheckCircle aria-hidden="true" /> : number}</i>
-              <span><strong>{label}</strong><small>{detail}</small></span>
+              <button
+                type="button"
+                aria-expanded={openStep === number}
+                aria-controls="forge-workflow-panel"
+                onClick={() => setOpenStep(number)}
+              >
+                <span><strong>{label}</strong><small>{detail}</small></span>
+                <CaretDown aria-hidden="true" />
+              </button>
             </li>
           )
         })}
       </ol>
+      <div id="forge-workflow-panel" className="forge-workflow-panel">
+        {children}
+      </div>
     </section>
   )
 }

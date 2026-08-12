@@ -306,13 +306,34 @@ test('shows the short-lived Viewer verification code', async () => {
 test('switches theme and opens Viewer as its own library destination', async () => {
   render(<App />)
 
-  fireEvent.click(await screen.findByRole('button', { name: 'Switch to dark theme' }))
+  const themeToggle = await screen.findByRole('button', { name: 'Light theme. Switch to dark theme' })
+  expect(themeToggle).toHaveTextContent('Light theme')
+  fireEvent.click(themeToggle)
   expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
   expect(localStorage.getItem('pathlab-forge-theme')).toBe('dark')
+  expect(screen.getByRole('button', { name: 'Dark theme. Switch to light theme' }))
+    .toHaveTextContent('Dark theme')
 
   fireEvent.click(screen.getByRole('button', { name: 'Viewer library' }))
   expect((await screen.findAllByText('Viewer not connected'))[0]).toBeVisible()
   expect(screen.getByRole('button', { name: 'Connect to Viewer' })).toBeVisible()
+})
+
+test('does not present connection refresh as two-way Viewer file synchronization', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: true,
+    viewerUrl: 'https://viewer.example',
+    deviceName: 'PathLab Viewer',
+    scopes: ['desktop:ingest'],
+    conversionMode: 'OME_DYNAMIC_V1',
+  })
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
+
+  expect(await screen.findByRole('button', { name: 'Refresh Viewer connection' })).toBeVisible()
+  expect(screen.getByText('Two-way file sync unavailable')).toBeVisible()
+  expect(screen.queryByText('Sync Viewer connection')).not.toBeInTheDocument()
 })
 
 test('uses one-click default pairing and hides custom origins under Advanced', async () => {
@@ -973,12 +994,89 @@ test('uses direct OME stages instead of DZI packaging stages during conversion',
   expect(screen.queryByText('Generating DZI')).not.toBeInTheDocument()
   expect(screen.queryByText('Packaging')).not.toBeInTheDocument()
   const selectSlide = screen.getByRole('checkbox', { name: 'Select Direct converting.vsi' })
+  expect(selectSlide.closest('label')).toHaveClass('forge-check')
+  expect(selectSlide.nextElementSibling).toHaveClass('forge-check-control')
   expect(selectSlide.closest('.forge-slide-row')?.querySelector('img')).toHaveAttribute(
     'src',
     '/api/datasets/direct-converting/series/0/thumbnail?v=direct-converting-source',
   )
   expect(screen.getByRole('progressbar', { name: 'Direct converting.vsi library conversion progress' })).toHaveValue(33)
   expect(screen.getByRole('region', { name: 'Conversion workflow' })).toBeVisible()
+})
+
+test('opens each workflow step as a focused menu instead of showing one static progress list', async () => {
+  const slide: api.Dataset = {
+    id: 'workflow-slide', displayName: 'Workflow slide.svs', sourceBytes: 5_000,
+    format: 'SVS', status: 'READY_TO_CONVERT', detail: 'Ready to convert', outputPath: '',
+    sha256: '', selectedSeries: 0, width: 2_000, height: 1_000, downsample: 1,
+    estimatedOutputBytes: 4_000, projectedFileBytes: 2_000,
+    projectedFileLowerBytes: 1_000, projectedFileUpperBytes: 3_000,
+    cropX: 0, cropY: 0, cropWidth: 2_000, cropHeight: 1_000,
+    sourceFingerprint: 'workflow-source', configurationRevision: 'workflow-config',
+    currentArtifactRevision: '', approvedArtifactRevision: '',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[slide], {
+    conversionRuntime: 'OpenSlide test', derivativeRuntime: 'libvips test',
+    vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([slide])
+  vi.mocked(api.inspectDataset).mockResolvedValue([{
+    index: 0, name: 'Main image', width: 2_000, height: 1_000,
+    sizeZ: 1, channels: 3, sizeT: 1, pixelType: 'uint8', physicalSizeX: .25,
+    physicalSizeY: .25, physicalUnit: 'µm', resolutionCount: 4, rgbPlane: true,
+  }])
+
+  render(<App />)
+
+  const workflow = await screen.findByRole('region', { name: 'Conversion workflow' })
+  expect(within(workflow).getByRole('button', { name: /^Inspect Choose/ })).toHaveAttribute('aria-expanded', 'true')
+  fireEvent.click(within(workflow).getByRole('button', { name: 'Inspect image series' }))
+  const regionStep = within(workflow).getByRole('button', { name: /Region/ })
+  await waitFor(() => expect(regionStep).toHaveAttribute('aria-expanded', 'true'))
+  expect(within(workflow).getByRole('button', { name: 'Draw crop on slide' })).toBeVisible()
+
+  fireEvent.click(within(workflow).getByRole('button', { name: /^Inspect Choose/ }))
+  expect(within(workflow).getByRole('button', { name: /^Inspect Choose/ })).toHaveAttribute('aria-expanded', 'true')
+  expect(workflow).toHaveAttribute('data-open-step', '1')
+  expect(within(workflow).getByRole('list', { name: 'Image series' })).toBeVisible()
+})
+
+test('blocks direct delivery when connected Viewer does not advertise exact dynamic OME support', async () => {
+  const slide: api.Dataset = {
+    id: 'viewer-incompatible', displayName: 'Viewer incompatible.svs', sourceBytes: 5_000,
+    format: 'SVS', status: 'READY', detail: 'Validated', outputPath: '', sha256: '',
+    selectedSeries: 0, width: 2_000, height: 1_000, downsample: 1,
+    estimatedOutputBytes: 4_000, projectedFileBytes: 2_000,
+    projectedFileLowerBytes: 1_000, projectedFileUpperBytes: 3_000,
+    cropX: 0, cropY: 0, cropWidth: 2_000, cropHeight: 1_000,
+    sourceFingerprint: 'viewer-incompatible-source', configurationRevision: 'config',
+    currentArtifactRevision: 'direct-approved', approvedArtifactRevision: 'direct-approved',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[slide], {
+    conversionRuntime: 'OpenSlide test', derivativeRuntime: 'libvips test',
+    vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([slide])
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Older Viewer',
+    scopes: ['slides:write'], conversionMode: 'PREPARED_DZI_V2',
+  })
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'direct-approved', approvedRevision: 'direct-approved', revisions: [{
+      id: 'direct-approved', status: 'APPROVED', format: 'OME_DYNAMIC_V1',
+      createdAt: Date.now(), outputWidth: 2_000, outputHeight: 1_000,
+      omePath: 'C:\\exports\\direct.ome.tif', packagePath: '', omeSha256: 'sha',
+      omeProfile: 'ome-dynamic-v1', omeBytes: 2_000, dziBytes: 0, packageBytes: 0,
+      jpegQuality: 75, minimumWindowedSsim: 0, maximumRoiMeanDeltaE00: 0,
+      minimumEdgeDetailRetention: 0, encoderProfile: '', packageSha256: '', failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  expect(await screen.findByText('Viewer update required')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Deliver privately to Viewer' })).not.toBeInTheDocument()
+  expect(api.uploadApprovedArtifact).not.toHaveBeenCalled()
 })
 
 test('does not offer Viewer delivery for an older prepared artifact', async () => {
