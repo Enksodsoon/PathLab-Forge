@@ -26,7 +26,7 @@ import org.pathlab.forge.annotation.AnnotationTransformer;
 import org.pathlab.forge.conversion.ArtifactIntegrityStamp;
 import org.pathlab.forge.conversion.ArtifactRevision;
 
-public final class ViewerPairingService implements AutoCloseable {
+public final class ViewerPairingService implements AutoCloseable, ViewerAuthorizedClient {
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private static final int LEGACY_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
     private static final int MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
@@ -1016,6 +1016,30 @@ public final class ViewerPairingService implements AutoCloseable {
             deliveryStore.close();
         } catch (IOException ignored) {
             // Shutdown must continue; SQLite will recover the durable job on restart.
+        }
+    }
+
+    @Override
+    public ViewerHttpResponse request(String method, String path, java.util.Map<String, String> headers,
+            byte[] body) throws IOException {
+        if (!path.startsWith("/api/") || path.contains("..")) {
+            throw new IllegalArgumentException("Viewer API path is invalid");
+        }
+        var credential = storedCredential();
+        if (credential == null) throw new IllegalStateException("Connect to Viewer first");
+        var builder = HttpRequest.newBuilder(credential.base().resolve(path))
+                .timeout(Duration.ofMinutes(5))
+                .header("Authorization", "Bearer " + credential.token());
+        headers.forEach(builder::header);
+        var publisher = body.length == 0 ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofByteArray(body);
+        var request = builder.method(method, publisher).build();
+        try {
+            var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            return new ViewerHttpResponse(response.statusCode(), response.headers().map(), response.body());
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Viewer request was interrupted", error);
         }
     }
 

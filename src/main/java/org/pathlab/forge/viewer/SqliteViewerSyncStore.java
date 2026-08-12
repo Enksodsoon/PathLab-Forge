@@ -1,5 +1,7 @@
 package org.pathlab.forge.viewer;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,11 +14,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 public final class SqliteViewerSyncStore implements ViewerSyncStore {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private final Connection connection;
 
     public SqliteViewerSyncStore(Path database) throws IOException {
@@ -36,8 +40,21 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
                           folder_revision INTEGER NOT NULL, thumbnail_url TEXT NOT NULL, tile_url TEXT NOT NULL,
                           remote_updated_at TEXT NOT NULL, dirty_fields TEXT NOT NULL DEFAULT '',
                           partial_path TEXT NOT NULL DEFAULT '', download_bytes INTEGER NOT NULL DEFAULT 0,
-                          download_offset INTEGER NOT NULL DEFAULT 0, download_sha256 TEXT NOT NULL DEFAULT '')
+                          download_offset INTEGER NOT NULL DEFAULT 0, download_sha256 TEXT NOT NULL DEFAULT '',
+                          content_bytes INTEGER NOT NULL DEFAULT 0, content_sha256 TEXT NOT NULL DEFAULT '',
+                          metadata_json TEXT NOT NULL DEFAULT '{}')
                         """);
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS viewer_remote_folders (
+                          folder_id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT NOT NULL,
+                          revision INTEGER NOT NULL)
+                        """);
+                ensureColumn(connection, "viewer_sync_records", "content_bytes",
+                        "INTEGER NOT NULL DEFAULT 0");
+                ensureColumn(connection, "viewer_sync_records", "content_sha256",
+                        "TEXT NOT NULL DEFAULT ''");
+                ensureColumn(connection, "viewer_sync_records", "metadata_json",
+                        "TEXT NOT NULL DEFAULT '{}'");
                 statement.execute("""
                         CREATE TABLE IF NOT EXISTS viewer_sync_state (
                           singleton INTEGER PRIMARY KEY CHECK(singleton=1), cursor INTEGER NOT NULL)
@@ -56,19 +73,32 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
         }
     }
 
+    private static void ensureColumn(Connection connection, String table, String column,
+            String definition) throws SQLException {
+        try (var columns = connection.createStatement().executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (columns.next()) {
+                if (column.equals(columns.getString("name"))) return;
+            }
+        }
+        connection.createStatement().execute(
+                "ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    }
+
     @Override
     public synchronized void upsertRemote(ViewerRemoteSlide slide) throws IOException {
         try (var statement = connection.prepareStatement("""
                 INSERT INTO viewer_sync_records
                 (slide_id,display_name,folder_id,status,content_revision,annotation_revision,
-                 metadata_revision,folder_revision,thumbnail_url,tile_url,remote_updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                 metadata_revision,folder_revision,thumbnail_url,tile_url,remote_updated_at,
+                 content_bytes,content_sha256,metadata_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(slide_id) DO UPDATE SET display_name=excluded.display_name,
                   folder_id=excluded.folder_id,status=excluded.status,
                   content_revision=excluded.content_revision,annotation_revision=excluded.annotation_revision,
                   metadata_revision=excluded.metadata_revision,folder_revision=excluded.folder_revision,
                   thumbnail_url=excluded.thumbnail_url,tile_url=excluded.tile_url,
-                  remote_updated_at=excluded.remote_updated_at
+                  remote_updated_at=excluded.remote_updated_at,content_bytes=excluded.content_bytes,
+                  content_sha256=excluded.content_sha256,metadata_json=excluded.metadata_json
                 """)) {
             statement.setString(1, slide.id());
             statement.setString(2, slide.displayName());
@@ -81,9 +111,57 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
             statement.setString(9, slide.thumbnailUrl());
             statement.setString(10, slide.tileUrl());
             statement.setString(11, slide.updatedAt().toString());
+            statement.setLong(12, slide.contentBytes());
+            statement.setString(13, slide.contentSha256());
+            statement.setString(14, JSON.writeValueAsString(slide.metadata()));
             statement.executeUpdate();
         } catch (SQLException error) {
             throw new IOException("Unable to save remote slide", error);
+        }
+    }
+
+    @Override
+    public synchronized void replaceFolders(List<ViewerRemoteFolder> folders) throws IOException {
+        try {
+            connection.setAutoCommit(false);
+            try (var delete = connection.prepareStatement("DELETE FROM viewer_remote_folders")) {
+                delete.executeUpdate();
+            }
+            try (var insert = connection.prepareStatement(
+                    "INSERT INTO viewer_remote_folders VALUES (?,?,?,?)")) {
+                for (var folder : folders) {
+                    insert.setString(1, folder.id());
+                    insert.setString(2, folder.name());
+                    insert.setString(3, folder.parentId());
+                    insert.setLong(4, folder.revision());
+                    insert.addBatch();
+                }
+                insert.executeBatch();
+            }
+            connection.commit();
+        } catch (SQLException error) {
+            try { connection.rollback(); } catch (SQLException ignored) { }
+            throw new IOException("Unable to save remote folders", error);
+        } finally {
+            try { connection.setAutoCommit(true); } catch (SQLException error) {
+                throw new IOException("Unable to restore sync store transaction mode", error);
+            }
+        }
+    }
+
+    @Override
+    public synchronized List<ViewerRemoteFolder> folders() throws IOException {
+        try (var statement = connection.prepareStatement(
+                "SELECT * FROM viewer_remote_folders ORDER BY name,folder_id");
+                var rows = statement.executeQuery()) {
+            var folders = new ArrayList<ViewerRemoteFolder>();
+            while (rows.next()) {
+                folders.add(new ViewerRemoteFolder(rows.getString("folder_id"), rows.getString("name"),
+                        rows.getString("parent_id"), rows.getLong("revision")));
+            }
+            return List.copyOf(folders);
+        } catch (SQLException error) {
+            throw new IOException("Unable to list remote folders", error);
         }
     }
 
@@ -223,10 +301,17 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     }
 
     private static ViewerSyncRecord readRecord(ResultSet row) throws SQLException {
+        Map<String, Object> metadata;
+        try {
+            metadata = JSON.readValue(row.getString("metadata_json"), new TypeReference<>() { });
+        } catch (IOException error) {
+            throw new SQLException("Stored Viewer metadata is invalid", error);
+        }
         var remote = new ViewerRemoteSlide(row.getString("slide_id"), row.getString("display_name"),
                 row.getString("folder_id"), row.getString("status"), row.getLong("content_revision"),
                 row.getLong("annotation_revision"), row.getLong("metadata_revision"),
                 row.getLong("folder_revision"), row.getString("thumbnail_url"), row.getString("tile_url"),
+                row.getLong("content_bytes"), row.getString("content_sha256"), metadata,
                 Instant.parse(row.getString("remote_updated_at")));
         var path = row.getString("partial_path");
         return new ViewerSyncRecord(remote, decodeFields(row.getString("dirty_fields")),

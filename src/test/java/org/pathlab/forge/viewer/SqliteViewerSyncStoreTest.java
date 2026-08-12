@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Set;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -23,6 +24,7 @@ final class SqliteViewerSyncStoreTest {
 
         try (var store = new SqliteViewerSyncStore(database)) {
             store.upsertRemote(remote);
+            store.replaceFolders(List.of(new ViewerRemoteFolder("folder-1", "Remote", "", 3)));
             store.markDirty("remote-1", Set.of("displayName", "folderId"));
             store.beginDownload("remote-1", partial, 100, "a".repeat(64));
             store.advanceDownload("remote-1", 40);
@@ -38,6 +40,7 @@ final class SqliteViewerSyncStoreTest {
             assertEquals(40, record.downloadOffset());
             assertEquals(partial.toAbsolutePath().normalize(), record.partialPath());
             assertEquals(9, store.cursor());
+            assertEquals("Remote", store.folders().get(0).name());
             assertEquals(1, store.conflicts().size());
             assertTrue(store.conflicts().get(0).unresolved());
         }
