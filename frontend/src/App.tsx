@@ -695,7 +695,6 @@ export function App() {
               onSync={() => void syncViewer()}
               onKeepOffline={(id) => void api.keepViewerSlideOffline(id).then(() => {
                 setNotice('Offline download started; verified activation will happen in the background')
-                window.setTimeout(() => void api.viewerLibrary().then(setRemoteLibrary), 1200)
               }).catch((nextError) => setError(message(nextError)))}
               onRemoveOffline={(id) => void api.removeViewerSlideOffline(id)
                 .then(() => api.viewerLibrary()).then(setRemoteLibrary)

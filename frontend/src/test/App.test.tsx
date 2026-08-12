@@ -365,6 +365,7 @@ test('opens a synchronized Viewer slide and starts a verified offline copy', asy
   )
   fireEvent.click(screen.getAllByRole('button', { name: 'Keep offline' })[0])
   expect(api.keepViewerSlideOffline).toHaveBeenCalledWith('slide-1')
+  await waitFor(() => expect(screen.getByText(/Offline download started/)).toBeVisible())
 })
 
 test('uses one-click default pairing and hides custom origins under Advanced', async () => {
