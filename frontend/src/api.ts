@@ -139,7 +139,10 @@ export interface ViewerRemoteItem {
   folderId: string
   state: string
   contentBytes: number
+  width: number
+  height: number
   thumbnailUrl: string
+  tileSourceUrl: string
   offlineBytes: number
   offlineComplete: boolean
 }
@@ -371,6 +374,10 @@ export async function keepViewerSlideOffline(id: string) {
   return request<{ state: string }>(`/api/viewer/slides/${encodeURIComponent(id)}/offline`, { method: 'POST' })
 }
 
+export async function removeViewerSlideOffline(id: string) {
+  return request<void>(`/api/viewer/slides/${encodeURIComponent(id)}/offline`, { method: 'DELETE' })
+}
+
 export async function updateViewerSlideMetadata(id: string, values: { displayName?: string; folderId?: string }) {
   const query = new URLSearchParams()
   if (values.displayName !== undefined) query.set('displayName', values.displayName)
@@ -378,6 +385,21 @@ export async function updateViewerSlideMetadata(id: string, values: { displayNam
   return request<{ id: string; displayName: string }>(
     `/api/viewer/slides/${encodeURIComponent(id)}/metadata?${query}`, { method: 'POST' },
   )
+}
+
+export async function viewerSlideAnnotations(id: string) {
+  return request<Record<string, unknown>>(`/api/viewer/slides/${encodeURIComponent(id)}/annotations`)
+}
+
+export async function mutateViewerSlideAnnotations(id: string, payload: Record<string, unknown>) {
+  return request<Record<string, unknown>>(
+    `/api/viewer/slides/${encodeURIComponent(id)}/annotations?payload=${encodeURIComponent(JSON.stringify(payload))}`,
+    { method: 'POST' },
+  )
+}
+
+export async function resolveViewerConflict(id: string, field: string, resolution: 'local' | 'viewer') {
+  return request<void>(`/api/viewer/conflicts/${encodeURIComponent(id)}/resolve?field=${encodeURIComponent(field)}&resolution=${resolution}`, { method: 'POST' })
 }
 
 export async function annotations(id: string) {

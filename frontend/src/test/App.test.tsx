@@ -117,8 +117,12 @@ vi.mock('../api', () => ({
   cancelViewerUpload: vi.fn(),
   viewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
   syncViewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
-  keepViewerSlideOffline: vi.fn(),
-  updateViewerSlideMetadata: vi.fn(),
+  keepViewerSlideOffline: vi.fn(async () => ({ state: 'DOWNLOADING' })),
+  removeViewerSlideOffline: vi.fn(async () => undefined),
+  updateViewerSlideMetadata: vi.fn(async () => ({ id: '', displayName: '' })),
+  resolveViewerConflict: vi.fn(async () => undefined),
+  viewerSlideAnnotations: vi.fn(),
+  mutateViewerSlideAnnotations: vi.fn(),
 }))
 
 beforeEach(() => {
@@ -338,6 +342,29 @@ test('presents the authenticated Viewer library as active two-way synchronizatio
   expect(await screen.findByRole('button', { name: 'Refresh Viewer connection' })).toHaveTextContent('Sync changes')
   expect(screen.getByText('Two-way sync active')).toBeVisible()
   expect(api.syncViewerLibrary).toHaveBeenCalled()
+})
+
+test('opens a synchronized Viewer slide and starts a verified offline copy', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Viewer',
+    scopes: ['library:read', 'slides:offline:read', 'library:sync'],
+  })
+  vi.mocked(api.syncViewerLibrary).mockResolvedValue({
+    items: [{ id: 'slide-1', displayName: 'Remote slide', folderId: '', state: 'ready_private',
+      contentBytes: 1024, width: 2048, height: 1024, thumbnailUrl: '/thumb',
+      tileSourceUrl: '/api/viewer/slides/slide-1/preview/slide.dzi', offlineBytes: 0,
+      offlineComplete: false }],
+    folders: [], conflicts: [],
+  })
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
+
+  expect((await screen.findAllByText('Remote slide'))[0]).toBeVisible()
+  expect(screen.getByTestId('forge-osd')).toHaveAttribute(
+    'data-tile-source', '/api/viewer/slides/slide-1/preview/slide.dzi',
+  )
+  fireEvent.click(screen.getAllByRole('button', { name: 'Keep offline' })[0])
+  expect(api.keepViewerSlideOffline).toHaveBeenCalledWith('slide-1')
 })
 
 test('uses one-click default pairing and hides custom origins under Advanced', async () => {

@@ -21,6 +21,24 @@ Forge must integrate with those contracts rather than create a parallel slide li
 
 The implemented desktop ingest endpoints use `/api/v1/desktop`.
 
+## Private hybrid sync v1
+
+`desktop-sync/v1` extends the existing device credential; it does not replace ingest.
+New pairings receive `library:read`, `slides:offline:read`, and `library:sync`.
+Legacy credentials must reconnect before sync.
+
+- `GET /api/v2/desktop/library/items`: private ready slides and folders, at most 100 items.
+- `GET /api/v2/desktop/library/changes?after=`: durable cursor, at most 500 events.
+- `HEAD/GET /api/v2/desktop/slides/{id}/content`: verified, resumable canonical OME download.
+- `PATCH /api/v2/desktop/slides/{id}`: compare-and-set metadata and folder placement.
+- Existing `/api/v1/desktop/slides/{id}/preview/*` and annotation batch routes remain authoritative.
+
+Forge proxies private preview and annotation traffic over loopback so credentials never enter
+browser JavaScript. It caches preview resources to a 2 GiB byte cap and downloads at most one
+offline OME at a time with a 1 MiB streaming buffer, 10 percent disk headroom, SHA-256
+verification, and atomic activation. HTTP 409 preserves local and Viewer values for explicit
+resolution. Pixels remain immutable.
+
 ### Capabilities
 
 ```text

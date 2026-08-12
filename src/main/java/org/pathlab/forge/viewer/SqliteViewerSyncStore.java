@@ -232,6 +232,19 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     }
 
     @Override
+    public synchronized void clearDownload(String slideId) throws IOException {
+        try (var statement = connection.prepareStatement("""
+                UPDATE viewer_sync_records SET partial_path='',download_bytes=0,
+                download_offset=0,download_sha256='' WHERE slide_id=?
+                """)) {
+            statement.setString(1, slideId);
+            requireUpdated(statement.executeUpdate(), slideId);
+        } catch (SQLException error) {
+            throw new IOException("Unable to clear offline slide state", error);
+        }
+    }
+
+    @Override
     public synchronized void saveCursor(long cursor) throws IOException {
         if (cursor < 0) throw new IllegalArgumentException("Cursor must be non-negative");
         try (var statement = connection.prepareStatement("UPDATE viewer_sync_state SET cursor=? WHERE singleton=1")) {
@@ -288,6 +301,18 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
             return List.copyOf(conflicts);
         } catch (SQLException error) {
             throw new IOException("Unable to list Viewer sync conflicts", error);
+        }
+    }
+
+    @Override
+    public synchronized void resolveConflict(String slideId, String field) throws IOException {
+        try (var statement = connection.prepareStatement(
+                "UPDATE viewer_sync_conflicts SET unresolved=0 WHERE slide_id=? AND field=?")) {
+            statement.setString(1, slideId);
+            statement.setString(2, field);
+            statement.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to resolve Viewer sync conflict", error);
         }
     }
 

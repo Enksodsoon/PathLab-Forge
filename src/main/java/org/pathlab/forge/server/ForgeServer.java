@@ -349,12 +349,27 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/viewer/preview".equals(path)
                     && "GET".equals(exchange.getRequestMethod())) {
                 viewerPreview(exchange);
+            } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/preview/.+")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                viewerSlidePreview(exchange, path);
             } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/offline")
                     && "POST".equals(exchange.getRequestMethod())) {
                 keepViewerSlideOffline(exchange, path);
+            } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/offline")
+                    && "DELETE".equals(exchange.getRequestMethod())) {
+                removeViewerSlideOffline(exchange, path);
             } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/metadata")
                     && "POST".equals(exchange.getRequestMethod())) {
                 updateViewerSlideMetadata(exchange, path);
+            } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/annotations")
+                    && "GET".equals(exchange.getRequestMethod())) {
+                viewerSlideAnnotations(exchange, path, false);
+            } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/annotations")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                viewerSlideAnnotations(exchange, path, true);
+            } else if (path.matches("/api/viewer/conflicts/[A-Za-z0-9_-]{1,128}/resolve")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                resolveViewerConflict(exchange, path);
             } else if ("/api/datasets".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 listDatasets(exchange);
             } else if ("/api/datasets/select".equals(path)
@@ -1756,9 +1771,12 @@ public final class ForgeServer implements AutoCloseable {
                 return "{\"id\":" + json(slide.id()) + ",\"displayName\":" + json(slide.displayName())
                         + ",\"folderId\":" + json(slide.folderId()) + ",\"state\":" + json(slide.status())
                         + ",\"contentBytes\":" + slide.contentBytes()
+                        + ",\"width\":" + slide.metadata().getOrDefault("width", 1)
+                        + ",\"height\":" + slide.metadata().getOrDefault("height", 1)
                         + ",\"thumbnailUrl\":\"/api/viewer/preview?path="
                         + java.net.URLEncoder.encode(slide.thumbnailUrl(), StandardCharsets.UTF_8)
-                        + "\",\"offlineBytes\":" + record.downloadOffset()
+                        + "\",\"tileSourceUrl\":" + json("/api/viewer/slides/" + slide.id()
+                                + "/preview/slide.dzi") + ",\"offlineBytes\":" + record.downloadOffset()
                         + ",\"offlineComplete\":" + (record.downloadBytes() > 0
                                 && record.downloadOffset() == record.downloadBytes()) + "}";
             }).collect(java.util.stream.Collectors.joining(","));
@@ -1800,11 +1818,38 @@ public final class ForgeServer implements AutoCloseable {
         }
     }
 
+    private void viewerSlidePreview(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        var remainder = path.substring("/api/viewer/slides/".length());
+        var separator = remainder.indexOf("/preview/");
+        var id = remainder.substring(0, separator);
+        var relative = remainder.substring(separator + "/preview/".length());
+        if (!relative.matches("slide\\.dzi|slide_files/\\d+/\\d+_\\d+\\.(?:jpg|jpeg|png)")) {
+            respond(exchange, 404, "application/json", "{\"error\":\"viewer_preview_not_found\"}");
+            return;
+        }
+        try {
+            var resource = viewerTileCache.get(
+                    "/api/v1/desktop/slides/" + id + "/preview/" + relative);
+            respondFile(exchange, resource.contentType(), resource.path());
+        } catch (IOException error) {
+            respond(exchange, 502, "application/json", "{\"error\":\"viewer_preview_failed\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
     private void keepViewerSlideOffline(HttpExchange exchange, String path) throws IOException {
         if (!requireWrite(exchange)) return;
         var id = path.substring("/api/viewer/slides/".length(), path.length() - "/offline".length());
         viewerSyncService.keepOfflineAsync(id);
         respond(exchange, 202, "application/json", "{\"state\":\"DOWNLOADING\"}");
+    }
+
+    private void removeViewerSlideOffline(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var id = path.substring("/api/viewer/slides/".length(), path.length() - "/offline".length());
+        viewerSyncService.removeOffline(id);
+        exchange.sendResponseHeaders(204, -1);
     }
 
     private void updateViewerSlideMetadata(HttpExchange exchange, String path) throws IOException {
@@ -1817,6 +1862,41 @@ public final class ForgeServer implements AutoCloseable {
                     + ",\"displayName\":" + json(updated.displayName()) + "}");
         } catch (IOException | IllegalArgumentException error) {
             respond(exchange, 409, "application/json", "{\"error\":\"viewer_sync_conflict\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void viewerSlideAnnotations(HttpExchange exchange, String path, boolean write)
+            throws IOException {
+        if (write ? !requireWrite(exchange) : !requireAuthenticated(exchange)) return;
+        var id = path.substring("/api/viewer/slides/".length(), path.length() - "/annotations".length());
+        var remotePath = "/api/v1/desktop/slides/" + id + "/annotations" + (write ? "/batch" : "");
+        var payload = write ? queryValue(exchange, "payload", "").getBytes(StandardCharsets.UTF_8)
+                : new byte[0];
+        if (payload.length > MAX_WRITE_BYTES) {
+            respond(exchange, 413, "application/json", "{\"error\":\"request_too_large\"}");
+            return;
+        }
+        try (var response = viewerPairingService.request(write ? "POST" : "GET", remotePath,
+                write ? java.util.Map.of("Content-Type", "application/json") : java.util.Map.of(), payload)) {
+            var bytes = response.body().readNBytes(2 * 1024 * 1024 + 1);
+            if (bytes.length > 2 * 1024 * 1024) {
+                respond(exchange, 502, "application/json", "{\"error\":\"viewer_response_too_large\"}");
+                return;
+            }
+            respond(exchange, response.status(), "application/json", bytes);
+        }
+    }
+
+    private void resolveViewerConflict(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var id = path.substring("/api/viewer/conflicts/".length(), path.length() - "/resolve".length());
+        try {
+            viewerSyncService.resolveConflict(id, queryValue(exchange, "field", ""),
+                    queryValue(exchange, "resolution", ""));
+            exchange.sendResponseHeaders(204, -1);
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 409, "application/json", "{\"error\":\"conflict_resolution_failed\",\"detail\":"
                     + json(error.getMessage()) + "}");
         }
     }

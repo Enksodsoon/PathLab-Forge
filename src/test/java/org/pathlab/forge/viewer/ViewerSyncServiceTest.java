@@ -19,14 +19,8 @@ final class ViewerSyncServiceTest {
 
     @Test
     void importsBoundedRemoteLibraryAndCursor() throws Exception {
-        var library = """
-                {"schema":"desktop-sync/v1","items":[{"id":"s1","displayName":"Remote",
-                "folderId":"f1","state":"ready_private","imageRevision":1,"annotationRevision":2,
-                "metadataRevision":3,"folderRevision":4,"contentBytes":5,"contentSha256":"abc",
-                "thumbnailUrl":"/thumb","tileSourceUrl":"/slide.dzi","updatedAt":"2026-08-12T00:00:00Z",
-                "description":"Private"}],"folders":[{"id":"f1","name":"Cases","parentId":null,
-                "revision":7}],"nextCursor":null}
-                """;
+        var library = new String(ViewerSyncServiceTest.class.getResourceAsStream(
+                "/viewer-sync-v1/library-page.json").readAllBytes(), StandardCharsets.UTF_8);
         var transport = new FakeTransport(Map.of(
                 "GET /api/v2/desktop/library/items?limit=100", json(library),
                 "GET /api/v2/desktop/library/changes?after=0&limit=500",
@@ -34,9 +28,9 @@ final class ViewerSyncServiceTest {
         try (var store = new SqliteViewerSyncStore(temp.resolve("sync.db"));
                 var service = new ViewerSyncService(transport, store, temp.resolve("offline"))) {
             service.syncNow();
-            assertEquals("Remote", store.find("s1").orElseThrow().remote().displayName());
-            assertEquals("Private", store.find("s1").orElseThrow().remote().metadata().get("description"));
-            assertEquals("Cases", store.folders().get(0).name());
+            assertEquals("Slide 1", store.find("slide-1").orElseThrow().remote().displayName());
+            assertEquals(2048, store.find("slide-1").orElseThrow().remote().metadata().get("width"));
+            assertEquals(0, store.folders().size());
             assertEquals(9, store.cursor());
         }
     }

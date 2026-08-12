@@ -32,6 +32,7 @@ public final class ViewerSyncService implements AutoCloseable {
         thread.setDaemon(true);
         return thread;
     });
+    private final java.util.Set<String> cancelledDownloads = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public ViewerSyncService(ViewerAuthorizedClient client, ViewerSyncStore store, Path offlineRoot)
             throws IOException {
@@ -89,6 +90,7 @@ public final class ViewerSyncService implements AutoCloseable {
     }
 
     public synchronized Path keepOffline(String slideId) throws IOException {
+        cancelledDownloads.remove(slideId);
         var record = store.find(slideId).orElseThrow(() -> new IOException("Unknown remote slide"));
         var endpoint = "/api/v2/desktop/slides/" + slideId + "/content";
         long bytes;
@@ -118,6 +120,7 @@ public final class ViewerSyncService implements AutoCloseable {
                 var buffer = new byte[BUFFER_BYTES];
                 int count;
                 while ((count = response.body().read(buffer)) >= 0) {
+                    if (cancelledDownloads.remove(slideId)) throw new IOException("Offline download cancelled");
                     if (count == 0) continue;
                     output.write(buffer, 0, count);
                     offset += count;
@@ -132,6 +135,15 @@ public final class ViewerSyncService implements AutoCloseable {
         Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         store.advanceDownload(slideId, bytes);
         return target;
+    }
+
+    public void cancelOffline(String slideId) { cancelledDownloads.add(slideId); }
+
+    public synchronized void removeOffline(String slideId) throws IOException {
+        cancelOffline(slideId);
+        Files.deleteIfExists(offlineRoot.resolve(safeName(slideId) + ".ome.tif"));
+        Files.deleteIfExists(offlineRoot.resolve(safeName(slideId) + ".ome.tif.partial"));
+        store.clearDownload(slideId);
     }
 
     public List<ViewerSyncRecord> library() throws IOException { return store.all(); }
@@ -175,6 +187,23 @@ public final class ViewerSyncService implements AutoCloseable {
         }
     }
 
+    public synchronized void resolveConflict(String slideId, String field, String resolution)
+            throws IOException {
+        var conflict = store.conflicts().stream()
+                .filter(item -> item.slideId().equals(slideId) && item.field().equals(field))
+                .findFirst().orElseThrow(() -> new IOException("Sync conflict was not found"));
+        if ("viewer".equals(resolution)) {
+            store.clearDirty(slideId, java.util.Set.of(field));
+        } else if ("local".equals(resolution)) {
+            if ("displayName".equals(field)) updateMetadata(slideId, conflict.localValue(), null);
+            else if ("folderId".equals(field)) updateMetadata(slideId, null, conflict.localValue());
+            else throw new IOException("This conflict requires annotation resolution");
+        } else {
+            throw new IllegalArgumentException("Resolution must be local or viewer");
+        }
+        store.resolveConflict(slideId, field);
+    }
+
     private JsonNode json(String method, String path, Map<String, String> headers, byte[] body)
             throws IOException {
         try (var response = client.request(method, path, headers, body)) {
@@ -188,7 +217,7 @@ public final class ViewerSyncService implements AutoCloseable {
     private static ViewerRemoteSlide parseSlide(JsonNode item) throws IOException {
         var metadata = new LinkedHashMap<String, Object>();
         for (var key : List.of("description", "caseId", "organSite", "stain", "diagnosis",
-                "course", "tags", "teachingNote", "adminNotes")) {
+                "course", "tags", "teachingNote", "adminNotes", "width", "height")) {
             var value = item.get(key);
             if (value != null && !value.isNull()) metadata.put(key, JSON.convertValue(value, Object.class));
         }

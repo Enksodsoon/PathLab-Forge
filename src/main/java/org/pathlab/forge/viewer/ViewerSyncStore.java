@@ -16,9 +16,11 @@ public interface ViewerSyncStore extends AutoCloseable {
     void clearDirty(String slideId, Set<String> fields) throws IOException;
     void beginDownload(String slideId, Path partialPath, long bytes, String sha256) throws IOException;
     void advanceDownload(String slideId, long offset) throws IOException;
+    void clearDownload(String slideId) throws IOException;
     void saveCursor(long cursor) throws IOException;
     long cursor() throws IOException;
     void recordConflict(ViewerSyncConflict conflict) throws IOException;
     List<ViewerSyncConflict> conflicts() throws IOException;
+    void resolveConflict(String slideId, String field) throws IOException;
     @Override void close() throws IOException;
 }
