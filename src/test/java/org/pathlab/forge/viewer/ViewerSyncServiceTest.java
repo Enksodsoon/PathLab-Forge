@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,13 @@ final class ViewerSyncServiceTest {
             assertEquals(0, store.folders().size());
             assertEquals(9, store.cursor());
         }
+    }
+
+    @Test
+    void treatsViewerSqliteTimestampWithoutOffsetAsUtc() throws Exception {
+        assertEquals(
+                Instant.parse("2026-08-12T04:49:31.366627Z"),
+                ViewerSyncService.parseViewerInstant("2026-08-12T04:49:31.366627"));
     }
 
     @Test

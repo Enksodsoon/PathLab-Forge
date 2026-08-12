@@ -10,6 +10,9 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -226,7 +229,21 @@ public final class ViewerSyncService implements AutoCloseable {
                 item.path("annotationRevision").asLong(), item.path("metadataRevision").asLong(),
                 item.path("folderRevision").asLong(), text(item, "thumbnailUrl"),
                 text(item, "tileSourceUrl"), item.path("contentBytes").asLong(),
-                nullableText(item, "contentSha256"), metadata, Instant.parse(text(item, "updatedAt")));
+                nullableText(item, "contentSha256"), metadata,
+                parseViewerInstant(text(item, "updatedAt")));
+    }
+
+    static Instant parseViewerInstant(String value) throws IOException {
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeParseException offsetError) {
+            try {
+                // Viewer persists SQLite timestamps without an offset. Its server clock is UTC.
+                return LocalDateTime.parse(value).toInstant(ZoneOffset.UTC);
+            } catch (DateTimeParseException localError) {
+                throw new IOException("Viewer returned an invalid timestamp", localError);
+            }
+        }
     }
 
     private void ensureSpace(long bytes) throws IOException {
