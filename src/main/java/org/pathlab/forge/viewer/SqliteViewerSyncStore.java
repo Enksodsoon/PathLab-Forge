@@ -198,6 +198,13 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     }
 
     @Override
+    public synchronized void clearDirty(String slideId, Set<String> fields) throws IOException {
+        var remaining = new LinkedHashSet<>(find(slideId).orElseThrow().dirtyFields());
+        remaining.removeAll(fields);
+        update(slideId, "dirty_fields", encodeFields(remaining));
+    }
+
+    @Override
     public synchronized void beginDownload(String slideId, Path partialPath, long bytes, String sha256)
             throws IOException {
         if (bytes < 0) throw new IllegalArgumentException("Download size must be non-negative");

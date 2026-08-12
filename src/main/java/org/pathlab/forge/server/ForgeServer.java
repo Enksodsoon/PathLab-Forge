@@ -46,6 +46,9 @@ import org.pathlab.forge.model.BatchId;
 import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
 import org.pathlab.forge.viewer.SqliteViewerDeliveryStore;
+import org.pathlab.forge.viewer.SqliteViewerSyncStore;
+import org.pathlab.forge.viewer.ViewerSyncService;
+import org.pathlab.forge.viewer.ViewerTileCache;
 import org.pathlab.forge.viewer.ViewerUploadStatus;
 import org.pathlab.forge.viewer.WindowsCredentialStore;
 
@@ -70,6 +73,8 @@ public final class ForgeServer implements AutoCloseable {
     private final CapabilityRegistry capabilityRegistry;
     private final AnalysisJobService analysisJobService;
     private final ViewerPairingService viewerPairingService;
+    private final ViewerSyncService viewerSyncService;
+    private final ViewerTileCache viewerTileCache;
     private volatile boolean launchTokenAvailable = true;
 
     private ForgeServer(
@@ -104,6 +109,11 @@ public final class ForgeServer implements AutoCloseable {
                 new WindowsCredentialStore(),
                 new SqliteViewerDeliveryStore(
                         managedRoot.toAbsolutePath().normalize().getParent().resolve("forge.db")));
+        var dataRoot = managedRoot.toAbsolutePath().normalize().getParent();
+        viewerSyncService = new ViewerSyncService(
+                viewerPairingService, new SqliteViewerSyncStore(dataRoot.resolve("viewer-sync.db")),
+                dataRoot.resolve("viewer-offline"));
+        viewerTileCache = new ViewerTileCache(viewerPairingService, dataRoot.resolve("viewer-cache"));
     }
 
     public static ForgeServer start() throws IOException {
@@ -330,6 +340,21 @@ public final class ForgeServer implements AutoCloseable {
             } else if ("/api/viewer/upload/cancel".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 cancelViewerUpload(exchange);
+            } else if ("/api/viewer/library".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                viewerLibrary(exchange);
+            } else if ("/api/viewer/sync".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                syncViewerLibrary(exchange);
+            } else if ("/api/viewer/preview".equals(path)
+                    && "GET".equals(exchange.getRequestMethod())) {
+                viewerPreview(exchange);
+            } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/offline")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                keepViewerSlideOffline(exchange, path);
+            } else if (path.matches("/api/viewer/slides/[A-Za-z0-9_-]{1,128}/metadata")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                updateViewerSlideMetadata(exchange, path);
             } else if ("/api/datasets".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 listDatasets(exchange);
             } else if ("/api/datasets/select".equals(path)
@@ -1723,6 +1748,79 @@ public final class ForgeServer implements AutoCloseable {
                 + "]}";
     }
 
+    private void viewerLibrary(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        try {
+            var items = viewerSyncService.library().stream().map(record -> {
+                var slide = record.remote();
+                return "{\"id\":" + json(slide.id()) + ",\"displayName\":" + json(slide.displayName())
+                        + ",\"folderId\":" + json(slide.folderId()) + ",\"state\":" + json(slide.status())
+                        + ",\"contentBytes\":" + slide.contentBytes()
+                        + ",\"thumbnailUrl\":\"/api/viewer/preview?path="
+                        + java.net.URLEncoder.encode(slide.thumbnailUrl(), StandardCharsets.UTF_8)
+                        + "\",\"offlineBytes\":" + record.downloadOffset()
+                        + ",\"offlineComplete\":" + (record.downloadBytes() > 0
+                                && record.downloadOffset() == record.downloadBytes()) + "}";
+            }).collect(java.util.stream.Collectors.joining(","));
+            var folders = viewerSyncService.folders().stream()
+                    .map(folder -> "{\"id\":" + json(folder.id()) + ",\"name\":" + json(folder.name())
+                            + ",\"parentId\":" + json(folder.parentId()) + "}")
+                    .collect(java.util.stream.Collectors.joining(","));
+            var conflicts = viewerSyncService.conflicts().stream()
+                    .map(conflict -> "{\"slideId\":" + json(conflict.slideId())
+                            + ",\"field\":" + json(conflict.field()) + "}")
+                    .collect(java.util.stream.Collectors.joining(","));
+            respond(exchange, 200, "application/json", "{\"items\":[" + items
+                    + "],\"folders\":[" + folders + "],\"conflicts\":[" + conflicts + "]}");
+        } catch (IOException error) {
+            respond(exchange, 503, "application/json", "{\"error\":\"viewer_sync_unavailable\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void syncViewerLibrary(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) return;
+        try {
+            viewerSyncService.syncNow();
+            viewerLibrary(exchange);
+        } catch (IOException | RuntimeException error) {
+            respond(exchange, 503, "application/json", "{\"error\":\"viewer_sync_failed\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void viewerPreview(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        try {
+            var resource = viewerTileCache.get(queryValue(exchange, "path", ""));
+            respondFile(exchange, resource.contentType(), resource.path());
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 502, "application/json", "{\"error\":\"viewer_preview_failed\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void keepViewerSlideOffline(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var id = path.substring("/api/viewer/slides/".length(), path.length() - "/offline".length());
+        viewerSyncService.keepOfflineAsync(id);
+        respond(exchange, 202, "application/json", "{\"state\":\"DOWNLOADING\"}");
+    }
+
+    private void updateViewerSlideMetadata(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var id = path.substring("/api/viewer/slides/".length(), path.length() - "/metadata".length());
+        try {
+            var updated = viewerSyncService.updateMetadata(id,
+                    queryValue(exchange, "displayName", null), queryValue(exchange, "folderId", null));
+            respond(exchange, 200, "application/json", "{\"id\":" + json(updated.id())
+                    + ",\"displayName\":" + json(updated.displayName()) + "}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 409, "application/json", "{\"error\":\"viewer_sync_conflict\",\"detail\":"
+                    + json(error.getMessage()) + "}");
+        }
+    }
+
     private void cancelViewerUpload(HttpExchange exchange) throws IOException {
         if (!requireWrite(exchange)) {
             return;
@@ -2208,6 +2306,7 @@ public final class ForgeServer implements AutoCloseable {
         sourceVerificationService.close();
         conversionService.close();
         analysisJobService.close();
+        viewerSyncService.close();
         viewerPairingService.close();
         executor.shutdownNow();
     }

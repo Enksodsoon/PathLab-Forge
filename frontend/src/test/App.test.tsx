@@ -115,6 +115,10 @@ vi.mock('../api', () => ({
   uploadApprovedArtifact: vi.fn(),
   getViewerUpload: vi.fn(),
   cancelViewerUpload: vi.fn(),
+  viewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
+  syncViewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
+  keepViewerSlideOffline: vi.fn(),
+  updateViewerSlideMetadata: vi.fn(),
 }))
 
 beforeEach(() => {
@@ -319,21 +323,21 @@ test('switches theme and opens Viewer as its own library destination', async () 
   expect(screen.getByRole('button', { name: 'Connect to Viewer' })).toBeVisible()
 })
 
-test('does not present connection refresh as two-way Viewer file synchronization', async () => {
+test('presents the authenticated Viewer library as active two-way synchronization', async () => {
   vi.mocked(api.getViewerConnection).mockResolvedValue({
     connected: true,
     viewerUrl: 'https://viewer.example',
     deviceName: 'PathLab Viewer',
-    scopes: ['desktop:ingest'],
+    scopes: ['desktop:ingest', 'library:read', 'slides:offline:read', 'library:sync'],
     conversionMode: 'OME_DYNAMIC_V1',
   })
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
 
-  expect(await screen.findByRole('button', { name: 'Refresh Viewer connection' })).toBeVisible()
-  expect(screen.getByText('Two-way file sync unavailable')).toBeVisible()
-  expect(screen.queryByText('Sync Viewer connection')).not.toBeInTheDocument()
+  expect(await screen.findByRole('button', { name: 'Refresh Viewer connection' })).toHaveTextContent('Sync changes')
+  expect(screen.getByText('Two-way sync active')).toBeVisible()
+  expect(api.syncViewerLibrary).toHaveBeenCalled()
 })
 
 test('uses one-click default pairing and hides custom origins under Advanced', async () => {

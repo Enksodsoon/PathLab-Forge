@@ -45,9 +45,17 @@ public final class ViewerTileCache {
         var partial = root.resolve(key + ".partial");
         try (var response = client.request("GET", remotePath, Map.of(), new byte[0])) {
             if (response.status() != 200) throw new IOException("Viewer preview failed (" + response.status() + ")");
-            var bytes = response.body().readNBytes((int) Math.min(Integer.MAX_VALUE, maxBytes + 1));
-            if (bytes.length > maxBytes) throw new IOException("Viewer preview exceeds the local cache limit");
-            Files.write(partial, bytes);
+            long total = 0;
+            try (var output = Files.newOutputStream(partial)) {
+                var buffer = new byte[1024 * 1024];
+                int count;
+                while ((count = response.body().read(buffer)) >= 0) {
+                    if (count == 0) continue;
+                    total += count;
+                    if (total > maxBytes) throw new IOException("Viewer preview exceeds the local cache limit");
+                    output.write(buffer, 0, count);
+                }
+            }
             Files.move(partial, data, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             Files.writeString(type, normalizedType(response.header("Content-Type")), StandardCharsets.UTF_8);
         } finally {

@@ -138,6 +138,43 @@ public final class ViewerSyncService implements AutoCloseable {
     public List<ViewerRemoteFolder> folders() throws IOException { return store.folders(); }
     public List<ViewerSyncConflict> conflicts() throws IOException { return store.conflicts(); }
 
+    public synchronized ViewerRemoteSlide updateMetadata(String slideId, String displayName,
+            String folderId) throws IOException {
+        var current = store.find(slideId).orElseThrow(() -> new IOException("Unknown remote slide"));
+        var changed = new java.util.LinkedHashSet<String>();
+        var payload = JSON.createObjectNode();
+        payload.put("expectedMetadataRevision", current.remote().metadataRevision());
+        payload.put("expectedFolderRevision", current.remote().folderRevision());
+        if (displayName != null) { payload.put("displayName", displayName); changed.add("displayName"); }
+        if (folderId != null) {
+            if (folderId.isBlank()) payload.putNull("folderId"); else payload.put("folderId", folderId);
+            changed.add("folderId");
+        }
+        if (changed.isEmpty()) throw new IllegalArgumentException("No remote fields changed");
+        store.markDirty(slideId, changed);
+        try (var response = client.request("PATCH", "/api/v2/desktop/slides/" + safeName(slideId),
+                Map.of("Content-Type", "application/json"), JSON.writeValueAsBytes(payload))) {
+            var bytes = response.body().readNBytes(MAX_JSON_BYTES + 1);
+            if (response.status() == 409) {
+                refreshLibrary();
+                var remote = store.find(slideId).orElseThrow().remote();
+                for (var field : changed) {
+                    var local = "displayName".equals(field) ? displayName : folderId;
+                    var remoteValue = "displayName".equals(field) ? remote.displayName() : remote.folderId();
+                    store.recordConflict(new ViewerSyncConflict(slideId, field,
+                            local == null ? "" : local, remoteValue,
+                            remote.metadataRevision(), Instant.now()));
+                }
+                throw new IOException("Viewer edit conflicts with a newer remote revision");
+            }
+            if (response.status() != 200) throw new IOException("Viewer update failed (" + response.status() + ")");
+            var remote = parseSlide(JSON.readTree(bytes));
+            store.upsertRemote(remote);
+            store.clearDirty(slideId, changed);
+            return remote;
+        }
+    }
+
     private JsonNode json(String method, String path, Map<String, String> headers, byte[] body)
             throws IOException {
         try (var response = client.request(method, path, headers, body)) {
@@ -216,5 +253,8 @@ public final class ViewerSyncService implements AutoCloseable {
         }
     }
 
-    @Override public void close() { executor.shutdownNow(); }
+    @Override public void close() {
+        executor.shutdownNow();
+        try { store.close(); } catch (IOException ignored) { }
+    }
 }

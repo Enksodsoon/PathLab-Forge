@@ -133,6 +133,23 @@ export interface AnnotationRecord {
   revision: number
 }
 
+export interface ViewerRemoteItem {
+  id: string
+  displayName: string
+  folderId: string
+  state: string
+  contentBytes: number
+  thumbnailUrl: string
+  offlineBytes: number
+  offlineComplete: boolean
+}
+
+export interface ViewerRemoteLibrary {
+  items: ViewerRemoteItem[]
+  folders: Array<{ id: string; name: string; parentId: string }>
+  conflicts: Array<{ slideId: string; field: string }>
+}
+
 export interface FeaturePack {
   id: string
   version: string
@@ -340,6 +357,27 @@ export async function cancelViewerUpload() {
 
 export async function revokeViewerConnection() {
   return request<void>('/api/viewer/connection/revoke', { method: 'POST' })
+}
+
+export async function viewerLibrary() {
+  return request<ViewerRemoteLibrary>('/api/viewer/library')
+}
+
+export async function syncViewerLibrary() {
+  return request<ViewerRemoteLibrary>('/api/viewer/sync', { method: 'POST' })
+}
+
+export async function keepViewerSlideOffline(id: string) {
+  return request<{ state: string }>(`/api/viewer/slides/${encodeURIComponent(id)}/offline`, { method: 'POST' })
+}
+
+export async function updateViewerSlideMetadata(id: string, values: { displayName?: string; folderId?: string }) {
+  const query = new URLSearchParams()
+  if (values.displayName !== undefined) query.set('displayName', values.displayName)
+  if (values.folderId !== undefined) query.set('folderId', values.folderId)
+  return request<{ id: string; displayName: string }>(
+    `/api/viewer/slides/${encodeURIComponent(id)}/metadata?${query}`, { method: 'POST' },
+  )
 }
 
 export async function annotations(id: string) {

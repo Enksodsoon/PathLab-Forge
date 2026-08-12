@@ -43,7 +43,6 @@ import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
-const SERVER_DESTINATIONS = ['All slides', 'Unfiled', 'Shared', 'Processing', 'Failed', 'Trash']
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 const CANCELLABLE_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCES', ...CONVERSION_STATUSES])
@@ -84,6 +83,7 @@ export function App() {
   const [pairing, setPairing] = useState<ViewerPairing>()
   const [connection, setConnection] = useState<ViewerConnection>()
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
+  const [remoteLibrary, setRemoteLibrary] = useState<api.ViewerRemoteLibrary>({ items: [], folders: [], conflicts: [] })
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
@@ -374,14 +374,23 @@ export function App() {
     try {
       const next = await api.getViewerConnection()
       setConnection(next)
+      if (next.connected) setRemoteLibrary(await api.syncViewerLibrary())
       setNotice(next.connected
-        ? 'Viewer connection checked — remote library remains server-managed'
+        ? 'Viewer library synchronized'
         : 'Connect to PathLab Viewer before opening its private library')
       if (!next.connected) connect()
     } catch (nextError) {
       setError(viewerConnectionMessage(nextError))
     }
   }
+
+  useEffect(() => {
+    if (libraryMode !== 'viewer' || !connection?.connected) return
+    const timer = window.setInterval(() => {
+      void api.syncViewerLibrary().then(setRemoteLibrary).catch(() => undefined)
+    }, 15_000)
+    return () => window.clearInterval(timer)
+  }, [libraryMode, connection?.connected])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -651,6 +660,7 @@ export function App() {
               selectedId={selected?.id || ''}
               mode={libraryMode}
               connection={connection}
+              remoteLibrary={remoteLibrary}
               checkedIds={selectedDatasetIds}
               folders={localFolders}
               folderByDataset={folderByDataset}
@@ -669,6 +679,17 @@ export function App() {
               onImport={() => setImportOpen(true)}
               onConnect={connect}
               onSync={() => void syncViewer()}
+              onKeepOffline={(id) => void api.keepViewerSlideOffline(id).then(() => {
+                setNotice('Offline download started; verified activation will happen in the background')
+                window.setTimeout(() => void api.viewerLibrary().then(setRemoteLibrary), 1200)
+              }).catch((nextError) => setError(message(nextError)))}
+              onRenameRemote={(id, current) => {
+                const displayName = window.prompt('Rename private Viewer slide', current)?.trim()
+                if (!displayName || displayName === current) return
+                void api.updateViewerSlideMetadata(id, { displayName })
+                  .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
+                  .catch((nextError) => setError(message(nextError)))
+              }}
               onCollapse={() => {
                 setNavigatorOpen(false)
                 window.requestAnimationFrame(() => navigatorButtonRef.current?.focus())
@@ -1102,6 +1123,7 @@ function SlideNavigator({
   selectedId,
   mode,
   connection,
+  remoteLibrary,
   checkedIds,
   folders,
   folderByDataset,
@@ -1114,12 +1136,15 @@ function SlideNavigator({
   onImport,
   onConnect,
   onSync,
+  onKeepOffline,
+  onRenameRemote,
   onCollapse,
 }: {
   datasets: Dataset[]
   selectedId: string
   mode: 'local' | 'viewer'
   connection?: ViewerConnection
+  remoteLibrary: api.ViewerRemoteLibrary
   checkedIds: string[]
   folders: string[]
   folderByDataset: Record<string, string>
@@ -1132,6 +1157,8 @@ function SlideNavigator({
   onImport: () => void
   onConnect: () => void
   onSync: () => void
+  onKeepOffline: (id: string) => void
+  onRenameRemote: (id: string, current: string) => void
   onCollapse: () => void
 }) {
   const [query, setQuery] = useState('')
@@ -1148,7 +1175,6 @@ function SlideNavigator({
     : [...checkedIds, id])
 
   if (mode === 'viewer') {
-    const base = connection?.viewerUrl?.replace(/\/$/, '') || ''
     return (
       <div className="forge-navigator forge-viewer-library">
         <header>
@@ -1158,28 +1184,36 @@ function SlideNavigator({
         <div className="forge-viewer-library-status">
           <span className={connection?.connected ? 'connected' : ''} />
           <strong>{connection?.connected ? connection.deviceName : 'Viewer not connected'}</strong>
-          <small>{connection?.connected ? 'Remote files stay private and server-managed in Viewer' : 'Connect once to open private Viewer destinations'}</small>
+          <small>{connection?.connected ? `${remoteLibrary.items.length} private slides · hybrid offline mode` : 'Connect once to synchronize your private library'}</small>
         </div>
         <button className="forge-sync-viewer" type="button" aria-label={connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'} onClick={connection?.connected ? onSync : onConnect}>
-          <ArrowsClockwise /> {connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'}
+          <ArrowsClockwise /> {connection?.connected ? 'Sync changes' : 'Connect to Viewer'}
         </button>
         {connection?.connected ? (
           <div className="forge-viewer-sync-boundary" role="status">
-            <strong>Two-way file sync unavailable</strong>
-            <span>Current Viewer desktop API supports verified upload and status, but no library listing, download, or change feed. Use destinations below to open authoritative Viewer files.</span>
+            <strong>Two-way sync active</strong>
+            <span>Thumbnails stream through Forge. Choose Keep offline for a verified full OME copy. Conflicting edits pause per field.</span>
           </div>
         ) : null}
-        <nav aria-label="Viewer destinations">
-          {SERVER_DESTINATIONS.map((destination) => (
-            connection?.connected ? (
-              <a key={destination} href={`${base}/admin/library?view=${encodeURIComponent(destination.toLowerCase().replaceAll(' ', '-'))}`} target="_blank" rel="noreferrer">
-                <Folder /><span><strong>{destination}</strong><small>Open live Viewer library</small></span>
-              </a>
-            ) : (
-              <button type="button" key={destination} onClick={onConnect}><Folder /><span><strong>{destination}</strong><small>Connect to open</small></span></button>
-            )
+        <nav aria-label="Viewer folders">
+          {remoteLibrary.folders.map((folder) => (
+            <button type="button" key={folder.id}><Folder /><span><strong>{folder.name}</strong><small>Private folder</small></span></button>
           ))}
         </nav>
+        <section className="forge-remote-slides" aria-label="Synchronized Viewer slides">
+          {remoteLibrary.items.map((item) => (
+            <article key={item.id} className="forge-remote-slide">
+              <img src={item.thumbnailUrl} alt="" loading="lazy" />
+              <span><strong>{item.displayName}</strong><small>{item.offlineComplete ? 'Available offline' : formatBytes(item.contentBytes)}</small></span>
+              <button type="button" disabled={item.offlineComplete} onClick={() => onKeepOffline(item.id)}>
+                {item.offlineComplete ? 'Offline' : 'Keep offline'}
+              </button>
+              <button type="button" onClick={() => onRenameRemote(item.id, item.displayName)}>Rename</button>
+            </article>
+          ))}
+          {connection?.connected && remoteLibrary.items.length === 0 ? <p>No private Viewer slides yet.</p> : null}
+        </section>
+        {remoteLibrary.conflicts.length ? <div className="forge-viewer-sync-boundary"><strong>Sync paused</strong><span>{remoteLibrary.conflicts.length} field conflicts need review.</span></div> : null}
       </div>
     )
   }

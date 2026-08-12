@@ -13,6 +13,7 @@ public interface ViewerSyncStore extends AutoCloseable {
     void replaceFolders(List<ViewerRemoteFolder> folders) throws IOException;
     List<ViewerRemoteFolder> folders() throws IOException;
     void markDirty(String slideId, Set<String> fields) throws IOException;
+    void clearDirty(String slideId, Set<String> fields) throws IOException;
     void beginDownload(String slideId, Path partialPath, long bytes, String sha256) throws IOException;
     void advanceDownload(String slideId, long offset) throws IOException;
     void saveCursor(long cursor) throws IOException;
