@@ -1,21 +1,31 @@
 import {
   AnnotationToolbar,
-  PathLabProductRail,
   ViewerCanvasShell,
 } from '@pathlab/viewer-ui'
 import {
   ArrowsOut,
+  ArrowsClockwise,
   CheckCircle,
+  CloudArrowUp,
   Crosshair,
+  Folder,
   FolderOpen,
   House,
+  Key,
+  List,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
+  Moon,
+  Plus,
   SidebarSimple,
+  SignOut,
+  Sun,
   Trash,
+  UploadSimple,
+  Wrench,
 } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, Ref } from 'react'
 import type OpenSeadragon from 'openseadragon'
 import { renderSVG } from 'uqr'
 
@@ -38,6 +48,7 @@ const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING
 const CANCELLABLE_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCES', ...CONVERSION_STATUSES])
 const QUEUEABLE_STATUSES = new Set(['READY', 'READY_TO_CONVERT', 'CONVERSION_READY', 'FAILED', 'CANCELLED'])
 const NO_ANNOTATIONS: AnnotationRecord[] = []
+const DEFAULT_LOCAL_FOLDER = 'Unfiled'
 
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
@@ -76,6 +87,12 @@ export function App() {
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
   const [featureLoading, setFeatureLoading] = useState(false)
+  const [libraryMode, setLibraryMode] = useState<'local' | 'viewer'>('local')
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([])
+  const [localFolders, setLocalFolders] = useState<string[]>(() => readStored('pathlab-forge-folders-v1', [DEFAULT_LOCAL_FOLDER]))
+  const [folderByDataset, setFolderByDataset] = useState<Record<string, string>>(() => readStored('pathlab-forge-folder-map-v1', {}))
+  const [batchRemoveIds, setBatchRemoveIds] = useState<string[]>([])
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
 
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
@@ -130,6 +147,14 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem('pathlab-forge-crop-drafts-v1', JSON.stringify(cropDrafts))
   }, [cropDrafts])
+
+  useEffect(() => {
+    window.localStorage.setItem('pathlab-forge-folders-v1', JSON.stringify(localFolders))
+  }, [localFolders])
+
+  useEffect(() => {
+    window.localStorage.setItem('pathlab-forge-folder-map-v1', JSON.stringify(folderByDataset))
+  }, [folderByDataset])
 
   const refresh = useCallback(async () => {
     try {
@@ -316,8 +341,9 @@ export function App() {
     }
   }
 
-  const queueReadySlides = async () => {
-    const candidates = datasets.filter((item) => QUEUEABLE_STATUSES.has(item.status))
+  const queueReadySlides = async (ids = datasets.map((item) => item.id)) => {
+    const selectedIds = new Set(ids)
+    const candidates = datasets.filter((item) => selectedIds.has(item.id) && QUEUEABLE_STATUSES.has(item.status))
     if (!candidates.length) return
     setNotice(`Preparing ${candidates.length} slides for the adaptive queue…`)
     for (const candidate of candidates) {
@@ -329,6 +355,38 @@ export function App() {
       }
     }
     await refresh()
+  }
+
+  const removeSelectedDatasets = async () => {
+    for (const id of batchRemoveIds) await api.deleteDataset(id)
+    const remaining = await api.datasets()
+    setDatasets(remaining)
+    setSelectedDatasetIds([])
+    setSelectedId((current) => remaining.some((item) => item.id === current) ? current : remaining[0]?.id || '')
+    setBatchRemoveIds([])
+    setNotice('Selected slides were removed from the Forge library; originals and completed exports were preserved')
+  }
+
+  const syncViewer = async () => {
+    setLibraryMode('viewer')
+    setNavigatorOpen(true)
+    try {
+      const next = await api.getViewerConnection()
+      setConnection(next)
+      setNotice(next.connected
+        ? 'Viewer connection refreshed — choose a Viewer destination to open its live library'
+        : 'Connect to PathLab Viewer before opening its private library')
+      if (!next.connected) connect()
+    } catch (nextError) {
+      setError(viewerConnectionMessage(nextError))
+    }
+  }
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    document.documentElement.dataset.theme = next
+    window.localStorage.setItem('pathlab-forge-theme', next)
   }
 
   const approveCurrent = async () => {
@@ -551,18 +609,24 @@ export function App() {
   }
 
   const rail = (
-    <PathLabProductRail
-      productName="Forge"
+    <ForgeProductRail
       expanded={railExpanded}
       navigatorOpen={navigatorOpen}
       navigatorButtonRef={navigatorButtonRef}
       storage={storage}
+      mode={libraryMode}
+      theme={theme}
       onToggleExpanded={() => setRailExpanded((current) => !current)}
-      onNavigator={() => setNavigatorOpen((current) => !current)}
-      onUpload={selected?.approvedArtifactRevision ? uploadApproved : () => setImportOpen(true)}
+      onLocalLibrary={() => {
+        setLibraryMode('local')
+        setNavigatorOpen(true)
+      }}
+      onViewerLibrary={() => void syncViewer()}
+      onImport={() => setImportOpen(true)}
+      onFeatures={openFeatures}
+      onTheme={toggleTheme}
       onSecurity={connect}
       onSignOut={connect}
-      uploadLabel={selected?.approvedArtifactRevision ? 'Upload' : 'Import'}
       accountLabel={connection?.connected ? connection.deviceName : 'Viewer account'}
       signOutLabel={connection?.connected ? 'Disconnect' : 'Connect Viewer'}
     />
@@ -584,12 +648,26 @@ export function App() {
             <SlideNavigator
               datasets={datasets}
               selectedId={selected?.id || ''}
+              mode={libraryMode}
+              connection={connection}
+              checkedIds={selectedDatasetIds}
+              folders={localFolders}
+              folderByDataset={folderByDataset}
               onSelect={(id) => {
                 setSelectedId(id)
                 if (window.innerWidth <= 960) setNavigatorOpen(false)
               }}
+              onChecked={setSelectedDatasetIds}
+              onCreateFolder={(name) => setLocalFolders((current) => current.includes(name) ? current : [...current, name])}
+              onMove={(ids, folder) => setFolderByDataset((current) => ({
+                ...current,
+                ...Object.fromEntries(ids.map((id) => [id, folder])),
+              }))}
+              onQueue={(ids) => void queueReadySlides(ids)}
+              onRemove={(ids) => setBatchRemoveIds(ids)}
               onImport={() => setImportOpen(true)}
               onConnect={connect}
+              onSync={() => void syncViewer()}
               onCollapse={() => {
                 setNavigatorOpen(false)
                 window.requestAnimationFrame(() => navigatorButtonRef.current?.focus())
@@ -662,9 +740,6 @@ export function App() {
           )}
         />
       </div>
-      <button className="forge-feature-launcher" type="button" onClick={openFeatures}>
-        Feature Center
-      </button>
       {connection?.connected && viewerUpload?.viewerSlideId
         && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (
         <a
@@ -716,6 +791,13 @@ export function App() {
           onClose={() => setPairingOpen(false)}
         />
       ) : null}
+      {batchRemoveIds.length ? (
+        <BatchRemoveDialog
+          count={batchRemoveIds.length}
+          onRemove={() => void removeSelectedDatasets().catch((nextError) => setError(message(nextError)))}
+          onClose={() => setBatchRemoveIds([])}
+        />
+      ) : null}
       {featureOpen ? (
         <FeatureCenter
           features={features}
@@ -726,6 +808,80 @@ export function App() {
         />
       ) : null}
     </>
+  )
+}
+
+function ForgeProductRail({
+  expanded,
+  navigatorOpen,
+  navigatorButtonRef,
+  storage,
+  mode,
+  theme,
+  onToggleExpanded,
+  onLocalLibrary,
+  onViewerLibrary,
+  onImport,
+  onFeatures,
+  onTheme,
+  onSecurity,
+  onSignOut,
+  accountLabel,
+  signOutLabel,
+}: {
+  expanded: boolean
+  navigatorOpen: boolean
+  navigatorButtonRef: Ref<HTMLButtonElement>
+  storage: { usableBytes: number; effectiveCapacityBytes: number }
+  mode: 'local' | 'viewer'
+  theme: 'light' | 'dark'
+  onToggleExpanded: () => void
+  onLocalLibrary: () => void
+  onViewerLibrary: () => void
+  onImport: () => void
+  onFeatures: () => void
+  onTheme: () => void
+  onSecurity: () => void
+  onSignOut: () => void
+  accountLabel: string
+  signOutLabel: string
+}) {
+  const remaining = storage.effectiveCapacityBytes > 0
+    ? Math.round(storage.usableBytes / storage.effectiveCapacityBytes * 100)
+    : 0
+  return (
+    <aside className="library-app-rail" aria-label="Product navigation" data-canvas-region="icon-rail">
+      <div className="library-rail-brand">
+        <div className="brand brand-library" aria-label="PathLab Forge">
+          <span className="brand-mark brand-mark-layers"><Crosshair aria-hidden="true" /></span>
+          <span>PathLab</span><span className="brand-product">Forge</span>
+        </div>
+      </div>
+      <button className="library-rail-toggle" type="button" aria-label={expanded ? 'Collapse navigation rail' : 'Expand navigation rail'} aria-expanded={expanded} onClick={onToggleExpanded}>
+        <SidebarSimple aria-hidden="true" /><span>{expanded ? 'Collapse' : 'Expand'}</span>
+      </button>
+      <nav className="library-rail-primary" aria-label="Library destinations">
+        <button ref={navigatorButtonRef} className={mode === 'local' && navigatorOpen ? 'active' : ''} type="button" aria-label="Local library" aria-expanded={mode === 'local' && navigatorOpen} onClick={onLocalLibrary}>
+          <List aria-hidden="true" /><span>Local library</span>
+        </button>
+        <button className={mode === 'viewer' && navigatorOpen ? 'active' : ''} type="button" aria-label="Viewer library" aria-expanded={mode === 'viewer' && navigatorOpen} onClick={onViewerLibrary}>
+          <CloudArrowUp aria-hidden="true" /><span>Viewer library</span>
+        </button>
+        <button type="button" aria-label="Import" onClick={onImport}><UploadSimple aria-hidden="true" /><span>Import</span></button>
+        <button type="button" aria-label="Feature Center" onClick={onFeatures}><Wrench aria-hidden="true" /><span>Feature Center</span></button>
+      </nav>
+      <div className="library-rail-utilities" aria-label="Account actions">
+        <section className="library-storage-meter" aria-label={`Storage, ${formatBytes(storage.usableBytes)} available`}>
+          <div className="library-storage-copy"><span>Storage</span><strong>{formatBytes(storage.usableBytes)} available</strong></div>
+          <div className="library-storage-track" role="meter" aria-label="Usable storage remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}><span style={{ width: `${remaining}%` }} /></div>
+        </section>
+        <button type="button" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={onTheme}>
+          {theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}<span>{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
+        </button>
+        <button type="button" aria-label={accountLabel} onClick={onSecurity}><Key aria-hidden="true" /><span>{accountLabel}</span></button>
+        <button type="button" aria-label={signOutLabel} onClick={onSignOut}><SignOut aria-hidden="true" /><span>{signOutLabel}</span></button>
+      </div>
+    </aside>
   )
 }
 
@@ -937,22 +1093,88 @@ function ViewerPairingDialog({
 function SlideNavigator({
   datasets,
   selectedId,
+  mode,
+  connection,
+  checkedIds,
+  folders,
+  folderByDataset,
   onSelect,
+  onChecked,
+  onCreateFolder,
+  onMove,
+  onQueue,
+  onRemove,
   onImport,
   onConnect,
+  onSync,
   onCollapse,
 }: {
   datasets: Dataset[]
   selectedId: string
+  mode: 'local' | 'viewer'
+  connection?: ViewerConnection
+  checkedIds: string[]
+  folders: string[]
+  folderByDataset: Record<string, string>
   onSelect: (id: string) => void
+  onChecked: (ids: string[]) => void
+  onCreateFolder: (name: string) => void
+  onMove: (ids: string[], folder: string) => void
+  onQueue: (ids: string[]) => void
+  onRemove: (ids: string[]) => void
   onImport: () => void
   onConnect: () => void
+  onSync: () => void
   onCollapse: () => void
 }) {
+  const [query, setQuery] = useState('')
+  const [activeFolder, setActiveFolder] = useState('All slides')
+  const [newFolder, setNewFolder] = useState('')
+  const checked = new Set(checkedIds)
+  const visible = datasets.filter((dataset) => {
+    const matchesSearch = dataset.displayName.toLowerCase().includes(query.trim().toLowerCase())
+    const folder = folderByDataset[dataset.id] || DEFAULT_LOCAL_FOLDER
+    return matchesSearch && (activeFolder === 'All slides' || folder === activeFolder)
+  })
+  const toggle = (id: string) => onChecked(checked.has(id)
+    ? checkedIds.filter((current) => current !== id)
+    : [...checkedIds, id])
+
+  if (mode === 'viewer') {
+    const base = connection?.viewerUrl?.replace(/\/$/, '') || ''
+    return (
+      <div className="forge-navigator forge-viewer-library">
+        <header>
+          <div><span>Connected workspace</span><strong>Viewer library</strong></div>
+          <button type="button" aria-label="Collapse Viewer library" onClick={onCollapse}><SidebarSimple /></button>
+        </header>
+        <div className="forge-viewer-library-status">
+          <span className={connection?.connected ? 'connected' : ''} />
+          <strong>{connection?.connected ? connection.deviceName : 'Viewer not connected'}</strong>
+          <small>{connection?.connected ? 'Remote files stay private in Viewer' : 'Connect once to open private Viewer destinations'}</small>
+        </div>
+        <button className="forge-sync-viewer" type="button" onClick={connection?.connected ? onSync : onConnect}>
+          <ArrowsClockwise /> {connection?.connected ? 'Sync Viewer connection' : 'Connect to Viewer'}
+        </button>
+        <nav aria-label="Viewer destinations">
+          {SERVER_DESTINATIONS.map((destination) => (
+            connection?.connected ? (
+              <a key={destination} href={`${base}/admin/library?view=${encodeURIComponent(destination.toLowerCase().replaceAll(' ', '-'))}`} target="_blank" rel="noreferrer">
+                <Folder /><span><strong>{destination}</strong><small>Open live Viewer library</small></span>
+              </a>
+            ) : (
+              <button type="button" key={destination} onClick={onConnect}><Folder /><span><strong>{destination}</strong><small>Connect to open</small></span></button>
+            )
+          ))}
+        </nav>
+      </div>
+    )
+  }
+
   return (
     <div className="forge-navigator">
       <header>
-        <div><span>Local workspace</span><strong>Slide library</strong></div>
+        <div><span>Local workspace</span><strong>Local library</strong></div>
         <div className="forge-navigator-actions">
           <button
             type="button"
@@ -967,20 +1189,58 @@ function SlideNavigator({
       </header>
       <label className="forge-search">
         <span className="visually-hidden">Search local slides</span>
-        <input type="search" placeholder="Search local slides" />
+        <input type="search" placeholder="Search slides and folders" value={query} onChange={(event) => setQuery(event.target.value)} />
       </label>
-      <nav aria-label="Local slides">
-        {datasets.length ? datasets.map((dataset) => (
-          <button
-            type="button"
-            key={dataset.id}
-            className={dataset.id === selectedId ? 'active' : undefined}
-            onClick={() => onSelect(dataset.id)}
-          >
-            <span className={`forge-slide-dot status-${dataset.status.toLowerCase()}`} />
-            <span><strong>{dataset.displayName}</strong><small>{statusLabel(dataset.status)}</small></span>
-          </button>
-        )) : (
+      <section className="forge-local-folders" aria-label="Local folders">
+        <div className="forge-folder-actions">
+          <button type="button" onClick={() => setNewFolder((current) => current ? '' : 'New folder')}><Plus /> New folder</button>
+          <button type="button" onClick={onSync}><ArrowsClockwise /> Sync Viewer</button>
+        </div>
+        {newFolder ? (
+          <form onSubmit={(event) => { event.preventDefault(); const name = newFolder.trim(); if (name) { onCreateFolder(name); setActiveFolder(name); setNewFolder('') } }}>
+            <input aria-label="New folder name" autoFocus value={newFolder} onChange={(event) => setNewFolder(event.target.value)} />
+            <button type="submit">Add</button>
+          </form>
+        ) : null}
+        <div className="forge-folder-tree">
+          {['All slides', ...folders].map((folder) => (
+            <button className={activeFolder === folder ? 'active' : ''} type="button" key={folder} onClick={() => setActiveFolder(folder)}>
+              <Folder /> <span>{folder}</span><small>{folder === 'All slides' ? datasets.length : datasets.filter((item) => (folderByDataset[item.id] || DEFAULT_LOCAL_FOLDER) === folder).length}</small>
+            </button>
+          ))}
+        </div>
+      </section>
+      {checkedIds.length ? (
+        <div className="forge-batch-actions" role="toolbar" aria-label={`${checkedIds.length} selected slides`}>
+          <strong>{checkedIds.length} selected</strong>
+          <button type="button" onClick={() => onQueue(checkedIds)}>Queue</button>
+          <label>Move<span className="visually-hidden"> selected slides to folder</span>
+            <select defaultValue="" onChange={(event) => { if (event.target.value) onMove(checkedIds, event.target.value); event.target.value = '' }}>
+              <option value="" disabled>Move…</option>{folders.map((folder) => <option value={folder} key={folder}>{folder}</option>)}
+            </select>
+          </label>
+          <button className="danger" type="button" onClick={() => onRemove(checkedIds)}><Trash /> Remove</button>
+        </div>
+      ) : null}
+      <nav className="forge-slide-list" aria-label="Local slides">
+        {visible.length ? visible.map((dataset) => {
+          const progress = libraryProgress(dataset)
+          const thumbnailSeries = Math.max(0, dataset.selectedSeries)
+          return (
+          <div key={dataset.id} className={`forge-slide-row${dataset.id === selectedId ? ' active' : ''}`}>
+            <input type="checkbox" aria-label={`Select ${dataset.displayName}`} checked={checked.has(dataset.id)} onChange={() => toggle(dataset.id)} />
+            <button type="button" onClick={() => onSelect(dataset.id)}>
+              <span className="forge-slide-thumbnail"><img src={`/api/datasets/${encodeURIComponent(dataset.id)}/series/${thumbnailSeries}/thumbnail?v=${encodeURIComponent(dataset.sourceFingerprint.slice(0, 24))}`} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} /></span>
+              <span className="forge-slide-copy">
+                <strong>{dataset.displayName}</strong>
+                <small><i className={`forge-slide-dot status-${dataset.status.toLowerCase()}`} />{statusLabel(dataset.status)}</small>
+                <span className="forge-slide-progress"><progress aria-label={`${dataset.displayName} library conversion progress`} max="100" value={progress} /><b>{progress}%</b></span>
+              </span>
+            </button>
+          </div>
+        )}) : datasets.length ? (
+          <div className="forge-empty-nav"><Folder /><strong>No slides in this folder</strong><span>Move slides here using the selection toolbar.</span></div>
+        ) : (
           <div className="forge-empty-nav">
             <Crosshair aria-hidden="true" />
             <strong>No local slides</strong>
@@ -988,12 +1248,6 @@ function SlideNavigator({
           </div>
         )}
       </nav>
-      <section className="forge-server-nav" aria-label="Viewer library">
-        <div><span>PathLab Viewer</span><button type="button" onClick={onConnect}>Connect</button></div>
-        {SERVER_DESTINATIONS.map((destination) => (
-          <button type="button" key={destination} onClick={onConnect}>{destination}</button>
-        ))}
-      </section>
     </div>
   )
 }
@@ -1725,6 +1979,23 @@ function ExportInspector({
     ? current
     : undefined
   const directOmePlanned = true
+  const deliverableRevision = Boolean(
+    readyCurrent
+    && readyCurrent.id === dataset.approvedArtifactRevision
+    && readyCurrent.format === 'OME_DYNAMIC_V1'
+    && readyCurrent.omeProfile === 'ome-dynamic-v1'
+    && readyCurrent.jpegQuality === 75
+    && readyCurrent.omeBytes > 0,
+  )
+  const workflowStep = CANCELLABLE_STATUSES.has(dataset.status)
+      ? 3
+      : readyCurrent
+        ? dataset.approvedArtifactRevision !== readyCurrent.id
+          ? 4
+          : 5
+        : !series.length
+          ? 1
+          : 2
 
   const updateSeries = async (value: string) => {
     const next = series.find((item) => item.index === Number(value))
@@ -1760,6 +2031,7 @@ function ExportInspector({
 
   return (
     <section className="forge-inspector-section">
+      <ConversionWorkflow currentStep={workflowStep} complete={viewerUpload?.state === 'COMPLETE'} />
       <div className="forge-source-summary">
         <span>{dataset.format === 'VSI' ? 'VSI with matched ETS' : dataset.format === 'SVS' ? 'SVS whole slide' : 'OME-TIFF'}</span>
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
@@ -1804,7 +2076,9 @@ function ExportInspector({
               >
                 Download {formatBytes(readyCurrent.packageBytes)} package
               </a>
-            ) : <small>Validated locally · approve to enable private Viewer upload</small>}
+            ) : <small>{readyCurrent.status === 'APPROVED'
+              ? 'Validated and approved · ready for private Viewer delivery'
+              : 'Validated locally · approve to enable private Viewer delivery'}</small>}
           </>
         </section>
       ) : null}
@@ -1969,6 +2243,12 @@ function ExportInspector({
           ? ` · SHA verified ${viewerUpload.viewerSlideSha256.slice(0, 12)}…`
           : ''}
       </div>
+      {dataset.approvedArtifactRevision && !deliverableRevision ? (
+        <div className="forge-format-notice" role="status">
+          <strong>Update needed before Viewer delivery</strong>
+          <span>This approved result uses an older package format. Convert once with the current direct OME-TIFF workflow; Forge will keep the older result in History.</span>
+        </div>
+      ) : null}
       {dataset.status === 'FAILED' && dataset.detail.includes('DZI_SIZE_QUALITY_CONFLICT') ? (
         <div className="forge-compact-conflict" role="alert">
           <strong>Compact DZI could not meet the 1.25× size limit</strong>
@@ -1987,7 +2267,7 @@ function ExportInspector({
           && dataset.approvedArtifactRevision !== current.id
           ? <button className="forge-approve" type="button" onClick={onApprove}><CheckCircle /> Approve {current.format === 'OME_DYNAMIC_V1' ? 'direct OME' : 'compact DZI'}</button>
           : null}
-        {dataset.approvedArtifactRevision
+        {deliverableRevision
           ? <button type="button" onClick={onUpload}>Deliver privately to Viewer</button>
           : !connection?.connected
           ? <button type="button" onClick={onConnect}>Connect Viewer</button>
@@ -2150,6 +2430,48 @@ function conversionCounter(dataset: Dataset) {
   return `${completed.toLocaleString()} of ${total.toLocaleString()} ${units}`
 }
 
+function ConversionWorkflow({ currentStep, complete }: { currentStep: number; complete: boolean }) {
+  const steps = [
+    ['Inspect', 'Choose the image series'],
+    ['Region', 'Set crop and scale'],
+    ['Convert', 'Create direct OME-TIFF'],
+    ['Review', 'Open and approve result'],
+    ['Deliver', 'Send privately to Viewer'],
+  ]
+  return (
+    <section className="forge-workflow" aria-label="Conversion workflow">
+      <header><strong>Slide workflow</strong><span>One continuous path</span></header>
+      <ol>
+        {steps.map(([label, detail], index) => {
+          const number = index + 1
+          const done = complete || number < currentStep
+          const active = !complete && number === currentStep
+          return (
+            <li className={done ? 'complete' : active ? 'active' : ''} key={label} aria-current={active ? 'step' : undefined}>
+              <i>{done ? <CheckCircle aria-hidden="true" /> : number}</i>
+              <span><strong>{label}</strong><small>{detail}</small></span>
+            </li>
+          )
+        })}
+      </ol>
+    </section>
+  )
+}
+
+function BatchRemoveDialog({ count, onRemove, onClose }: { count: number; onRemove: () => void; onClose: () => void }) {
+  return (
+    <div className="forge-dialog-backdrop">
+      <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-batch-remove-title">
+        <span>Local slide library</span>
+        <h2 id="forge-batch-remove-title">Remove {count} slides?</h2>
+        <p>The selected slides disappear from this Forge library. Original files and completed exports remain on disk.</p>
+        <button className="forge-danger" type="button" onClick={onRemove}><Trash /> Remove selected slides</button>
+        <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
+      </section>
+    </div>
+  )
+}
+
 function conversionRouteLabel(dataset: Dataset, directOme: boolean) {
   if (directOme) return 'Direct OME-TIFF'
   if (['REGIONS_RENDERING', 'REGIONS_VERIFIED', 'DIRECT_DZI_SOURCE_READY', 'DIRECT_DZI_PREPARING']
@@ -2206,6 +2528,22 @@ function statusLabel(status: string) {
     LOCAL_COPY_READY: 'Managed copy ready',
     FAILED: 'Failed',
   } as Record<string, string>)[status] || status.toLowerCase().replaceAll('_', ' ')
+}
+
+function libraryProgress(dataset: Dataset) {
+  if (['PACKAGE_READY', 'READY', 'APPROVED'].includes(dataset.status)) return 100
+  if (['QUEUED', 'WAITING_RESOURCES', 'READY_TO_CONVERT', 'CONVERSION_READY'].includes(dataset.status)) return 0
+  if (!CONVERSION_STATUSES.has(dataset.status)) return 0
+  return conversionPhase(dataset, dataset.stage === 'DIRECT_OME').percent
+}
+
+function readStored<T>(key: string, fallback: T): T {
+  try {
+    const stored = window.localStorage.getItem(key)
+    return stored ? JSON.parse(stored) as T : fallback
+  } catch {
+    return fallback
+  }
 }
 
 function useElapsed(startedAt?: number) {

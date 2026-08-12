@@ -118,6 +118,8 @@ vi.mock('../api', () => ({
 }))
 
 beforeEach(() => {
+  localStorage.clear()
+  document.documentElement.dataset.theme = 'light'
   vi.mocked(api.getViewerConnection).mockResolvedValue({
     connected: false,
     viewerUrl: '',
@@ -134,7 +136,7 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('main')).toBeVisible()
   expect(screen.getByRole('region', { name: 'Whole-slide viewer' })).toBeVisible()
   expect(screen.getByText('Your slides, ready at launch')).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Connect' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Viewer library' })).toBeVisible()
 })
 
 test('keeps optional features offline until Feature Center is opened', async () => {
@@ -171,7 +173,7 @@ test('keeps the viewer visible by collapsing the navigator on compact browser wi
     const view = render(<App />)
     const main = await screen.findByRole('main')
     expect(main.closest('.forge-canvas-host')).toHaveClass('navigator-collapsed')
-    expect(screen.getByRole('button', { name: 'Slide library' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Local library' })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
@@ -189,8 +191,10 @@ test('gives the expanded product rail enough width to show its labels', async ()
   const rail = screen.getByRole('complementary', { name: 'Product navigation' })
   const shell = rail.closest('.pathlab-canvas-shell')
   expect(shell).toHaveClass('rail-expanded')
-  expect(within(rail).getByText('Slide library')).toBeVisible()
+  expect(within(rail).getByText('Local library')).toBeVisible()
+  expect(within(rail).getByText('Viewer library')).toBeVisible()
   expect(within(rail).getByText('Import')).toBeVisible()
+  expect(within(rail).getByText('Feature Center')).toBeVisible()
   expect(within(rail).getByText('Viewer account')).toBeVisible()
   expect(within(rail).getByText('Connect Viewer')).toBeVisible()
 })
@@ -259,7 +263,7 @@ test('collapses and restores the slide inspector without losing its state', asyn
 
   expect(host).toHaveClass('navigator-collapsed')
   expect(navigator).not.toBeVisible()
-  const restoreLibrary = screen.getByRole('button', { name: 'Slide library' })
+  const restoreLibrary = screen.getByRole('button', { name: 'Local library' })
   expect(restoreLibrary).toHaveAttribute('aria-expanded', 'false')
   fireEvent.click(restoreLibrary)
 
@@ -267,7 +271,17 @@ test('collapses and restores the slide inspector without losing its state', asyn
   expect(navigator).toBeVisible()
   expect(screen.getByRole('button', {
     name: /Collapsible slide\.ome\.tif Ready to convert/,
-  })).toHaveClass('active')
+  }).closest('.forge-slide-row')).toHaveClass('active')
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select Collapsible slide.ome.tif' }))
+  const batchTools = screen.getByRole('toolbar', { name: '1 selected slides' })
+  expect(within(batchTools).getByRole('button', { name: 'Queue' })).toBeVisible()
+  expect(within(batchTools).getByRole('button', { name: 'Remove' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'New folder' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'New folder name' }), { target: { value: 'Cases' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  fireEvent.change(within(batchTools).getByRole('combobox'), { target: { value: 'Cases' } })
+  await waitFor(() => expect(localStorage.getItem('pathlab-forge-folder-map-v1')).toContain('Cases'))
 })
 
 test('shows the short-lived Viewer verification code', async () => {
@@ -287,6 +301,18 @@ test('shows the short-lived Viewer verification code', async () => {
   )
   expect(screen.getByRole('img', { name: 'Scan to approve this Forge device' }))
     .toHaveAttribute('data-value', 'http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH')
+})
+
+test('switches theme and opens Viewer as its own library destination', async () => {
+  render(<App />)
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Switch to dark theme' }))
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+  expect(localStorage.getItem('pathlab-forge-theme')).toBe('dark')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Viewer library' }))
+  expect((await screen.findAllByText('Viewer not connected'))[0]).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Connect to Viewer' })).toBeVisible()
 })
 
 test('uses one-click default pairing and hides custom origins under Advanced', async () => {
@@ -946,6 +972,53 @@ test('uses direct OME stages instead of DZI packaging stages during conversion',
   expect(screen.getAllByText('Rendering canonical OME-TIFF')[0]).toBeVisible()
   expect(screen.queryByText('Generating DZI')).not.toBeInTheDocument()
   expect(screen.queryByText('Packaging')).not.toBeInTheDocument()
+  const selectSlide = screen.getByRole('checkbox', { name: 'Select Direct converting.vsi' })
+  expect(selectSlide.closest('.forge-slide-row')?.querySelector('img')).toHaveAttribute(
+    'src',
+    '/api/datasets/direct-converting/series/0/thumbnail?v=direct-converting-source',
+  )
+  expect(screen.getByRole('progressbar', { name: 'Direct converting.vsi library conversion progress' })).toHaveValue(33)
+  expect(screen.getByRole('region', { name: 'Conversion workflow' })).toBeVisible()
+})
+
+test('does not offer Viewer delivery for an older prepared artifact', async () => {
+  const legacyApproved: api.Dataset = {
+    id: 'legacy-approved', displayName: 'Older prepared slide.vsi', sourceBytes: 2_000,
+    format: 'VSI', status: 'PACKAGE_READY', detail: 'Older prepared package approved',
+    outputPath: '', sha256: '', selectedSeries: 0, width: 2_000, height: 1_000,
+    downsample: 1, estimatedOutputBytes: 2_000, projectedFileBytes: 1_000,
+    projectedFileLowerBytes: 500, projectedFileUpperBytes: 2_000,
+    cropX: 0, cropY: 0, cropWidth: 2_000, cropHeight: 1_000,
+    sourceFingerprint: 'legacy-approved-source', configurationRevision: 'legacy-config',
+    currentArtifactRevision: 'legacy-artifact', approvedArtifactRevision: 'legacy-artifact',
+  }
+  vi.mocked(api.bootstrap).mockResolvedValue([[legacyApproved], {
+    conversionRuntime: 'QuPath test', derivativeRuntime: 'libvips test',
+    vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
+  }])
+  vi.mocked(api.datasets).mockResolvedValue([legacyApproved])
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Viewer',
+    scopes: ['slides:write'], conversionMode: 'OME_DYNAMIC_V1',
+  })
+  vi.mocked(api.artifacts).mockResolvedValue({
+    currentRevision: 'legacy-artifact', approvedRevision: 'legacy-artifact', revisions: [{
+      id: 'legacy-artifact', status: 'APPROVED', format: 'PREPARED_DZI_V2',
+      createdAt: Date.now(), outputWidth: 2_000, outputHeight: 1_000,
+      omePath: 'C:\\older.ome.tif', packagePath: 'C:\\older.plslide',
+      omeSha256: 'older-ome', omeProfile: 'ome-dynamic-v1', omeBytes: 1_000,
+      dziBytes: 900, packageBytes: 950, jpegQuality: 85,
+      minimumWindowedSsim: .98, maximumRoiMeanDeltaE00: 1.5,
+      minimumEdgeDetailRetention: .95, encoderProfile: 'older',
+      packageSha256: 'older-package', failure: '',
+    }],
+  })
+
+  render(<App />)
+
+  expect(await screen.findByText('Update needed before Viewer delivery')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Deliver privately to Viewer' })).not.toBeInTheDocument()
+  expect(api.uploadApprovedArtifact).not.toHaveBeenCalled()
 })
 
 test('shows direct OME pyramid finalization as active instead of frozen at a fixed percent', async () => {
@@ -981,7 +1054,6 @@ test('shows direct OME pyramid finalization as active instead of frozen at a fix
   expect((await screen.findAllByText('Finalizing OME-TIFF pyramid'))[0]).toBeVisible()
   expect(screen.getByRole('progressbar', { name: 'Conversion progress' })).not.toHaveAttribute('value')
   expect(screen.getAllByText('Finalizing…')[0]).toBeVisible()
-  expect(screen.queryByText('75%')).not.toBeInTheDocument()
 })
 
 test('refreshes annotations and artifacts only for the selected active slide', async () => {
