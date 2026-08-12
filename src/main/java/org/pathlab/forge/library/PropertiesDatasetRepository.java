@@ -1,0 +1,193 @@
+package org.pathlab.forge.library;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.function.UnaryOperator;
+
+public final class PropertiesDatasetRepository implements DatasetRepository {
+    private static final String PREFIX = "dataset.";
+    private final Path storePath;
+    private final Map<String, LocalDataset> datasets = new LinkedHashMap<>();
+    private final Map<String, ConversionQueueEntry> queue = new LinkedHashMap<>();
+
+    public PropertiesDatasetRepository(Path storePath) throws IOException {
+        this.storePath = storePath.toAbsolutePath().normalize();
+        load();
+    }
+
+    @Override
+    public synchronized List<LocalDataset> list() {
+        return datasets.values().stream()
+                .sorted(Comparator.comparing(LocalDataset::displayName)
+                        .thenComparing(LocalDataset::id))
+                .toList();
+    }
+
+    @Override
+    public synchronized Optional<LocalDataset> find(String id) {
+        return Optional.ofNullable(datasets.get(id));
+    }
+
+    @Override
+    public synchronized Optional<LocalDataset> findBySourcePath(String sourcePath) {
+        return datasets.values().stream()
+                .filter(dataset -> dataset.sourcePath().equals(sourcePath))
+                .findFirst();
+    }
+
+    @Override
+    public synchronized List<ConversionQueueEntry> listQueueEntries() {
+        return queue.values().stream()
+                .sorted(Comparator.comparingLong(ConversionQueueEntry::position))
+                .toList();
+    }
+
+    @Override
+    public synchronized void saveQueueEntry(ConversionQueueEntry entry) {
+        queue.put(entry.datasetId(), entry);
+    }
+
+    @Override
+    public synchronized void deleteQueueEntry(String datasetId) {
+        queue.remove(datasetId);
+    }
+
+    @Override
+    public synchronized void save(LocalDataset dataset) throws IOException {
+        datasets.put(dataset.id(), dataset);
+        persist();
+    }
+
+    @Override
+    public synchronized LocalDataset update(String id, UnaryOperator<LocalDataset> change)
+            throws IOException {
+        var current = Optional.ofNullable(datasets.get(id))
+                .orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
+        var updated = change.apply(current);
+        datasets.put(id, updated);
+        persist();
+        return updated;
+    }
+
+    @Override
+    public synchronized void delete(String id) throws IOException {
+        datasets.remove(id);
+        persist();
+    }
+
+    private void load() throws IOException {
+        if (!Files.isRegularFile(storePath)) {
+            return;
+        }
+        var properties = new Properties();
+        try (InputStream input = Files.newInputStream(storePath)) {
+            properties.load(input);
+        }
+        var ids = new ArrayList<String>();
+        for (var key : properties.stringPropertyNames()) {
+            if (key.startsWith(PREFIX) && key.endsWith(".displayName")) {
+                ids.add(key.substring(PREFIX.length(), key.length() - ".displayName".length()));
+            }
+        }
+        for (var id : ids) {
+            var key = PREFIX + id + ".";
+            var loaded = new LocalDataset(
+                    id,
+                    properties.getProperty(key + "displayName"),
+                    properties.getProperty(key + "sourcePath"),
+                    Long.parseLong(properties.getProperty(key + "sourceBytes")),
+                    DatasetFormat.valueOf(properties.getProperty(key + "format")),
+                    DatasetStatus.valueOf(properties.getProperty(key + "status")),
+                    properties.getProperty(key + "detail", ""),
+                    properties.getProperty(key + "outputPath", ""),
+                    properties.getProperty(key + "sha256", ""),
+                    Integer.parseInt(properties.getProperty(key + "selectedSeries", "-1")),
+                    Integer.parseInt(properties.getProperty(key + "width", "0")),
+                    Integer.parseInt(properties.getProperty(key + "height", "0")),
+                    Double.parseDouble(properties.getProperty(key + "downsample", "1")),
+                    Long.parseLong(properties.getProperty(key + "estimatedOutputBytes", "0")),
+                    Integer.parseInt(properties.getProperty(key + "cropX", "0")),
+                    Integer.parseInt(properties.getProperty(key + "cropY", "0")),
+                    Integer.parseInt(properties.getProperty(
+                            key + "cropWidth", properties.getProperty(key + "width", "0"))),
+                    Integer.parseInt(properties.getProperty(
+                            key + "cropHeight", properties.getProperty(key + "height", "0"))),
+                    properties.getProperty(key + "sourceFingerprint", ""),
+                    properties.getProperty(key + "sourceInventory", ""),
+                    properties.getProperty(key + "configurationRevision", ""),
+                    properties.getProperty(key + "currentArtifactRevision", ""),
+                    properties.getProperty(key + "approvedArtifactRevision", ""));
+            if (loaded.status() == DatasetStatus.INSPECTING
+                    || loaded.status() == DatasetStatus.CONVERTING
+                    || loaded.status() == DatasetStatus.OPTIMIZING_OME
+                    || loaded.status() == DatasetStatus.VALIDATING) {
+                loaded = loaded.withPreparation(
+                        DatasetStatus.FAILED,
+                        "Interrupted by application restart; retry is safe",
+                        loaded.outputPath(),
+                        loaded.sha256());
+            }
+            datasets.put(id, loaded);
+        }
+    }
+
+    private void persist() throws IOException {
+        Files.createDirectories(storePath.getParent());
+        var properties = new Properties();
+        for (var dataset : datasets.values()) {
+            var key = PREFIX + dataset.id() + ".";
+            properties.setProperty(key + "displayName", dataset.displayName());
+            properties.setProperty(key + "sourcePath", dataset.sourcePath());
+            properties.setProperty(key + "sourceBytes", Long.toString(dataset.sourceBytes()));
+            properties.setProperty(key + "format", dataset.format().name());
+            properties.setProperty(key + "status", dataset.status().name());
+            properties.setProperty(key + "detail", dataset.detail());
+            properties.setProperty(key + "outputPath", dataset.outputPath());
+            properties.setProperty(key + "sha256", dataset.sha256());
+            properties.setProperty(key + "selectedSeries", Integer.toString(dataset.selectedSeries()));
+            properties.setProperty(key + "width", Integer.toString(dataset.width()));
+            properties.setProperty(key + "height", Integer.toString(dataset.height()));
+            properties.setProperty(key + "downsample", Double.toString(dataset.downsample()));
+            properties.setProperty(
+                    key + "estimatedOutputBytes",
+                    Long.toString(dataset.estimatedOutputBytes()));
+            properties.setProperty(key + "cropX", Integer.toString(dataset.cropX()));
+            properties.setProperty(key + "cropY", Integer.toString(dataset.cropY()));
+            properties.setProperty(key + "cropWidth", Integer.toString(dataset.cropWidth()));
+            properties.setProperty(key + "cropHeight", Integer.toString(dataset.cropHeight()));
+            properties.setProperty(key + "sourceFingerprint", dataset.sourceFingerprint());
+            properties.setProperty(key + "sourceInventory", dataset.sourceInventory());
+            properties.setProperty(
+                    key + "configurationRevision", dataset.configurationRevision());
+            properties.setProperty(
+                    key + "currentArtifactRevision", dataset.currentArtifactRevision());
+            properties.setProperty(
+                    key + "approvedArtifactRevision", dataset.approvedArtifactRevision());
+        }
+        var partial = storePath.resolveSibling(storePath.getFileName() + ".partial");
+        try (OutputStream output = Files.newOutputStream(partial)) {
+            properties.store(output, "PathLab Forge local library");
+        }
+        try {
+            Files.move(
+                    partial,
+                    storePath,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(partial, storePath, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+}

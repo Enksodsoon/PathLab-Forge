@@ -1,0 +1,56 @@
+{
+  "schema": "pathlab-ome-direct-rc-metrics/v1",
+  "deterministicTrials": 3,
+  "directTrialsPassed": 3,
+  "preparedFallbackTrialsPassed": 3,
+  "realSlide": {
+    "sourceDisclosure": "private-user-provided-vsi",
+    "directPackageReadyMs": 199788,
+    "preparedPackageReadyMs": 374619,
+    "speedImprovementPercent": 46.67,
+    "directRetainedArtifactBytes": 500309132,
+    "preparedRetainedArtifactBytes": 1850400059,
+    "storageImprovementPercent": 72.96,
+    "directPeakProcessTreeBytes": 4110106624,
+    "preparedPeakProcessTreeBytes": 4172959744,
+    "directPeakWorkspaceBytes": 500312729,
+    "preparedPeakWorkspaceBytes": 3175606914,
+    "fidelity": {
+      "profile": "pathlab-visual-v1",
+      "jpegQuality": 75,
+      "jpegSubsampling": "4:2:0",
+      "roiCount": 64,
+      "minimumSsim": 0.9719863124132546,
+      "maximumMeanDeltaE00": 1.8374669090427977,
+      "maximumP95DeltaE00Diagnostic": 4.91582803473951,
+      "minimumEdgeDetailRetention": 1.0,
+      "passed": true
+    }
+  },
+  "tileConcurrency": {
+    "1": {"errors": 0, "maxP95Ms": 25.977, "maxP99Ms": 25.977},
+    "10": {"errors": 0, "maxP95Ms": 51.862, "maxP99Ms": 51.862},
+    "25": {"errors": 0, "maxP95Ms": 132.164, "maxP99Ms": 134.687},
+    "50": {"errors": 0, "maxP95Ms": 234.788, "maxP99Ms": 244.617}
+  },
+  "finalCrossProcessRerun": {
+    "directFormat": "OME_DYNAMIC_V1",
+    "directStoredOmeFiles": 1,
+    "directStoredDziFiles": 0,
+    "directShaMatch": true,
+    "viewerRestartTilePassed": true,
+    "fallbackFormat": "PREPARED_DZI_V2",
+    "fallbackShaMatch": true,
+    "concurrencyErrors": 0
+  },
+  "regressions": {
+    "viewerBackendPassed": 441,
+    "viewerBackendSkipped": 4,
+    "viewerFrontendPassed": 226,
+    "forgeJavaPassed": 153,
+    "forgeJavaSkipped": 2,
+    "forgeFrontendPassed": 33
+  },
+  "privateRawEvidenceCommitted": false,
+  "pushMergeDeployPerformed": false
+}

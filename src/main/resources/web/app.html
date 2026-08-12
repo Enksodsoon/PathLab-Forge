@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PathLab Forge</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/openseadragon.min.js" defer></script>
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail" aria-label="Primary navigation">
+        <a class="brand" href="/app" aria-label="PathLab Forge">
+          <svg aria-hidden="true" viewBox="0 0 32 32">
+            <path d="M4.5 10.1 16 4.4l11.5 5.7L16 15.8 4.5 10.1Z" opacity=".34"/>
+            <path d="m4.5 15.9 11.5 5.7 11.5-5.7M4.5 21.7l11.5 5.7 11.5-5.7"/>
+          </svg>
+          <span>PathLab <b>Forge</b></span>
+        </a>
+        <nav>
+          <a class="active" href="#library">Library</a>
+          <a href="#queue">Conversion queue</a>
+          <a href="#sync">Viewer sync</a>
+        </nav>
+        <p class="local">Local workspace<br><span>Originals stay on this computer</span></p>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <p class="eyebrow">Local slide preparation</p>
+            <h1>Library</h1>
+            <p>Inspect local datasets and export verified RGB OME-TIFF locally.</p>
+          </div>
+          <div class="actions">
+            <button class="secondary" data-action="refresh">Refresh</button>
+            <button data-action="add-datasets">＋ Add datasets</button>
+          </div>
+        </header>
+        <section class="toolbar" aria-label="Library controls">
+          <label><span class="sr-only">Search</span><input id="library-search" type="search" placeholder="Search local slides"></label>
+          <button class="secondary" data-action="filters" aria-pressed="false">Filters</button>
+          <button class="secondary" data-action="theme">Theme: System</button>
+        </section>
+        <section class="runtime" data-runtime>
+          <span class="runtime-dot" aria-hidden="true"></span>
+          <span>Checking local conversion runtime…</span>
+        </section>
+        <section class="filter-panel" hidden aria-label="Dataset filters">
+          <span>Showing supported datasets:</span>
+          <button class="chip active" data-filter="all">All</button>
+          <button class="chip" data-filter="ome">OME-TIFF</button>
+          <button class="chip" data-filter="vsi">VSI / ETS</button>
+        </section>
+        <section class="empty" id="library" data-empty-state>
+          <div class="tissue">◎</div>
+          <h2>Your local pathology workspace</h2>
+          <p>Add an OME-TIFF or a complete VSI/ETS dataset. Forge will inspect it before any conversion starts.</p>
+          <button data-action="add-datasets">Choose datasets</button>
+          <small>Originals stay untouched. Conversion runs one slide at a time with bounded tiled I/O.</small>
+        </section>
+        <section class="dataset-grid" data-dataset-grid hidden aria-label="Local datasets"></section>
+        <section class="queue" id="queue">
+          <div><p class="eyebrow">Batch activity</p><h2>Conversion queue</h2></div>
+          <span class="status" data-queue-status>0 staged</span>
+        </section>
+        <section id="sync" class="sync-note">
+          <strong>Viewer sync:</strong> staged, not connected. Secure account pairing and the reviewed prepared-slide API are required before upload can be enabled.
+        </section>
+      </main>
+    </div>
+    <dialog class="viewer-dialog" data-viewer-dialog aria-label="Whole-slide viewer">
+      <header class="viewer-header">
+        <div>
+          <p class="eyebrow">Local whole-slide workspace</p>
+          <h2 data-viewer-title>Slide viewer</h2>
+        </div>
+        <div class="viewer-actions">
+          <button class="secondary" data-viewer-action="home" title="Fit slide">Fit</button>
+          <button class="secondary" data-viewer-action="zoom-out" aria-label="Zoom out">−</button>
+          <button class="secondary" data-viewer-action="zoom-in" aria-label="Zoom in">＋</button>
+          <button class="secondary" data-viewer-action="fullscreen">Full screen</button>
+          <button data-viewer-action="close">Close</button>
+        </div>
+      </header>
+      <div class="viewer-workspace">
+        <aside class="annotation-panel">
+          <h3>Annotations</h3>
+          <p>Draw directly on the slide. Coordinates are stored locally in image pixels.</p>
+          <div class="tool-grid" role="toolbar" aria-label="Annotation tools">
+            <button class="secondary active" data-tool="pan">Pan</button>
+            <button class="secondary" data-tool="point">Point</button>
+            <button class="secondary" data-tool="rectangle">Rectangle</button>
+            <button class="secondary" data-tool="ellipse">Ellipse</button>
+            <button class="secondary" data-tool="line">Line</button>
+            <button class="secondary" data-tool="measure">Measure</button>
+            <button class="secondary" data-tool="polygon">Polygon</button>
+            <button class="secondary" data-tool="freehand">Freehand</button>
+            <button class="secondary" data-tool="text">Text</button>
+          </div>
+          <label class="annotation-field">Label
+            <input data-annotation-label maxlength="240" placeholder="Optional label">
+          </label>
+          <label class="annotation-color">Colour
+            <input type="color" data-annotation-color value="#f3b33d">
+          </label>
+          <p class="tool-hint" data-tool-hint>Pan and zoom the slide.</p>
+          <div class="annotation-list" data-annotation-list></div>
+        </aside>
+        <section class="slide-stage" aria-label="Slide canvas">
+          <div class="slide-viewer" data-slide-viewer></div>
+          <svg class="annotation-overlay" data-annotation-overlay aria-label="Annotation overlay"></svg>
+        </section>
+      </div>
+    </dialog>
+    <div class="toast" data-toast role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

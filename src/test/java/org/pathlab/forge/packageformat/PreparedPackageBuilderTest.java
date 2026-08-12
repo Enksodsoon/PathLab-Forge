@@ -1,0 +1,231 @@
+package org.pathlab.forge.packageformat;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import javax.imageio.ImageIO;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pathlab.forge.derivative.DerivativeInfo;
+import org.pathlab.forge.derivative.FileLedgerEntry;
+
+final class PreparedPackageBuilderTest {
+    @TempDir
+    Path temporaryDirectory;
+
+    @Test
+    void buildsDeterministicCanonicalPackage() throws Exception {
+        var derivative = Files.createDirectories(temporaryDirectory.resolve("derivative"));
+        Files.writeString(
+                derivative.resolve("slide.dzi"),
+                """
+                <Image xmlns="http://schemas.microsoft.com/deepzoom/2008"
+                  Format="jpg" Overlap="1" TileSize="512"><Size Height="1" Width="1"/></Image>
+                """);
+        var level = Files.createDirectories(derivative.resolve("slide_files").resolve("0"));
+        writeJpeg(level.resolve("0_0.jpg"));
+        var levelOne = Files.createDirectories(derivative.resolve("slide_files").resolve("1"));
+        writeJpeg(levelOne.resolve("0_0.jpg"));
+        var levelTen = Files.createDirectories(derivative.resolve("slide_files").resolve("10"));
+        writeJpeg(levelTen.resolve("0_0.jpg"));
+        writeJpeg(derivative.resolve("thumbnail.jpg"));
+        var first = temporaryDirectory.resolve("first.plslide");
+        var second = temporaryDirectory.resolve("second.plslide");
+
+        var metadata = new PackageMetadata(
+                "artifact-1",
+                "configuration-1",
+                "source-fingerprint",
+                2,
+                10,
+                20,
+                30,
+                40,
+                1.5,
+                0.25,
+                0.25,
+                "µm",
+                "actual-staging-ome",
+                "test");
+        var firstInfo = PreparedPackageBuilder.build(derivative, 1, 1, metadata, first);
+        var secondInfo = PreparedPackageBuilder.build(derivative, 1, 1, metadata, second);
+        var ledger = Files.walk(derivative)
+                .filter(Files::isRegularFile)
+                .sorted()
+                .map(path -> {
+                    try {
+                        var relative =
+                                derivative.relativize(path).toString().replace('\\', '/');
+                        var jpeg = relative.endsWith(".jpg");
+                        return new FileLedgerEntry(
+                                relative,
+                                Files.size(path),
+                                sha256(path),
+                                jpeg,
+                                jpeg,
+                                jpeg ? 1 : 0,
+                                jpeg ? 1 : 0);
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                })
+                .toList();
+        var derivativeInfo = new DerivativeInfo(
+                derivative, firstInfo.derivativeBytes(), ledger.size(), 3, "a".repeat(64),
+                ledger, 75, 1.0, 0.0, 1.0, "compact-baseline");
+
+        assertArrayEquals(Files.readAllBytes(first), Files.readAllBytes(second));
+        assertEquals(firstInfo.sha256(), secondInfo.sha256());
+        assertEquals(
+                firstInfo.bytes(),
+                PreparedPackageBuilder.predictBytes(derivativeInfo, 1, 1, metadata, 0));
+        assertEquals(5, firstInfo.derivativeFileCount());
+        var listing = tarEntry(first, "manifest.json");
+        assertTrue(listing.contains("\"schema\":\"pathlab-prepared-slide/v2\""));
+        assertTrue(listing.contains("\"sourceFingerprint\":\"source-fingerprint\""));
+        assertTrue(listing.contains("\"scale\":0.6666666666666666"));
+        assertTrue(listing.contains("\"format\":\"ndjson-v1\""));
+        assertTrue(listing.contains("\"quality\":75"));
+        assertTrue(listing.contains("\"selector\":\"quality-gated-v2-64-roi\""));
+        assertTrue(listing.contains("\"minimumEdgeDetailRetention\":1.0"));
+        assertTrue(listing.contains("\"predictedPackageBytes\":" + firstInfo.bytes()));
+        assertEquals(64, tarEntry(first, "manifest.sha256").length());
+        var inventory = tarEntry(first, "inventory.ndjson");
+        assertEquals(5, inventory.lines().count());
+        assertTrue(
+                inventory.indexOf("derivative/slide_files/1/0_0.jpg")
+                        < inventory.indexOf("derivative/slide_files/10/0_0.jpg"));
+        var indexedTile = firstInfo.entryIndex().require(
+                "derivative/slide_files/0/0_0.jpg");
+        try (var channel = java.nio.channels.FileChannel.open(first)) {
+            var bytes = java.nio.ByteBuffer.allocate(Math.toIntExact(indexedTile.size()));
+            channel.position(indexedTile.offset());
+            while (bytes.hasRemaining()) {
+                channel.read(bytes);
+            }
+            assertArrayEquals(
+                    Files.readAllBytes(level.resolve("0_0.jpg")),
+                    bytes.array());
+        }
+    }
+
+    @Test
+    void throttlesPackagingProgressWithoutLosingFinalUpdate() throws Exception {
+        var derivative = Files.createDirectories(temporaryDirectory.resolve("many-tiles"));
+        Files.writeString(
+                derivative.resolve("slide.dzi"),
+                """
+                <Image xmlns="http://schemas.microsoft.com/deepzoom/2008"
+                  Format="jpg" Overlap="1" TileSize="512"><Size Height="1" Width="1"/></Image>
+                """);
+        writeJpeg(derivative.resolve("thumbnail.jpg"));
+        var level = Files.createDirectories(derivative.resolve("slide_files").resolve("8"));
+        for (int index = 0; index < 128; index++) {
+            writeJpeg(level.resolve(index + "_0.jpg"));
+        }
+        var ledger = Files.walk(derivative)
+                .filter(Files::isRegularFile)
+                .sorted()
+                .map(path -> {
+                    try {
+                        var relative =
+                                derivative.relativize(path).toString().replace('\\', '/');
+                        var jpeg = relative.endsWith(".jpg");
+                        return new FileLedgerEntry(
+                                relative,
+                                Files.size(path),
+                                sha256(path),
+                                jpeg,
+                                jpeg,
+                                jpeg ? 1 : 0,
+                                jpeg ? 1 : 0);
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                })
+                .toList();
+        var derivativeInfo = new DerivativeInfo(
+                derivative,
+                ledger.stream().mapToLong(FileLedgerEntry::size).sum(),
+                ledger.size(),
+                1,
+                "a".repeat(64),
+                ledger,
+                75,
+                1.0,
+                0.0,
+                1.0,
+                "compact-baseline");
+        var metadata = new PackageMetadata(
+                "artifact-1",
+                "configuration-1",
+                "source-fingerprint",
+                1,
+                0,
+                0,
+                1,
+                1,
+                1.0,
+                0.25,
+                0.25,
+                "µm",
+                "actual-staging-ome",
+                "test");
+        var updates = new ArrayList<String>();
+
+        PreparedPackageBuilder.build(
+                derivativeInfo,
+                1,
+                1,
+                metadata,
+                temporaryDirectory.resolve("throttled.plslide"),
+                0,
+                (completed, total) -> updates.add(completed + "/" + total));
+
+        assertEquals(java.util.List.of("0/130", "128/130", "130/130"), updates);
+    }
+
+    private static String tarEntry(Path archive, String expected) throws Exception {
+        try (var input = Files.newInputStream(archive)) {
+            while (true) {
+                var header = input.readNBytes(512);
+                if (header.length < 512 || header[0] == 0) {
+                    throw new IllegalArgumentException("Tar entry was not found: " + expected);
+                }
+                var nameEnd = 0;
+                while (nameEnd < 100 && header[nameEnd] != 0) {
+                    nameEnd++;
+                }
+                var name = new String(header, 0, nameEnd, java.nio.charset.StandardCharsets.UTF_8);
+                var sizeText = new String(
+                                header, 124, 12, java.nio.charset.StandardCharsets.US_ASCII)
+                        .replace("\0", "")
+                        .trim();
+                var size = Long.parseLong(sizeText, 8);
+                var bytes = input.readNBytes(Math.toIntExact(size));
+                var padding = (int) ((512 - size % 512) % 512);
+                input.skipNBytes(padding);
+                if (name.equals(expected)) {
+                    return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+        }
+    }
+
+    private static void writeJpeg(Path path) throws Exception {
+        ImageIO.write(new BufferedImage(1, 1, BufferedImage.TYPE_INT_RGB), "jpg", path.toFile());
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+    }
+}

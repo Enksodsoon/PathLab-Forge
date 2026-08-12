@@ -1,8 +1,8 @@
-Open the PathLab-Forge repository.
+Open Enksodsoon/PathLab-Forge.
 
-Read AGENTS.md and docs/plans/active/current.md. Work on Task 1 only: Java 17 build foundation and batch domain state machine.
+Read AGENTS.md and docs/plans/active/current.md. Work on Task F1.1 only: Java 17 build foundation and batch domain state machine.
 
-Do not add QuPath, Bio-Formats, OpenSlide, libvips, JavaFX, SQLite, server upload, WSI conversion, installers or later tasks yet.
+The active task is independent from current PathLab Viewer internals. Do not add QuPath, Bio-Formats, OpenSlide, libvips, JavaFX, SQLite, package schemas, server upload, WSI conversion, installers or later tasks.
 
 Use test-driven development exactly as specified:
 1. create the failing tests;
@@ -10,6 +10,6 @@ Use test-driven development exactly as specified:
 3. implement the smallest complete solution;
 4. run focused and full checks;
 5. review scope and naming;
-6. commit Task 1;
+6. commit Task F1.1;
 7. return the required TASK RESULT report;
 8. stop.

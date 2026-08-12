@@ -1,72 +1,230 @@
 # PathLab Viewer Connection Contract
 
-PathLab Forge communicates with PathLab Viewer through HTTPS JSON APIs and tus.
+## Current boundary
 
-## Capabilities
+PathLab Forge is a separate desktop application. It prepares browser-ready slide assets locally and communicates with PathLab Viewer through HTTPS JSON APIs plus the existing tus upload transport.
+
+PathLab Viewer already has:
+
+- an authenticated, folder-aware slide library;
+- resumable tus uploads;
+- storage reservations and reconciliation;
+- one serial background worker with heartbeat and stale-job recovery;
+- cached private thumbnails;
+- privacy-gated publication grants and hardlinked public delivery;
+- administrator annotations on the existing private preview;
+- bounded slide-status polling.
+
+Forge must integrate with those contracts rather than create a parallel slide library, publication system, or worker service.
+
+## API version
+
+The implemented desktop ingest endpoints use `/api/v1/desktop`.
+
+## Private hybrid sync v1
+
+`desktop-sync/v1` extends the existing device credential; it does not replace ingest.
+New pairings receive `library:read`, `slides:offline:read`, and `library:sync`.
+Legacy credentials must reconnect before sync.
+
+- `GET /api/v2/desktop/library/items`: private ready slides and folders, at most 100 items.
+- `GET /api/v2/desktop/library/changes?after=`: durable cursor, at most 500 events.
+- `HEAD/GET /api/v2/desktop/slides/{id}/content`: verified, resumable canonical OME download.
+- `PATCH /api/v2/desktop/slides/{id}`: compare-and-set metadata and folder placement.
+- Existing `/api/v1/desktop/slides/{id}/preview/*` and annotation batch routes remain authoritative.
+
+Forge proxies private preview and annotation traffic over loopback so credentials never enter
+browser JavaScript. It caches preview resources to a 2 GiB byte cap and downloads at most one
+offline OME at a time with a 1 MiB streaming buffer, 10 percent disk headroom, SHA-256
+verification, and atomic activation. HTTP 409 preserves local and Viewer values for explicit
+resolution. Pixels remain immutable.
+
+### Capabilities
 
 ```text
 GET /api/v1/desktop/capabilities
+Authorization: Bearer <desktop credential>
 ```
 
-Expected concepts:
+Expected response concepts:
 
-- API version;
-- supported `.plslide` schema versions;
+- desktop API version;
+- accepted `.plslide` schema versions;
 - maximum package bytes;
-- archive permission;
-- DZI tile size, overlap, format and policy quality.
+- package extraction limits;
+- supported package schemas and inventory formats;
+- recommended and maximum chunk sizes (64 MiB in the current Viewer);
+- thumbnail dimensions and JPEG quality;
+- whether folder assignment is supported;
+- current usable storage;
+- tus upload endpoint.
 
-Forge checks capabilities before building an upload for that server.
+Forge checks capabilities before conversion and repeats the check immediately
+before ingest creation. Direct OME requires the exact structured
+`ome-dynamic-v1` profile: RGB uint8/sRGB, three channels, 512-pixel JPEG Q75 tiles,
+factor 2, classic TIFF and BigTIFF, native JPEG tiles, persisted SHA
+acknowledgement, and an accepted artifact size. Missing, partial, malformed, or
+future-only profiles select `prepared-v2`.
 
-## Reservation
+### Direct OME reservation
+
+`POST /api/v1/desktop/ome-ingests` declares the exact profile, dimensions,
+downsample, JPEG quality, byte length, and local SHA-256. Viewer independently
+validates the request against its enabled profile before accepting bytes.
+
+### Prepared-slide reservation
 
 ```text
-POST /api/v1/desktop/prepared-slides
+POST /api/v1/desktop/ingests
+Authorization: Bearer <desktop credential>
 ```
 
 Forge supplies:
 
-- display name;
-- package basename;
-- byte length;
-- SHA-256;
+- `displayName`;
+- `.plslide` basename;
+- package byte length;
+- package SHA-256;
 - schema version;
-- archive included flag.
+- declared derivative bytes;
+- declared derivative file count;
+- optional `folderId` when the credential permits folder placement.
 
-Viewer returns:
+PathLab Viewer returns:
 
 - slide ID;
-- tus upload URL;
-- short-lived size-bound upload token;
-- expiration.
+- current slide state;
+- ingest ID and upload offset.
 
-## Upload
+The server creates the slide in the current library domain. A missing folder places it in Unfiled. A supplied folder must exist and must not be in Trash.
 
-Use tus resumable upload. Preserve a valid local package and resume/fetch a new reservation after network or token failure. Never reconvert solely because upload failed.
+### Upload
 
-## Status
+Upload with `PATCH /api/v1/desktop/ingests/{id}` and `Upload-Offset`. Forge uses
+the capability-advertised chunk size, streams each chunk with a bounded buffer,
+and falls back to 16 MiB for older Viewers.
+
+A failed network upload must never cause local reconversion when a valid OME or
+prepared package still exists.
+
+### Status
 
 ```text
-GET /api/v1/desktop/prepared-slides/{slideId}
+GET /api/v1/desktop/ingests/{ingestId}
+Authorization: Bearer <desktop credential>
 ```
 
-Expected states:
+The desktop ingest states are:
 
 ```text
 uploading
-queued_import
-importing
+finalizing
 ready_private
 failed
-published
 ```
 
-## Package contract
+The final upload only transitions to `finalizing`. A single bounded Viewer worker
+claims and validates it asynchronously; `HEAD` and status requests never perform
+finalization. `ready_private` means the derivative was atomically installed and
+committed to the private library. The ready response includes the SHA-256 of the
+persisted final artifact. Forge fails closed unless it exactly matches the local
+OME or prepared package selected for upload.
 
-The canonical acceptance schema lives in `PathLab-Viewer/contracts/prepared-slide-v1.schema.json`.
+### Private preview
 
-Forge keeps a pinned copy after the server contract is implemented. A breaking change creates a new schema version; never silently redefine version 1.
+When the slide reaches `ready_private`, Forge opens the existing browser route:
+
+```text
+/admin/preview/{slideId}
+```
+
+The user authenticates in the browser if needed. Forge does not embed or bypass the browser administrator session.
+
+## Prepared package v2
+
+New packages have this canonical order:
+
+```text
+manifest.json
+manifest.sha256
+inventory.ndjson
+derivative/slide.dzi
+derivative/slide_files/<level>/<column>_<row>.jpg
+derivative/thumbnail.jpg
+```
+
+The NDJSON inventory contains one canonical path, size and SHA-256 per derivative.
+`manifest.json` records its format, path, hash, file count and derivative bytes.
+Existing v2 packages that use `files[]` remain accepted. For new prepared-v2
+revisions the standardized OME-TIFF is temporary staging and is deleted only
+after package hash, ledger, index and integrity stamp verification.
+
+Required output contract:
+
+```text
+DZI tile size: 512
+DZI overlap: 1
+DZI JPEG quality: adaptively selected Q65, Q70, Q75, Q80, Q85, Q90 or Q95
+DZI JPEG profile: optimized non-progressive 4:2:0 with trellis and deringing
+DZI rescue profile: optimized non-progressive 4:4:4 quality ladder when 4:2:0 cannot pass
+Thumbnail longest edge: 640
+Thumbnail JPEG quality: 82
+Thumbnail filename: thumbnail.jpg
+```
+
+Forge evaluates 64 deterministic native-resolution ROIs and chooses the smallest
+quality for which minimum windowed SSIM is at least 0.970, every ROI mean
+Delta E00 is at most 2.5, and edge-detail retention passes. If the 4:2:0
+candidates fail, Forge evaluates the same Q65-Q95 ladder with the recorded 4:4:4
+quality-rescue profile rather than weaken the quality gate or silently change the
+requested crop or downsample. When both profiles pass, Forge uses the encoded
+quality probe to choose the smaller compliant profile instead of stopping at the
+first passing profile. The manifest records the selected quality, encoder
+profile, metrics, staging/DZI/package bytes, exact predicted TAR bytes and ratios.
+1.10 times staging OME is the reference target and 1.25 times is the warning
+boundary. A quality-compliant package above that boundary remains reviewable so
+every supported downsample preset can complete without silently reducing
+resolution or weakening the quality gates; Forge shows the exact ratio before
+approval.
+Viewer validates one streaming TAR pass, including archive and payload hashes,
+JPEG signatures, DZI geometry, declared counts and bytes. Output remains private
+until the entire archive, including physical EOF, has passed.
+
+## Library integration
+
+A prepared slide must behave exactly like a legacy converted slide after import:
+
+- appear in All, Unfiled, or its selected folder;
+- contribute to bounded navigation counts and storage accounting;
+- expose `derivativeBytes` and a cached thumbnail;
+- be found by existing metadata search after metadata is edited;
+- remain `privacy_status=pending` until explicit review;
+- work with existing individual publication grants, folder/collection shares, Trash, restore, permanent deletion and private annotations.
+
+Forge does not create collections or activate public shares during upload.
+
+## Authentication roadmap
+
+The first integration may use a revocable, scoped desktop credential created by an administrator and stored in Windows Credential Manager or macOS Keychain.
+
+Required initial scopes:
+
+```text
+prepared:create
+prepared:upload
+prepared:status
+folders:read      optional
+```
+
+Browser-assisted device pairing is a later hardening milestone. Desktop credentials never receive unrestricted filesystem, annotation, publication, password, or recovery access.
 
 ## Publication
 
-Automatic public publication is disabled by default. Forge may open private preview after `ready_private`; publication requires an explicit administrator action.
+Automatic public publication is disabled by default. Existing Viewer publication and sharing flows require explicit de-identification confirmation and remain the only supported public-release boundary.
+
+## Versioning
+
+- Never redefine schema version 2 silently.
+- Breaking package changes create a new schema version.
+- Viewer may accept multiple schema versions concurrently.
+- Forge records the server capability response and producer versions in each job’s diagnostics.

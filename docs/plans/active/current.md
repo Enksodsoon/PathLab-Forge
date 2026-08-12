@@ -1,113 +1,38 @@
-# Active Task 1 — Java 17 Build Foundation and Batch Domain State Machine
+# Active Task — Modular Capability Release
 
-> Complete this task only. Commit, report and stop.
+Supersedes the completed direct-OME release-candidate brief by explicit
+product-owner direction on 2026-08-11.
 
-## Goal
+## Fixed endpoint
 
-Create a dependency-light Java 17 project that compiles and tests on the development platform, with explicit immutable batch/job domain models and a validated state-transition function.
+Deliver a lightweight Forge base plus a signed, offline-by-default Feature
+Center. The base owns WSI inspection, direct preview, annotations, geometry
+measurements, conversion, validation and upload. Optional Pathology Tools and
+Classical Analysis packs are downloaded only after an explicit user action.
 
-Do not add WSI readers, image conversion, JavaFX, SQLite, server upload, native libraries or installers.
+AI is not a core feature. Forge bundles no weights or training runtime. At most
+one separately downloaded pretrained research model may be published after
+license, provenance, resource and deterministic self-test gates pass. Training
+Lab is a separate advanced pack using user-provided labelled data.
 
-## Create
+## Milestones
 
-```text
-settings.gradle.kts
-build.gradle.kts
-gradle.properties
-src/main/java/org/pathlab/forge/ForgeApp.java
-src/main/java/org/pathlab/forge/model/BatchId.java
-src/main/java/org/pathlab/forge/model/JobId.java
-src/main/java/org/pathlab/forge/model/JobState.java
-src/main/java/org/pathlab/forge/model/SlideJob.java
-src/main/java/org/pathlab/forge/model/InvalidJobTransition.java
-src/main/java/org/pathlab/forge/model/JobTransitions.java
-src/test/java/org/pathlab/forge/model/JobTransitionsTest.java
-src/test/java/org/pathlab/forge/model/SlideJobTest.java
-```
+1. Remove redundant preview work and finish adaptive runtime limits.
+2. Add signed catalog, staged installation, self-test, rollback and uninstall.
+3. Add bounded raw-region, PathObject, measurement and analysis-run contracts.
+4. Add the Pathology Tools pack boundary: hierarchy, H&E, stains and TMA.
+5. Add the Classical Analysis pack boundary: tissue/cells/classifier/QC/registration.
+6. Add the optional pretrained-AI and Training Lab availability gates.
+7. Add explicit private Viewer synchronization with conflict-safe verification.
 
-Create a Gradle wrapper and CI only after the focused tests pass.
+## Stop rule
 
-## Required model behavior
+Stop after these seven milestones and their local validation report. Do not add
+third-party plugins, arbitrary scripting, a dependency solver, cloud services,
+microservices, distributed workers, additional models, merge or deployment.
 
-- `BatchId` and `JobId` are non-empty value objects.
-- `SlideJob` is immutable.
-- `SlideJob` contains job ID, batch ID, source path string, display name, queue position, current state, retry count and created/updated timestamps.
-- No WSI library object appears in the model.
-- Queue position is non-negative.
-- Retry count is non-negative.
-- Source path is stored only locally and is not a server manifest field.
-
-Required states:
-
-```text
-PENDING
-INSPECTING
-NEEDS_REVIEW
-READY
-EXPORTING_OME
-VALIDATING_OME
-GENERATING_DZI
-VALIDATING_DZI
-PACKAGING
-READY_TO_UPLOAD
-UPLOADING
-SERVER_IMPORTING
-READY_PRIVATE
-PUBLISHED
-PAUSED
-CANCEL_REQUESTED
-CANCELLED
-FAILED_RETRYABLE
-FAILED_PERMANENT
-SKIPPED
-```
-
-`JobTransitions.transition(source, target)` returns the target only for explicitly allowed transitions and throws `InvalidJobTransition` otherwise.
-
-At minimum, test:
-
-- normal local conversion path;
-- upload/import path;
-- failure and retry path;
-- pause/resume path;
-- cancellation path;
-- terminal-state rejection;
-- invalid direct jumps;
-- immutable job update returning a new object.
-
-## Test-first sequence
-
-1. Verify the official current Gradle/Java tooling needed for a Java 17-compatible project; record only the selected versions in the build files.
-2. Create failing model and transition tests.
-3. Run and confirm failure due to missing classes.
-4. Implement the smallest domain model and explicit transition table.
-5. Run focused tests.
-6. Add Gradle wrapper.
-7. Add `.github/workflows/ci.yml` running tests on Windows, macOS and Ubuntu with Java 17.
-8. Run complete tests and repository verification scripts.
-9. Review for future-reader dependency leakage and scope creep.
-10. Commit and stop.
-
-## Acceptance criteria
-
-- Java 17-compatible compilation succeeds.
-- All transition behavior is explicit and tested.
-- Domain models contain no reader, GUI, database or HTTP dependency.
-- CI configuration covers Windows, macOS and Ubuntu.
-- No later milestone functionality is implemented.
-- Repository policy checks pass.
-
-## Required report
-
-```text
-TASK RESULT
-- Task: Java 17 build foundation and batch domain state machine
-- Branch:
-- Commit:
-- Files changed:
-- Focused tests:
-- Full checks:
-- Evidence:
-- Known limitations:
-- Next task: SQLite queue persistence and restart recovery — do not start
-```
+New conversions use only the measured `ome-dynamic-v1` direct path. The governed
+same-slide release-candidate comparison found it 46.67% faster and 72.96% smaller
+than prepared-v2. Existing prepared artifacts remain readable, but Forge does not
+select or retry into that larger route. Image-quality gates, artifact reuse,
+privacy and resumable upload remain regression contracts.

@@ -1,0 +1,23 @@
+package org.pathlab.forge.library;
+
+public enum DatasetStatus {
+    READY,
+    NEEDS_COMPANIONS,
+    READER_REQUIRED,
+    VERIFYING_SOURCE,
+    INSPECTING,
+    READY_TO_CONVERT,
+    QUEUED,
+    WAITING_RESOURCES,
+    CONVERTING,
+    OPTIMIZING_OME,
+    VALIDATING,
+    CONVERSION_READY,
+    GENERATING_DZI,
+    DZI_READY,
+    PACKAGE_READY,
+    CANCELLED,
+    PREPARING,
+    LOCAL_COPY_READY,
+    FAILED
+}
