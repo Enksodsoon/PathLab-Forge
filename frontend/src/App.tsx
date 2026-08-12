@@ -86,6 +86,7 @@ export function App() {
   const [remoteLibrary, setRemoteLibrary] = useState<api.ViewerRemoteLibrary>({ items: [], folders: [], conflicts: [] })
   const [remoteSyncReady, setRemoteSyncReady] = useState(false)
   const [selectedRemoteId, setSelectedRemoteId] = useState('')
+  const [remoteRename, setRemoteRename] = useState<{ id: string; current: string; value: string }>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
@@ -699,13 +700,7 @@ export function App() {
               onRemoveOffline={(id) => void api.removeViewerSlideOffline(id)
                 .then(() => api.viewerLibrary()).then(setRemoteLibrary)
                 .catch((nextError) => setError(message(nextError)))}
-              onRenameRemote={(id, current) => {
-                const displayName = window.prompt('Rename private Viewer slide', current)?.trim()
-                if (!displayName || displayName === current) return
-                void api.updateViewerSlideMetadata(id, { displayName })
-                  .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
-                  .catch((nextError) => setError(message(nextError)))
-              }}
+              onRenameRemote={(id, current) => setRemoteRename({ id, current, value: current })}
               selectedRemoteId={selectedRemote?.id || ''}
               onSelectRemote={setSelectedRemoteId}
               onResolveConflict={(id, field, resolution) => void api.resolveViewerConflict(id, field, resolution)
@@ -854,6 +849,28 @@ export function App() {
           onClose={() => setPairingOpen(false)}
         />
       ) : null}
+      {remoteRename ? (
+        <RenameViewerSlideDialog
+          value={remoteRename.value}
+          onValue={(value) => setRemoteRename((current) => current ? { ...current, value } : current)}
+          onRename={() => {
+            const displayName = remoteRename.value.trim()
+            if (!displayName || displayName === remoteRename.current) {
+              setRemoteRename(undefined)
+              return
+            }
+            void api.updateViewerSlideMetadata(remoteRename.id, { displayName })
+              .then(() => api.syncViewerLibrary())
+              .then((next) => {
+                setRemoteLibrary(next)
+                setRemoteRename(undefined)
+                setNotice('Viewer slide name synchronized')
+              })
+              .catch((nextError) => setError(message(nextError)))
+          }}
+          onClose={() => setRemoteRename(undefined)}
+        />
+      ) : null}
       {batchRemoveIds.length ? (
         <BatchRemoveDialog
           count={batchRemoveIds.length}
@@ -871,6 +888,43 @@ export function App() {
         />
       ) : null}
     </>
+  )
+}
+
+function RenameViewerSlideDialog({
+  value,
+  onValue,
+  onRename,
+  onClose,
+}: {
+  value: string
+  onValue: (value: string) => void
+  onRename: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="forge-dialog-backdrop">
+      <form
+        className="forge-connect-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="forge-viewer-rename-title"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onRename()
+        }}
+      >
+        <span>Private Viewer library</span>
+        <h2 id="forge-viewer-rename-title">Rename slide</h2>
+        <p>The new name is synchronized to the private Viewer record.</p>
+        <label>
+          Slide name
+          <input autoFocus value={value} onChange={(event) => onValue(event.target.value)} />
+        </label>
+        <button className="forge-primary" type="submit" disabled={!value.trim()}>Save name</button>
+        <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
+      </form>
+    </div>
   )
 }
 

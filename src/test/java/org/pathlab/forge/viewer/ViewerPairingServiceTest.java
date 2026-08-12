@@ -29,6 +29,14 @@ final class ViewerPairingServiceTest {
     Path temporaryDirectory;
 
     @Test
+    void retriesTransportFailuresButPausesPermanentViewerValidationFailures() {
+        assertTrue(ViewerPairingService.transientFailure("Viewer request failed (503)"));
+        assertTrue(ViewerPairingService.transientFailure("Connection interrupted"));
+        assertFalse(ViewerPairingService.transientFailure(
+                "Viewer finalization failed: OME_PYRAMID_INCOMPLETE"));
+    }
+
+    @Test
     void pairsExchangesChecksAndRevokesAgainstLoopbackViewer() throws Exception {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", ViewerPairingServiceTest::respond);

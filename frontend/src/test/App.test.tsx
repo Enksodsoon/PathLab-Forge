@@ -368,6 +368,33 @@ test('opens a synchronized Viewer slide and starts a verified offline copy', asy
   await waitFor(() => expect(screen.getByText(/Offline download started/)).toBeVisible())
 })
 
+test('renames a synchronized Viewer slide with an accessible in-app dialog', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({
+    connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Viewer',
+    scopes: ['library:read', 'slides:offline:read', 'library:sync'],
+  })
+  vi.mocked(api.syncViewerLibrary).mockResolvedValue({
+    items: [{ id: 'slide-1', displayName: 'Remote slide', folderId: '', state: 'ready_private',
+      contentBytes: 1024, width: 2048, height: 1024, thumbnailUrl: '/thumb',
+      tileSourceUrl: '/api/viewer/slides/slide-1/preview/slide.dzi', offlineBytes: 0,
+      offlineComplete: false }],
+    folders: [], conflicts: [],
+  })
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
+  fireEvent.click((await screen.findAllByRole('button', { name: 'Rename' }))[0])
+
+  const dialog = screen.getByRole('dialog', { name: 'Rename slide' })
+  fireEvent.change(within(dialog).getByRole('textbox', { name: 'Slide name' }), {
+    target: { value: 'Renamed slide' },
+  })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save name' }))
+
+  await waitFor(() => expect(api.updateViewerSlideMetadata)
+    .toHaveBeenCalledWith('slide-1', { displayName: 'Renamed slide' }))
+  expect(await screen.findByText('Viewer slide name synchronized')).toBeVisible()
+})
+
 test('uses one-click default pairing and hides custom origins under Advanced', async () => {
   render(<App />)
 

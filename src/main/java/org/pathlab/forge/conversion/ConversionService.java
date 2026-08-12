@@ -1138,6 +1138,7 @@ public final class ConversionService implements AutoCloseable {
                             reusable.omePath(),
                             reusable.omeSha256(),
                             reusable.id());
+            cached = restoreReusableApproval(cached, reusable);
             repository.save(cached);
             return cached;
         }
@@ -1332,17 +1333,33 @@ public final class ConversionService implements AutoCloseable {
                     .orElse(null);
             if (current != null
                     && current.format() == requestedFormat
-                    && isReusableArtifact(dataset, request, current)) {
+                    && isReusableArtifact(dataset, request, current)
+                    && validatesReusableProfile(current, request)) {
                 return current;
             }
         }
         for (var historical : artifactRepository.list(dataset.id())) {
             if (historical.format() == requestedFormat
-                    && isReusableArtifact(dataset, request, historical)) {
+                    && isReusableArtifact(dataset, request, historical)
+                    && validatesReusableProfile(historical, request)) {
                 return historical;
             }
         }
         return null;
+    }
+
+    boolean validatesReusableProfile(ArtifactRevision revision, ConversionRequest request) {
+        if (revision.format() != ArtifactRevisionFormat.OME_DYNAMIC_V1) {
+            return true;
+        }
+        try {
+            validateOmeArtifact(
+                    revision.format(), Path.of(revision.omePath()),
+                    request.outputWidth(), request.outputHeight());
+            return true;
+        } catch (IOException invalidProfile) {
+            return false;
+        }
     }
 
     static boolean isReusableArtifact(
@@ -1390,6 +1407,13 @@ public final class ConversionService implements AutoCloseable {
             ArtifactIntegrityStamp.write(revision);
         }
         return verified;
+    }
+
+    static LocalDataset restoreReusableApproval(
+            LocalDataset cached, ArtifactRevision reusable) {
+        return reusable.status() == ArtifactRevisionStatus.APPROVED
+                ? cached.withApprovedArtifact(reusable.id())
+                : cached;
     }
 
     public LocalDataset cancel(String id) throws IOException {
