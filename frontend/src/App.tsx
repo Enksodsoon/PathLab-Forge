@@ -84,6 +84,7 @@ export function App() {
   const [connection, setConnection] = useState<ViewerConnection>()
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
   const [remoteLibrary, setRemoteLibrary] = useState<api.ViewerRemoteLibrary>({ items: [], folders: [], conflicts: [] })
+  const [remoteSyncReady, setRemoteSyncReady] = useState(false)
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
@@ -374,12 +375,18 @@ export function App() {
     try {
       const next = await api.getViewerConnection()
       setConnection(next)
-      if (next.connected) setRemoteLibrary(await api.syncViewerLibrary())
+      if (next.connected) {
+        setRemoteLibrary(await api.syncViewerLibrary())
+        setRemoteSyncReady(true)
+      } else {
+        setRemoteSyncReady(false)
+      }
       setNotice(next.connected
         ? 'Viewer library synchronized'
         : 'Connect to PathLab Viewer before opening its private library')
       if (!next.connected) connect()
     } catch (nextError) {
+      setRemoteSyncReady(false)
       setError(viewerConnectionMessage(nextError))
     }
   }
@@ -387,7 +394,10 @@ export function App() {
   useEffect(() => {
     if (libraryMode !== 'viewer' || !connection?.connected) return
     const timer = window.setInterval(() => {
-      void api.syncViewerLibrary().then(setRemoteLibrary).catch(() => undefined)
+      void api.syncViewerLibrary().then((next) => {
+        setRemoteLibrary(next)
+        setRemoteSyncReady(true)
+      }).catch(() => setRemoteSyncReady(false))
     }, 15_000)
     return () => window.clearInterval(timer)
   }, [libraryMode, connection?.connected])
@@ -661,6 +671,7 @@ export function App() {
               mode={libraryMode}
               connection={connection}
               remoteLibrary={remoteLibrary}
+              remoteSyncReady={remoteSyncReady}
               checkedIds={selectedDatasetIds}
               folders={localFolders}
               folderByDataset={folderByDataset}
@@ -1124,6 +1135,7 @@ function SlideNavigator({
   mode,
   connection,
   remoteLibrary,
+  remoteSyncReady,
   checkedIds,
   folders,
   folderByDataset,
@@ -1145,6 +1157,7 @@ function SlideNavigator({
   mode: 'local' | 'viewer'
   connection?: ViewerConnection
   remoteLibrary: api.ViewerRemoteLibrary
+  remoteSyncReady: boolean
   checkedIds: string[]
   folders: string[]
   folderByDataset: Record<string, string>
@@ -1184,17 +1197,17 @@ function SlideNavigator({
         <div className="forge-viewer-library-status">
           <span className={connection?.connected ? 'connected' : ''} />
           <strong>{connection?.connected ? connection.deviceName : 'Viewer not connected'}</strong>
-          <small>{connection?.connected ? `${remoteLibrary.items.length} private slides · hybrid offline mode` : 'Connect once to synchronize your private library'}</small>
+          <small>{connection?.connected && remoteSyncReady ? `${remoteLibrary.items.length} private slides · hybrid offline mode` : connection?.connected ? 'Viewer connected · sync API unavailable' : 'Connect once to synchronize your private library'}</small>
         </div>
         <button className="forge-sync-viewer" type="button" aria-label={connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'} onClick={connection?.connected ? onSync : onConnect}>
           <ArrowsClockwise /> {connection?.connected ? 'Sync changes' : 'Connect to Viewer'}
         </button>
-        {connection?.connected ? (
+        {connection?.connected && remoteSyncReady ? (
           <div className="forge-viewer-sync-boundary" role="status">
             <strong>Two-way sync active</strong>
             <span>Thumbnails stream through Forge. Choose Keep offline for a verified full OME copy. Conflicting edits pause per field.</span>
           </div>
-        ) : null}
+        ) : connection?.connected ? <div className="forge-viewer-sync-boundary" role="status"><strong>Viewer update required</strong><span>Restart Viewer with the matching desktop-sync/v1 build, then choose Sync changes.</span></div> : null}
         <nav aria-label="Viewer folders">
           {remoteLibrary.folders.map((folder) => (
             <button type="button" key={folder.id}><Folder /><span><strong>{folder.name}</strong><small>Private folder</small></span></button>
