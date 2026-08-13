@@ -145,6 +145,11 @@ export interface ViewerRemoteItem {
   tileSourceUrl: string
   offlineBytes: number
   offlineComplete: boolean
+  visibility?: 'private' | 'published'
+  annotationRevision?: number
+  metadataRevision?: number
+  updatedAt?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface ViewerRemoteLibrary {
@@ -219,8 +224,17 @@ export async function importProjectFolder(path?: string) {
   )
 }
 
-export async function chooseDatasets() {
-  return request<{ datasets: Dataset[] }>('/api/datasets/select', { method: 'POST' })
+export interface LocalFileListing {
+  path: string
+  parent: string | null
+  locations: Array<{ name: string; path: string }>
+  entries: Array<{ name: string; path: string; directory: boolean; bytes: number }>
+  truncated: boolean
+}
+
+export async function browseLocalFiles(path?: string) {
+  const query = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : ''
+  return request<LocalFileListing>(`/api/local-files${query}`)
 }
 
 export async function importDataset(path: string) {
@@ -454,7 +468,7 @@ export async function annotationMeasurements(id: string, annotationId: string) {
   )
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, sessionRetry = true): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.method && init.method !== 'GET') {
     headers.set('X-Forge-CSRF', csrf)
@@ -466,6 +480,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: 'same-origin',
   })
   const body = response.status === 204 ? undefined : await response.json()
+  if (response.status === 403 && sessionRetry && init.method && init.method !== 'GET'
+      && body?.error === 'forbidden') {
+    const session = await fetch('/api/session', { credentials: 'same-origin' })
+    if (session.ok) {
+      csrf = session.headers.get('X-Forge-CSRF') || ''
+      return request<T>(path, init, false)
+    }
+  }
   if (!response.ok) {
     throw new Error(body?.detail || body?.error || `Request failed (${response.status})`)
   }

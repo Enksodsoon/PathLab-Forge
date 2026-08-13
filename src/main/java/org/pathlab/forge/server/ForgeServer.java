@@ -372,6 +372,8 @@ public final class ForgeServer implements AutoCloseable {
                 resolveViewerConflict(exchange, path);
             } else if ("/api/datasets".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 listDatasets(exchange);
+            } else if ("/api/local-files".equals(path) && "GET".equals(exchange.getRequestMethod())) {
+                browseLocalFiles(exchange);
             } else if ("/api/datasets/select".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 selectDatasets(exchange);
@@ -867,6 +869,90 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         respond(exchange, 200, "application/json", body);
+    }
+
+    private void browseLocalFiles(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) {
+            return;
+        }
+        try {
+            var requested = queryValue(exchange, "path", "").trim();
+            var home = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize();
+            var downloads = home.resolve("Downloads");
+            var directory = requested.isEmpty() && Files.isDirectory(downloads)
+                    ? downloads
+                    : requested.isEmpty() ? home : Path.of(requested).toAbsolutePath().normalize();
+            if (!Files.isDirectory(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(directory)) {
+                respond(exchange, 422, "application/json",
+                        "{\"error\":\"folder_unavailable\",\"detail\":\"Choose a readable local folder\"}");
+                return;
+            }
+            var entries = new java.util.ArrayList<Path>();
+            try (var stream = Files.list(directory)) {
+                stream.filter(item -> Files.isDirectory(item, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                                || supportedSlideName(item.getFileName().toString()))
+                        .sorted(java.util.Comparator
+                                .comparing((Path item) -> !Files.isDirectory(item, java.nio.file.LinkOption.NOFOLLOW_LINKS))
+                                .thenComparing(item -> item.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                        .limit(501)
+                        .forEach(entries::add);
+            }
+            var truncated = entries.size() > 500;
+            if (truncated) entries.remove(entries.size() - 1);
+            var body = new StringBuilder("{\"path\":")
+                    .append(json(directory.toString()))
+                    .append(",\"parent\":")
+                    .append(directory.getParent() == null ? "null" : json(directory.getParent().toString()))
+                    .append(",\"locations\":[");
+            var locations = new java.util.LinkedHashSet<Path>();
+            locations.add(home);
+            for (var name : List.of("Desktop", "Documents", "Downloads")) {
+                var location = home.resolve(name);
+                if (Files.isDirectory(location)) locations.add(location);
+            }
+            for (var root : java.io.File.listRoots()) {
+                if (root.isDirectory()) locations.add(root.toPath().toAbsolutePath().normalize());
+            }
+            var first = true;
+            for (var location : locations) {
+                if (!first) body.append(',');
+                first = false;
+                var name = location.equals(home) ? "Home"
+                        : location.getFileName() == null ? location.toString() : location.getFileName().toString();
+                body.append("{\"name\":").append(json(name))
+                        .append(",\"path\":").append(json(location.toString())).append('}');
+            }
+            body.append("],\"entries\":[");
+            first = true;
+            for (var entry : entries) {
+                if (!first) body.append(',');
+                first = false;
+                var directoryEntry = Files.isDirectory(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+                body.append("{\"name\":").append(json(entry.getFileName().toString()))
+                        .append(",\"path\":").append(json(entry.toAbsolutePath().normalize().toString()))
+                        .append(",\"directory\":").append(directoryEntry)
+                        .append(",\"bytes\":");
+                try {
+                    body.append(directoryEntry ? 0 : Files.size(entry));
+                } catch (IOException ignored) {
+                    body.append(0);
+                }
+                body.append('}');
+            }
+            body.append("],\"truncated\":").append(truncated).append('}');
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            respond(exchange, 200, "application/json", body.toString());
+        } catch (IOException | RuntimeException error) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"folder_unavailable\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private static boolean supportedSlideName(String name) {
+        var lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".svs") || lower.endsWith(".vsi")
+                || lower.endsWith(".ome.tif") || lower.endsWith(".ome.tiff");
     }
 
     private void selectDatasets(HttpExchange exchange) throws IOException {
@@ -1770,6 +1856,11 @@ public final class ForgeServer implements AutoCloseable {
                 var slide = record.remote();
                 return "{\"id\":" + json(slide.id()) + ",\"displayName\":" + json(slide.displayName())
                         + ",\"folderId\":" + json(slide.folderId()) + ",\"state\":" + json(slide.status())
+                        + ",\"visibility\":" + json(viewerVisibility(slide.status()))
+                        + ",\"annotationRevision\":" + slide.annotationRevision()
+                        + ",\"metadataRevision\":" + slide.metadataRevision()
+                        + ",\"updatedAt\":" + json(slide.updatedAt().toString())
+                        + ",\"metadata\":" + jsonValue(slide.metadata())
                         + ",\"contentBytes\":" + slide.contentBytes()
                         + ",\"width\":" + slide.metadata().getOrDefault("width", 1)
                         + ",\"height\":" + slide.metadata().getOrDefault("height", 1)
@@ -2305,6 +2396,31 @@ public final class ForgeServer implements AutoCloseable {
             }
         }
         return escaped.append('"').toString();
+    }
+
+    private static String viewerVisibility(String status) {
+        var normalized = status == null ? "" : status.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "published", "public", "shared" -> "published";
+            default -> "private";
+        };
+    }
+
+    private static String jsonValue(Object value) {
+        if (value == null) return "null";
+        if (value instanceof String text) return json(text);
+        if (value instanceof Number || value instanceof Boolean) return value.toString();
+        if (value instanceof java.util.Map<?, ?> map) {
+            return "{" + map.entrySet().stream()
+                    .map(entry -> json(String.valueOf(entry.getKey())) + ":" + jsonValue(entry.getValue()))
+                    .collect(java.util.stream.Collectors.joining(",")) + "}";
+        }
+        if (value instanceof Iterable<?> iterable) {
+            var values = new java.util.ArrayList<String>();
+            for (var item : iterable) values.add(jsonValue(item));
+            return "[" + String.join(",", values) + "]";
+        }
+        return json(String.valueOf(value));
     }
 
     private static String sha256(byte[] value) {

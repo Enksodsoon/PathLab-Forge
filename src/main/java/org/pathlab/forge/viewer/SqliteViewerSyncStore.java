@@ -121,6 +121,36 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     }
 
     @Override
+    public synchronized void replaceRemoteSlides(List<ViewerRemoteSlide> slides) throws IOException {
+        try {
+            connection.setAutoCommit(false);
+            var ids = slides.stream().map(ViewerRemoteSlide::id).toList();
+            var placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+            var staleWhere = ids.isEmpty() ? "" : " WHERE slide_id NOT IN (" + placeholders + ")";
+            try (var deleteConflicts = connection.prepareStatement(
+                    "DELETE FROM viewer_sync_conflicts" + staleWhere);
+                    var deleteSlides = connection.prepareStatement(
+                            "DELETE FROM viewer_sync_records" + staleWhere)) {
+                for (int index = 0; index < ids.size(); index++) {
+                    deleteConflicts.setString(index + 1, ids.get(index));
+                    deleteSlides.setString(index + 1, ids.get(index));
+                }
+                deleteConflicts.executeUpdate();
+                deleteSlides.executeUpdate();
+            }
+            for (var slide : slides) upsertRemote(slide);
+            connection.commit();
+        } catch (SQLException | IOException error) {
+            try { connection.rollback(); } catch (SQLException ignored) { }
+            throw new IOException("Unable to replace remote slide snapshot", error);
+        } finally {
+            try { connection.setAutoCommit(true); } catch (SQLException error) {
+                throw new IOException("Unable to restore sync store transaction mode", error);
+            }
+        }
+    }
+
+    @Override
     public synchronized void replaceFolders(List<ViewerRemoteFolder> folders) throws IOException {
         try {
             connection.setAutoCommit(false);
