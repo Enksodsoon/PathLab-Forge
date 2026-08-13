@@ -25,6 +25,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
+    implementation("org.apache.poi:poi:5.5.1")
     testImplementation(platform("org.junit:junit-bom:5.14.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -135,6 +136,9 @@ tasks.withType<Test>().configureEach {
         "pathlab.forge.test.fullDzi",
         "pathlab.forge.test.heSource",
         "pathlab.forge.test.runtimeRoot",
+        "pathlab.forge.test.mds",
+        "pathlab.forge.test.sdpc",
+        "pathlab.forge.sdpcRuntime",
     ).forEach { name ->
         System.getProperty(name)?.let { value -> systemProperty(name, value) }
     }

@@ -13,8 +13,11 @@ Release installers must not be produced until all of these are complete:
 5. `verifyReaderRuntimeBundle` passes on Windows and macOS packaging hosts.
 
 The repository does not contain reader binaries. Local development may use
-`PATHLAB_FORGE_BFTOOLS` and the existing libvips discovery mechanism. This does
-not authorize redistribution.
+`PATHLAB_FORGE_BFTOOLS`, `PATHLAB_FORGE_SDPC_RUNTIME`, and the existing libvips
+discovery mechanism. This does not authorize redistribution. The SDPC adapter
+must remain opt-in until the exact native decoder and its FFmpeg dependencies
+have completed redistribution and notice review. Philips iSyntax remains an
+external vendor-SDK integration and must not be described as bundled support.
 
 Expected external layout:
 
@@ -23,4 +26,5 @@ reader-runtime/
   bftools/bioformats_package.jar
   vips/bin/vips.exe       # Windows
   vips/bin/vips           # macOS
+  sdpc/DecodeSdpcDll.dll  # optional Windows runtime after approval
 ```

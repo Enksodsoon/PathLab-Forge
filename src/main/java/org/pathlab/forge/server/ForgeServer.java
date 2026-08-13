@@ -22,7 +22,7 @@ import org.pathlab.forge.analysis.GeometryMeasurements;
 import org.pathlab.forge.analysis.AnalysisJob;
 import org.pathlab.forge.analysis.AnalysisJobService;
 import org.pathlab.forge.analysis.HeAnalysisService;
-import org.pathlab.forge.conversion.BioFormatsEngine;
+import org.pathlab.forge.conversion.CompositeConversionEngine;
 import org.pathlab.forge.conversion.ConversionEngine;
 import org.pathlab.forge.conversion.ConversionService;
 import org.pathlab.forge.conversion.SeriesInfo;
@@ -146,7 +146,7 @@ public final class ForgeServer implements AutoCloseable {
                 repository,
                 new SwingDatasetPicker(),
                 paths.managedRoot(),
-                BioFormatsEngine.discover(paths.dataRoot()),
+                CompositeConversionEngine.discover(paths.dataRoot()),
                 VipsRuntime.discover(paths.dataRoot()),
                 configuredPort,
                 LocalBrowserSession.loadOrCreate(
@@ -160,7 +160,7 @@ public final class ForgeServer implements AutoCloseable {
                 repository,
                 picker,
                 managedRoot,
-                BioFormatsEngine.discover(managedRoot.toAbsolutePath().normalize().getParent()),
+                CompositeConversionEngine.discover(managedRoot.toAbsolutePath().normalize().getParent()),
                 VipsRuntime.discover(managedRoot.toAbsolutePath().normalize().getParent()));
     }
 
@@ -208,7 +208,7 @@ public final class ForgeServer implements AutoCloseable {
                 repository,
                 picker,
                 managedRoot,
-                BioFormatsEngine.discover(runtimeRoot),
+                CompositeConversionEngine.discover(runtimeRoot),
                 VipsRuntime.discover(runtimeRoot),
                 port,
                 sessionToken);
