@@ -72,7 +72,7 @@ final class ForgeServerTest {
                     HttpRequest.newBuilder(server.baseUri().resolve("/assets/app.js")).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(200, script.statusCode());
-            assertTrue(script.body().contains("/api/datasets/select"));
+            assertTrue(script.body().contains("/api/local-files"));
             assertTrue(script.body().contains("/api/datasets"));
             assertTrue(script.body().contains("Queue ready"));
         }

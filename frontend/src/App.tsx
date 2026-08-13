@@ -5,25 +5,38 @@ import {
 import {
   ArrowsOut,
   ArrowsClockwise,
+  ArrowUp,
   CaretDown,
+  CaretRight,
   CheckCircle,
+  CloudArrowDown,
   CloudArrowUp,
   Crosshair,
+  Database,
+  FileText,
+  Globe,
   Folder,
   FolderOpen,
+  HardDrive,
   House,
+  Info,
   Key,
+  LockKey,
   List,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
   Moon,
+  PencilSimple,
   Plus,
+  Ruler,
   SidebarSimple,
   SignOut,
   Sun,
+  Tag,
   Trash,
   UploadSimple,
   Wrench,
+  X,
 } from '@phosphor-icons/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode, Ref } from 'react'
@@ -49,6 +62,20 @@ const CANCELLABLE_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCES', ...CONVERSI
 const QUEUEABLE_STATUSES = new Set(['READY', 'READY_TO_CONVERT', 'CONVERSION_READY', 'FAILED', 'CANCELLED'])
 const NO_ANNOTATIONS: AnnotationRecord[] = []
 const DEFAULT_LOCAL_FOLDER = 'Unfiled'
+const isCompactWorkspace = () => typeof window !== 'undefined' && window.innerWidth <= 1180
+
+function viewerVisibility(slide?: Pick<api.ViewerRemoteItem, 'state' | 'visibility'>) {
+  if (slide?.visibility) return slide.visibility === 'published' ? 'Published' : 'Private'
+  const normalized = (slide?.state || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  return ['published', 'public', 'shared'].includes(normalized) ? 'Published' : 'Private'
+}
+
+function metadataText(value: unknown): string {
+  if (value === undefined || value === null || value === '') return ''
+  if (Array.isArray(value)) return value.map((entry) => metadataText(entry)).filter(Boolean).join(', ')
+  if (typeof value === 'object') return Object.values(value as Record<string, unknown>).map((entry) => metadataText(entry)).filter(Boolean).join(', ')
+  return String(value)
+}
 
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
@@ -77,6 +104,7 @@ export function App() {
   const [importOpen, setImportOpen] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importPath, setImportPath] = useState('')
+  const [importError, setImportError] = useState('')
   const [removeTarget, setRemoveTarget] = useState<Dataset>()
   const [pairingOpen, setPairingOpen] = useState(false)
   const [viewerUrl, setViewerUrl] = useState('http://127.0.0.1:5173')
@@ -85,6 +113,7 @@ export function App() {
   const [viewerUpload, setViewerUpload] = useState<api.ViewerUpload>()
   const [remoteLibrary, setRemoteLibrary] = useState<api.ViewerRemoteLibrary>({ items: [], folders: [], conflicts: [] })
   const [remoteSyncReady, setRemoteSyncReady] = useState(false)
+  const [remoteLastChecked, setRemoteLastChecked] = useState<number>()
   const [selectedRemoteId, setSelectedRemoteId] = useState('')
   const [remoteRename, setRemoteRename] = useState<{ id: string; current: string; value: string }>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
@@ -161,6 +190,13 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem('pathlab-forge-folder-map-v1', JSON.stringify(folderByDataset))
   }, [folderByDataset])
+
+  useEffect(() => {
+    const inspector = document.querySelector<HTMLElement>('.pathlab-viewer-inspector')
+    if (!inspector) return
+    inspector.inert = !inspectorOpen
+    inspector.setAttribute('aria-hidden', inspectorOpen ? 'false' : 'true')
+  }, [inspectorOpen])
 
   const refresh = useCallback(async () => {
     try {
@@ -243,13 +279,19 @@ export function App() {
     }
   }
 
-  const handleNativeImport = async () => {
+  const handleSelectedImport = async (paths: string[]) => {
+    if (!paths.length) return
+    setImportError('')
     setImporting(true)
     try {
-      const next = await api.chooseDatasets()
+      let next: { datasets: Dataset[] } | undefined
+      for (const selectedPath of paths) next = await api.importDataset(selectedPath)
+      if (!next) return
       finishImport(next)
     } catch (nextError) {
-      setError(message(nextError))
+      const detail = message(nextError)
+      setImportError(detail)
+      setError(detail)
     } finally {
       setImporting(false)
     }
@@ -257,20 +299,22 @@ export function App() {
 
   const handlePathImport = async () => {
     if (!importPath.trim()) return
-    setImportOpen(false)
+    setImportError('')
     setImporting(true)
     try {
       const next = await api.importDataset(importPath.trim())
       finishImport(next)
     } catch (nextError) {
-      setError(message(nextError))
-      setImportOpen(true)
+      const detail = message(nextError)
+      setImportError(detail)
+      setError(detail)
     } finally {
       setImporting(false)
     }
   }
 
   const handleProjectImport = async (path?: string) => {
+    setImportError('')
     setImporting(true)
     try {
       const next = await api.importProjectFolder(path)
@@ -279,7 +323,9 @@ export function App() {
         ? `${next.project.imported} slides imported from project folder${next.project.failed ? ` · ${next.project.failed}` : ''}`
         : 'Project folder selection closed')
     } catch (nextError) {
-      setError(message(nextError))
+      const detail = message(nextError)
+      setImportError(detail)
+      setError(detail)
     } finally {
       setImporting(false)
     }
@@ -373,15 +419,19 @@ export function App() {
     setNotice('Selected slides were removed from the Forge library; originals and completed exports were preserved')
   }
 
-  const syncViewer = async () => {
-    setLibraryMode('viewer')
-    setNavigatorOpen(true)
+  const syncViewer = async (revealLibrary = true) => {
+    if (revealLibrary) {
+      setLibraryMode('viewer')
+      setNavigatorOpen(true)
+      if (isCompactWorkspace()) setInspectorOpen(false)
+    }
     try {
       const next = await api.getViewerConnection()
       setConnection(next)
       if (next.connected) {
         setRemoteLibrary(await api.syncViewerLibrary())
         setRemoteSyncReady(true)
+        setRemoteLastChecked(Date.now())
       } else {
         setRemoteSyncReady(false)
       }
@@ -401,6 +451,7 @@ export function App() {
       void api.syncViewerLibrary().then((next) => {
         setRemoteLibrary(next)
         setRemoteSyncReady(true)
+        setRemoteLastChecked(Date.now())
       }).catch(() => setRemoteSyncReady(false))
     }, 5_000)
     return () => window.clearInterval(timer)
@@ -644,9 +695,10 @@ export function App() {
       onLocalLibrary={() => {
         setLibraryMode('local')
         setNavigatorOpen(true)
+        if (isCompactWorkspace()) setInspectorOpen(false)
       }}
       onViewerLibrary={() => void syncViewer()}
-      onImport={() => setImportOpen(true)}
+      onImport={() => { setImportError(''); setImportOpen(true) }}
       onFeatures={openFeatures}
       onTheme={toggleTheme}
       onSecurity={connect}
@@ -676,12 +728,16 @@ export function App() {
               connection={connection}
               remoteLibrary={remoteLibrary}
               remoteSyncReady={remoteSyncReady}
+              remoteLastChecked={remoteLastChecked}
               checkedIds={selectedDatasetIds}
               folders={localFolders}
               folderByDataset={folderByDataset}
               onSelect={(id) => {
                 setSelectedId(id)
-                if (window.innerWidth <= 960) setNavigatorOpen(false)
+                if (isCompactWorkspace()) {
+                  setNavigatorOpen(false)
+                  setInspectorOpen(true)
+                }
               }}
               onChecked={setSelectedDatasetIds}
               onCreateFolder={(name) => setLocalFolders((current) => current.includes(name) ? current : [...current, name])}
@@ -691,9 +747,9 @@ export function App() {
               }))}
               onQueue={(ids) => void queueReadySlides(ids)}
               onRemove={(ids) => setBatchRemoveIds(ids)}
-              onImport={() => setImportOpen(true)}
+              onImport={() => { setImportError(''); setImportOpen(true) }}
               onConnect={connect}
-              onSync={() => void syncViewer()}
+              onSync={() => void syncViewer(false)}
               onKeepOffline={(id) => void api.keepViewerSlideOffline(id).then(() => {
                 setNotice('Offline download started; verified activation will happen in the background')
               }).catch((nextError) => setError(message(nextError)))}
@@ -702,7 +758,9 @@ export function App() {
                 .catch((nextError) => setError(message(nextError)))}
               onRenameRemote={(id, current) => setRemoteRename({ id, current, value: current })}
               selectedRemoteId={selectedRemote?.id || ''}
-              onSelectRemote={setSelectedRemoteId}
+              onSelectRemote={(id) => {
+                setSelectedRemoteId(id)
+              }}
               onResolveConflict={(id, field, resolution) => void api.resolveViewerConflict(id, field, resolution)
                 .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
                 .catch((nextError) => setError(message(nextError)))}
@@ -794,6 +852,7 @@ export function App() {
               isError={Boolean(error)}
               onClearError={() => setError('')}
               onQueueReady={() => void queueReadySlides()}
+              onOpen={() => setInspectorOpen(false)}
             />
           )}
         />
@@ -823,12 +882,14 @@ export function App() {
       {importOpen ? (
         <ImportDialog
           path={importPath}
-          onPath={setImportPath}
-          onChoose={() => void handleNativeImport()}
-          onChooseFolder={() => void handleProjectImport()}
+          busy={importing}
+          error={importError}
+          onPath={(value) => { setImportPath(value); setImportError('') }}
+          onImportSelected={(paths) => void handleSelectedImport(paths)}
+          onImportSelectedFolder={(path) => void handleProjectImport(path)}
           onImport={() => void handlePathImport()}
           onImportFolder={() => void handleProjectImport(importPath)}
-          onClose={() => setImportOpen(false)}
+          onClose={() => { if (!importing) { setImportError(''); setImportOpen(false) } }}
         />
       ) : null}
       {removeTarget ? (
@@ -970,11 +1031,11 @@ function ForgeProductRail({
     <aside className="library-app-rail" aria-label="Product navigation" data-canvas-region="icon-rail">
       <div className="library-rail-brand">
         <div className="brand brand-library" aria-label="PathLab Forge">
-          <span className="brand-mark brand-mark-forge">
+          <span className="brand-mark brand-mark-layers">
             <svg aria-hidden="true" viewBox="0 0 32 32" fill="none">
-              <path d="M7 5.5h9.8c5.6 0 8.7 2.7 8.7 7.3 0 4.8-3.4 7.7-9.2 7.7h-4.1V27H7V5.5Z" fill="currentColor" opacity=".34" />
-              <path d="M10 5.5v21.2M10 8h7c3.5 0 5.6 1.7 5.6 4.8 0 3.2-2.2 5.1-5.8 5.1H10" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
-              <path d="m19.7 20.1 4.8 2.4-4.8 2.4-4.8-2.4 4.8-2.4Z" fill="currentColor" />
+              <path data-tissue-layer d="M4.5 10.1 16 4.4l11.5 5.7L16 15.8 4.5 10.1Z" fill="currentColor" opacity=".34" />
+              <path data-tissue-layer d="m4.5 15.9 11.5 5.7 11.5-5.7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
+              <path data-tissue-layer d="m4.5 21.7 11.5 5.7 11.5-5.7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
             </svg>
           </span>
           <span>PathLab</span><span className="brand-product">Forge</span>
@@ -1080,44 +1141,168 @@ function RemoveDatasetDialog({
 
 function ImportDialog({
   path,
+  busy,
+  error,
   onPath,
-  onChoose,
-  onChooseFolder,
+  onImportSelected,
+  onImportSelectedFolder,
   onImport,
   onImportFolder,
   onClose,
 }: {
   path: string
+  busy: boolean
+  error: string
   onPath: (value: string) => void
-  onChoose: () => void
-  onChooseFolder: () => void
+  onImportSelected: (paths: string[]) => void
+  onImportSelectedFolder: (path: string) => void
   onImport: () => void
   onImportFolder: () => void
   onClose: () => void
 }) {
+  const chooseFilesRef = useRef<HTMLButtonElement>(null)
+  const [browserMode, setBrowserMode] = useState<'files' | 'folder' | null>(null)
+  const [listing, setListing] = useState<api.LocalFileListing>()
+  const [browserPath, setBrowserPath] = useState('')
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([])
+  const [browserBusy, setBrowserBusy] = useState(false)
+  const [browserError, setBrowserError] = useState('')
+  const [showBrowserPath, setShowBrowserPath] = useState(false)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+
+  useEffect(() => {
+    chooseFilesRef.current?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeRef.current()
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [])
+
+  const openDirectory = async (nextPath?: string) => {
+    setBrowserBusy(true)
+    setBrowserError('')
+    try {
+      const next = await api.browseLocalFiles(nextPath)
+      setListing(next)
+      setBrowserPath(next.path)
+      setSelectedPaths([])
+    } catch (nextError) {
+      setBrowserError(message(nextError))
+    } finally {
+      setBrowserBusy(false)
+    }
+  }
+
+  const openBrowser = (mode: 'files' | 'folder') => {
+    setBrowserMode(mode)
+    void openDirectory()
+  }
+
+  const closeBrowser = () => {
+    if (browserBusy || busy) return
+    setBrowserMode(null)
+    setListing(undefined)
+    setSelectedPaths([])
+    setBrowserError('')
+    setShowBrowserPath(false)
+  }
+
+  const currentFolderName = listing?.path.split(/[\\/]/).filter(Boolean).at(-1) || listing?.path || 'This device'
+  const commonLocations = listing?.locations.filter((location) => !/^[A-Za-z]:\\?$/.test(location.path)) || []
+  const driveLocations = listing?.locations.filter((location) => /^[A-Za-z]:\\?$/.test(location.path)) || []
+
   return (
     <div className="forge-dialog-backdrop">
-      <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-import-title">
-        <span>Local pathology project</span>
-        <h2 id="forge-import-title">Import slides</h2>
-        <p>Select several SVS/OME-TIFF/VSI files, or recursively discover a project folder. VSI companion ETS files are grouped automatically.</p>
-        <button className="forge-primary" type="button" onClick={onChoose}>Choose slide files…</button>
-        <button type="button" onClick={onChooseFolder}>Choose project folder…</button>
-        <div className="forge-dialog-divider"><span>or enter its full local path</span></div>
-        <label>
-          Local slide path
+      <section className="forge-connect-dialog forge-import-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-import-title" aria-describedby="forge-import-description">
+        <header className="forge-import-header">
+          <span className="forge-import-mark" aria-hidden="true"><UploadSimple /></span>
+          <div>
+            <span>Local pathology project</span>
+            <h2 id="forge-import-title">{browserMode ? (browserMode === 'files' ? 'Choose slide files' : 'Choose project folder') : 'Import slides'}</h2>
+          </div>
+          <button className="forge-import-close" type="button" aria-label="Close import dialog" disabled={busy} onClick={onClose}><X /></button>
+        </header>
+        {browserMode ? (
+          <div className="forge-local-browser">
+            <p id="forge-import-description" className="forge-local-browser-description">Open a folder, then select one or more supported slides.</p>
+            <div className="forge-local-browser-layout">
+              <aside className="forge-local-places">
+                <strong>Places</strong>
+                <nav aria-label="Common folders">
+                  {commonLocations.map((location) => <button className={listing?.path === location.path ? 'active' : ''} type="button" key={location.path} onClick={() => void openDirectory(location.path)}>{location.name === 'Home' ? <House /> : <Folder />}{location.name}</button>)}
+                </nav>
+                {driveLocations.length ? <details><summary><HardDrive /> This device</summary>{driveLocations.map((location) => <button type="button" key={location.path} onClick={() => void openDirectory(location.path)}>{location.name}</button>)}</details> : null}
+              </aside>
+              <main className="forge-local-browser-main">
+                <div className="forge-local-browser-toolbar">
+                  <button type="button" aria-label="Go to parent folder" disabled={browserBusy || !listing?.parent} onClick={() => void openDirectory(listing?.parent || undefined)}><ArrowUp /></button>
+                  <div className="forge-local-current"><FolderOpen /><span><strong>{currentFolderName}</strong><small>{listing?.path || 'Opening folder…'}</small></span></div>
+                  <button className="forge-local-path-toggle" type="button" aria-expanded={showBrowserPath} onClick={() => setShowBrowserPath((current) => !current)}>Path</button>
+                </div>
+                {showBrowserPath ? <div className="forge-local-path-entry"><label htmlFor="forge-browser-path">Folder path</label><div><input id="forge-browser-path" value={browserPath} disabled={browserBusy} onChange={(event) => setBrowserPath(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void openDirectory(browserPath) }} /><button type="button" disabled={browserBusy || !browserPath.trim()} onClick={() => void openDirectory(browserPath)}>Open</button></div></div> : null}
+                <div className="forge-local-list-heading"><strong>{browserMode === 'files' ? 'Folders and slides' : 'Choose this folder'}</strong><span>{listing?.entries.length || 0} items</span></div>
+                <div className="forge-local-entries" role="listbox" aria-label="Local files" aria-multiselectable={browserMode === 'files'}>
+              {browserBusy && !listing ? <div className="forge-local-empty" role="status">Opening folder…</div> : null}
+              {!browserBusy && listing?.entries.length === 0 ? <div className="forge-local-empty"><FolderOpen />No supported slides or folders here</div> : null}
+              {listing?.entries.map((entry) => entry.directory ? (
+                <button className="forge-local-entry folder" type="button" role="option" aria-selected="false" key={entry.path} onClick={() => void openDirectory(entry.path)}>
+                  <FolderOpen /><span><strong>{entry.name}</strong><small>Open folder</small></span><CaretRight />
+                </button>
+              ) : (
+                <button className={`forge-local-entry file ${selectedPaths.includes(entry.path) ? 'selected' : ''}`} type="button" role="option" aria-selected={selectedPaths.includes(entry.path)} key={entry.path} onClick={() => setSelectedPaths((current) => current.includes(entry.path) ? current.filter((path) => path !== entry.path) : [...current, entry.path])}>
+                  <span className="forge-local-check" aria-hidden="true">{selectedPaths.includes(entry.path) ? '✓' : ''}</span><FileText /><span><strong>{entry.name}</strong><small>{formatBytes(entry.bytes)}</small></span>
+                </button>
+              ))}
+                </div>
+              </main>
+            </div>
+            {listing?.truncated ? <small className="forge-local-limit">Showing the first 500 entries</small> : null}
+            {browserError ? <div className="forge-import-error" role="alert"><Info /><span><strong>Could not open this folder</strong>{browserError}</span></div> : null}
+            <div className="forge-local-browser-actions">
+              <button type="button" disabled={browserBusy || busy} onClick={closeBrowser}>Import options</button>
+              {browserMode === 'files'
+                ? <button className="forge-primary" type="button" disabled={browserBusy || busy || selectedPaths.length === 0} onClick={() => onImportSelected(selectedPaths)}>{selectedPaths.length ? `Add ${selectedPaths.length} ${selectedPaths.length === 1 ? 'slide' : 'slides'}` : 'Select slides to continue'}</button>
+                : <button className="forge-primary" type="button" disabled={browserBusy || busy || !listing} onClick={() => listing && onImportSelectedFolder(listing.path)}>Use “{currentFolderName}”</button>}
+            </div>
+          </div>
+        ) : <>
+        <p id="forge-import-description">Add individual slides or discover every supported slide inside a project folder.</p>
+        <div className="forge-import-sources">
+          <button ref={chooseFilesRef} className="forge-import-source primary" type="button" disabled={busy} onClick={() => openBrowser('files')}>
+            <FileText aria-hidden="true" />
+            <span><strong>Choose slide files</strong><small>SVS, OME-TIFF or VSI</small></span>
+            <UploadSimple aria-hidden="true" />
+          </button>
+          <button className="forge-import-source" type="button" disabled={busy} onClick={() => openBrowser('folder')}>
+            <FolderOpen aria-hidden="true" />
+            <span><strong>Choose project folder</strong><small>Find supported slides recursively</small></span>
+            <CaretRight aria-hidden="true" />
+          </button>
+        </div>
+        <div className="forge-dialog-divider"><span>Or use a local path</span></div>
+        <div className="forge-import-path">
+          <label htmlFor="forge-import-path">Local slide path</label>
           <input
+            id="forge-import-path"
             type="text"
             value={path}
+            disabled={busy}
             onChange={(event) => onPath(event.target.value)}
-            placeholder="C:\path\slide.svs"
+            placeholder="C:\\path\\slide.svs"
           />
-        </label>
-        <div className="forge-dialog-actions">
-          <button type="button" disabled={!path.trim()} onClick={onImport}>Import this path</button>
-          <button type="button" disabled={!path.trim()} onClick={onImportFolder}>Import folder path</button>
+          <div className="forge-import-path-actions">
+            <button className="forge-primary" type="button" aria-label="Import this path" disabled={busy || !path.trim()} onClick={onImport}><FileText />{busy ? 'Checking path…' : 'Import slide'}</button>
+            <button type="button" aria-label="Import folder path" disabled={busy || !path.trim()} onClick={onImportFolder}><FolderOpen />{busy ? 'Checking path…' : 'Import folder'}</button>
+          </div>
         </div>
-        <button className="forge-dialog-close" type="button" onClick={onClose}>Cancel</button>
+        {error ? <div className="forge-import-error" role="alert"><Info /><span><strong>Could not import this path</strong>{error}</span></div> : null}
+        <footer className="forge-import-footer">
+          <small>VSI companion ETS files are grouped automatically.</small>
+          <button className="forge-dialog-close" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+        </footer>
+        </>}
       </section>
     </div>
   )
@@ -1220,6 +1405,7 @@ function SlideNavigator({
   connection,
   remoteLibrary,
   remoteSyncReady,
+  remoteLastChecked,
   checkedIds,
   folders,
   folderByDataset,
@@ -1246,6 +1432,7 @@ function SlideNavigator({
   connection?: ViewerConnection
   remoteLibrary: api.ViewerRemoteLibrary
   remoteSyncReady: boolean
+  remoteLastChecked?: number
   checkedIds: string[]
   folders: string[]
   folderByDataset: Record<string, string>
@@ -1268,6 +1455,7 @@ function SlideNavigator({
 }) {
   const [query, setQuery] = useState('')
   const [activeFolder, setActiveFolder] = useState('All slides')
+  const [collapsedRemoteFolders, setCollapsedRemoteFolders] = useState<Set<string>>(new Set())
   const [newFolder, setNewFolder] = useState('')
   const checked = new Set(checkedIds)
   const visible = datasets.filter((dataset) => {
@@ -1278,6 +1466,48 @@ function SlideNavigator({
   const toggle = (id: string) => onChecked(checked.has(id)
     ? checkedIds.filter((current) => current !== id)
     : [...checkedIds, id])
+  const remoteGroups = [
+    { id: 'unfiled', name: 'Unfiled', parentId: '', items: remoteLibrary.items.filter((item) => !item.folderId) },
+    ...remoteLibrary.folders.map((folder) => ({
+      ...folder,
+      items: remoteLibrary.items.filter((item) => item.folderId === folder.id),
+    })),
+  ]
+  const toggleRemoteFolder = (folderId: string) => setCollapsedRemoteFolders((current) => {
+    const next = new Set(current)
+    if (next.has(folderId)) next.delete(folderId)
+    else next.add(folderId)
+    return next
+  })
+  const renderRemoteSlide = (item: api.ViewerRemoteItem) => (
+    <article key={item.id} className={`forge-remote-slide ${selectedRemoteId === item.id ? 'active' : ''}`}>
+      <button className="forge-remote-slide-main" type="button" onClick={() => onSelectRemote(item.id)}>
+        <span className="forge-remote-thumbnail"><CloudArrowUp aria-hidden="true" /><img src={item.thumbnailUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} /></span>
+        <span className="forge-remote-slide-copy"><strong>{item.displayName}</strong><small>{item.offlineComplete ? 'Available offline' : item.contentBytes > 0 ? formatBytes(item.contentBytes) : 'Viewer-only legacy slide'}</small></span>
+      </button>
+      <div className="forge-remote-slide-actions">
+        {item.offlineComplete || item.contentBytes > 0 ? <button type="button" aria-label={item.offlineComplete ? 'Remove offline copy' : 'Keep offline'} title={item.offlineComplete ? 'Remove offline copy' : 'Keep offline'} onClick={() => item.offlineComplete ? onRemoveOffline(item.id) : onKeepOffline(item.id)}><CloudArrowDown /><span>{item.offlineComplete ? 'Remove local' : 'Keep offline'}</span></button> : <button className="forge-cloud-only" type="button" aria-label="Offline unavailable" title="Cloud only: this Viewer slide has no downloadable OME content" disabled><CloudArrowUp /><span>Cloud only</span></button>}
+        <button type="button" aria-label="Rename" title="Rename" onClick={() => onRenameRemote(item.id, item.displayName)}><PencilSimple /><span>Rename</span></button>
+      </div>
+    </article>
+  )
+  const renderRemoteFolder = (group: typeof remoteGroups[number], depth = 0): ReactNode => {
+    const expanded = !collapsedRemoteFolders.has(group.id)
+    const children = remoteGroups.filter((candidate) => candidate.parentId === group.id)
+    const descendantSlideCount = (folderId: string): number => remoteGroups
+      .filter((candidate) => candidate.parentId === folderId)
+      .reduce((total, candidate) => total + candidate.items.length + descendantSlideCount(candidate.id), 0)
+    const total = group.items.length + descendantSlideCount(group.id)
+    return <div className="forge-remote-folder" role="treeitem" aria-expanded={expanded} data-depth={depth} key={group.id}>
+      <button className="forge-remote-folder-toggle" type="button" aria-expanded={expanded} onClick={() => toggleRemoteFolder(group.id)}>
+        {expanded ? <CaretDown /> : <CaretRight />}<Folder /><span><strong>{group.name}</strong><small>{total} {total === 1 ? 'slide' : 'slides'}</small></span>
+      </button>
+      {expanded ? <div className="forge-remote-folder-children" role="group">
+        {group.items.map(renderRemoteSlide)}
+        {children.map((child) => renderRemoteFolder(child, depth + 1))}
+      </div> : null}
+    </div>
+  }
 
   if (mode === 'viewer') {
     return (
@@ -1286,37 +1516,20 @@ function SlideNavigator({
           <div><span>Connected workspace</span><strong>Viewer library</strong></div>
           <button type="button" aria-label="Collapse Viewer library" onClick={onCollapse}><SidebarSimple /></button>
         </header>
-        <div className="forge-viewer-library-status">
+        <div className="forge-viewer-library-status" role="status">
           <span className={connection?.connected ? 'connected' : ''} />
-          <strong>{connection?.connected ? connection.deviceName : 'Viewer not connected'}</strong>
-          <small>{connection?.connected && remoteSyncReady ? `${remoteLibrary.items.length} private slides · hybrid offline mode` : connection?.connected ? 'Viewer connected · sync API unavailable' : 'Connect once to synchronize your private library'}</small>
+          <strong>{connection?.connected && remoteSyncReady ? 'Connected' : connection?.connected ? 'Connection interrupted' : 'Not connected'}</strong>
+          <small title={connection?.deviceName}>{connection?.connected && remoteSyncReady && remoteLastChecked ? `${remoteLibrary.items.length} slides synced` : connection?.connected ? 'Choose Sync changes to retry' : 'Connect to synchronize'}</small>
         </div>
-        <button className="forge-sync-viewer" type="button" aria-label={connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'} onClick={connection?.connected ? onSync : onConnect}>
-          <ArrowsClockwise /> {connection?.connected ? 'Sync changes' : 'Connect to Viewer'}
+        <button className="forge-sync-viewer" type="button" aria-label={connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'} title={connection?.connected ? 'Refresh Viewer connection' : 'Connect to Viewer'} onClick={connection?.connected ? onSync : onConnect}>
+          <ArrowsClockwise aria-hidden="true" />
+          <span className="visually-hidden">{connection?.connected ? 'Sync changes' : 'Connect to Viewer'}</span>
         </button>
-        {connection?.connected && remoteSyncReady ? (
-          <div className="forge-viewer-sync-boundary" role="status">
-            <strong>Two-way sync active</strong>
-            <span>Thumbnails stream through Forge. Choose Keep offline for a verified full OME copy. Conflicting edits pause per field.</span>
-          </div>
-        ) : connection?.connected ? <div className="forge-viewer-sync-boundary" role="status"><strong>Viewer update required</strong><span>Restart Viewer with the matching desktop-sync/v1 build, then choose Sync changes.</span></div> : null}
-        <nav aria-label="Viewer folders">
-          {remoteLibrary.folders.map((folder) => (
-            <button type="button" key={folder.id}><Folder /><span><strong>{folder.name}</strong><small>Private folder</small></span></button>
-          ))}
-        </nav>
-        <section className="forge-remote-slides" aria-label="Synchronized Viewer slides">
-          {remoteLibrary.items.map((item) => (
-            <article key={item.id} className={`forge-remote-slide ${selectedRemoteId === item.id ? 'active' : ''}`} onClick={() => onSelectRemote(item.id)}>
-              <img src={item.thumbnailUrl} alt="" loading="lazy" />
-              <span><strong>{item.displayName}</strong><small>{item.offlineComplete ? 'Available offline' : formatBytes(item.contentBytes)}</small></span>
-              <button type="button" onClick={() => item.offlineComplete ? onRemoveOffline(item.id) : onKeepOffline(item.id)}>
-                {item.offlineComplete ? 'Remove offline copy' : 'Keep offline'}
-              </button>
-              <button type="button" onClick={() => onRenameRemote(item.id, item.displayName)}>Rename</button>
-            </article>
-          ))}
-          {connection?.connected && remoteLibrary.items.length === 0 ? <p>No private Viewer slides yet.</p> : null}
+        {connection?.connected && !remoteSyncReady ? <div className="forge-viewer-sync-boundary" role="status"><strong>Viewer unavailable</strong><span>Check the Viewer server, then choose Sync changes.</span></div> : null}
+        <section className="forge-remote-slides" role="tree" aria-label="Synchronized Viewer slides">
+          <header className="forge-remote-tree-heading"><span>Private files</span><strong>{remoteLibrary.items.length} files</strong></header>
+          {remoteGroups.filter((group) => !group.parentId).map((group) => renderRemoteFolder(group))}
+          {connection?.connected && remoteLibrary.items.length === 0 ? <p>No private Viewer slides.</p> : null}
         </section>
         {remoteLibrary.conflicts.map((conflict) => <div className="forge-viewer-sync-boundary forge-conflict" key={`${conflict.slideId}:${conflict.field}`}><strong>Resolve {conflict.field}</strong><span>Both versions are preserved.</span><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'local')}>Keep local</button><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'viewer')}>Keep Viewer</button></div>)}
       </div>
@@ -1417,8 +1630,8 @@ function RemoteViewerStage({ slide, viewer, onViewer, inspectorOpen, onInspector
   return (
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
       <header className="forge-viewer-header">
-        <div><strong>{slide?.displayName || 'Viewer library'}</strong><span>{slide ? 'Private Viewer slide · authenticated tile cache' : 'Choose a synchronized slide'}</span></div>
-        <button type="button" aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} aria-expanded={inspectorOpen} onClick={onInspector}><SidebarSimple /></button>
+        <div><strong>{slide?.displayName || 'Viewer library'}</strong><span>{slide ? `${viewerVisibility(slide)} Viewer slide · authenticated tile cache` : 'Choose a synchronized slide'}</span></div>
+        <button type="button" aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} aria-controls="forge-slide-inspector" aria-expanded={inspectorOpen} title={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} onClick={onInspector}><SidebarSimple /></button>
       </header>
       {slide ? <SlideViewer tileSource={slide.tileSourceUrl} sourceWidth={slide.width} sourceHeight={slide.height} onReady={onViewer} /> : (
         <div className="forge-stage-empty"><CloudArrowUp /><h1>No synchronized slides</h1><p>Sync a matching Viewer build to browse private slides here.</p></div>
@@ -1444,11 +1657,22 @@ function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOf
   return (
     <aside id="forge-slide-inspector" className="forge-inspector" aria-label="Viewer slide inspector">
       <header><div><span>Viewer slide</span><h2>{slide?.displayName || 'No slide selected'}</h2></div><button type="button" aria-label="Collapse slide inspector" onClick={onCollapse}><SidebarSimple /></button></header>
-      {slide ? <section className="forge-inspector-section">
-        <strong>Private synchronized record</strong>
-        <small>{formatBytes(slide.contentBytes)} · {slide.state.replaceAll('_', ' ')}</small>
-        <label>Viewer folder<select value={slide.folderId} onChange={(event) => onMove(slide.id, event.target.value)}><option value="">Unfiled</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>
-        <button type="button" onClick={() => slide.offlineComplete ? onRemoveOffline(slide.id) : onKeepOffline(slide.id)}>{slide.offlineComplete ? 'Remove offline copy' : 'Keep verified OME offline'}</button>
+      {slide ? <section className="forge-inspector-section forge-remote-inspector-card">
+        <div className="forge-remote-inspector-state"><span className="connected" /><strong>{viewerVisibility(slide)} slide</strong><small>{slide.state.replaceAll('_', ' ')}</small></div>
+        <dl className="forge-remote-metadata">
+          <div><dt><LockKey aria-hidden="true" />Visibility</dt><dd>{viewerVisibility(slide)}</dd></div>
+          <div><dt><Database aria-hidden="true" />Storage</dt><dd>{slide.offlineComplete ? 'Viewer + device' : 'Viewer'}</dd></div>
+          <div><dt><FileText aria-hidden="true" />File</dt><dd>{slide.contentBytes > 0 ? formatBytes(slide.contentBytes) : 'Legacy format'}</dd></div>
+          <div><dt><Ruler aria-hidden="true" />Dimensions</dt><dd>{slide.width > 0 && slide.height > 0 ? `${slide.width.toLocaleString()} × ${slide.height.toLocaleString()} px` : 'Not reported'}</dd></div>
+        </dl>
+        <div className="forge-remote-sync-summary" aria-label="Synchronized Viewer metadata">
+          <div><Database aria-hidden="true" /><span>Annotations</span><strong>{slide.annotationRevision ? 'Synced' : 'None reported'}</strong></div>
+          <div><Info aria-hidden="true" /><span>Metadata</span><strong>{slide.metadataRevision ? 'Synced' : 'Basic record'}</strong></div>
+        </div>
+        {metadataText(slide.metadata?.tags) ? <div className="forge-remote-tags"><Tag aria-hidden="true" /><span>{metadataText(slide.metadata?.tags)}</span></div> : null}
+        {metadataText(slide.metadata?.caseId) || metadataText(slide.metadata?.organSite) || metadataText(slide.metadata?.stain) ? <div className="forge-remote-context"><Globe aria-hidden="true" /><span>{[slide.metadata?.caseId, slide.metadata?.organSite, slide.metadata?.stain].map(metadataText).filter(Boolean).join(' · ')}</span></div> : null}
+        <label className="forge-remote-folder-field"><span>Viewer folder</span><select value={slide.folderId} onChange={(event) => onMove(slide.id, event.target.value)}><option value="">Unfiled</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>
+        {slide.offlineComplete || slide.contentBytes > 0 ? <button className="forge-remote-storage-action" type="button" onClick={() => slide.offlineComplete ? onRemoveOffline(slide.id) : onKeepOffline(slide.id)}>{slide.offlineComplete ? 'Remove offline copy' : 'Keep verified OME offline'}</button> : <div className="forge-remote-legacy-note"><CloudArrowUp /><span><strong>Cloud only</strong><small>This older Viewer slide remains viewable online but has no downloadable OME file.</small></span></div>}
       </section> : null}
     </aside>
   )
@@ -2498,13 +2722,18 @@ function QueueDock({
   isError,
   onClearError,
   onQueueReady,
+  onOpen,
 }: {
   datasets: Dataset[]
   notice: string
   isError: boolean
   onClearError: () => void
   onQueueReady: () => void
+  onOpen: () => void
 }) {
+  const [queueOpen, setQueueOpen] = useState(false)
+  const queueButtonRef = useRef<HTMLButtonElement>(null)
+  const queueCloseRef = useRef<HTMLButtonElement>(null)
   const active = datasets.filter((dataset) => ACTIVE_STATUSES.has(dataset.status))
   const convertingSlides = active.filter((dataset) => CONVERSION_STATUSES.has(dataset.status))
   const converting = convertingSlides[0]
@@ -2512,34 +2741,68 @@ function QueueDock({
   const ready = datasets.filter((dataset) => QUEUEABLE_STATUSES.has(dataset.status))
   const phase = converting ? conversionPhase(converting) : undefined
   const indeterminate = phase?.indeterminate === true
+  const queueItems = [...active, ...ready.filter((dataset) => !active.some((candidate) => candidate.id === dataset.id))]
+  const closeQueue = useCallback(() => {
+    setQueueOpen(false)
+    window.requestAnimationFrame(() => queueButtonRef.current?.focus())
+  }, [])
+
+  useEffect(() => {
+    if (!queueOpen) return
+    queueCloseRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeQueue()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [closeQueue, queueOpen])
+
   return (
-    <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
-      <span className="forge-queue-mark" />
-      <strong>{active.length
-        ? `${convertingSlides.length ? `Converting ${convertingSlides.length}` : 'Starting'} · ${queued.length} queued`
-        : 'Queue ready'}</strong>
-      <span>{notice}</span>
-      {ready.length ? (
-        <button type="button" onClick={onQueueReady}>Queue {ready.length} ready slide{ready.length === 1 ? '' : 's'}</button>
-      ) : null}
-      {converting && phase ? (
-        <label className="forge-queue-progress">
-          <span>
-            {phase.label}
-            {converting.estimatedRemainingMs
-              ? ` · ~${formatDuration(converting.estimatedRemainingMs)} left`
-              : ''}
-          </span>
-          <progress
-            aria-label={`${converting.displayName} conversion progress`}
-            max="100"
-            value={indeterminate ? undefined : phase.percent}
-          />
-          <strong>{indeterminate ? 'Finalizing…' : `${phase.percent}%`}</strong>
-        </label>
-      ) : null}
-      {isError ? <button type="button" onClick={onClearError}>Dismiss</button> : null}
-    </div>
+    <>
+      <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
+        <span className="forge-queue-mark" />
+        <strong>{active.length
+          ? `${convertingSlides.length ? `Converting ${convertingSlides.length}` : 'Starting'} · ${queued.length} queued`
+          : 'Queue ready'}</strong>
+        <span>{notice}</span>
+        {queueItems.length ? <button ref={queueButtonRef} type="button" aria-haspopup="dialog" aria-expanded={queueOpen} onClick={() => { onOpen(); setQueueOpen(true) }}>View queue · {queueItems.length}</button> : null}
+        {converting && phase ? (
+          <label className="forge-queue-progress">
+            <span>
+              {phase.label}
+              {converting.estimatedRemainingMs
+                ? ` · ~${formatDuration(converting.estimatedRemainingMs)} left`
+                : ''}
+            </span>
+            <progress
+              aria-label={`${converting.displayName} conversion progress`}
+              max="100"
+              value={indeterminate ? undefined : phase.percent}
+            />
+            <strong>{indeterminate ? 'Finalizing…' : `${phase.percent}%`}</strong>
+          </label>
+        ) : null}
+        {isError ? <button type="button" onClick={onClearError}>Dismiss</button> : null}
+      </div>
+      {queueOpen ? <div className="forge-dialog-backdrop forge-queue-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) closeQueue() }}>
+        <section className="forge-queue-dialog" role="dialog" aria-modal="true" aria-labelledby="forge-queue-title">
+          <header><div><span>Conversion queue</span><h2 id="forge-queue-title">{queueItems.length} slide{queueItems.length === 1 ? '' : 's'} waiting</h2></div><button ref={queueCloseRef} type="button" aria-label="Close conversion queue" onClick={closeQueue}><X /></button></header>
+          <div className="forge-queue-list">
+            {queueItems.map((dataset) => {
+              const itemPhase = CONVERSION_STATUSES.has(dataset.status) ? conversionPhase(dataset) : undefined
+              const thumbnailSeries = Math.max(0, dataset.selectedSeries)
+              return <article key={dataset.id} className="forge-queue-item">
+                <span className="forge-queue-thumbnail"><img src={`/api/datasets/${encodeURIComponent(dataset.id)}/series/${thumbnailSeries}/thumbnail?v=${encodeURIComponent(dataset.sourceFingerprint.slice(0, 24))}`} alt="" onError={(event) => { event.currentTarget.hidden = true }} /></span>
+                <span><strong>{dataset.displayName}</strong><small>{itemPhase?.label || (QUEUEABLE_STATUSES.has(dataset.status) ? 'Ready to queue' : dataset.detail)}</small></span>
+                <b>{itemPhase ? `${itemPhase.percent}%` : 'Ready'}</b>
+                {itemPhase ? <progress aria-label={`${dataset.displayName} queue progress`} max="100" value={itemPhase.indeterminate ? undefined : itemPhase.percent} /> : null}
+              </article>
+            })}
+          </div>
+          <footer><span>{active.length ? 'Conversion continues in the background.' : 'Ready slides have not started yet.'}</span>{ready.length ? <button type="button" onClick={() => { onQueueReady(); setQueueOpen(false) }}>Start {ready.length} ready slide{ready.length === 1 ? '' : 's'}</button> : null}</footer>
+        </section>
+      </div> : null}
+    </>
   )
 }
 

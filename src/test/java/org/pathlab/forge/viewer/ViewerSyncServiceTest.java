@@ -37,6 +37,28 @@ final class ViewerSyncServiceTest {
     }
 
     @Test
+    void explicitSyncReconcilesAuthoritativeSnapshotWhenChangeCursorIsAlreadyCurrent()
+            throws Exception {
+        var stale = new ViewerRemoteSlide("deleted-slide", "Deleted in Viewer", "",
+                "ready_private", 1, 0, 0, 0, "/thumb", "/tiles",
+                Instant.parse("2026-08-12T00:00:00Z"));
+        var transport = new FakeTransport(Map.of(
+                "GET /api/v2/desktop/library/items?limit=100",
+                json("{\"schema\":\"desktop-sync/v1\",\"items\":[],\"folders\":[],\"nextCursor\":null}"),
+                "GET /api/v2/desktop/library/changes?after=9&limit=500",
+                json("{\"schema\":\"desktop-sync/v1\",\"changes\":[],\"nextCursor\":\"9\"}")));
+        try (var store = new SqliteViewerSyncStore(temp.resolve("stale.db"));
+                var service = new ViewerSyncService(transport, store, temp.resolve("offline"))) {
+            store.upsertRemote(stale);
+            store.saveCursor(9);
+
+            service.syncNow();
+
+            assertEquals(0, store.all().size());
+        }
+    }
+
+    @Test
     void treatsViewerSqliteTimestampWithoutOffsetAsUtc() throws Exception {
         assertEquals(
                 Instant.parse("2026-08-12T04:49:31.366627Z"),

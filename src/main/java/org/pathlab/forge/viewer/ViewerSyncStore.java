@@ -8,6 +8,7 @@ import java.util.Set;
 
 public interface ViewerSyncStore extends AutoCloseable {
     void upsertRemote(ViewerRemoteSlide slide) throws IOException;
+    void replaceRemoteSlides(List<ViewerRemoteSlide> slides) throws IOException;
     Optional<ViewerSyncRecord> find(String slideId) throws IOException;
     List<ViewerSyncRecord> all() throws IOException;
     void replaceFolders(List<ViewerRemoteFolder> folders) throws IOException;

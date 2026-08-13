@@ -56,12 +56,16 @@ public final class ViewerSyncService implements AutoCloseable {
         var changes = json("GET", "/api/v2/desktop/library/changes?after=" + after + "&limit=500",
                 Map.of(), new byte[0]);
         requireSchema(changes);
-        if (after == 0 || !changes.path("changes").isEmpty()) refreshLibrary();
+        // An explicit desktop sync is a bounded authoritative reconciliation. The change
+        // cursor can already have advanced after an earlier refresh, so relying on a new
+        // event here would leave remotely deleted slides in the local cache forever.
+        refreshLibrary();
         store.saveCursor(changes.path("nextCursor").asLong(after));
     }
 
     private void refreshLibrary() throws IOException {
         var folders = new LinkedHashMap<String, ViewerRemoteFolder>();
+        var slides = new LinkedHashMap<String, ViewerRemoteSlide>();
         String cursor = "";
         for (int page = 0; page < MAX_LIBRARY_PAGES; page++) {
             var path = "/api/v2/desktop/library/items?limit=100";
@@ -69,7 +73,10 @@ public final class ViewerSyncService implements AutoCloseable {
                     java.nio.charset.StandardCharsets.UTF_8);
             var document = json("GET", path, Map.of(), new byte[0]);
             requireSchema(document);
-            for (var item : document.path("items")) store.upsertRemote(parseSlide(item));
+            for (var item : document.path("items")) {
+                var parsed = parseSlide(item);
+                slides.put(parsed.id(), parsed);
+            }
             for (var folder : document.path("folders")) {
                 var parsed = new ViewerRemoteFolder(text(folder, "id"), text(folder, "name"),
                         nullableText(folder, "parentId"), folder.path("revision").asLong());
@@ -77,6 +84,7 @@ public final class ViewerSyncService implements AutoCloseable {
             }
             var next = document.path("nextCursor");
             if (next.isMissingNode() || next.isNull() || next.asText().isBlank()) {
+                store.replaceRemoteSlides(List.copyOf(slides.values()));
                 store.replaceFolders(List.copyOf(folders.values()));
                 return;
             }
