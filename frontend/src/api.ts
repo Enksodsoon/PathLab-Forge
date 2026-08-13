@@ -2,7 +2,13 @@ export interface Dataset {
   id: string
   displayName: string
   sourceBytes: number
-  format: 'OME_TIFF' | 'VSI' | 'SVS'
+  format: string
+  readerEngine?: string
+  readerId?: string
+  formatName?: string
+  runtimeFingerprint?: string
+  viewDefinitionJson?: string
+  viewRevision?: string
   status: string
   detail: string
   outputPath: string
@@ -50,6 +56,41 @@ export interface SeriesInfo {
   physicalUnit: string
   resolutionCount: number
   rgbPlane: boolean
+}
+
+export type AxisMode = 'SLICE' | 'MIN' | 'MAX' | 'MEAN'
+export interface ViewDefinition {
+  series: number
+  z: { mode: AxisMode; start: number; end: number }
+  t: { mode: AxisMode; start: number; end: number }
+  channels: Array<{
+    channel: number; enabled: boolean; color: string; minimum: number; maximum: number
+  }>
+  profile: 'PATHOLOGY_STANDARD' | 'DISPLAY_COMPOSITE'
+}
+
+export interface ImportDiagnostic {
+  code: 'UNSUPPORTED' | 'CORRUPT' | 'ENCRYPTED' | 'MISSING_COMPANION'
+    | 'CODEC_UNAVAILABLE' | 'PROBE_TIMEOUT' | 'RESOURCE_LIMIT'
+  detail: string
+  repairable: boolean
+  paths: string[]
+}
+
+export interface FormatCatalog {
+  policy: 'BEST_EFFORT'
+  runtimeVersion: string
+  runtimeFingerprint: string
+  formats: Array<{
+    engine: string
+    readerId: string
+    displayName: string
+    extensions: string[]
+    multidimensional: boolean
+    nativePyramid: boolean
+    groupedFiles: boolean
+    randomRegions: boolean
+  }>
 }
 
 export interface ArtifactRevision {
@@ -131,6 +172,10 @@ export interface AnnotationRecord {
   classification: string
   updatedAt: number
   revision: number
+  series?: number
+  z?: number
+  t?: number
+  viewRevision?: string
 }
 
 export interface ViewerRemoteItem {
@@ -238,10 +283,46 @@ export async function browseLocalFiles(path?: string) {
 }
 
 export async function importDataset(path: string) {
-  return request<{ datasets: Dataset[] }>(
-    `/api/datasets/import?path=${encodeURIComponent(path)}`,
-    { method: 'POST' },
+  const report = await importDatasets([path])
+  if (!report.datasets.length && report.diagnostics.length) {
+    throw new Error(`${report.diagnostics[0].code}: ${report.diagnostics[0].detail}`)
+  }
+  datasetEtag = ''
+  return { datasets: await datasets() }
+}
+
+export async function formats() {
+  return request<FormatCatalog>('/api/v2/desktop/formats')
+}
+
+export async function importDatasets(paths: string[]) {
+  return request<{ datasets: Dataset[]; diagnostics: ImportDiagnostic[] }>(
+    '/api/v2/desktop/imports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths }),
+    },
   )
+}
+
+export async function images(id: string) {
+  return request<{ series: SeriesInfo[]; viewDefinition: ViewDefinition | null }>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/images`,
+  )
+}
+
+export async function updateView(id: string, view: ViewDefinition) {
+  return request<Dataset & { viewRevision: string }>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/view`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(view),
+    },
+  )
+}
+
+export function viewDziUrl(id: string, revision: string) {
+  return `/api/v2/desktop/datasets/${encodeURIComponent(id)}/views/${encodeURIComponent(revision)}/slide.dzi`
 }
 
 export async function deleteDataset(id: string) {

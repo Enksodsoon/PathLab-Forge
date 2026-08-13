@@ -71,16 +71,16 @@ public final class SwingDatasetPicker implements DatasetPicker {
             chooser.setDialogTitle(folder ? "Import PathLab project folder" : "Add pathology datasets");
             chooser.setMultiSelectionEnabled(!folder);
             chooser.setFileSelectionMode(folder ? JFileChooser.DIRECTORIES_ONLY : JFileChooser.FILES_ONLY);
-            chooser.setAcceptAllFileFilterUsed(folder);
+            chooser.setAcceptAllFileFilterUsed(true);
             if (!folder) chooser.setFileFilter(new FileFilter() {
                 @Override
                 public boolean accept(File file) {
-                    return file.isDirectory() || supported(file.getName());
+                    return true;
                 }
 
                 @Override
                 public String getDescription() {
-                    return "Pathology slides (*.svs, *.vsi, *.ome.tif, *.ome.tiff)";
+                    return "WSI, microscopy and image files (content detected)";
                 }
             });
             var downloads = Path.of(System.getProperty("user.home"), "Downloads");
@@ -106,11 +106,4 @@ public final class SwingDatasetPicker implements DatasetPicker {
         }
     }
 
-    private static boolean supported(String name) {
-        var lower = name.toLowerCase(java.util.Locale.ROOT);
-        return lower.endsWith(".vsi")
-                || lower.endsWith(".svs")
-                || lower.endsWith(".ome.tif")
-                || lower.endsWith(".ome.tiff");
-    }
 }

@@ -1348,6 +1348,33 @@ public final class ConversionService implements AutoCloseable {
         return null;
     }
 
+    public DirectTileSource directView(String id, org.pathlab.forge.reader.ViewDefinition view)
+            throws IOException {
+        var dataset = requireDataset(id);
+        evictIdleReaderSessions();
+        ensureReaderSession(dataset);
+        return engine.directTileSource(Path.of(dataset.sourcePath()), view);
+    }
+
+    public byte[] directViewTile(
+            String id, org.pathlab.forge.reader.ViewDefinition view,
+            int level, int tileX, int tileY) throws IOException {
+        var dataset = requireDataset(id);
+        evictIdleReaderSessions();
+        var session = ensureReaderSession(dataset);
+        try {
+            return session.tile(
+                    new ReaderSession.TileKey(
+                            view.series(), level, tileX, tileY, view.revision()),
+                    () -> engine.readViewTile(
+                            Path.of(dataset.sourcePath()), view, level, tileX, tileY));
+        } catch (IOException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IOException("Multidimensional tile read failed", error);
+        }
+    }
+
     boolean validatesReusableProfile(ArtifactRevision revision, ConversionRequest request) {
         if (revision.format() != ArtifactRevisionFormat.OME_DYNAMIC_V1) {
             return true;
@@ -1508,8 +1535,10 @@ public final class ConversionService implements AutoCloseable {
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
             var request = request(dataset);
+            var savedView = savedView(dataset);
             var useDirectDzi = useDirectDziFromRegions(
                     revision.format(), dataset, request);
+            if (savedView != null) useDirectDzi = false;
             String digest = "";
             var resumeOme = existingCheckpoint != null
                     && !useDirectDzi
@@ -1519,7 +1548,7 @@ public final class ConversionService implements AutoCloseable {
                             >= StageCheckpoint.Stage.OME_VERIFIED.ordinal()
                     && Files.isRegularFile(output);
             if (!resumeOme) {
-                if (shouldUseQuPathWriter(
+                if (savedView == null && shouldUseQuPathWriter(
                         revision.format(), quPathRuntime.supports(dataset.format()))) {
                     repository.save(dataset.withConversion(
                         DatasetStatus.OPTIMIZING_OME,
@@ -1548,10 +1577,10 @@ public final class ConversionService implements AutoCloseable {
                                 Math.min(bytes, projectedBytes),
                                 projectedBytes));
                     finalOmeWritten = true;
-                } else if (dataset.format().isSingleFileTiff()
+                } else if (savedView == null && dataset.format().isSingleFileTiff()
                         && derivativeEngine.supportsOmeRendering()) {
                     derivativeEngine.renderOme(request, rendered);
-                } else if (useParallelRgb(dataset, request)) {
+                } else if (savedView != null || useParallelRgb(dataset, request)) {
                 regionRoot = outputDirectory.resolve("regions.partial");
                 List<Path> regions = null;
                 if (existingCheckpoint != null
@@ -1576,11 +1605,8 @@ public final class ConversionService implements AutoCloseable {
                     }
                     Files.createDirectories(regionRoot);
                     var progressLock = new Object();
-                    regions = engine.convertRegions(
-                            request,
-                            regionRoot,
-                            parallelRgbWorkers(request.source()),
-                            (completed, total) -> {
+                    var viewForRender = savedView;
+                    var progressListener = (java.util.function.BiConsumer<Integer, Integer>) (completed, total) -> {
                                 synchronized (progressLock) {
                                     updateProgress(
                                             dataset.id(),
@@ -1598,7 +1624,12 @@ public final class ConversionService implements AutoCloseable {
                                         throw new java.io.UncheckedIOException(error);
                                     }
                                 }
-                            });
+                            };
+                    regions = viewForRender == null
+                            ? engine.convertRegions(request, regionRoot,
+                                    parallelRgbWorkers(request.source()), progressListener)
+                            : engine.convertViewRegions(request, viewForRender, regionRoot,
+                                    Math.max(1, parallelRgbWorkers(request.source())), progressListener);
                 }
                 saveCheckpoint(
                         checkpoints,
@@ -1875,7 +1906,9 @@ public final class ConversionService implements AutoCloseable {
                             useDirectDzi
                                     ? "estimated-staging-ome"
                                     : "actual-staging-ome",
-                            "0.1.0-rc");
+                            "0.1.0-rc",
+                            dataset.readerEngine(), dataset.readerId(), dataset.formatName(),
+                            dataset.runtimeFingerprint(), dataset.viewDefinitionJson());
             var stagingOmeBytes = useDirectDzi
                     ? OutputSizeEstimator.compressedOmeTiff(
                                     dataset.cropWidth(),
@@ -2174,6 +2207,39 @@ public final class ConversionService implements AutoCloseable {
                 derivativeEngine.available(),
                 parallelRgbWorkers(request.source()),
                 request);
+    }
+
+    private static org.pathlab.forge.reader.ViewDefinition savedView(LocalDataset dataset)
+            throws IOException {
+        if (dataset.viewDefinitionJson().isBlank()) return null;
+        try {
+            var node = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(dataset.viewDefinitionJson());
+            var z = node.required("z");
+            var t = node.required("t");
+            var channels = new java.util.ArrayList<org.pathlab.forge.reader.ChannelRender>();
+            for (var channel : node.required("channels")) {
+                channels.add(new org.pathlab.forge.reader.ChannelRender(
+                        channel.required("channel").asInt(),
+                        channel.required("enabled").asBoolean(),
+                        channel.required("color").asText(),
+                        channel.required("minimum").asDouble(),
+                        channel.required("maximum").asDouble()));
+            }
+            return new org.pathlab.forge.reader.ViewDefinition(
+                    node.required("series").asInt(),
+                    new org.pathlab.forge.reader.AxisSelection(
+                            org.pathlab.forge.reader.AxisMode.valueOf(z.required("mode").asText()),
+                            z.required("start").asInt(), z.required("end").asInt()),
+                    new org.pathlab.forge.reader.AxisSelection(
+                            org.pathlab.forge.reader.AxisMode.valueOf(t.required("mode").asText()),
+                            t.required("start").asInt(), t.required("end").asInt()),
+                    channels,
+                    org.pathlab.forge.reader.RenderProfile.valueOf(
+                            node.required("profile").asText()));
+        } catch (RuntimeException error) {
+            throw new IOException("Saved multidimensional view is invalid", error);
+        }
     }
 
     static boolean shouldUseParallelRgb(

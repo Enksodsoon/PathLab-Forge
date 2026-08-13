@@ -54,7 +54,11 @@ public final class AnnotationRepository {
                     properties.getProperty(prefix + "classification", ""),
                     Long.parseLong(properties.getProperty(
                             prefix + "updatedAt", properties.getProperty(prefix + "createdAt", "0"))),
-                    Long.parseLong(properties.getProperty(prefix + "revision", "1"))));
+                    Long.parseLong(properties.getProperty(prefix + "revision", "1")),
+                    Integer.parseInt(properties.getProperty(prefix + "series", "-1")),
+                    Integer.parseInt(properties.getProperty(prefix + "z", "-1")),
+                    Integer.parseInt(properties.getProperty(prefix + "t", "-1")),
+                    properties.getProperty(prefix + "viewRevision", "")));
         }
         result.sort(Comparator.comparingLong(AnnotationRecord::createdAt));
         return List.copyOf(result);
@@ -62,6 +66,13 @@ public final class AnnotationRepository {
 
     public synchronized AnnotationRecord create(
             String datasetId, String type, String geometry, String label, String color)
+            throws IOException {
+        return create(datasetId, type, geometry, label, color, -1, -1, -1, "");
+    }
+
+    public synchronized AnnotationRecord create(
+            String datasetId, String type, String geometry, String label, String color,
+            int series, int z, int t, String viewRevision)
             throws IOException {
         if (!TYPES.contains(type)) {
             throw new IllegalArgumentException("Unsupported annotation tool");
@@ -84,7 +95,8 @@ public final class AnnotationRepository {
                 geometry,
                 label,
                 color.toLowerCase(java.util.Locale.ROOT),
-                System.currentTimeMillis());
+                System.currentTimeMillis(), "", "", System.currentTimeMillis(), 1,
+                series, z, t, viewRevision);
         var properties = read(datasetId);
         var prefix = "annotation." + record.id() + ".";
         properties.setProperty(prefix + "type", record.type());
@@ -94,8 +106,25 @@ public final class AnnotationRepository {
         properties.setProperty(prefix + "createdAt", Long.toString(record.createdAt()));
         properties.setProperty(prefix + "updatedAt", Long.toString(record.updatedAt()));
         properties.setProperty(prefix + "revision", Long.toString(record.revision()));
+        writeScope(properties, prefix, record);
         write(datasetId, properties);
         return record;
+    }
+
+    public synchronized void scopeLegacy(
+            String datasetId, int series, int z, int t, String viewRevision) throws IOException {
+        var properties = read(datasetId);
+        var changed = false;
+        for (var annotation : list(datasetId)) {
+            if (annotation.series() >= 0) continue;
+            var prefix = "annotation." + annotation.id() + ".";
+            properties.setProperty(prefix + "series", Integer.toString(series));
+            properties.setProperty(prefix + "z", Integer.toString(z));
+            properties.setProperty(prefix + "t", Integer.toString(t));
+            properties.setProperty(prefix + "viewRevision", viewRevision);
+            changed = true;
+        }
+        if (changed) write(datasetId, properties);
     }
 
     public synchronized AnnotationRecord updateMetadata(
@@ -128,7 +157,8 @@ public final class AnnotationRepository {
         var updated = new AnnotationRecord(
                 current.id(), current.type(), current.geometry(), current.label(), current.color(),
                 current.createdAt(), parentId, classification.strip(), System.currentTimeMillis(),
-                current.revision() + 1);
+                current.revision() + 1, current.series(), current.z(), current.t(),
+                current.viewRevision());
         var properties = read(datasetId);
         var prefix = "annotation." + annotationId + ".";
         properties.setProperty(prefix + "parentId", updated.parentId());
@@ -137,6 +167,14 @@ public final class AnnotationRepository {
         properties.setProperty(prefix + "revision", Long.toString(updated.revision()));
         write(datasetId, properties);
         return updated;
+    }
+
+    private static void writeScope(
+            Properties properties, String prefix, AnnotationRecord record) {
+        properties.setProperty(prefix + "series", Integer.toString(record.series()));
+        properties.setProperty(prefix + "z", Integer.toString(record.z()));
+        properties.setProperty(prefix + "t", Integer.toString(record.t()));
+        properties.setProperty(prefix + "viewRevision", record.viewRevision());
     }
 
     public synchronized boolean delete(String datasetId, String annotationId) throws IOException {

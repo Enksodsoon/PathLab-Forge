@@ -286,8 +286,7 @@ export function App() {
     try {
       let next: { datasets: Dataset[] } | undefined
       for (const selectedPath of paths) next = await api.importDataset(selectedPath)
-      if (!next) return
-      finishImport(next)
+      if (next) finishImport(next)
     } catch (nextError) {
       const detail = message(nextError)
       setImportError(detail)
@@ -379,6 +378,18 @@ export function App() {
       setNotice('Crop, scale, and artifact identity updated')
     } catch (nextError) {
       setError(message(nextError))
+    }
+  }
+
+  const updateViewDefinition = async (view: api.ViewDefinition) => {
+    if (!selected) return
+    try {
+      const updated = await api.updateView(selected.id, view)
+      setDatasets((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setNotice('Series, axes, channels, and render profile saved')
+    } catch (nextError) {
+      setError(message(nextError))
+      throw nextError
     }
   }
 
@@ -831,6 +842,7 @@ export function App() {
               onCollapse={() => setInspectorOpen(false)}
               onInspect={inspect}
               onConfigure={updateConfiguration}
+              onUpdateView={updateViewDefinition}
               onConvert={beginConversion}
               onCancel={() => selected && void api.cancel(selected.id).then(() => refresh())}
               onApprove={approveCurrent}
@@ -1168,6 +1180,8 @@ function ImportDialog({
   const [browserBusy, setBrowserBusy] = useState(false)
   const [browserError, setBrowserError] = useState('')
   const [showBrowserPath, setShowBrowserPath] = useState(false)
+  const [formatCatalog, setFormatCatalog] = useState<api.FormatCatalog>()
+  const [formatQuery, setFormatQuery] = useState('')
   const closeRef = useRef(onClose)
   closeRef.current = onClose
 
@@ -1178,6 +1192,12 @@ function ImportDialog({
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [])
+
+  useEffect(() => {
+    if (typeof api.formats === 'function') {
+      void api.formats().then(setFormatCatalog).catch(() => undefined)
+    }
   }, [])
 
   const openDirectory = async (nextPath?: string) => {
@@ -1272,15 +1292,29 @@ function ImportDialog({
         <div className="forge-import-sources">
           <button ref={chooseFilesRef} className="forge-import-source primary" type="button" disabled={busy} onClick={() => openBrowser('files')}>
             <FileText aria-hidden="true" />
-            <span><strong>Choose slide files</strong><small>SVS, OME-TIFF or VSI</small></span>
+            <span><strong>Choose slide files</strong><small>WSI, microscopy, and ordinary images</small></span>
             <UploadSimple aria-hidden="true" />
           </button>
           <button className="forge-import-source" type="button" disabled={busy} onClick={() => openBrowser('folder')}>
             <FolderOpen aria-hidden="true" />
-            <span><strong>Choose project folder</strong><small>Find supported slides recursively</small></span>
+            <span><strong>Choose project folder</strong><small>Probe candidate files recursively</small></span>
             <CaretRight aria-hidden="true" />
           </button>
         </div>
+        <details className="forge-format-center">
+          <summary><Database aria-hidden="true" /><span><strong>Format Center</strong><small>Live installed-reader catalog · best effort</small></span></summary>
+          <div>
+            <label htmlFor="forge-format-search">Filter formats</label>
+            <input id="forge-format-search" type="search" value={formatQuery} onChange={(event) => setFormatQuery(event.target.value)} placeholder="CZI, NDPI, JPEG…" />
+            <p>{formatCatalog ? `${formatCatalog.formats.length} reader formats · ${formatCatalog.runtimeVersion}` : 'Reading installed capabilities…'}</p>
+            <ul>
+              {formatCatalog?.formats.filter((format) => `${format.displayName} ${format.extensions.join(' ')}`.toLowerCase().includes(formatQuery.trim().toLowerCase())).slice(0, 80).map((format) => (
+                <li key={`${format.engine}:${format.readerId}`}><strong>{format.displayName}</strong><span>{format.extensions.length ? format.extensions.map((extension) => `.${extension}`).join(', ') : 'Content detection'}</span>{format.multidimensional ? <small>Z/C/T</small> : null}</li>
+              ))}
+            </ul>
+            <small>Selectable means the bundled runtime will probe the file. Vendor variants, codecs, corruption, and missing companions can still prevent opening.</small>
+          </div>
+        </details>
         <div className="forge-dialog-divider"><span>Or use a local path</span></div>
         <div className="forge-import-path">
           <label htmlFor="forge-import-path">Local slide path</label>
@@ -1299,7 +1333,7 @@ function ImportDialog({
         </div>
         {error ? <div className="forge-import-error" role="alert"><Info /><span><strong>Could not import this path</strong>{error}</span></div> : null}
         <footer className="forge-import-footer">
-          <small>VSI companion ETS files are grouped automatically.</small>
+          <small>Reader-reported companion files stay in place and are grouped automatically.</small>
           <button className="forge-dialog-close" type="button" disabled={busy} onClick={onClose}>Cancel</button>
         </footer>
         </>}
@@ -1612,7 +1646,7 @@ function SlideNavigator({
           <div className="forge-empty-nav">
             <Crosshair aria-hidden="true" />
             <strong>No local slides</strong>
-            <span>Import an SVS, OME-TIFF or VSI; Forge finds matching VSI companions.</span>
+            <span>Import any image advertised by the installed readers; companions are grouped automatically.</span>
           </div>
         )}
       </nav>
@@ -1729,7 +1763,9 @@ function ViewerStage({
         'WAITING_RESOURCES',
         ...CONVERSION_STATUSES,
       ].includes(dataset.status)
-      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}&preview=${DIRECT_PREVIEW_VERSION}`
+      ? dataset.viewRevision
+        ? api.viewDziUrl(dataset.id, dataset.viewRevision)
+        : `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}&preview=${DIRECT_PREVIEW_VERSION}`
       : ''
   return (
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
@@ -1785,7 +1821,7 @@ function ViewerStage({
         <div className="forge-stage-empty">
           <span className="forge-tissue-mark"><Crosshair /></span>
           <h1>{dataset ? 'Preparing slide preview' : 'Your slides, ready at launch'}</h1>
-          <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import an SVS, OME-TIFF or VSI. The slide panel remains visible so image-series selection and conversion feel like one viewer workflow.'}</p>
+          <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import a WSI, microscopy dataset, or ordinary image. Forge probes the installed readers by content.'}</p>
         </div>
       )}
       {converting && dataset ? (
@@ -1887,6 +1923,7 @@ function Inspector({
   onCollapse,
   onInspect,
   onConfigure,
+  onUpdateView,
   onConvert,
   onCancel,
   onApprove,
@@ -1916,6 +1953,7 @@ function Inspector({
   onCollapse: () => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
+  onUpdateView: (view: api.ViewDefinition) => Promise<void>
   onConvert: () => void
   onCancel: () => void
   onApprove: () => void
@@ -1967,6 +2005,7 @@ function Inspector({
           onCropEditing={onCropEditing}
           onInspect={onInspect}
           onConfigure={onConfigure}
+          onUpdateView={onUpdateView}
           onConvert={onConvert}
           onCancel={onCancel}
           onApprove={onApprove}
@@ -2221,6 +2260,101 @@ function RevisionHistory({
   )
 }
 
+const CHANNEL_PALETTE = ['#ffffff', '#ff4d4d', '#45e06f', '#4d8cff', '#ffcf4d', '#d85cff', '#43d9d2']
+
+function initialView(dataset: Dataset, image: SeriesInfo): api.ViewDefinition {
+  if (dataset.viewDefinitionJson) {
+    try {
+      const saved = JSON.parse(dataset.viewDefinitionJson) as api.ViewDefinition
+      if (saved.series === image.index) return saved
+    } catch { /* A legacy or interrupted value falls back deterministically. */ }
+  }
+  const maximum = image.pixelType.includes('16') ? 65535
+    : image.pixelType.includes('32') && !image.pixelType.includes('float') ? 4_294_967_295
+      : image.pixelType.includes('float') || image.pixelType.includes('double') ? 1 : 255
+  return {
+    series: image.index,
+    z: { mode: 'SLICE', start: 0, end: 0 },
+    t: { mode: 'SLICE', start: 0, end: 0 },
+    channels: Array.from({ length: image.channels }, (_, channel) => ({
+      channel,
+      enabled: channel < Math.min(3, image.channels),
+      color: image.rgbPlane ? '#ffffff' : CHANNEL_PALETTE[channel % CHANNEL_PALETTE.length],
+      minimum: 0,
+      maximum,
+    })),
+    profile: image.rgbPlane ? 'PATHOLOGY_STANDARD' : 'DISPLAY_COMPOSITE',
+  }
+}
+
+function MultidimensionalViewControls({ dataset, image, onUpdate }: {
+  dataset: Dataset
+  image: SeriesInfo
+  onUpdate: (view: api.ViewDefinition) => Promise<void>
+}) {
+  const [view, setView] = useState(() => initialView(dataset, image))
+  const [saving, setSaving] = useState(false)
+  const [playing, setPlaying] = useState(false)
+  useEffect(() => {
+    setView(initialView(dataset, image))
+    setPlaying(false)
+  }, [dataset.id, dataset.viewDefinitionJson, image.index])
+  useEffect(() => {
+    if (!playing || image.sizeT < 2 || view.t.mode !== 'SLICE') return
+    const timer = window.setInterval(() => {
+      setView((current) => {
+        const position = (current.t.start + 1) % image.sizeT
+        const next = { ...current, t: { mode: 'SLICE' as const, start: position, end: position } }
+        void onUpdate(next).catch(() => setPlaying(false))
+        return next
+      })
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [playing, image.sizeT, view.t.mode, onUpdate])
+
+  const axis = (name: 'z' | 't', size: number) => {
+    const value = view[name]
+    const label = name.toUpperCase()
+    return <div className="forge-axis-control">
+      <label>{label} render<select value={value.mode} onChange={(event) => {
+        const mode = event.target.value as api.AxisMode
+        setView((current) => {
+          const other = name === 'z' ? 't' : 'z'
+          const nextOther = mode !== 'SLICE' && current[other].mode !== 'SLICE'
+            ? { mode: 'SLICE' as const, start: current[other].start, end: current[other].start }
+            : current[other]
+          return { ...current, [other]: nextOther, [name]: mode === 'SLICE'
+            ? { mode, start: Math.min(current[name].start, size - 1), end: Math.min(current[name].start, size - 1) }
+            : { mode, start: 0, end: size - 1 } }
+        })
+      }}><option value="SLICE">Slice</option><option value="MIN">Minimum</option><option value="MAX">Maximum</option><option value="MEAN">Mean</option></select></label>
+      {value.mode === 'SLICE' ? <label>{label} position<input type="range" min="0" max={size - 1} value={value.start} onChange={(event) => { const position = Number(event.target.value); setView((current) => ({ ...current, [name]: { mode: 'SLICE', start: position, end: position } })) }} /><output>{value.start + 1} / {size}</output></label> : <div className="forge-axis-range"><label>Start<input type="number" min="0" max={value.end} value={value.start} onChange={(event) => setView((current) => ({ ...current, [name]: { ...current[name], start: Math.max(0, Math.min(Number(event.target.value), current[name].end)) } }))} /></label><label>End<input type="number" min={value.start} max={size - 1} value={value.end} onChange={(event) => setView((current) => ({ ...current, [name]: { ...current[name], end: Math.max(current[name].start, Math.min(Number(event.target.value), size - 1)) } }))} /></label></div>}
+    </div>
+  }
+
+  const apply = async () => {
+    setSaving(true)
+    try { await onUpdate(view) } finally { setSaving(false) }
+  }
+  return <fieldset className="forge-multidimensional-controls workflow-only-step-1">
+    <legend>Image view</legend>
+    <p>{image.pixelType} · {image.channels}C · {image.sizeZ}Z · {image.sizeT}T</p>
+    {axis('z', image.sizeZ)}
+    {axis('t', image.sizeT)}
+    {image.sizeT > 1 ? <button type="button" aria-pressed={playing} disabled={view.t.mode !== 'SLICE'} onClick={() => setPlaying((current) => !current)}>{playing ? 'Pause time' : 'Play time (4 fps)'}</button> : null}
+    <div className="forge-channel-controls" aria-label="Channel rendering">
+      {view.channels.map((channel, index) => <div key={channel.channel}>
+        <label><input type="checkbox" checked={channel.enabled} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item) }))} />C{channel.channel + 1}</label>
+        <input aria-label={`Channel ${channel.channel + 1} color`} type="color" value={channel.color} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, color: event.target.value } : item) }))} />
+        <label>Min<input type="number" value={channel.minimum} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, minimum: Number(event.target.value) } : item) }))} /></label>
+        <label>Max<input type="number" value={channel.maximum} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, maximum: Number(event.target.value) } : item) }))} /></label>
+      </div>)}
+    </div>
+    <button className="forge-primary" type="button" disabled={saving || !view.channels.some((channel) => channel.enabled)} onClick={() => void apply()}>{saving ? 'Rendering view…' : 'Apply image view'}</button>
+    <small>One projected axis at a time. Tile reads and projections are cancellable and resource bounded.</small>
+  </fieldset>
+}
+
 function ExportInspector({
   dataset,
   series,
@@ -2234,6 +2368,7 @@ function ExportInspector({
   onCropEditing,
   onInspect,
   onConfigure,
+  onUpdateView,
   onConvert,
   onCancel,
   onApprove,
@@ -2256,6 +2391,7 @@ function ExportInspector({
   onCropEditing: (editing: boolean) => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
+  onUpdateView: (view: api.ViewDefinition) => Promise<void>
   onConvert: () => void
   onCancel: () => void
   onApprove: () => void
@@ -2464,7 +2600,7 @@ function ExportInspector({
     <section className="forge-inspector-section">
       <ConversionWorkflow currentStep={workflowStep} complete={viewerUpload?.state === 'COMPLETE'}>
       <div className="forge-source-summary workflow-only-step-1">
-        <span>{dataset.format === 'VSI' ? 'VSI with matched ETS' : dataset.format === 'SVS' ? 'SVS whole slide' : 'OME-TIFF'}</span>
+        <span>{dataset.formatName || datasetFormatLabel(dataset.format)}</span>
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
@@ -2527,7 +2663,7 @@ function ExportInspector({
           <fieldset className="forge-series-picker workflow-only-step-1">
             <legend>Image series</legend>
             <div role="list" aria-label="Image series">
-              {series.filter((item) => item.rgbPlane).map((item) => {
+              {series.map((item) => {
                 const active = item.index === Number(draft.series)
                 const name = item.name || `Series ${item.index}`
                 return (
@@ -2560,6 +2696,11 @@ function ExportInspector({
             </div>
             {seriesLoading ? <small role="status">Opening selected series in the viewer…</small> : null}
           </fieldset>
+          {selected && !selected.rgbPlane ? <MultidimensionalViewControls
+            dataset={dataset}
+            image={selected}
+            onUpdate={onUpdateView}
+          /> : null}
           <div className="forge-crop-panel workflow-only-step-2">
             <div className="forge-section-heading">
               <div>
@@ -2984,7 +3125,8 @@ function conversionRouteLabel(dataset: Dataset, directOme: boolean) {
 function datasetFormatLabel(format: Dataset['format']) {
   if (format === 'VSI') return 'VSI / ETS'
   if (format === 'SVS') return 'SVS'
-  return 'OME-TIFF'
+  if (format === 'OME_TIFF') return 'OME-TIFF'
+  return format.replaceAll('_', ' ')
 }
 
 function formatRate(value: number, stage?: string) {

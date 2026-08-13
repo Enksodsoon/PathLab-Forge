@@ -35,4 +35,25 @@ final class AnnotationRepositoryTest {
                         "",
                         "#ffaa22"));
     }
+
+    @Test
+    void scopesAnnotationsToExactPlaneAndMigratesLegacyRecords() throws Exception {
+        var repository = new AnnotationRepository(Files.createTempDirectory("forge-annotations"));
+        var datasetId = "ca38d59a-08ce-44a2-aaf2-cb96bd147bdf";
+        var legacy = repository.create(
+                datasetId, "point", "1,2", "Legacy", "#ffaa22");
+
+        repository.scopeLegacy(datasetId, 2, 4, 7, "a".repeat(64));
+        var scoped = repository.create(
+                datasetId, "point", "3,4", "Plane", "#00ff00",
+                2, 5, 7, "b".repeat(64));
+
+        var annotations = repository.list(datasetId);
+        assertEquals(2, annotations.size());
+        assertEquals(2, annotations.stream().filter(item -> item.series() == 2).count());
+        assertEquals("a".repeat(64), annotations.stream()
+                .filter(item -> item.id().equals(legacy.id())).findFirst().orElseThrow().viewRevision());
+        assertEquals(5, annotations.stream()
+                .filter(item -> item.id().equals(scoped.id())).findFirst().orElseThrow().z());
+    }
 }

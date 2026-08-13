@@ -89,7 +89,7 @@ public record DatasetSourceInventory(
                             .toLowerCase(Locale.ROOT)
                             .endsWith(".vsi")
                     ? SourceSnapshot.forVsi(normalized)
-                    : SourceSnapshot.singleFile(normalized);
+                    : SourceSnapshot.fromSerialized(normalized, serialized);
             var lines = serialized.lines().filter(line -> !line.isBlank()).toList();
             if (lines.size() != snapshot.files().size()) {
                 return false;

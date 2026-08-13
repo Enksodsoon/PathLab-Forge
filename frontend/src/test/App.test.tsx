@@ -49,6 +49,9 @@ vi.mock('../api', () => ({
   }]),
   datasets: vi.fn(async () => []),
   capabilities: vi.fn(),
+  formats: vi.fn(async () => ({
+    policy: 'BEST_EFFORT', runtimeVersion: 'test readers', runtimeFingerprint: 'a'.repeat(64), formats: [],
+  })),
   browseLocalFiles: vi.fn(async () => ({
     path: 'C:\\cases',
     parent: 'C:\\',

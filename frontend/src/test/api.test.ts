@@ -41,3 +41,32 @@ test('refreshes the local session and retries one write after Forge restarts', a
   expect(new Headers((fetch.mock.calls[2][1] as RequestInit).headers).get('X-Forge-CSRF'))
     .toBe('fresh-token')
 })
+
+test('uses versioned capability, import, image, and view contracts', async () => {
+  const fetch = vi.fn()
+    .mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ formats: [], datasets: [], diagnostics: [], series: [] }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })))
+  vi.stubGlobal('fetch', fetch)
+
+  await api.formats()
+  await api.importDatasets(['C:\\slides\\case.czi'])
+  await api.images('dataset 1')
+  await api.updateView('dataset 1', {
+    series: 0,
+    z: { mode: 'SLICE', start: 0, end: 0 },
+    t: { mode: 'SLICE', start: 0, end: 0 },
+    channels: [{ channel: 0, enabled: true, color: '#ffffff', minimum: 0, maximum: 255 }],
+    profile: 'DISPLAY_COMPOSITE',
+  })
+
+  expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+    '/api/v2/desktop/formats',
+    '/api/v2/desktop/imports',
+    '/api/v2/desktop/datasets/dataset%201/images',
+    '/api/v2/desktop/datasets/dataset%201/view',
+  ])
+  expect(JSON.parse((fetch.mock.calls[1][1] as RequestInit).body as string))
+    .toEqual({ paths: ['C:\\slides\\case.czi'] })
+  expect((fetch.mock.calls[3][1] as RequestInit).method).toBe('PUT')
+})

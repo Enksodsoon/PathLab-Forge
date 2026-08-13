@@ -128,7 +128,13 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     properties.getProperty(key + "sourceInventory", ""),
                     properties.getProperty(key + "configurationRevision", ""),
                     properties.getProperty(key + "currentArtifactRevision", ""),
-                    properties.getProperty(key + "approvedArtifactRevision", ""));
+                    properties.getProperty(key + "approvedArtifactRevision", ""),
+                    properties.getProperty(key + "readerEngine", ""),
+                    properties.getProperty(key + "readerId", ""),
+                    properties.getProperty(
+                            key + "formatName", properties.getProperty(key + "format", "")),
+                    properties.getProperty(key + "runtimeFingerprint", ""),
+                    properties.getProperty(key + "viewDefinitionJson", ""));
             if (loaded.status() == DatasetStatus.INSPECTING
                     || loaded.status() == DatasetStatus.CONVERTING
                     || loaded.status() == DatasetStatus.OPTIMIZING_OME
@@ -175,6 +181,11 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     key + "currentArtifactRevision", dataset.currentArtifactRevision());
             properties.setProperty(
                     key + "approvedArtifactRevision", dataset.approvedArtifactRevision());
+            properties.setProperty(key + "readerEngine", dataset.readerEngine());
+            properties.setProperty(key + "readerId", dataset.readerId());
+            properties.setProperty(key + "formatName", dataset.formatName());
+            properties.setProperty(key + "runtimeFingerprint", dataset.runtimeFingerprint());
+            properties.setProperty(key + "viewDefinitionJson", dataset.viewDefinitionJson());
         }
         var partial = storePath.resolveSibling(storePath.getFileName() + ".partial");
         try (OutputStream output = Files.newOutputStream(partial)) {

@@ -42,7 +42,7 @@ application {
 tasks.register("productionDist") {
     group = "distribution"
     description = "Builds a release distribution with an explicit official Viewer origin."
-    dependsOn(tasks.installDist)
+    dependsOn("verifyReaderRuntimeBundle", tasks.installDist)
     doFirst {
         val configured = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
             .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
@@ -54,6 +54,16 @@ tasks.register("productionDist") {
             "Production Viewer origin must use HTTPS"
         }
     }
+}
+
+tasks.register<Exec>("verifyReaderRuntimeBundle") {
+    group = "verification"
+    description = "Fail-closed verification of licensed, pinned Bio-Formats and libvips artifacts."
+    val runtimeRoot = providers.gradleProperty("pathlab.forge.readerRuntimeRoot").orElse("PENDING_REVIEW")
+    commandLine("powershell", "-NoProfile", "-File",
+        layout.projectDirectory.file("scripts/verify-reader-runtime.ps1").asFile,
+        "-RuntimeRoot", runtimeRoot.get())
+    inputs.files("reader-runtime.lock.properties", "scripts/verify-reader-runtime.ps1")
 }
 
 val pnpmCommand = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "pnpm.cmd" else "pnpm"

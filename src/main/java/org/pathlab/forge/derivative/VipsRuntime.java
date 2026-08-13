@@ -13,6 +13,9 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.pathlab.forge.conversion.ConversionRequest;
+import org.pathlab.forge.reader.DatasetProbe;
+import org.pathlab.forge.reader.ReaderDescriptor;
+import org.pathlab.forge.reader.RuntimeCatalog;
 
 public final class VipsRuntime implements DerivativeEngine {
     private static final Duration OPERATION_TIMEOUT = Duration.ofHours(24);
@@ -210,6 +213,61 @@ public final class VipsRuntime implements DerivativeEngine {
         // smallest stored overview. Requiring every earlier level still rejects
         // truncated or factor-four pyramids while accepting bounded QuPath output.
         return Math.max(1, completeStoredLevels - 1);
+    }
+
+    public java.util.Optional<RuntimeCatalog> runtimeCatalog() {
+        if (!available()) return java.util.Optional.empty();
+        try {
+            var output = run(List.of("-l", "foreign"));
+            var pattern = java.util.regex.Pattern.compile(
+                    "(?m)^\\s*VipsForeignLoad\\w+File \\(([^)]+)\\), ([^\\r\\n]+)");
+            var matcher = pattern.matcher(output);
+            var formats = new ArrayList<ReaderDescriptor>();
+            while (matcher.find()) {
+                var loader = matcher.group(1);
+                var description = matcher.group(2).replaceAll(",.*$", "").trim();
+                var extensionMatcher = java.util.regex.Pattern.compile("\\.([A-Za-z0-9]+)")
+                        .matcher(matcher.group(2));
+                var extensions = new ArrayList<String>();
+                while (extensionMatcher.find()) extensions.add(
+                        extensionMatcher.group(1).toLowerCase(java.util.Locale.ROOT));
+                formats.add(new ReaderDescriptor(
+                        "LIBVIPS", loader, description, extensions,
+                        false, loader.contains("tiff") || loader.contains("openslide"),
+                        false, true));
+            }
+            var identity = description() + "\n" + formats.stream()
+                    .map(format -> format.readerId() + "=" + String.join(",", format.extensions()))
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            return java.util.Optional.of(new RuntimeCatalog(description(), sha256(identity), formats));
+        } catch (IOException error) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    public DatasetProbe.Result probe(Path source) throws IOException {
+        requireAvailable();
+        var header = executable.resolveSibling(
+                java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
+        var loader = lastNonblankLine(runCommand(
+                List.of(header.toString(), "-f", "vips-loader", source.toString()))).trim();
+        if (loader.isBlank()) throw new IOException("libvips did not identify an image loader");
+        var descriptor = runtimeCatalog().stream().flatMap(catalog -> catalog.formats().stream())
+                .filter(format -> format.readerId().equals(loader)).findFirst()
+                .orElse(new ReaderDescriptor(
+                        "LIBVIPS", loader, loader, List.of(), false,
+                        loader.contains("tiff") || loader.contains("openslide"), false, true));
+        var fingerprint = runtimeCatalog().map(RuntimeCatalog::fingerprint).orElse("0".repeat(64));
+        return new DatasetProbe.Result(descriptor, descriptor.displayName(), List.of(source), fingerprint);
+    }
+
+    private static String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest
+                    .getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     static int maximumStoredSubifds(

@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -26,6 +27,14 @@ import java.util.stream.Stream;
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
+import org.pathlab.forge.reader.RuntimeCatalog;
+import org.pathlab.forge.reader.DatasetProbe;
+import org.pathlab.forge.reader.ReaderDescriptor;
+import org.pathlab.forge.reader.PixelPlaneCompositor;
+import org.pathlab.forge.reader.RenderProfile;
+import org.pathlab.forge.reader.ViewDefinition;
+import org.pathlab.forge.reader.ImportDiagnostic;
+import org.pathlab.forge.reader.ImportProbeException;
 
 public final class BioFormatsEngine implements ConversionEngine {
     private static final int MAX_METADATA_BYTES = 32 * 1024 * 1024;
@@ -72,6 +81,24 @@ public final class BioFormatsEngine implements ConversionEngine {
     }
 
     @Override
+    public Optional<RuntimeCatalog> runtimeCatalog() {
+        if (!available()) return Optional.empty();
+        try {
+            var catalogCommand = command("loci.formats.tools.PrintFormatTable", List.of("-xml"));
+            catalogCommand.add(1, "-Dlogback.configurationFile="
+                    + runtimeRoot.resolve("logback.xml"));
+            var result = run(
+                    catalogCommand,
+                    Duration.ofSeconds(30),
+                    MAX_METADATA_BYTES);
+            if (result.exitCode() != 0) return Optional.empty();
+            return Optional.of(RuntimeCatalog.parseBioFormats(result.output(), runtimeDescription()));
+        } catch (Exception error) {
+            return Optional.empty();
+        }
+    }
+
+    @Override
     public List<SeriesInfo> inspect(Path source) throws IOException {
         requireAvailable();
         var reader = directReader(source);
@@ -86,6 +113,66 @@ public final class BioFormatsEngine implements ConversionEngine {
                         mapping.get(item.index()).resolutions().size()))
                 .toList();
     }
+
+    @Override
+    public DatasetProbe.Result probe(Path source) throws IOException, ImportProbeException {
+        requireAvailable();
+        var temporaryRoot = Files.createTempDirectory("pathlab-reader-probe-");
+        ProbeResult probed;
+        try {
+            var classpath = System.getProperty("java.class.path") + java.io.File.pathSeparator
+                    + runtimeRoot.resolve("bioformats_package.jar");
+            var command = new ArrayList<>(List.of(
+                    Path.of(System.getProperty("java.home"), "bin",
+                            isWindows() ? "java.exe" : "java").toString(),
+                    "-Xmx384m", "-Djava.io.tmpdir=" + temporaryRoot,
+                    "-cp", classpath,
+                    "org.pathlab.forge.reader.BioFormatsProbeWorker", source.toString()));
+            var result = run(command, Duration.ofSeconds(45), MAX_METADATA_BYTES);
+            if (result.exitCode() != 0) {
+                throw new IOException("Bio-Formats probe failed: " + diagnostic(result.output()));
+            }
+            var marker = "PATHLAB_PROBE_JSON=";
+            var offset = result.output().lastIndexOf(marker);
+            if (offset < 0) throw new IOException("Bio-Formats probe returned no result");
+            var json = result.output().substring(offset + marker.length()).strip();
+            probed = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readValue(json, ProbeResult.class);
+        } catch (IOException error) {
+            if (error.getMessage() != null && error.getMessage().contains("timed out")) {
+                throw new ImportProbeException(new ImportDiagnostic(
+                        ImportDiagnostic.Code.PROBE_TIMEOUT, error.getMessage(), List.of(source)));
+            }
+            throw error;
+        } finally {
+            try (var files = Files.walk(temporaryRoot)) {
+                files.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                    try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+                });
+            }
+        }
+        var formatName = probed.formatName();
+        var usedFiles = probed.usedFiles().stream().map(Path::of)
+                .map(Path::toAbsolutePath).map(Path::normalize).toList();
+        var readerId = probed.readerId();
+        var descriptor = new ReaderDescriptor(
+                "BIO_FORMATS",
+                readerId,
+                formatName,
+                runtimeCatalog().stream().flatMap(catalog -> catalog.formats().stream())
+                        .filter(item -> item.displayName().equals(formatName))
+                        .findFirst().map(ReaderDescriptor::extensions).orElse(List.of()),
+                probed.multidimensional(),
+                probed.nativePyramid(),
+                usedFiles.size() > 1,
+                true);
+        var fingerprint = runtimeCatalog().map(RuntimeCatalog::fingerprint).orElse("0".repeat(64));
+        return new DatasetProbe.Result(descriptor, formatName, usedFiles, fingerprint);
+    }
+
+    private record ProbeResult(
+            String formatName, String readerId, List<String> usedFiles,
+            boolean multidimensional, boolean nativePyramid) {}
 
     private List<SeriesInfo> inspectConversionMetadata(Path source) throws IOException {
         var executor = Executors.newFixedThreadPool(3, runnable -> {
@@ -533,6 +620,104 @@ public final class BioFormatsEngine implements ConversionEngine {
                 sourceY,
                 sourceWidth,
                 sourceHeight);
+        if (image.getWidth() != outputWidth || image.getHeight() != outputHeight) {
+            image = resize(image, outputWidth, outputHeight);
+        }
+        return encodeJpeg(image, 0.85f);
+    }
+
+    @Override
+    public List<Path> convertViewRegions(
+            ConversionRequest request, ViewDefinition view, Path outputDirectory,
+            int workers, BiConsumer<Integer, Integer> progress) throws IOException {
+        requireAvailable();
+        if (view.series() != request.seriesIndex() || workers < 1) {
+            throw new IllegalArgumentException("Multidimensional region request is invalid");
+        }
+        Files.createDirectories(outputDirectory);
+        var maximumPixels = 4_194_304;
+        var stripeHeight = Math.max(1, maximumPixels / Math.max(1, request.cropWidth()));
+        var count = (request.cropHeight() + stripeHeight - 1) / stripeHeight;
+        var executor = Executors.newFixedThreadPool(Math.min(workers, count), runnable -> {
+            var thread = new Thread(runnable, "pathlab-view-region");
+            thread.setDaemon(true);
+            return thread;
+        });
+        var completed = new AtomicInteger();
+        try {
+            var tasks = new ArrayList<java.util.concurrent.Callable<Path>>();
+            for (var index = 0; index < count; index++) {
+                var stripe = index;
+                tasks.add(() -> {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new IOException("Multidimensional rendering was cancelled");
+                    }
+                    var y = request.cropY() + stripe * stripeHeight;
+                    var height = Math.min(stripeHeight,
+                            request.cropY() + request.cropHeight() - y);
+                    var image = directTileReader(request.source()).readView(
+                            view, 0, request.cropX(), y, request.cropWidth(), height);
+                    var output = outputDirectory.resolve("view-%05d.png".formatted(stripe));
+                    if (!ImageIO.write(image, "png", output.toFile())) {
+                        throw new IOException("PNG writer is unavailable for view rendering");
+                    }
+                    progress.accept(completed.incrementAndGet(), count);
+                    return output;
+                });
+            }
+            var futures = executor.invokeAll(tasks);
+            var outputs = new ArrayList<Path>(count);
+            for (var future : futures) {
+                try { outputs.add(future.get()); }
+                catch (ExecutionException error) {
+                    if (error.getCause() instanceof IOException io) throw io;
+                    throw new IOException("Multidimensional view rendering failed", error.getCause());
+                }
+            }
+            return List.copyOf(outputs);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Multidimensional rendering was cancelled", error);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Override
+    public byte[] readViewTile(
+            Path source, ViewDefinition view, int level, int tileX, int tileY)
+            throws IOException {
+        if (tileX < 0 || tileY < 0 || level < 0) {
+            throw new IllegalArgumentException("Direct tile coordinates are invalid");
+        }
+        var reader = directTileReader(source);
+        var selected = reader.series(view.series());
+        var tileSource = new DirectTileSource(selected.width(), selected.height(), 512);
+        if (level > tileSource.maximumLevel()) {
+            throw new IllegalArgumentException("Direct tile level is invalid");
+        }
+        var scale = Math.scalb(1.0, tileSource.maximumLevel() - level);
+        var levelWidth = Math.max(1, (int) Math.ceil(selected.width() / scale));
+        var levelHeight = Math.max(1, (int) Math.ceil(selected.height() / scale));
+        var outputX = Math.multiplyExact(tileX, tileSource.tileSize());
+        var outputY = Math.multiplyExact(tileY, tileSource.tileSize());
+        if (outputX >= levelWidth || outputY >= levelHeight) {
+            throw new IllegalArgumentException("Direct tile is outside the image");
+        }
+        var outputWidth = Math.min(tileSource.tileSize(), levelWidth - outputX);
+        var outputHeight = Math.min(tileSource.tileSize(), levelHeight - outputY);
+        var resolution = selectDirectResolution(selected, scale);
+        var sourceX = (int) Math.floor((double) outputX * resolution.width() / levelWidth);
+        var sourceY = (int) Math.floor((double) outputY * resolution.height() / levelHeight);
+        var sourceRight = (int) Math.ceil(
+                (double) (outputX + outputWidth) * resolution.width() / levelWidth);
+        var sourceBottom = (int) Math.ceil(
+                (double) (outputY + outputHeight) * resolution.height() / levelHeight);
+        var sourceWidth = Math.max(1, Math.min(resolution.width() - sourceX, sourceRight - sourceX));
+        var sourceHeight = Math.max(1,
+                Math.min(resolution.height() - sourceY, sourceBottom - sourceY));
+        var image = reader.readView(view, resolution.directIndex(), sourceX, sourceY,
+                sourceWidth, sourceHeight);
         if (image.getWidth() != outputWidth || image.getHeight() != outputHeight) {
             image = resize(image, outputWidth, outputHeight);
         }
@@ -1054,6 +1239,33 @@ public final class BioFormatsEngine implements ConversionEngine {
             }
         }
 
+        private synchronized String formatName() throws IOException {
+            try {
+                return String.valueOf(invoke("getFormat", new Class<?>[0]));
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not identify the format", error);
+            }
+        }
+
+        private synchronized String readerId() throws IOException {
+            try {
+                var underlying = invoke("getReader", new Class<?>[0]);
+                return underlying.getClass().getSimpleName();
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not identify the reader", error);
+            }
+        }
+
+        private synchronized List<Path> usedFiles() throws IOException {
+            try {
+                var values = (String[]) invoke("getUsedFiles", new Class<?>[0]);
+                return java.util.Arrays.stream(values)
+                        .map(Path::of).map(Path::toAbsolutePath).map(Path::normalize).toList();
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not inventory dataset files", error);
+            }
+        }
+
         private String imageName(int seriesIndex) {
             try {
                 var value = metadata.getClass()
@@ -1175,6 +1387,98 @@ public final class BioFormatsEngine implements ConversionEngine {
             } catch (ReflectiveOperationException error) {
                 throw new IOException("Bio-Formats could not read the requested tile", error);
             }
+        }
+
+        private synchronized BufferedImage readView(
+                ViewDefinition view, int resolution, int x, int y, int width, int height)
+                throws IOException {
+            try {
+                invoke("setSeries", new Class<?>[] {int.class}, view.series());
+                invoke("setResolution", new Class<?>[] {int.class}, resolution);
+                var pixels = Math.multiplyExact(width, height);
+                var rgbChannels = (int) invoke("getRGBChannelCount", new Class<?>[0]);
+                if (view.profile() == RenderProfile.PATHOLOGY_STANDARD && rgbChannels >= 3
+                        && !view.z().projected() && !view.t().projected()) {
+                    return readRgbPlane(view.series(), resolution, view.z().start(), view.t().start(),
+                            x, y, width, height);
+                }
+                var enabled = view.channels().stream().filter(channel -> channel.enabled()).count();
+                var projectedPlanes = view.z().projected()
+                        ? view.z().end() - view.z().start() + 1
+                        : view.t().projected() ? view.t().end() - view.t().start() + 1 : 1;
+                if (enabled == 0 || enabled > 16 || projectedPlanes > 256
+                        || Math.multiplyExact((long) pixels, enabled * projectedPlanes) > 67_108_864L) {
+                    throw new IOException("View exceeds bounded channel or projection limits");
+                }
+                var pixelType = pixelType();
+                var littleEndian = (boolean) invoke("isLittleEndian", new Class<?>[0]);
+                var planes = new ArrayList<double[]>(view.channels().size());
+                for (var channel : view.channels()) {
+                    if (!channel.enabled()) {
+                        planes.add(new double[pixels]);
+                        continue;
+                    }
+                    var inputs = new ArrayList<double[]>();
+                    var start = view.z().projected() ? view.z().start()
+                            : view.t().projected() ? view.t().start() : 0;
+                    var end = view.z().projected() ? view.z().end()
+                            : view.t().projected() ? view.t().end() : 0;
+                    for (var position = start; position <= end; position++) {
+                        var z = view.z().projected() ? position : view.z().start();
+                        var t = view.t().projected() ? position : view.t().start();
+                        var plane = (int) invoke("getIndex",
+                                new Class<?>[] {int.class, int.class, int.class},
+                                z, channel.channel(), t);
+                        var bytes = (byte[]) invoke("openBytes",
+                                new Class<?>[] {int.class, int.class, int.class, int.class, int.class},
+                                plane, x, y, width, height);
+                        var decoded = PixelPlaneCompositor.decode(bytes, pixelType, littleEndian);
+                        if (decoded.length != pixels) {
+                            throw new IOException("Reader returned an unexpected channel plane layout");
+                        }
+                        inputs.add(decoded);
+                    }
+                    planes.add(projectedPlanes == 1 ? inputs.get(0)
+                            : PixelPlaneCompositor.project(inputs,
+                                    view.z().projected() ? view.z().mode() : view.t().mode()));
+                }
+                var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+                image.setRGB(0, 0, width, height,
+                        PixelPlaneCompositor.composite(planes, view.channels(), pixels), 0, width);
+                return image;
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not render the requested view", error);
+            }
+        }
+
+        private BufferedImage readRgbPlane(
+                int series, int resolution, int z, int t,
+                int x, int y, int width, int height)
+                throws ReflectiveOperationException, IOException {
+            invoke("setSeries", new Class<?>[] {int.class}, series);
+            invoke("setResolution", new Class<?>[] {int.class}, resolution);
+            var bits = (int) invoke("getBitsPerPixel", new Class<?>[0]);
+            var channels = (int) invoke("getRGBChannelCount", new Class<?>[0]);
+            var interleaved = (boolean) invoke("isInterleaved", new Class<?>[0]);
+            if (bits > 8 || channels < 3) {
+                throw new IOException("Pathology-standard rendering requires 8-bit native RGB");
+            }
+            var plane = (int) invoke("getIndex",
+                    new Class<?>[] {int.class, int.class, int.class}, z, 0, t);
+            var bytes = (byte[]) invoke("openBytes",
+                    new Class<?>[] {int.class, int.class, int.class, int.class, int.class},
+                    plane, x, y, width, height);
+            var pixels = Math.multiplyExact(width, height);
+            var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            var rgb = new int[pixels];
+            for (var index = 0; index < pixels; index++) {
+                var red = bytes[interleaved ? index * channels : index] & 0xff;
+                var green = bytes[interleaved ? index * channels + 1 : pixels + index] & 0xff;
+                var blue = bytes[interleaved ? index * channels + 2 : pixels * 2 + index] & 0xff;
+                rgb[index] = (red << 16) | (green << 8) | blue;
+            }
+            image.setRGB(0, 0, width, height, rgb, 0, width);
+            return image;
         }
 
         private Object invoke(String name, Class<?>[] parameters, Object... arguments)

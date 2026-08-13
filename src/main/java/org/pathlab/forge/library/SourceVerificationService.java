@@ -53,11 +53,9 @@ public final class SourceVerificationService implements AutoCloseable {
 
     private LocalDataset verify(LocalDataset dataset) {
         try {
-            var snapshot = DatasetInspector.snapshot(
-                    Path.of(dataset.sourcePath()), dataset.format());
+            var snapshot = snapshot(dataset);
             var digest = SourceDigest.compute(snapshot);
-            var after = DatasetInspector.snapshot(
-                    Path.of(dataset.sourcePath()), dataset.format());
+            var after = snapshot(dataset);
             if (!snapshot.fingerprint().equals(after.fingerprint())) {
                 throw new IOException("Source changed while content digest was being computed");
             }
@@ -79,6 +77,16 @@ public final class SourceVerificationService implements AutoCloseable {
                             ? io
                             : new IOException(error.getMessage(), error));
         }
+    }
+
+    private static SourceSnapshot snapshot(LocalDataset dataset)
+            throws IOException, DatasetInspectionException {
+        if (!dataset.format().equals(DatasetFormat.VSI)
+                && !dataset.sourceInventory().isBlank()) {
+            return SourceSnapshot.fromSerialized(
+                    Path.of(dataset.sourcePath()), dataset.sourceInventory());
+        }
+        return DatasetInspector.snapshot(Path.of(dataset.sourcePath()), dataset.format());
     }
 
     private static LocalDataset mergeVerification(
