@@ -42,4 +42,23 @@ class RealVendorReaderCompatibilityTest {
         assertTrue(bytes.length > 1_000);
         assertTrue(ImageIO.read(new java.io.ByteArrayInputStream(bytes)).getWidth() > 0);
     }
+
+    @Test void opensAndTilesRealISyntaxWithFreeDecoder() throws Exception {
+        var configured = System.getProperty("pathlab.forge.test.isyntax", "");
+        assumeTrue(!configured.isBlank());
+        var source = Path.of(configured);
+        assumeTrue(Files.isRegularFile(source));
+        var engine = LibISyntaxEngine.discover(source.getParent());
+        assertTrue(engine.available());
+        assertEquals("Philips iSyntax", engine.probe(source).formatName());
+        var info = engine.inspect(source).get(0);
+        assertEquals(37382, info.width());
+        assertEquals(73222, info.height());
+        assertEquals(8, info.resolutionCount());
+        var direct = engine.directTileSource(source, 0);
+        var bytes = engine.readDirectTile(source, 0, direct.maximumLevel(), 20, 50);
+        assertTrue(bytes.length > 1_000);
+        var image = ImageIO.read(new java.io.ByteArrayInputStream(bytes));
+        assertTrue(image.getWidth() > 0 && image.getHeight() > 0);
+    }
 }

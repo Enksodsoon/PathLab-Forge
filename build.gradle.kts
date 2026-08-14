@@ -139,6 +139,9 @@ tasks.withType<Test>().configureEach {
         "pathlab.forge.test.mds",
         "pathlab.forge.test.sdpc",
         "pathlab.forge.sdpcRuntime",
+        "pathlab.forge.test.isyntax",
+        "pathlab.forge.isyntaxRuntime",
+        "pathlab.forge.isyntaxPython",
     ).forEach { name ->
         System.getProperty(name)?.let { value -> systemProperty(name, value) }
     }

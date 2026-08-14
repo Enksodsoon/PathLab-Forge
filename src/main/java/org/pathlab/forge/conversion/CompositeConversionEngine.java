@@ -13,7 +13,6 @@ import java.util.Optional;
 import java.util.function.BiConsumer;
 import org.pathlab.forge.reader.DatasetProbe;
 import org.pathlab.forge.reader.ImportProbeException;
-import org.pathlab.forge.reader.ImportDiagnostic;
 import org.pathlab.forge.reader.ReaderDescriptor;
 import org.pathlab.forge.reader.RuntimeCatalog;
 import org.pathlab.forge.reader.ViewDefinition;
@@ -23,21 +22,25 @@ public final class CompositeConversionEngine implements ConversionEngine {
     private final ConversionEngine primary;
     private final MoticMdsEngine mds;
     private final SdpcEngine sdpc;
+    private final LibISyntaxEngine isyntax;
 
     public static CompositeConversionEngine discover(Path dataRoot) {
         return new CompositeConversionEngine(BioFormatsEngine.discover(dataRoot),
-                new MoticMdsEngine(), SdpcEngine.discover(dataRoot));
+                new MoticMdsEngine(), SdpcEngine.discover(dataRoot),
+                LibISyntaxEngine.discover(dataRoot));
     }
 
-    CompositeConversionEngine(ConversionEngine primary, MoticMdsEngine mds, SdpcEngine sdpc) {
-        this.primary = primary; this.mds = mds; this.sdpc = sdpc;
+    CompositeConversionEngine(ConversionEngine primary, MoticMdsEngine mds, SdpcEngine sdpc,
+            LibISyntaxEngine isyntax) {
+        this.primary = primary; this.mds = mds; this.sdpc = sdpc; this.isyntax = isyntax;
     }
 
     // This flag controls whether legacy imports may bypass probing. Keep it tied to the
     // universal primary runtime; format-specific readers are still routed by probe().
     @Override public boolean available() { return primary.available(); }
     @Override public String runtimeDescription() {
-        return primary.runtimeDescription() + "; " + mds.runtimeDescription() + "; " + sdpc.runtimeDescription();
+        return primary.runtimeDescription() + "; " + mds.runtimeDescription() + "; "
+                + sdpc.runtimeDescription() + "; " + isyntax.runtimeDescription();
     }
 
     @Override public Optional<RuntimeCatalog> runtimeCatalog() {
@@ -49,26 +52,19 @@ public final class CompositeConversionEngine implements ConversionEngine {
                 List.of("mds"), false, true, false, true));
         if (sdpc.available()) formats.add(new ReaderDescriptor("SDPC_NATIVE", "sqray-sdpc", "SDPC",
                 List.of("sdpc"), false, true, false, true));
+        if (isyntax.available()) formats.add(new ReaderDescriptor("LIBISYNTAX", "libisyntax",
+                "Philips iSyntax", List.of("isyntax"), false, true, false, true));
         if (formats.isEmpty()) return Optional.empty();
         version.append(" + PathLab MDS");
         if (sdpc.available()) version.append(" + SDPC native");
+        if (isyntax.available()) version.append(" + libisyntax 0.1.6");
         var canonical = version + "\n" + formats.stream().map(ReaderDescriptor::readerId).sorted()
                 .collect(java.util.stream.Collectors.joining("\n"));
         return Optional.of(new RuntimeCatalog(version.toString(), sha256(canonical), formats));
     }
 
     @Override public DatasetProbe.Result probe(Path source) throws IOException, ImportProbeException {
-        try {
-            return engine(source).probe(source);
-        } catch (IOException | ImportProbeException error) {
-            if (source.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".isyntax")) {
-                throw new ImportProbeException(new ImportDiagnostic(
-                        ImportDiagnostic.Code.CODEC_UNAVAILABLE,
-                        "Philips iSyntax decoding requires a locally licensed Philips Pathology SDK; no SDK reader is installed",
-                        List.of(source.toAbsolutePath().normalize())));
-            }
-            throw error;
-        }
+        return engine(source).probe(source);
     }
     @Override public List<SeriesInfo> inspect(Path source) throws IOException { return engine(source).inspect(source); }
     @Override public void convert(Path source, int seriesIndex, Path output) throws IOException { engine(source).convert(source, seriesIndex, output); }
@@ -107,7 +103,7 @@ public final class CompositeConversionEngine implements ConversionEngine {
 
     @Override public void close() throws IOException {
         IOException failure = null;
-        for (var engine : List.of(primary, mds, sdpc)) {
+        for (var engine : List.of(primary, mds, sdpc, isyntax)) {
             try { engine.close(); } catch (IOException error) { if (failure == null) failure = error; else failure.addSuppressed(error); }
         }
         if (failure != null) throw failure;
@@ -117,6 +113,7 @@ public final class CompositeConversionEngine implements ConversionEngine {
         var name = source.getFileName().toString().toLowerCase(Locale.ROOT);
         if (name.endsWith(".mds")) return mds;
         if (name.endsWith(".sdpc")) return sdpc;
+        if (name.endsWith(".isyntax")) return isyntax;
         return primary;
     }
 
