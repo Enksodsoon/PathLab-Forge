@@ -142,6 +142,8 @@ tasks.withType<Test>().configureEach {
         "pathlab.forge.test.isyntax",
         "pathlab.forge.isyntaxRuntime",
         "pathlab.forge.isyntaxPython",
+        "pathlab.forge.test.svsRoots",
+        "pathlab.forge.test.svsReport",
     ).forEach { name ->
         System.getProperty(name)?.let { value -> systemProperty(name, value) }
     }
