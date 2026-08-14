@@ -34,6 +34,8 @@ public final class VipsRuntime implements DerivativeEngine {
         if (configured != null && !configured.isBlank()) {
             candidates.add(Path.of(configured));
         }
+        org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "vips")
+                .ifPresent(candidates::add);
         candidates.add(dataRoot.resolve("runtime").resolve("vips"));
         candidates.add(Path.of(
                 System.getProperty("user.home"),
@@ -376,17 +378,17 @@ public final class VipsRuntime implements DerivativeEngine {
         var paddedJoin = pyramidalOme.resolveSibling("joined-resized.partial.tif");
         try {
             Files.deleteIfExists(paddedJoin);
-            boolean uniformTargetHeights = true;
+            var sourceHeights = new ArrayList<Integer>(regions.size());
+            for (var region : regions) {
+                sourceHeights.add(imageDimension(region, "height"));
+            }
+            boolean uniformTargetHeights = uniformRegionHeights(sourceHeights);
             if (downsample != 1.0) {
                 deleteTree(resizedRoot);
                 Files.createDirectories(resizedRoot);
                 var resized = new ArrayList<Path>(regions.size());
-                var sourceHeights = new ArrayList<Integer>(regions.size());
-                for (var region : regions) {
-                    sourceHeights.add(imageDimension(region, "height"));
-                }
                 var targetHeights = targetRegionHeights(sourceHeights, height);
-                uniformTargetHeights = targetHeights.stream().distinct().count() == 1;
+                uniformTargetHeights = uniformRegionHeights(targetHeights);
                 for (var index = 0; index < regions.size(); index++) {
                     var targetHeight = targetHeights.get(index);
                     var output = resizedRoot.resolve("region-%02d.tif".formatted(index));
@@ -647,11 +649,20 @@ public final class VipsRuntime implements DerivativeEngine {
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
         run(List.of(
                 "thumbnail",
-                source + "[page=" + seriesIndex + "]",
+                sourcePage(source, seriesIndex),
                 output + "[Q=82,strip]",
                 Integer.toString(maxDimension),
                 "--size",
                 "down"));
+    }
+
+    static boolean uniformRegionHeights(List<Integer> heights) {
+        return !heights.isEmpty() && heights.stream().distinct().count() == 1;
+    }
+
+    static String sourcePage(Path source, int seriesIndex) {
+        if (seriesIndex < 0) throw new IllegalArgumentException("Series index must not be negative");
+        return seriesIndex == 0 ? source.toString() : source + "[page=" + seriesIndex + "]";
     }
 
     @Override

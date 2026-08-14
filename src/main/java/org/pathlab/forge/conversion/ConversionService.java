@@ -1693,6 +1693,14 @@ public final class ConversionService implements AutoCloseable {
                 } else if (!finalOmeWritten) {
                     Files.move(rendered, partial, StandardCopyOption.REPLACE_EXISTING);
                 }
+                if (!useDirectDzi && savedView != null) {
+                    org.pathlab.forge.derivative.OmeTiffMetadataInjector.inject(
+                            partial,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            savedView.revision(),
+                            savedView.profile().name());
+                }
                 if (!useDirectDzi) {
                     repository.save(dataset.withConversion(
                     DatasetStatus.VALIDATING,

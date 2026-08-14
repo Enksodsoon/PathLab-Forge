@@ -58,6 +58,7 @@ import org.pathlab.forge.reader.AxisSelection;
 import org.pathlab.forge.reader.ChannelRender;
 import org.pathlab.forge.reader.RenderProfile;
 import org.pathlab.forge.reader.ViewDefinition;
+import org.pathlab.forge.runtime.ReaderRuntimeInventory;
 
 public final class ForgeServer implements AutoCloseable {
     private static final int MAX_WRITE_BYTES = 65_536;
@@ -85,6 +86,7 @@ public final class ForgeServer implements AutoCloseable {
     private final ViewerTileCache viewerTileCache;
     private final UniversalDatasetImporter universalDatasetImporter;
     private final boolean universalReaderAvailable;
+    private final Path dataRoot;
     private volatile boolean launchTokenAvailable = true;
 
     private ForgeServer(
@@ -123,7 +125,7 @@ public final class ForgeServer implements AutoCloseable {
                 new WindowsCredentialStore(),
                 new SqliteViewerDeliveryStore(
                         managedRoot.toAbsolutePath().normalize().getParent().resolve("forge.db")));
-        var dataRoot = managedRoot.toAbsolutePath().normalize().getParent();
+        dataRoot = managedRoot.toAbsolutePath().normalize().getParent();
         viewerSyncService = new ViewerSyncService(
                 viewerPairingService, new SqliteViewerSyncStore(dataRoot.resolve("viewer-sync.db")),
                 dataRoot.resolve("viewer-offline"));
@@ -910,11 +912,22 @@ public final class ForgeServer implements AutoCloseable {
         if (derivativeEngine instanceof VipsRuntime vips) {
             vips.runtimeCatalog().ifPresent(catalogs::add);
         }
+        var components = ReaderRuntimeInventory.inspect(dataRoot).stream().map(component ->
+                "{\"id\":" + json(component.id())
+                        + ",\"available\":" + component.available()
+                        + ",\"source\":" + json(component.source())
+                        + ",\"version\":" + json(component.version())
+                        + ",\"fingerprint\":" + json(component.fingerprint())
+                        + ",\"platform\":" + json(component.platform())
+                        + ",\"diagnosticCode\":" + json(component.diagnosticCode())
+                        + ",\"detail\":" + json(component.detail()) + "}")
+                .collect(java.util.stream.Collectors.joining(","));
         if (catalogs.isEmpty()) {
             respond(exchange, 200, "application/json",
                     "{\"policy\":\"BEST_EFFORT\",\"runtimeVersion\":"
                             + json(conversionService.engine().runtimeDescription())
-                            + ",\"runtimeFingerprint\":\"\",\"formats\":[]}");
+                            + ",\"runtimeFingerprint\":\"\",\"components\":[" + components
+                            + "],\"formats\":[]}");
             return;
         }
         var formats = catalogs.stream().flatMap(catalog -> catalog.formats().stream()).map(format ->
@@ -937,6 +950,7 @@ public final class ForgeServer implements AutoCloseable {
                                 .map(org.pathlab.forge.reader.RuntimeCatalog::fingerprint)
                                 .collect(java.util.stream.Collectors.joining("|"))
                                 .getBytes(StandardCharsets.UTF_8)))
+                        + ",\"components\":[" + components + "]"
                         + ",\"formats\":[" + formats + "]}");
     }
 

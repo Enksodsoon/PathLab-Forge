@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 final class ForgeCommandLineTest {
@@ -22,5 +23,21 @@ final class ForgeCommandLineTest {
         assertEquals(Path.of("C:\\bench\\forge-a"), command.dataRoot());
         assertEquals(Path.of("C:\\slides\\case.vsi"), command.benchmarkSource());
         assertEquals(Path.of("C:\\reports\\forge.json"), command.performanceReport());
+    }
+
+    @Test
+    void parsesReaderSelfTestSources() {
+        var command = ForgeCommandLine.parse(new String[] {
+            "--reader-self-test",
+            "--data-root", "C:\\clean\\forge",
+            "--port", "0",
+            "--self-test-source", "E:\\slides\\case.svs",
+            "--self-test-source", "E:\\slides\\case.isyntax"
+        });
+
+        assertTrue(command.readerSelfTest());
+        assertEquals(0, command.port());
+        assertEquals(List.of(Path.of("E:\\slides\\case.svs"), Path.of("E:\\slides\\case.isyntax")),
+                command.selfTestSources());
     }
 }

@@ -10,6 +10,7 @@ import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.runtime.DataRootLock;
 import org.pathlab.forge.runtime.ForgeCommandLine;
+import org.pathlab.forge.runtime.ReaderRuntimeSelfTest;
 import org.pathlab.forge.benchmark.ForgeBenchmark;
 
 public final class ForgeApp {
@@ -21,8 +22,15 @@ public final class ForgeApp {
         var paths = command.dataRoot() == null
                 ? ForgePaths.defaults()
                 : ForgePaths.at(command.dataRoot());
+        if (command.port() != null) {
+            System.setProperty("pathlab.forge.port", Integer.toString(command.port()));
+        }
         try (var dataRootLock = acquireOrOpenExisting(paths, command)) {
             if (dataRootLock == null) {
+                return;
+            }
+            if (command.readerSelfTest()) {
+                System.out.println(ReaderRuntimeSelfTest.run(paths, command.selfTestSources()));
                 return;
             }
             try (var repository = new SqliteDatasetRepository(

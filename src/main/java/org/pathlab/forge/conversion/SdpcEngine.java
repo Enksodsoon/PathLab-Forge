@@ -34,7 +34,9 @@ public final class SdpcEngine implements ConversionEngine {
         var configured = System.getProperty("pathlab.forge.sdpcRuntime");
         if (configured == null || configured.isBlank()) configured = System.getenv("PATHLAB_FORGE_SDPC_RUNTIME");
         var root = configured == null || configured.isBlank()
-                ? dataRoot.resolve("runtime").resolve("sdpc") : Path.of(configured);
+                ? org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "sdpc")
+                        .orElse(dataRoot.resolve("runtime").resolve("sdpc"))
+                : Path.of(configured);
         return new SdpcEngine(root);
     }
 

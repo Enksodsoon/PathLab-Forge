@@ -304,12 +304,12 @@ def upload(forge: Client, dataset_id: str) -> dict[str, Any]:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         status, _ = forge.request("GET", "/api/viewer/upload")
-        if status["state"] == "READY_PRIVATE":
+        if status["state"] in {"READY_PRIVATE", "IMAGE_READY", "COMPLETE"}:
             return status
         if status["state"] == "FAILED":
             raise RuntimeError("Viewer upload failed: " + status["detail"])
         time.sleep(0.25)
-    raise TimeoutError("Viewer upload did not reach READY_PRIVATE")
+    raise TimeoutError("Viewer upload did not reach a private-ready terminal state")
 
 
 def reconvert(forge: Client, dataset_id: str) -> dict[str, Any]:

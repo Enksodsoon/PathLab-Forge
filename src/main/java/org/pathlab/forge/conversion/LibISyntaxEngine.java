@@ -40,7 +40,9 @@ public final class LibISyntaxEngine implements ConversionEngine {
 
     public static LibISyntaxEngine discover(Path dataRoot) {
         var configuredRoot = configured("pathlab.forge.isyntaxRuntime", "PATHLAB_FORGE_ISYNTAX_RUNTIME");
-        var root = configuredRoot == null ? dataRoot.resolve("runtime").resolve("isyntax")
+        var root = configuredRoot == null
+                ? org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "isyntax")
+                        .orElse(dataRoot.resolve("runtime").resolve("isyntax"))
                 : Path.of(configuredRoot);
         root = root.toAbsolutePath().normalize();
         var configuredPython = configured("pathlab.forge.isyntaxPython", "PATHLAB_FORGE_ISYNTAX_PYTHON");

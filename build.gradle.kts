@@ -31,11 +31,12 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+val viewerOrigin = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
+    .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
+
 application {
     mainClass = "org.pathlab.forge.ForgeApp"
-    val viewerOrigin = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
-        .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
-    applicationDefaultJvmArgs = listOf("-Xmx512m") + viewerOrigin.orNull
+    applicationDefaultJvmArgs = listOf("-Xmx512m", "--enable-native-access=ALL-UNNAMED") + viewerOrigin.orNull
         ?.let { listOf("-Dpathlab.forge.viewer.defaultOrigin=$it") }
         .orEmpty()
 }
@@ -44,17 +45,6 @@ tasks.register("productionDist") {
     group = "distribution"
     description = "Builds a release distribution with an explicit official Viewer origin."
     dependsOn("verifyReaderRuntimeBundle", tasks.installDist)
-    doFirst {
-        val configured = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
-            .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
-            .orNull
-        require(!configured.isNullOrBlank()) {
-            "Production packaging requires pathlab.forge.viewer.defaultOrigin"
-        }
-        require(configured.startsWith("https://")) {
-            "Production Viewer origin must use HTTPS"
-        }
-    }
 }
 
 tasks.register<Exec>("verifyReaderRuntimeBundle") {
@@ -144,6 +134,7 @@ tasks.withType<Test>().configureEach {
         "pathlab.forge.isyntaxPython",
         "pathlab.forge.test.svsRoots",
         "pathlab.forge.test.svsReport",
+        "pathlab.forge.test.omeMetadataTarget",
     ).forEach { name ->
         System.getProperty(name)?.let { value -> systemProperty(name, value) }
     }
@@ -180,4 +171,121 @@ val installVersionedRuntime = tasks.register<Sync>("installVersionedRuntime") {
             StandardCopyOption.ATOMIC_MOVE)
         logger.lifecycle("Installed PathLab Forge runtime ${runtimeVersion.get()} at ${destinationDir}")
     }
+}
+
+val internalReaderRoot = layout.buildDirectory.dir("internal-reader-dist")
+
+val cleanInternalReaderDist = tasks.register<Delete>("cleanInternalReaderDist") {
+    delete(internalReaderRoot)
+}
+
+val stageInternalReaderApp = tasks.register<Exec>("stageInternalReaderApp") {
+    group = "distribution"
+    description = "Builds a Windows application image with its own Java runtime."
+    dependsOn(cleanInternalReaderDist, tasks.installDist)
+    val jpackage = file("${System.getProperty("java.home")}/bin/jpackage.exe")
+    val input = layout.buildDirectory.dir("install/${project.name}/lib").get().asFile
+    inputs.dir(input)
+    doNotTrackState("jpackage requires its application-image destination not to exist")
+    commandLine(
+        jpackage,
+        "--type", "app-image",
+        "--input", input,
+        "--dest", internalReaderRoot.get().asFile,
+        "--name", "PathLab Forge",
+        "--main-jar", tasks.jar.get().archiveFileName.get(),
+        "--main-class", "org.pathlab.forge.ForgeApp",
+        "--add-modules", "ALL-MODULE-PATH",
+        "--java-options", "-Xmx512m",
+        "--java-options", "--enable-native-access=ALL-UNNAMED",
+        "--win-console")
+}
+
+val stageInternalReaderChildJvm = tasks.register<Copy>("stageInternalReaderChildJvm") {
+    group = "distribution"
+    description = "Adds the matching Java launcher required by the contained Bio-Formats child process."
+    dependsOn(stageInternalReaderApp)
+    from(file("${System.getProperty("java.home")}/bin/java.exe"))
+    into(internalReaderRoot.map { it.dir("PathLab Forge/runtime/bin") })
+}
+
+val assembleInternalReaderRuntime = tasks.register<JavaExec>("assembleInternalReaderRuntime") {
+    group = "distribution"
+    description = "Copies an owner-supplied reader runtime into an internal validation package."
+    dependsOn(stageInternalReaderChildJvm, tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.runtime.ReaderRuntimeAssembler"
+    val source = providers.gradleProperty("pathlab.forge.readerRuntimeRoot")
+    inputs.dir(source)
+    outputs.dir(internalReaderRoot.map { it.dir("PathLab Forge/reader-data/runtime") })
+    args(source.get(), internalReaderRoot.get().dir("PathLab Forge/reader-data").asFile.absolutePath,
+        "INTERNAL", "windows-x86_64")
+}
+
+tasks.register("internalReaderDist") {
+    group = "distribution"
+    description = "Builds a NON_REDISTRIBUTABLE Windows package with owner-supplied readers."
+    dependsOn(assembleInternalReaderRuntime)
+    outputs.dir(internalReaderRoot)
+}
+
+val productionReaderRoot = layout.buildDirectory.dir("production-reader-dist")
+
+val cleanProductionReaderDist = tasks.register<Delete>("cleanProductionReaderDist") {
+    delete(productionReaderRoot)
+}
+
+val stageProductionReaderApp = tasks.register<Exec>("stageProductionReaderApp") {
+    group = "distribution"
+    description = "Builds the approved Windows application image with its own Java runtime."
+    dependsOn(cleanProductionReaderDist, tasks.installDist, "verifyReaderRuntimeBundle")
+    val jpackage = file("${System.getProperty("java.home")}/bin/jpackage.exe")
+    val input = layout.buildDirectory.dir("install/${project.name}/lib").get().asFile
+    val officialOrigin = viewerOrigin.orNull
+    require(!officialOrigin.isNullOrBlank()) {
+        "Production packaging requires pathlab.forge.viewer.defaultOrigin"
+    }
+    require(officialOrigin.startsWith("https://")) {
+        "Production Viewer origin must use HTTPS"
+    }
+    inputs.dir(input)
+    doNotTrackState("jpackage requires its application-image destination not to exist")
+    commandLine(
+        jpackage,
+        "--type", "app-image",
+        "--input", input,
+        "--dest", productionReaderRoot.get().asFile,
+        "--name", "PathLab Forge",
+        "--main-jar", tasks.jar.get().archiveFileName.get(),
+        "--main-class", "org.pathlab.forge.ForgeApp",
+        "--add-modules", "ALL-MODULE-PATH",
+        "--java-options", "-Xmx512m",
+        "--java-options", "--enable-native-access=ALL-UNNAMED",
+        "--java-options", "-Dpathlab.forge.viewer.defaultOrigin=$officialOrigin")
+}
+
+val stageProductionReaderChildJvm = tasks.register<Copy>("stageProductionReaderChildJvm") {
+    group = "distribution"
+    description = "Adds the matching Java launcher for the approved Bio-Formats child process."
+    dependsOn(stageProductionReaderApp)
+    from(file("${System.getProperty("java.home")}/bin/java.exe"))
+    into(productionReaderRoot.map { it.dir("PathLab Forge/runtime/bin") })
+}
+
+val assembleProductionReaderRuntime = tasks.register<JavaExec>("assembleProductionReaderRuntime") {
+    group = "distribution"
+    description = "Assembles an approved, hash-locked production reader runtime."
+    dependsOn(stageProductionReaderChildJvm, tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.runtime.ReaderRuntimeAssembler"
+    val source = providers.gradleProperty("pathlab.forge.readerRuntimeRoot")
+    inputs.dir(source)
+    outputs.dir(productionReaderRoot.map { it.dir("PathLab Forge/reader-data/runtime") })
+    args(source.get(), productionReaderRoot.get().dir("PathLab Forge/reader-data").asFile.absolutePath,
+        "PRODUCTION", "windows-x86_64")
+}
+
+tasks.named("productionDist") {
+    setDependsOn(listOf(assembleProductionReaderRuntime))
+    outputs.dir(productionReaderRoot)
 }

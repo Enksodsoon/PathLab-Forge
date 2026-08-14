@@ -59,6 +59,8 @@ public final class BioFormatsEngine implements ConversionEngine {
         if (configured != null && !configured.isBlank()) {
             candidates.add(Path.of(configured));
         }
+        org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "bftools")
+                .ifPresent(candidates::add);
         candidates.add(dataRoot.resolve("runtime").resolve("bftools"));
         candidates.add(Path.of(System.getProperty("java.io.tmpdir"), "pathlab-bftools-probe"));
         for (var candidate : candidates) {

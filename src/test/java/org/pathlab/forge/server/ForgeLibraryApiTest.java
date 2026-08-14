@@ -73,6 +73,8 @@ final class ForgeLibraryApiTest {
             assertTrue(response.body().contains("\"readerId\":\"zeiss-czi\""));
             assertTrue(response.body().contains("\"extensions\":[\"czi\"]"));
             assertTrue(response.body().contains("\"policy\":\"BEST_EFFORT\""));
+            assertTrue(response.body().contains("\"components\":"));
+            assertTrue(response.body().contains("\"diagnosticCode\":\"NOT_INSTALLED\""));
         }
     }
 

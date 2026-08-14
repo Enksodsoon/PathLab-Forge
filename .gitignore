@@ -43,7 +43,7 @@ Thumbs.db
 *.dzi
 
 # Runtime and packaging
-runtime/
+/runtime/
 dist/
 installers/
 *.dmg

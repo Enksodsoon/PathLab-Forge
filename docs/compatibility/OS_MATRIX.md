@@ -4,7 +4,7 @@ A platform is labelled supported only after a packaged artifact passes the liste
 
 | Platform | Architecture | Target channel | Status |
 |---|---|---|---|
-| Windows 11 | x86-64 | Modern | Planned |
+| Windows 11 | x86-64 | Modern | Internal package validated; release gated |
 | Windows 10 | x86-64 | Modern | Planned |
 | macOS 11+ | Apple Silicon | Modern | Planned |
 | macOS 11+ | Intel | Modern | Planned |
