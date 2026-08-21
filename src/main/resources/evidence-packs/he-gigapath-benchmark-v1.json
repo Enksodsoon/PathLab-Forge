@@ -1,0 +1,33 @@
+{
+  "schema": "pathlab.ai-pack/1",
+  "packId": "he-gigapath-benchmark-v1",
+  "version": "1",
+  "capability": "he-evidence",
+  "acceptedStains": [
+    "he"
+  ],
+  "preprocessing": {
+    "id": "gigapath-v1",
+    "tilePixels": 512
+  },
+  "artifacts": [],
+  "rights": {
+    "license": "Upstream model card excludes deployed use",
+    "allowedUse": "benchmark-only",
+    "redistributable": false,
+    "derivativesAllowed": false,
+    "reviewedAt": "2026-08-22T00:00:00Z"
+  },
+  "resourceEnvelope": {
+    "maxRamMiB": 16384,
+    "maxVramMiB": 4608,
+    "maxSeconds": 300,
+    "network": false
+  },
+  "validation": {
+    "status": "not-evaluable",
+    "modelCard": "docs/model-cards/he-gigapath-benchmark-v1.md",
+    "heldOutEvaluation": "not-evaluable-no-installed-artifact"
+  },
+  "outputSchema": "pathlab.ai-evidence/1"
+}

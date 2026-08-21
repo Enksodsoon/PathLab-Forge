@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pathlab.local/schemas/pathlab-ai-pack-v1.schema.json",
+  "title": "PathLab AI Pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "packId", "version", "capability", "acceptedStains", "preprocessing", "artifacts", "rights", "resourceEnvelope", "validation", "outputSchema"],
+  "properties": {
+    "schema": {"const": "pathlab.ai-pack/1"},
+    "packId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,119}$"},
+    "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "capability": {"enum": ["he-evidence", "cell-morphology", "ihc-descriptive"]},
+    "acceptedStains": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"enum": ["he", "ihc_dab"]}},
+    "preprocessing": {"type": "object", "additionalProperties": false, "required": ["id", "tilePixels"], "properties": {"id": {"type": "string", "maxLength": 120}, "tilePixels": {"type": "integer", "minimum": 64, "maximum": 2048}}},
+    "artifacts": {"type": "array", "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["name", "sha256", "source"], "properties": {"name": {"type": "string", "maxLength": 160}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "source": {"type": "string", "format": "uri", "maxLength": 1000}}},
+    "rights": {"type": "object", "additionalProperties": false, "required": ["license", "allowedUse", "redistributable", "derivativesAllowed", "reviewedAt"], "properties": {"license": {"type": "string", "maxLength": 200}, "allowedUse": {"enum": ["private-research", "benchmark-only"]}, "redistributable": {"type": "boolean"}, "derivativesAllowed": {"type": "boolean"}, "reviewedAt": {"type": "string", "format": "date-time"}}},
+    "resourceEnvelope": {"type": "object", "additionalProperties": false, "required": ["maxRamMiB", "maxVramMiB", "maxSeconds", "network"], "properties": {"maxRamMiB": {"type": "integer", "minimum": 64, "maximum": 16384}, "maxVramMiB": {"type": "integer", "minimum": 0, "maximum": 4608}, "maxSeconds": {"type": "integer", "minimum": 1, "maximum": 1200}, "network": {"const": false}}},
+    "validation": {"type": "object", "additionalProperties": false, "required": ["status", "modelCard", "heldOutEvaluation"], "properties": {"status": {"enum": ["experimental", "qualified", "not-evaluable", "blocked"]}, "modelCard": {"type": "string", "maxLength": 1000}, "heldOutEvaluation": {"type": "string", "maxLength": 1000}}},
+    "outputSchema": {"const": "pathlab.ai-evidence/1"},
+    "markers": {"type": "array", "uniqueItems": true, "items": {"enum": ["generic", "er", "pr", "ki-67", "her2", "pd-l1"]}}
+  }
+}

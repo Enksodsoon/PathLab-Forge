@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pathlab.local/schemas/pathlab-ai-evidence-v1.schema.json",
+  "title": "PathLab AI Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "bundleId", "source", "pack", "status", "researchOnly", "notDiagnostic", "reviewRequired", "coordinates", "evidence", "cellAggregates", "ihcDescriptors", "citations", "qc", "provenance", "manifestSha256", "signature"],
+  "properties": {
+    "schema": {"const": "pathlab.ai-evidence/1"},
+    "bundleId": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["slideSha256", "revision"], "properties": {"slideSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "revision": {"type": "string", "minLength": 1, "maxLength": 160}}},
+    "pack": {"type": "object", "additionalProperties": false, "required": ["id", "version", "manifestSha256", "preprocessing", "artifacts", "allowedUse", "validationStatus"], "properties": {"id": {"type": "string", "maxLength": 120}, "version": {"type": "string", "maxLength": 64}, "manifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "preprocessing": {"type": "string", "maxLength": 120}, "artifacts": {"type": "array", "maxItems": 16, "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}, "allowedUse": {"const": "private-research"}, "validationStatus": {"enum": ["experimental", "qualified"]}}},
+    "status": {"enum": ["completed", "partial", "abstained", "unsupported", "failed"]},
+    "researchOnly": {"const": true},
+    "notDiagnostic": {"const": true},
+    "reviewRequired": {"const": true},
+    "coordinates": {"type": "object", "additionalProperties": false, "required": ["space", "originX", "originY", "scaleX", "scaleY"], "properties": {"space": {"const": "source-pixel"}, "originX": {"type": "number", "minimum": 0}, "originY": {"type": "number", "minimum": 0}, "scaleX": {"type": "number", "exclusiveMinimum": 0}, "scaleY": {"type": "number", "exclusiveMinimum": 0}}},
+    "evidence": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/region"}},
+    "cellAggregates": {"type": "array", "maxItems": 1000, "items": {"type": "object", "additionalProperties": false, "required": ["regionId", "algorithm", "count", "densityPerMm2", "meanNucleusAreaPx2"], "properties": {"regionId": {"type": "string", "maxLength": 120}, "algorithm": {"enum": ["hovernet-fast", "od-watershed"]}, "count": {"type": "integer", "minimum": 0}, "densityPerMm2": {"type": ["number", "null"], "minimum": 0}, "meanNucleusAreaPx2": {"type": ["number", "null"], "minimum": 0}}}},
+    "ihcDescriptors": {"type": "array", "maxItems": 1000, "items": {"type": "object", "additionalProperties": false, "required": ["regionId", "marker", "compartment", "dabAreaFraction", "meanDabOd", "researchEstimate"], "properties": {"regionId": {"type": "string", "maxLength": 120}, "marker": {"enum": ["generic", "er", "pr", "ki-67", "her2", "pd-l1"]}, "compartment": {"enum": ["nuclear", "membrane", "tumor-immune-region", "generic-region"]}, "dabAreaFraction": {"type": "number", "minimum": 0, "maximum": 1}, "meanDabOd": {"type": "number", "minimum": 0}, "researchEstimate": {"const": true}}}},
+    "citations": {"type": "array", "maxItems": 100, "items": {"type": "object", "additionalProperties": false, "required": ["claimId", "sourceUrl"], "properties": {"claimId": {"type": "string", "maxLength": 160}, "sourceUrl": {"type": "string", "format": "uri", "maxLength": 1000}}}},
+    "qc": {"type": "object", "additionalProperties": false, "required": ["focus", "tissueFraction", "uncertainty", "abstentionReasons"], "properties": {"focus": {"type": "number", "minimum": 0, "maximum": 1}, "tissueFraction": {"type": "number", "minimum": 0, "maximum": 1}, "uncertainty": {"type": "number", "minimum": 0, "maximum": 1}, "abstentionReasons": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 500}}}},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["createdAt", "codeRevision", "offlineAnalysis"], "properties": {"createdAt": {"type": "string", "format": "date-time"}, "codeRevision": {"type": "string", "maxLength": 160}, "offlineAnalysis": {"const": true}}},
+    "manifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "signature": {"type": "object", "additionalProperties": false, "required": ["algorithm", "keyId", "publicKeyDer", "value"], "properties": {"algorithm": {"const": "Ed25519"}, "keyId": {"type": "string", "maxLength": 160}, "publicKeyDer": {"type": "string", "minLength": 1}, "value": {"type": "string", "minLength": 1}}}
+  },
+  "$defs": {
+    "region": {"type": "object", "additionalProperties": false, "required": ["id", "stage", "kind", "x", "y", "width", "height", "score"], "properties": {"id": {"type": "string", "maxLength": 120}, "stage": {"enum": ["coarse", "refined"]}, "kind": {"enum": ["support", "similar", "contrast"]}, "x": {"type": "number", "minimum": 0}, "y": {"type": "number", "minimum": 0}, "width": {"type": "number", "exclusiveMinimum": 0}, "height": {"type": "number", "exclusiveMinimum": 0}, "score": {"type": "number", "minimum": 0, "maximum": 1}, "thumbnail": {"type": "string", "pattern": "^thumbnails/[A-Za-z0-9._-]+\\.(png|jpg|webp)$"}}}
+  }
+}
