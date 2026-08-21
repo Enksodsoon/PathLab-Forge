@@ -139,6 +139,7 @@ export interface ViewerRemoteItem {
   folderId: string
   state: string
   contentBytes: number
+  contentSha256?: string
   width: number
   height: number
   thumbnailUrl: string
@@ -167,6 +168,45 @@ export interface FeaturePack {
   trainingOnly: boolean
   license: string
   detail: string
+}
+
+export interface StudyPackRecord {
+  packKey: string
+  version: number
+  title: string
+  checksum: string
+  reviewedAt: string
+}
+
+export type StudyPackDefinition = {
+  schema: 'pathlab.study-pack/1'
+  packKey: string
+  version: number
+  title: string
+  author: string
+  license: string
+  provenance: string
+  revision: string
+  languages: Array<'en' | 'th'>
+  slides: Array<{ viewerSlideId: string; sha256: string; displayName: string }>
+  tasks: Array<{
+    id: string
+    type: 'multiple-choice' | 'spatial'
+    slideId: string
+    prompt: string
+    options?: string[]
+    answerKey?: string
+    targetX?: number
+    targetY?: number
+    targetWidth?: number
+    targetHeight?: number
+    tolerance?: number
+    hints: string[]
+    explanation: string
+    sources: Array<{ title: string; url: string }>
+  }>
+  checksum?: string
+  facultyPreview?: { packChecksum: string; previewVersion: 'pathlab.study-preview/1'; reviewedAt: string }
 }
 
 let csrf = ''
@@ -446,6 +486,28 @@ export async function disableFeature(id: string) {
 
 export async function uninstallFeature(id: string) {
   return request<void>(`/api/features/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function studyPacks(): Promise<StudyPackRecord[]> {
+  return (await request<{ packs: StudyPackRecord[] }>('/api/study-packs')).packs
+}
+
+export async function previewStudyPack(definition: StudyPackDefinition) {
+  return request<{ checksum: string; canonicalCore: StudyPackDefinition }>('/api/study-packs/preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(definition),
+  })
+}
+
+export async function saveStudyPack(definition: StudyPackDefinition) {
+  return request<StudyPackRecord>('/api/study-packs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(definition),
+  })
+}
+
+export async function publishStudyPack(checksum: string) {
+  return request<{ id: string; packKey: string; version: number; checksum: string; status: string }>(
+    `/api/study-packs/${encodeURIComponent(checksum)}/publish`, { method: 'POST' },
+  )
 }
 
 export async function annotationMeasurements(id: string, annotationId: string) {

@@ -43,6 +43,7 @@ import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
 import org.pathlab.forge.library.SourceVerificationService;
 import org.pathlab.forge.model.BatchId;
+import org.pathlab.forge.study.StudyPackService;
 import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
 import org.pathlab.forge.viewer.SqliteViewerDeliveryStore;
@@ -75,6 +76,7 @@ public final class ForgeServer implements AutoCloseable {
     private final ViewerPairingService viewerPairingService;
     private final ViewerSyncService viewerSyncService;
     private final ViewerTileCache viewerTileCache;
+    private final StudyPackService studyPackService;
     private volatile boolean launchTokenAvailable = true;
 
     private ForgeServer(
@@ -114,6 +116,7 @@ public final class ForgeServer implements AutoCloseable {
                 viewerPairingService, new SqliteViewerSyncStore(dataRoot.resolve("viewer-sync.db")),
                 dataRoot.resolve("viewer-offline"));
         viewerTileCache = new ViewerTileCache(viewerPairingService, dataRoot.resolve("viewer-cache"));
+        studyPackService = new StudyPackService(dataRoot.resolve("study-packs"), viewerPairingService);
     }
 
     public static ForgeServer start() throws IOException {
@@ -313,6 +316,16 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 uninstallFeature(exchange, path);
+            } else if ("/api/study-packs".equals(path) && "GET".equals(exchange.getRequestMethod())) {
+                listStudyPacks(exchange);
+            } else if ("/api/study-packs/preview".equals(path)
+                    && "POST".equals(exchange.getRequestMethod())) {
+                previewStudyPack(exchange);
+            } else if ("/api/study-packs".equals(path) && "POST".equals(exchange.getRequestMethod())) {
+                saveStudyPack(exchange);
+            } else if (path.matches("/api/study-packs/[a-f0-9]{64}/publish")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                publishStudyPack(exchange, path);
             } else if ("/api/analysis/jobs".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
                 createAnalysisJob(exchange);
@@ -692,6 +705,69 @@ public final class ForgeServer implements AutoCloseable {
                     503,
                     "application/json",
                     "{\"error\":\"viewer_unavailable\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void listStudyPacks(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        try {
+            var items = studyPackService.list().stream()
+                    .map(item -> "{\"packKey\":" + json(item.packKey())
+                            + ",\"version\":" + item.version()
+                            + ",\"title\":" + json(item.title())
+                            + ",\"checksum\":" + json(item.checksum())
+                            + ",\"reviewedAt\":" + json(item.reviewedAt()) + "}")
+                    .collect(java.util.stream.Collectors.joining(","));
+            respond(exchange, 200, "application/json", "{\"packs\":[" + items + "]}");
+        } catch (IOException | RuntimeException error) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"study_pack_list_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void previewStudyPack(HttpExchange exchange) throws IOException {
+        var body = readBoundedWriteBody(exchange, StudyPackService.MAX_PACK_BYTES);
+        if (body == null) return;
+        try {
+            var preview = studyPackService.preview(new String(body, StandardCharsets.UTF_8));
+            respond(exchange, 200, "application/json",
+                    "{\"checksum\":" + json(preview.checksum())
+                            + ",\"canonicalCore\":" + preview.canonicalCore() + "}");
+        } catch (IOException | RuntimeException error) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"study_pack_invalid\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void saveStudyPack(HttpExchange exchange) throws IOException {
+        var body = readBoundedWriteBody(exchange, StudyPackService.MAX_PACK_BYTES);
+        if (body == null) return;
+        try {
+            var stored = studyPackService.save(new String(body, StandardCharsets.UTF_8));
+            respond(exchange, 201, "application/json",
+                    "{\"packKey\":" + json(stored.packKey())
+                            + ",\"version\":" + stored.version()
+                            + ",\"title\":" + json(stored.title())
+                            + ",\"checksum\":" + json(stored.checksum())
+                            + ",\"reviewedAt\":" + json(stored.reviewedAt()) + "}");
+        } catch (IOException | RuntimeException error) {
+            respond(exchange, 422, "application/json",
+                    "{\"error\":\"study_pack_save_failed\",\"detail\":"
+                            + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void publishStudyPack(HttpExchange exchange, String path) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var checksum = path.substring("/api/study-packs/".length(), path.length() - "/publish".length());
+        try {
+            respond(exchange, 200, "application/json", studyPackService.publish(checksum));
+        } catch (IOException | RuntimeException error) {
+            respond(exchange, 409, "application/json",
+                    "{\"error\":\"study_pack_publish_failed\",\"detail\":"
                             + json(error.getMessage()) + "}");
         }
     }
@@ -1674,6 +1750,23 @@ public final class ForgeServer implements AutoCloseable {
         return true;
     }
 
+    private byte[] readBoundedWriteBody(HttpExchange exchange, int maximum) throws IOException {
+        if (!requireAuthenticated(exchange)) return null;
+        var origin = exchange.getRequestHeaders().getFirst("Origin");
+        var csrf = exchange.getRequestHeaders().getFirst("X-Forge-CSRF");
+        if (!constantTimeEquals(baseUri.toString(), origin)
+                || !constantTimeEquals(csrfToken, csrf)) {
+            respond(exchange, 403, "application/json", "{\"error\":\"forbidden\"}");
+            return null;
+        }
+        var body = exchange.getRequestBody().readNBytes(maximum + 1);
+        if (body.length > maximum) {
+            respond(exchange, 413, "application/json", "{\"error\":\"request_too_large\"}");
+            return null;
+        }
+        return body;
+    }
+
     private String datasetsJson(List<LocalDataset> datasets) {
         return "{\"datasets\":["
                 + datasets.stream().map(this::datasetJson).collect(java.util.stream.Collectors.joining(","))
@@ -1771,6 +1864,7 @@ public final class ForgeServer implements AutoCloseable {
                 return "{\"id\":" + json(slide.id()) + ",\"displayName\":" + json(slide.displayName())
                         + ",\"folderId\":" + json(slide.folderId()) + ",\"state\":" + json(slide.status())
                         + ",\"contentBytes\":" + slide.contentBytes()
+                        + ",\"contentSha256\":" + json(slide.contentSha256())
                         + ",\"width\":" + slide.metadata().getOrDefault("width", 1)
                         + ",\"height\":" + slide.metadata().getOrDefault("height", 1)
                         + ",\"thumbnailUrl\":\"/api/viewer/preview?path="

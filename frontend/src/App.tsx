@@ -5,6 +5,7 @@ import {
 import {
   ArrowsOut,
   ArrowsClockwise,
+  Brain,
   CaretDown,
   CheckCircle,
   CloudArrowUp,
@@ -41,6 +42,7 @@ import type {
 } from './api'
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
+import { StudyPackWorkspace } from './StudyPackWorkspace'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -89,6 +91,7 @@ export function App() {
   const [remoteRename, setRemoteRename] = useState<{ id: string; current: string; value: string }>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
   const [featureOpen, setFeatureOpen] = useState(false)
+  const [studyOpen, setStudyOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
   const [featureLoading, setFeatureLoading] = useState(false)
   const [libraryMode, setLibraryMode] = useState<'local' | 'viewer'>('local')
@@ -632,6 +635,8 @@ export function App() {
     }
   }
 
+  if (studyOpen) return <StudyPackWorkspace onClose={() => setStudyOpen(false)} />
+
   const rail = (
     <ForgeProductRail
       expanded={railExpanded}
@@ -648,6 +653,7 @@ export function App() {
       onViewerLibrary={() => void syncViewer()}
       onImport={() => setImportOpen(true)}
       onFeatures={openFeatures}
+      onStudy={() => setStudyOpen(true)}
       onTheme={toggleTheme}
       onSecurity={connect}
       onSignOut={connect}
@@ -940,6 +946,7 @@ function ForgeProductRail({
   onViewerLibrary,
   onImport,
   onFeatures,
+  onStudy,
   onTheme,
   onSecurity,
   onSignOut,
@@ -957,6 +964,7 @@ function ForgeProductRail({
   onViewerLibrary: () => void
   onImport: () => void
   onFeatures: () => void
+  onStudy: () => void
   onTheme: () => void
   onSecurity: () => void
   onSignOut: () => void
@@ -992,6 +1000,7 @@ function ForgeProductRail({
         </button>
         <button type="button" aria-label="Import" onClick={onImport}><UploadSimple aria-hidden="true" /><span>Import</span></button>
         <button type="button" aria-label="Feature Center" onClick={onFeatures}><Wrench aria-hidden="true" /><span>Feature Center</span></button>
+        <button type="button" aria-label="Study Packs" onClick={onStudy}><Brain aria-hidden="true" /><span>Study Packs</span></button>
       </nav>
       <div className="library-rail-utilities" aria-label="Account actions">
         <section className="library-storage-meter" aria-label={`Storage, ${formatBytes(storage.usableBytes)} available`}>
