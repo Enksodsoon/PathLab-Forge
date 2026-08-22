@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [ValidateSet('Install','Upgrade','Uninstall','Status')] [string] $Action,
-    [string] $Version = '2.1.1',
+    [string] $Version = '2.1.2',
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
@@ -62,7 +62,8 @@ function Ensure-WinSW {
 function Grant-PathLabAccess([string] $InstallingUser) {
     & icacls.exe $ProgramRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)RX" "${InstallingUser}:(OI)(CI)RX" | Out-Null
     & icacls.exe $StateRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" "${InstallingUser}:(RX)" | Out-Null
-    foreach ($operatorPath in @('inputs','requests','models','artifacts','acceptance')) {
+    foreach ($operatorPath in @('inputs','requests','models','artifacts','acceptance','sources','acquisition',
+            'quota\reservations\source')) {
         $resolved = Join-Path $StateRoot $operatorPath
         & icacls.exe $resolved /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" "${InstallingUser}:(OI)(CI)M" | Out-Null
     }
@@ -246,7 +247,8 @@ if ($Action -eq 'Uninstall') {
 
 $installingUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $Version")) {
-    $stateDirectories = @('inputs','requests','models','artifacts','acceptance','checkpoints','signing','logs') | ForEach-Object { Join-Path $StateRoot $_ }
+    $stateDirectories = @('inputs','requests','models','artifacts','acceptance','sources','acquisition',
+        'quota\reservations\source','checkpoints','signing','logs') | ForEach-Object { Join-Path $StateRoot $_ }
     New-Item -ItemType Directory -Path @($ProgramRoot, $runtimeRoot, $StateRoot) -Force | Out-Null
     New-Item -ItemType Directory -Path $stateDirectories -Force | Out-Null
     $previousVersion = if (Test-Path -LiteralPath $activeVersionPath) { (Get-Content -LiteralPath $activeVersionPath -Raw).Trim() } else { '' }

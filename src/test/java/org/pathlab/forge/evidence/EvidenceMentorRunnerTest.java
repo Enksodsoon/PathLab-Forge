@@ -96,7 +96,7 @@ final class EvidenceMentorRunnerTest {
 
             var endpoint = JSON.readTree(temporaryDirectory.resolve("state/endpoint.json").toFile());
             assertEquals("pathlab.runner-endpoint/1", endpoint.path("schema").asText());
-            assertEquals("2.1.1", endpoint.path("serviceVersion").asText());
+            assertEquals("2.1.2", endpoint.path("serviceVersion").asText());
             assertEquals(runner.uri("/").getPort(), endpoint.path("port").asInt());
             assertTrue(!endpoint.has("token"));
         }
@@ -124,6 +124,29 @@ final class EvidenceMentorRunnerTest {
                     .GET().build(), HttpResponse.BodyHandlers.ofString());
             assertEquals(200, read.statusCode());
             assertTrue(read.body().contains("dinov2-small"));
+        }
+    }
+
+    @Test
+    void exposesOnlyBoundedOperationalAcquisitionProgress() throws Exception {
+        var state = Files.createDirectories(temporaryDirectory.resolve("acquisition-state"));
+        var acquisition = Files.createDirectories(state.resolve("acquisition/nct-crc-he-1214456"));
+        Files.writeString(acquisition.resolve("status.json"), """
+                {"schema":"pathlab.acquisition-status/1","datasetId":"nct-crc-he-1214456",
+                 "state":"transferring","completedBytes":1048576,"totalBytes":2097152,
+                 "detail":"must not be relayed","networkContext":"interactive-user-acquisition-only",
+                 "analysisNetwork":"disabled","updatedAt":"2026-08-22T14:00:00Z"}
+                """);
+        try (var runner = EvidenceMentorRunner.start(
+                state, 0, "test-loopback-token-0123456789abcdef", false)) {
+            var response = HttpClient.newHttpClient().send(HttpRequest.newBuilder(runner.uri("/v1/status"))
+                    .header("Authorization", "Bearer test-loopback-token-0123456789abcdef")
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, response.statusCode());
+            assertTrue(response.body().contains("nct-crc-he-1214456"));
+            assertTrue(response.body().contains("\"completedBytes\":1048576"));
+            assertTrue(!response.body().contains("must not be relayed"));
+            assertTrue(!response.body().contains(acquisition.toString()));
         }
     }
 

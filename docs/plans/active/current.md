@@ -36,7 +36,7 @@ byte-identical runtime is reused; a mismatch fails before the active
 configuration changes. The manual reboot-continuation acceptance is still
 deferred, so Gate 5 and activation remain incomplete.
 
-Runner `2.1.1` adds fail-closed candidate preflight terminalization: immutable
+Runner `2.1.1` added fail-closed candidate preflight terminalization: immutable
 candidate validation failures become `not_evaluable` rather than blocking the
 parent coordinator, while database and filesystem I/O failures still surface.
 The runtime starts and reports healthy locally, but the upgrade is not accepted:
@@ -54,6 +54,29 @@ prepared to retry the transactional upgrade two minutes after startup, verify
 exact outbound-deny coverage and service acceptance, and resume claims only on
 PASS. It records a durable result and removes itself after success; a failure
 remains paused and fail-closed.
+
+The product owner deferred that restart on 2026-08-22 so real research work can
+continue while the PC stays on. This is an explicit degraded-environment waiver,
+not firewall acceptance: new model results remain experimental and cannot enter
+the qualified registry, learner evidence, deployment activation, or a scientific
+claim until outbound-deny and restart-continuation acceptance pass.
+
+Real GI data acquisition is now active as an interactive-user, resumable task.
+It is downloading the immutable Zenodo record 1214456 NCT-CRC H&E reference and
+validation archives (12,490,560,932 bytes total), pinned to the official file
+sizes and MD5 values under CC BY 4.0. Completion additionally records SHA-256
+values and a source ledger. The task enforces the 45 GB new-source quota and
+runs independently of Forge, Codex, and the analysis service. The dashboard
+status contract exposes only bounded acquisition metadata; analysis remains
+credential-free and network-disabled. These patch archives add a real GI
+external evaluation source, but do not by themselves prove patient-held-out
+qualification when patient identity metadata is unavailable.
+
+Runner `2.1.2` is the next staged package. It adds the bounded acquisition
+status feed and dashboard rendering without changing the paused analysis state.
+It must not replace the installed runtime until the same transactional firewall
+and health checks can succeed; source download completion does not depend on
+that service upgrade.
 
 The branch now implements `pathlab.qualification-campaign/1` as a durable
 parent coordinator above the existing GPU and CPU/I/O lanes. It records frozen

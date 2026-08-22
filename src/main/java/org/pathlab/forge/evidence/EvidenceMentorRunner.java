@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -30,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.1.1";
+    private static final String VERSION = "2.1.2";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;
@@ -223,6 +224,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
                 "active", campaigns.stream().filter(run -> !run.campaignCompleted()).count(),
                 "completed", campaigns.stream().filter(QualificationRunSnapshot::campaignCompleted).count(),
                 "targetMet", campaigns.stream().filter(QualificationRunSnapshot::campaignTargetMet).count()));
+        status.put("acquisitions", acquisitionSnapshots());
         campaigns.stream().filter(run -> !run.campaignCompleted()).findFirst()
                 .ifPresent(run -> status.put("leadingQualificationRun", Map.of(
                         "id", run.id(), "state", run.state(),
@@ -237,6 +239,43 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         status.put("processMemoryLimitBytes", telemetry.get("processMemoryLimitBytes"));
         status.put("diskUsableBytes", telemetry.get("diskUsableBytes")); status.put("quota", telemetry.get("quota"));
         returnJsonCached(exchange, status);
+    }
+
+    private List<Map<String,Object>> acquisitionSnapshots() {
+        var root = stateRoot.resolve("acquisition");
+        if (!Files.isDirectory(root)) return List.of();
+        try (var directories = Files.list(root)) {
+            return directories.filter(Files::isDirectory).sorted().limit(20).map(directory -> {
+                try {
+                    var value = JSON.readTree(directory.resolve("status.json").toFile());
+                    require(fieldNames(value).equals(Set.of("schema", "datasetId", "state", "completedBytes",
+                            "totalBytes", "detail", "networkContext", "analysisNetwork", "updatedAt")),
+                            "Acquisition status fields are invalid");
+                    require("pathlab.acquisition-status/1".equals(value.path("schema").asText()),
+                            "Acquisition status schema is invalid");
+                    var datasetId = value.path("datasetId").asText();
+                    var state = value.path("state").asText();
+                    long completed = value.path("completedBytes").asLong(-1);
+                    long total = value.path("totalBytes").asLong(-1);
+                    var updatedAt = value.path("updatedAt").asText();
+                    require(datasetId.matches("[a-z0-9][a-z0-9._-]{0,119}"), "Acquisition dataset id is invalid");
+                    require(Set.of("transferring", "validating", "completed", "transient_error", "failed")
+                            .contains(state), "Acquisition state is invalid");
+                    require(completed >= 0 && total > 0 && completed <= total, "Acquisition byte counts are invalid");
+                    require("interactive-user-acquisition-only".equals(value.path("networkContext").asText())
+                                    && "disabled".equals(value.path("analysisNetwork").asText()),
+                            "Acquisition network boundary is invalid");
+                    Instant.parse(updatedAt);
+                    return Map.<String,Object>of("datasetId", datasetId, "state", state,
+                            "completedBytes", completed, "totalBytes", total, "updatedAt", updatedAt,
+                            "networkContext", "interactive-user-acquisition-only", "analysisNetwork", "disabled");
+                } catch (Exception ignored) {
+                    return null;
+                }
+            }).filter(java.util.Objects::nonNull).toList();
+        } catch (IOException ignored) {
+            return List.of();
+        }
     }
 
     private void listJobs(HttpExchange exchange) throws IOException {
