@@ -40,8 +40,13 @@ pack, while `experimental` packs are restricted to non-identifying
 `qualification-<hex>` jobs. The deterministic cell fallback is accurately
 identified as connected-component morphometry, and IHC marker-specific or PD-L1
 compartment claims fail closed to generic descriptive output. Neither track is
-qualified. Special stains and cytology remain unimplemented, and Gate 7 has not
-begun.
+qualified. A checksum-bound `pathlab.model-qualification-report/1` synthetic
+harness now records separated-cell counting, touching-cell separation,
+determinism, generic DAB area, relative calibration, and failed-stain refusal
+independently. Its current truthful outcome is `experimental`: touching nuclei
+are not split, instance masks are unavailable, and marker-specific/PD-L1
+fixtures remain `not_evaluable`. Special stains and cytology remain
+unimplemented, and Gate 7 has not begun.
 
 Implementation, service installation, model qualification, merge, deployment,
 feature activation, and any future clinical/capacity study are separate gates.

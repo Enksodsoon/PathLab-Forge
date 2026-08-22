@@ -11,3 +11,7 @@ cross-tissue fixtures, and failure-rate gates are resolved.
 Reported counts, area, perimeter, eccentricity, and solidity are descriptive
 pixel measurements. They are not clinical cell identities, tumor labels, or a
 diagnostic result. No learned cell-type prediction is performed.
+
+The executable synthetic protocol is documented in
+`docs/evidence/brightfield-qualification-protocol-v1.md`. Its current expected
+terminal status is `experimental`, including a failed touching-nuclei check.

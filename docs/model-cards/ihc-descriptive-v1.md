@@ -15,3 +15,7 @@ output and `COMPARTMENT_REVIEW_REQUIRED`.
 
 The pack never emits positive/negative calls, ASCO/CAP categories, TPS, CPS,
 diagnosis, prognosis, treatment guidance, or cross-slide cell correspondence.
+
+The executable synthetic protocol is documented in
+`docs/evidence/brightfield-qualification-protocol-v1.md`. Synthetic generic-DAB
+and fail-closed QC checks cannot replace independent marker-specific fixtures.

@@ -136,6 +136,19 @@ tasks.withType<Jar>().configureEach {
     isReproducibleFileOrder = true
 }
 
+tasks.register<JavaExec>("brightfieldQualification") {
+    group = "verification"
+    description = "Runs synthetic-only cell and IHC pre-qualification checks."
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.evidence.BrightfieldQualificationHarness"
+    val report = providers.gradleProperty("pathlab.qualification.output")
+        .orElse(layout.buildDirectory.file("qualification/brightfield-report.json").map { it.asFile.absolutePath })
+    args(
+        "--packs", file("src/main/resources/evidence-packs").absolutePath,
+        "--output", report.get())
+}
+
 val installVersionedRuntime = tasks.register<Sync>("installVersionedRuntime") {
     dependsOn(tasks.installDist)
     val localAppData = providers.environmentVariable("LOCALAPPDATA")
