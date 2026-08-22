@@ -10,7 +10,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 $taskName = 'PathLabEvidenceMentorPostRepair'
-$continuation = Join-Path $PSScriptRoot 'complete-evidence-mentor-after-reboot.ps1'
+$programRoot = 'C:\ProgramData\PathLab\EvidenceMentor'
+$continuation = Join-Path $programRoot 'Complete-PathLab-EvidenceMentor-PostRepair.ps1'
+New-Item -ItemType Directory -Path $programRoot -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'complete-evidence-mentor-after-reboot.ps1') `
+    -Destination $continuation -Force
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$continuation`""
 $trigger = New-ScheduledTaskTrigger -AtStartup

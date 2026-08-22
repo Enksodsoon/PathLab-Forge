@@ -1,16 +1,13 @@
 [CmdletBinding()]
 param(
     [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
-    [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
-    [string] $DistributionPath = 'C:\Users\enkso\.codex\worktrees\evidence-mentor\forge\build\install\pathlab-forge',
-    [string] $JavaHome = 'C:\Users\enkso\.gradle\jdks\eclipse_adoptium-17-amd64-windows.2'
+    [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $version = '2.1.1'
 $taskName = 'PathLabEvidenceMentorPostRepair'
-$repository = Split-Path -Parent $PSScriptRoot
 $acceptanceRoot = Join-Path $StateRoot 'acceptance\post-reboot-2.1.1'
 $resultPath = Join-Path $acceptanceRoot 'result.json'
 $logPath = Join-Path $acceptanceRoot 'continuation.log'
@@ -37,12 +34,43 @@ function Set-Claims([bool] $Accepting) {
         -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body '{}' | Out-Null
 }
 
+function Install-OutboundDeny([string[]] $Programs) {
+    $desiredNames = [Collections.Generic.List[string]]::new()
+    $createdNames = [Collections.Generic.List[string]]::new()
+    try {
+        $index = 0
+        foreach ($program in $Programs) {
+            if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+                throw "Analysis executable is unavailable: $program"
+            }
+            $name = "PathLab Evidence Mentor outbound deny $version $index"
+            $desiredNames.Add($name)
+            if ($null -eq (Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue)) {
+                New-NetFirewallRule -DisplayName $name -Direction Outbound -Action Block `
+                    -Program $program -Profile Any -ErrorAction Stop | Out-Null
+                $createdNames.Add($name)
+            }
+            $actual = Get-NetFirewallRule -DisplayName $name -ErrorAction Stop |
+                Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program -First 1
+            if ([IO.Path]::GetFullPath($actual) -ne [IO.Path]::GetFullPath($program)) {
+                throw "Outbound-deny rule program mismatch: $name"
+            }
+            $index++
+        }
+        Get-NetFirewallRule -DisplayName 'PathLab Evidence Mentor outbound deny*' -ErrorAction SilentlyContinue |
+            Where-Object { $desiredNames -notcontains $_.DisplayName } | Remove-NetFirewallRule
+    } catch {
+        foreach ($name in $createdNames) {
+            Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue |
+                Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
 Start-Transcript -LiteralPath $logPath -Append | Out-Null
 try {
     try { Set-Claims $false } catch { }
-    & (Join-Path $repository 'scripts\evidence-mentor-service.ps1') -Action Upgrade -Version $version `
-        -DistributionPath $DistributionPath -JavaHome $JavaHome -ProgramRoot $ProgramRoot -StateRoot $StateRoot
-
     $runtime = Join-Path $ProgramRoot "runtime\$version"
     $expectedPrograms = @((Join-Path $runtime 'jre\bin\java.exe'))
     $modelRoot = Join-Path $StateRoot 'models'
@@ -52,6 +80,7 @@ try {
     }
     $expectedPrograms = @($expectedPrograms | ForEach-Object { [IO.Path]::GetFullPath($_).ToLowerInvariant() } |
         Sort-Object -Unique)
+    Install-OutboundDeny $expectedPrograms
     $rules = @(Get-NetFirewallRule -DisplayName "PathLab Evidence Mentor outbound deny $version *" -ErrorAction Stop)
     $actualPrograms = @($rules | Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program |
         ForEach-Object { [IO.Path]::GetFullPath($_).ToLowerInvariant() } | Sort-Object -Unique)
@@ -60,7 +89,10 @@ try {
         throw 'Installed outbound-deny rules do not exactly cover the analysis executables.'
     }
 
-    & (Join-Path $repository 'scripts\test-evidence-mentor-service.ps1') -Mode Inspect `
+    $activeVersion = Join-Path $ProgramRoot 'active-version.txt'
+    [IO.File]::WriteAllText("$activeVersion.partial", "$version`n", [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath "$activeVersion.partial" -Destination $activeVersion -Force
+    & (Join-Path $ProgramRoot 'Test-PathLab-Evidence-Service.ps1') -Mode Inspect `
         -ProgramRoot $ProgramRoot -StateRoot $StateRoot -ReportRoot $acceptanceRoot
     if ($LASTEXITCODE -ne 0) { throw "Post-reboot service acceptance failed with exit code $LASTEXITCODE." }
 
