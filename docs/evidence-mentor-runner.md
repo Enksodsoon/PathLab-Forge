@@ -139,10 +139,18 @@ an incomplete report into passing evidence.
 
 ## Model boundary
 
-The deterministic cell/IHC baseline is runnable. DINOv2-small remains a
-`not_evaluable` executable candidate until its cross-tissue held-out cohort is
-complete. Hibou-B and HoVer-Net remain `not_evaluable` until exact,
-rights-approved workers and artifacts pass qualification. H&E, cells, IHC,
-special stains, cytology, and later Atlas tracks stay independently signed and
-fail closed; none may emit diagnosis, clinical categories, TPS/CPS, prognosis,
-or treatment guidance.
+The deterministic cell/IHC baselines are runnable only with non-identifying
+`qualification-<hex>` job IDs. Their `experimental` status is not pilot
+eligibility. The current cell fallback is connected-component morphometry, not
+validated watershed instance segmentation. Current IHC output is generic
+within-image H/DAB description; marker-specific requests explicitly fall back,
+and PD-L1 refuses compartment claims until reviewed geometry is carried by the
+request contract.
+
+DINOv2-small remains a `not_evaluable` executable candidate until its
+cross-tissue held-out cohort is complete. Hibou-B and HoVer-Net remain
+`not_evaluable` until exact, rights-approved workers and artifacts pass
+qualification. Only `qualified` private-research packs may process ordinary
+staff/demo jobs. H&E, cells, IHC, special stains, cytology, and later Atlas
+tracks stay independently signed and fail closed; none may emit diagnosis,
+clinical categories, TPS/CPS, prognosis, or treatment guidance.

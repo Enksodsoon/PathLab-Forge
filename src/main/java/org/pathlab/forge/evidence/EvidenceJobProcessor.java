@@ -24,7 +24,8 @@ public final class EvidenceJobProcessor {
             "schema", "sourcePath", "sourceSha256", "slideRevision", "previewPath",
             "sourceWidth", "sourceHeight", "packManifest", "stain", "marker");
     private static final Set<String> OPTIONAL_REQUEST_FIELDS = Set.of(
-            "compartmentSource", "controlsValidated", "tileCacheManifest", "tileCacheManifestSha256");
+            "compartmentSource", "controlsValidated", "markerIdentitySource",
+            "tileCacheManifest", "tileCacheManifestSha256");
     private final EvidenceJobQueue queue;
     private final Path stateRoot;
 
@@ -156,9 +157,17 @@ public final class EvidenceJobProcessor {
                 ? request.path("compartmentSource").textValue() : "none";
         require(Set.of("none", "faculty-authored", "faculty-approved", "model-suggested")
                 .contains(compartmentSource), "Evidence compartment source is invalid");
-        var reviewedCompartment = Set.of("faculty-authored", "faculty-approved").contains(compartmentSource);
-        var compartmentWarning = "pd-l1".equals(marker) && !reviewedCompartment
-                ? "COMPARTMENT_REVIEW_REQUIRED" : null;
+        var markerIdentitySource = request.path("markerIdentitySource").isTextual()
+                ? request.path("markerIdentitySource").textValue() : "unknown";
+        require(Set.of("unknown", "faculty-authored", "slide-label", "import-metadata")
+                .contains(markerIdentitySource), "Evidence marker identity source is invalid");
+        // This pack has no compartment geometry and no qualified marker-specific algorithms yet.
+        // A provenance label alone must never be promoted into a tumor/immune measurement claim.
+        var descriptorWarning = pack.capability() != EvidencePackManifest.Capability.IHC_DESCRIPTIVE
+                || "generic".equals(marker) ? null
+                : "pd-l1".equals(marker)
+                        ? "COMPARTMENT_REVIEW_REQUIRED"
+                        : "MARKER_SPECIFIC_QUALIFICATION_REQUIRED";
         var abstained = !abstentionReasons.isEmpty();
         var refiningAt = now.plusSeconds(1);
         checkCancellation(job.id(), workerId, refiningAt);
@@ -177,7 +186,7 @@ public final class EvidenceJobProcessor {
                 Math.max(1, Files.size(preview)));
         Files.createDirectories(artifactRoot);
         var unsigned = evidence(request, pack, image, analysis, stainQc, modelResult, focus, tissue,
-                abstentionReasons, compartmentSource, compartmentWarning, now);
+                abstentionReasons, compartmentSource, markerIdentitySource, descriptorWarning, now);
         var finalArtifact = artifactRoot.resolve("evidence.json");
         new EvidenceBundleWriter(stateRoot.resolve("signing")).write(finalArtifact, unsigned);
         queue.recordFinalArtifact(job.id(), workerId, sha256(finalArtifact), now.plusMillis(2500));
@@ -201,7 +210,8 @@ public final class EvidenceJobProcessor {
             double tissue,
             java.util.List<String> abstentionReasons,
             String compartmentSource,
-            String compartmentWarning,
+            String markerIdentitySource,
+            String descriptorWarning,
             Instant now) {
         var root = JSON.createObjectNode();
         root.put("schema", EvidenceBundleWriter.SCHEMA);
@@ -236,7 +246,7 @@ public final class EvidenceJobProcessor {
                 : modelResult.path("regions").deepCopy());
         var aggregate = new java.util.LinkedHashMap<String, Object>();
         aggregate.put("regionId", "region-1");
-        aggregate.put("algorithm", "od-watershed");
+        aggregate.put("algorithm", "od-connected-components");
         aggregate.put("count", analysis.cellCount());
         aggregate.put("densityPerMm2", null);
         aggregate.put("meanNucleusAreaPx2", analysis.meanNucleusAreaPx2());
@@ -253,15 +263,17 @@ public final class EvidenceJobProcessor {
             descriptor.put("regionId", "region-1");
             descriptor.put("markerId", analysis.marker());
             descriptor.put("marker", analysis.marker());
-            descriptor.put("analysisMode", compartmentWarning == null ? "marker-aware" : "generic-fallback");
-            descriptor.put("cellMaskSource", "od-watershed");
+            descriptor.put("markerIdentitySource", markerIdentitySource);
+            descriptor.put("analysisMode", "generic".equals(analysis.marker())
+                    ? "generic-descriptive" : "generic-fallback");
+            descriptor.put("cellMaskSource", "od-connected-components");
             descriptor.put("compartmentSource", compartmentSource);
             descriptor.put("calibrationStatus", stainQc.calibrationStatus());
-            descriptor.put("compartment", compartmentWarning == null ? analysis.compartment() : "generic-region");
+            descriptor.put("compartment", "generic-region");
             descriptor.put("dabAreaFraction", analysis.dabAreaFraction());
             descriptor.put("meanDabOd", analysis.meanDabOd());
             descriptor.put("uncertainty", 1 - Math.min(focus, tissue));
-            descriptor.put("abstentionReason", compartmentWarning);
+            descriptor.put("abstentionReason", descriptorWarning);
             descriptor.put("researchEstimate", true);
             ihc.add(descriptor);
         }
@@ -276,7 +288,7 @@ public final class EvidenceJobProcessor {
         qc.put("backgroundFraction", stainQc.backgroundFraction());
         qc.put("saturationFraction", stainQc.saturationFraction());
         qc.put("stainSeparation", stainQc.separationScore());
-        qc.put("warnings", compartmentWarning == null ? java.util.List.of() : java.util.List.of(compartmentWarning));
+        qc.put("warnings", descriptorWarning == null ? java.util.List.of() : java.util.List.of(descriptorWarning));
         root.set("qc", JSON.valueToTree(qc));
         root.set("provenance", JSON.valueToTree(java.util.Map.of(
                 "createdAt", now.toString(), "codeRevision", "pathlab-forge-evidence-mentor-v1",

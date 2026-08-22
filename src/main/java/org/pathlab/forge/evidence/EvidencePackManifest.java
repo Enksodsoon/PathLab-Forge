@@ -106,9 +106,7 @@ public record EvidencePackManifest(
 
     public boolean pilotEligible() {
         return !acceptanceOnly && "private-research".equals(allowedUse)
-                && validationStatus != ValidationStatus.BLOCKED
-                && validationStatus != ValidationStatus.UNSUPPORTED
-                && validationStatus != ValidationStatus.NOT_EVALUABLE;
+                && validationStatus == ValidationStatus.QUALIFIED;
     }
 
     public void requirePilotEligible() {
@@ -119,6 +117,12 @@ public record EvidencePackManifest(
         if (acceptanceOnly) {
             require(jobId != null && jobId.matches("acceptance-[a-f0-9]{8,64}"),
                     "Acceptance-only AI pack requires a non-identifying acceptance job id");
+            return;
+        }
+        if (jobId != null && jobId.matches("qualification-[a-f0-9]{8,64}")) {
+            require("private-research".equals(allowedUse)
+                            && validationStatus == ValidationStatus.EXPERIMENTAL,
+                    "AI pack is not eligible for qualification execution");
             return;
         }
         requirePilotEligible();

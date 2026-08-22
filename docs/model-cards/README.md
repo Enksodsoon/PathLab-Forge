@@ -10,8 +10,8 @@ must be recorded before a status can move from `not-evaluable`.
 | H&E | DINOv2-small | `not-evaluable` | Experimental only after exact artifact and held-out retrieval run |
 | H&E | Hibou-B | `not-evaluable` | User accepts gated terms; then rights, reproducibility, quality and latency gates |
 | Cells | HoVer-Net fast | `not-evaluable` | Exact private weights plus PQ/count/morphometry/resource gates |
-| Cells | OD watershed | `experimental` | Deterministic fallback; no clinical cell identity |
-| IHC | H/DAB descriptors | `experimental` | Within-slide research descriptors; reviewed compartments for PD-L1 |
+| Cells | OD fallback | `experimental` | Qualification IDs only; touching-nucleus watershed split and instance-mask gates remain |
+| IHC | H/DAB descriptors | `experimental` | Qualification IDs only; generic within-image descriptors until marker-specific fixtures pass |
 | Tutor | Qwen3-0.6B INT4 | `not-evaluable` | Complete browser asset at most 500 MiB and claim-ID-only tests |
 | Distillation | Atlas-H&E ~72M | `not-evaluable` | Baselines frozen, derivative rights pass, bounded feasibility run succeeds |
 

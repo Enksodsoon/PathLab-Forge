@@ -7,21 +7,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 final class EvidencePackManifestTest {
+    private static final ObjectMapper JSON = new ObjectMapper();
     @TempDir Path temporaryDirectory;
 
     @Test
     void acceptsBoundedPrivateResearchPack() throws Exception {
-        var path = write("private-research", "experimental", "[\"generic\",\"er\"]", "ihc-descriptive", "[\"ihc_dab\"]");
+        var path = write("private-research", "qualified", "[\"generic\",\"er\"]", "ihc-descriptive", "[\"ihc_dab\"]");
         var pack = EvidencePackManifest.load(path);
         assertEquals("ihc-descriptive-v1", pack.packId());
         assertTrue(pack.pilotEligible());
         assertTrue(pack.markers().contains("generic"));
         assertEquals("od-v1", pack.preprocessingId());
         assertEquals(64, pack.sha256().length());
+    }
+
+    @Test
+    void experimentalPackRunsOnlyAsANonIdentifyingQualificationJob() throws Exception {
+        var pack = EvidencePackManifest.load(write(
+                "private-research", "experimental", "[\"generic\"]", "ihc-descriptive", "[\"ihc_dab\"]"));
+
+        assertFalse(pack.pilotEligible());
+        pack.requireExecutableForJob("qualification-0123abcd");
+        assertThrows(IllegalArgumentException.class, () -> pack.requireExecutableForJob("staff-demo"));
+        assertThrows(IllegalArgumentException.class, () -> pack.requireExecutableForJob("qualification-person-name"));
     }
 
     @Test
@@ -73,8 +86,12 @@ final class EvidencePackManifestTest {
     @Test
     void bundledPilotCatalogActivatesOnlyInstalledLawfulBaselines() throws Exception {
         var root = Path.of("src/main/resources/evidence-packs");
-        assertTrue(EvidencePackManifest.load(root.resolve("cell-od-watershed-v1.json")).pilotEligible());
-        assertTrue(EvidencePackManifest.load(root.resolve("ihc-descriptive-v1.json")).pilotEligible());
+        var watershed = EvidencePackManifest.load(root.resolve("cell-od-watershed-v1.json"));
+        var ihc = EvidencePackManifest.load(root.resolve("ihc-descriptive-v1.json"));
+        assertFalse(watershed.pilotEligible());
+        assertFalse(ihc.pilotEligible());
+        watershed.requireExecutableForJob("qualification-0123abcd");
+        ihc.requireExecutableForJob("qualification-0123abcd");
         var dino = EvidencePackManifest.load(root.resolve("he-dinov2-small-v1.json"));
         assertFalse(dino.pilotEligible());
         assertEquals("ed25f3a31f01632728cabb09d1542f84ab7b0056",
@@ -95,6 +112,18 @@ final class EvidencePackManifestTest {
         assertEquals("cuda", hoverNet.runtimeCompatibility().executionProvider());
         assertEquals(2, hoverNet.licenseLedger().size());
         assertFalse(EvidencePackManifest.load(root.resolve("he-gigapath-benchmark-v1.json")).pilotEligible());
+    }
+
+    @Test
+    void everyBundledPackResolvesItsModelCard() throws Exception {
+        var root = Path.of("src/main/resources/evidence-packs");
+        try (var manifests = Files.list(root)) {
+            for (var manifest : manifests.filter(path -> path.toString().endsWith(".json")).toList()) {
+                var card = JSON.readTree(manifest.toFile()).path("validation").path("modelCard").asText();
+                assertTrue(!card.isBlank() && Files.isRegularFile(Path.of(card)),
+                        () -> manifest.getFileName() + " references a missing model card: " + card);
+            }
+        }
     }
 
     private Path write(String use, String status, String markers, String capability, String stains) throws Exception {

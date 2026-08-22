@@ -138,17 +138,18 @@ final class EvidenceJobProcessorTest {
         var pack = temporaryDirectory.resolve("pack.json");
         Files.writeString(pack, packJson());
         var request = temporaryDirectory.resolve("request.json");
-        JSON.writeValue(request.toFile(), java.util.Map.of(
-                "schema", "pathlab.evidence-job/1",
-                "sourcePath", source.toString(),
-                "sourceSha256", sha256(source),
-                "slideRevision", "revision-1",
-                "previewPath", preview.toString(),
-                "sourceWidth", 1600,
-                "sourceHeight", 1200,
-                "packManifest", pack.toString(),
-                "stain", "ihc_dab",
-                "marker", "ki-67"));
+        JSON.writeValue(request.toFile(), java.util.Map.ofEntries(
+                java.util.Map.entry("schema", "pathlab.evidence-job/1"),
+                java.util.Map.entry("sourcePath", source.toString()),
+                java.util.Map.entry("sourceSha256", sha256(source)),
+                java.util.Map.entry("slideRevision", "revision-1"),
+                java.util.Map.entry("previewPath", preview.toString()),
+                java.util.Map.entry("sourceWidth", 1600),
+                java.util.Map.entry("sourceHeight", 1200),
+                java.util.Map.entry("packManifest", pack.toString()),
+                java.util.Map.entry("stain", "ihc_dab"),
+                java.util.Map.entry("marker", "ki-67"),
+                java.util.Map.entry("markerIdentitySource", "slide-label")));
 
         var now = Instant.parse("2026-08-22T00:00:00Z");
         try (var queue = new EvidenceJobQueue(temporaryDirectory.resolve("state/jobs.sqlite3"))) {
@@ -164,13 +165,52 @@ final class EvidenceJobProcessorTest {
             assertEquals("ki-67", evidence.path("ihcDescriptors").get(0).path("marker").asText());
             assertEquals("relative_only", evidence.path("ihcDescriptors").get(0)
                     .path("calibrationStatus").asText());
-            assertEquals("od-watershed", evidence.path("ihcDescriptors").get(0)
+            assertEquals("generic-fallback", evidence.path("ihcDescriptors").get(0)
+                    .path("analysisMode").asText());
+            assertEquals("slide-label", evidence.path("ihcDescriptors").get(0)
+                    .path("markerIdentitySource").asText());
+            assertEquals("generic-region", evidence.path("ihcDescriptors").get(0)
+                    .path("compartment").asText());
+            assertEquals("MARKER_SPECIFIC_QUALIFICATION_REQUIRED", evidence.path("ihcDescriptors").get(0)
+                    .path("abstentionReason").asText());
+            assertEquals("od-connected-components", evidence.path("ihcDescriptors").get(0)
                     .path("cellMaskSource").asText());
+            assertEquals("od-connected-components", evidence.path("cellAggregates").get(0)
+                    .path("algorithm").asText());
             assertTrue(evidence.path("cellAggregates").get(0)
                     .path("meanNucleusPerimeterPx").asDouble() > 0);
             assertTrue(evidence.path("researchOnly").asBoolean());
             assertTrue(evidence.path("provenance").path("offlineAnalysis").asBoolean());
             assertEquals(64, evidence.path("manifestSha256").asText().length());
+        }
+    }
+
+    @Test
+    void refusesPdL1CompartmentClaimsWithoutReviewedGeometry() throws Exception {
+        var evidence = processIhcEvidence("pd-l1", "faculty-approved", "faculty-authored", "job-pdl1");
+        var descriptor = evidence.path("ihcDescriptors").get(0);
+
+        assertEquals("pd-l1", descriptor.path("markerId").asText());
+        assertEquals("generic-fallback", descriptor.path("analysisMode").asText());
+        assertEquals("generic-region", descriptor.path("compartment").asText());
+        assertEquals("faculty-approved", descriptor.path("compartmentSource").asText());
+        assertEquals("COMPARTMENT_REVIEW_REQUIRED", descriptor.path("abstentionReason").asText());
+        assertTrue(evidence.path("qc").path("warnings").toString()
+                .contains("COMPARTMENT_REVIEW_REQUIRED"));
+    }
+
+    @Test
+    void genericIhcOutputIsDescriptiveAndContainsNoClinicalScores() throws Exception {
+        var evidence = processIhcEvidence("generic", "none", "unknown", "job-generic");
+        var descriptor = evidence.path("ihcDescriptors").get(0);
+
+        assertEquals("generic-descriptive", descriptor.path("analysisMode").asText());
+        assertEquals("generic-region", descriptor.path("compartment").asText());
+        assertTrue(descriptor.path("abstentionReason").isNull());
+        for (var prohibited : java.util.List.of(
+                "positive", "negative", "tps", "cps", "ascoCapCategory",
+                "diagnosis", "prognosis", "treatmentGuidance")) {
+            assertTrue(!descriptor.has(prohibited), () -> "Clinical output leaked: " + prohibited);
         }
     }
 
@@ -218,8 +258,8 @@ final class EvidenceJobProcessorTest {
                 "\"rights\":{\"license\":\"internal\",\"allowedUse\":\"private-research\"," +
                 "\"redistributable\":false,\"derivativesAllowed\":false,\"reviewedAt\":\"2026-08-22T00:00:00Z\"}," +
                 "\"resourceEnvelope\":{\"maxRamMiB\":1024,\"maxVramMiB\":0,\"maxSeconds\":300,\"network\":false}," +
-                "\"validation\":{\"status\":\"experimental\",\"modelCard\":\"model.md\",\"heldOutEvaluation\":\"evaluation.json\"}," +
-                "\"outputSchema\":\"pathlab.ai-evidence/1\",\"markers\":[\"generic\",\"ki-67\"]}";
+                "\"validation\":{\"status\":\"qualified\",\"modelCard\":\"model.md\",\"heldOutEvaluation\":\"evaluation.json\"}," +
+                "\"outputSchema\":\"pathlab.ai-evidence/1\",\"markers\":[\"generic\",\"ki-67\",\"pd-l1\"]}";
     }
 
     private static String hePackJson() {
@@ -249,6 +289,47 @@ final class EvidenceJobProcessorTest {
                 "stain", "ihc_dab",
                 "marker", "generic"));
         return request;
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode processIhcEvidence(
+            String marker, String compartmentSource, String markerIdentitySource, String jobId) throws Exception {
+        var source = temporaryDirectory.resolve(jobId + "-source.bin");
+        Files.writeString(source, "immutable " + jobId + " source bytes");
+        var preview = temporaryDirectory.resolve(jobId + "-preview.png");
+        var image = new BufferedImage(16, 12, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(Color.WHITE);
+        graphics.fillRect(0, 0, 16, 12);
+        graphics.setColor(new Color(90, 55, 35));
+        graphics.fillRect(2, 2, 12, 8);
+        graphics.dispose();
+        ImageIO.write(image, "png", preview.toFile());
+        var pack = temporaryDirectory.resolve(jobId + "-pack.json");
+        Files.writeString(pack, packJson());
+        var request = temporaryDirectory.resolve(jobId + "-request.json");
+        JSON.writeValue(request.toFile(), java.util.Map.ofEntries(
+                java.util.Map.entry("schema", "pathlab.evidence-job/1"),
+                java.util.Map.entry("sourcePath", source.toString()),
+                java.util.Map.entry("sourceSha256", sha256(source)),
+                java.util.Map.entry("slideRevision", "revision-" + jobId),
+                java.util.Map.entry("previewPath", preview.toString()),
+                java.util.Map.entry("sourceWidth", 1600),
+                java.util.Map.entry("sourceHeight", 1200),
+                java.util.Map.entry("packManifest", pack.toString()),
+                java.util.Map.entry("stain", "ihc_dab"),
+                java.util.Map.entry("marker", marker),
+                java.util.Map.entry("compartmentSource", compartmentSource),
+                java.util.Map.entry("markerIdentitySource", markerIdentitySource)));
+        var state = temporaryDirectory.resolve(jobId + "-state");
+        var now = Instant.parse("2026-08-22T00:00:00Z");
+        try (var queue = new EvidenceJobQueue(state.resolve("jobs.sqlite3"))) {
+            queue.submit(jobId, request, now);
+            var claimed = queue.claimNext("worker-1", now, Duration.ofMinutes(2)).orElseThrow();
+            var completed = new EvidenceJobProcessor(queue, state)
+                    .process(claimed, "worker-1", now.plusSeconds(1));
+            assertEquals(EvidenceJobState.COMPLETED, completed.state());
+        }
+        return JSON.readTree(state.resolve("artifacts").resolve(jobId).resolve("evidence.json").toFile());
     }
 
     private static String sha256(Path path) throws Exception {

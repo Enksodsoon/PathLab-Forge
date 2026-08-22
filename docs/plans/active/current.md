@@ -35,7 +35,13 @@ live `LocalService`, outbound-deny coverage, P2000 CUDA 12.6 `sm_61` inference,
 resource bounds, signed evidence packaging, and restart recovery. Its latest
 aggregate report is still `NOT_EVALUABLE` solely because the operator-controlled
 manual-reboot challenge has not run. Gate 5 therefore remains incomplete. Gate
-6 has not been qualified, and Gate 7 has not begun.
+6 qualification preparation has begun: ordinary jobs now require a `qualified`
+pack, while `experimental` packs are restricted to non-identifying
+`qualification-<hex>` jobs. The deterministic cell fallback is accurately
+identified as connected-component morphometry, and IHC marker-specific or PD-L1
+compartment claims fail closed to generic descriptive output. Neither track is
+qualified. Special stains and cytology remain unimplemented, and Gate 7 has not
+begun.
 
 Implementation, service installation, model qualification, merge, deployment,
 feature activation, and any future clinical/capacity study are separate gates.
