@@ -10,7 +10,19 @@
     "id": "dinov2-v1",
     "tilePixels": 512
   },
-  "artifacts": [],
+  "artifacts": [{
+    "name": "model",
+    "sha256": "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1",
+    "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/model.safetensors"
+  }, {
+    "name": "config",
+    "sha256": "1809f83e3bdb1609a501a610ad4a742f4fd8ae44d72ca4aa0df52d1f2ac8628d",
+    "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/config.json"
+  }, {
+    "name": "preprocessor",
+    "sha256": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828",
+    "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/preprocessor_config.json"
+  }],
   "runtimeCompatibility": {
     "workerProtocol": "pathlab.model-worker-result/1",
     "executionProvider": "cuda",
@@ -21,7 +33,7 @@
   "licenseLedger": [{
     "component": "facebook/dinov2-small",
     "license": "Apache-2.0",
-    "revision": "PIN_REQUIRED_BEFORE_ACQUISITION",
+    "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
     "permittedUse": "private-research",
     "redistributable": false,
     "derivativesAllowed": false
@@ -42,7 +54,7 @@
   "validation": {
     "status": "not-evaluable",
     "modelCard": "docs/model-cards/he-dinov2-small-v1.md",
-    "heldOutEvaluation": "not-evaluable-no-installed-artifact"
+    "heldOutEvaluation": "not-evaluable-worker-not-installed"
   },
   "outputSchema": "pathlab.ai-evidence/1"
 }

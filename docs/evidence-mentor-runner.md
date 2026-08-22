@@ -23,6 +23,17 @@ The deterministic cell/IHC baseline is runnable. DINOv2-small, Hibou-B and HoVer
 P2000 unless they declare CUDA 12.6 and `sm_61`. Forge signs only bounded regions and descriptors;
 embeddings, raw pixels and clinical outputs are rejected.
 
+Acquire only the pinned DINOv2 safetensors baseline (never the pickle artifact) with:
+
+```powershell
+.\scripts\acquire-dinov2-small.ps1
+```
+
+The acquisition command reserves the fixed model quota, downloads from the exact upstream commit,
+verifies byte counts and SHA-256 values before atomic installation, and records a local receipt. It
+does not activate the pack: the status remains `not-evaluable` until the separate offline worker is
+installed, checksum-bound in the pack manifest, and qualified on the P2000 host.
+
 New material uses fixed hard buckets: 45 GB source, 25 GB derived, 10 GB models, 10 GB evidence/test,
 and a 10 GB untouchable reserve. Existing BRACS remains grandfathered read-only and is not copied.
 
