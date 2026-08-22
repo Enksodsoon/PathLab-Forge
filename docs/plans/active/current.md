@@ -46,6 +46,15 @@ now stages replacement rules before removing old rules and restores the prior
 runtime configuration on any setup or health failure. Model analysis must not
 be activated until an outbound-deny rule is verifiably installed.
 
+Read-only DISM found a healthy component store, while SFC found and repaired
+protected-file integrity violations. The active firewall provider still needs a
+Windows restart before it can accept new rules. Claims are durably paused with
+an empty queue. The one-time SYSTEM task `PathLabEvidenceMentorPostRepair` is
+prepared to retry the transactional upgrade two minutes after startup, verify
+exact outbound-deny coverage and service acceptance, and resume claims only on
+PASS. It records a durable result and removes itself after success; a failure
+remains paused and fail-closed.
+
 The branch now implements `pathlab.qualification-campaign/1` as a durable
 parent coordinator above the existing GPU and CPU/I/O lanes. It records frozen
 dependencies, attempts, signed attestations, completion versus target success,
