@@ -36,6 +36,16 @@ byte-identical runtime is reused; a mismatch fails before the active
 configuration changes. The manual reboot-continuation acceptance is still
 deferred, so Gate 5 and activation remain incomplete.
 
+Runner `2.1.1` adds fail-closed candidate preflight terminalization: immutable
+candidate validation failures become `not_evaluable` rather than blocking the
+parent coordinator, while database and filesystem I/O failures still surface.
+The runtime starts and reports healthy locally, but the upgrade is not accepted:
+this Windows host currently returns system error 2 when creating any outbound
+firewall rule, including a control rule for a Windows executable. The installer
+now stages replacement rules before removing old rules and restores the prior
+runtime configuration on any setup or health failure. Model analysis must not
+be activated until an outbound-deny rule is verifiably installed.
+
 The branch now implements `pathlab.qualification-campaign/1` as a durable
 parent coordinator above the existing GPU and CPU/I/O lanes. It records frozen
 dependencies, attempts, signed attestations, completion versus target success,
@@ -65,6 +75,14 @@ IHC, special-stain, and cytology execution tracks each produced a signed
 `campaignTargetMet=false`: this proves durable execution and signing, not the
 pre-registered held-out quality gates. The reusable staging command is
 `scripts/stage-local-deterministic-campaign.ps1`.
+
+The signed `all-rounder-candidate-preflight-20260822-v1` campaign also completed
+autonomously with `campaignCompleted=true` and `campaignTargetMet=false`.
+DINOv2, Hibou-B, GigaPath, HoVer-Net, PathoSAM, Qwen, and Atlas each reached the
+honest terminal status `not_evaluable`; no candidate job or model inference was
+launched. The result is an availability/readiness record, not a scientific
+qualification. Its reusable staging command is
+`scripts/stage-all-rounder-candidate-preflight.ps1`.
 
 Gate 7 has an executable four-hour feasibility decision contract using
 checkpointed 15-20 minute segments, fixed RAM/VRAM limits, validation

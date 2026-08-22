@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [ValidateSet('Install','Upgrade','Uninstall','Status')] [string] $Action,
-    [string] $Version = '2.1.0',
+    [string] $Version = '2.1.1',
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
@@ -122,18 +122,42 @@ function New-ServiceConfig([string] $RuntimePath) {
 }
 
 function Install-FirewallRules([string] $RuntimePath) {
-    Get-NetFirewallRule -DisplayName 'PathLab Evidence Mentor outbound deny*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     $executables = @((Join-Path $RuntimePath 'jre\bin\java.exe'))
     $modelRoot = Join-Path $StateRoot 'models'
     if (Test-Path -LiteralPath $modelRoot) {
         $executables += Get-ChildItem -LiteralPath $modelRoot -Filter '*.exe' -File -Recurse | Select-Object -ExpandProperty FullName
     }
+    $desiredNames = [Collections.Generic.List[string]]::new()
+    $createdNames = [Collections.Generic.List[string]]::new()
     $index = 0
-    foreach ($executable in $executables | Select-Object -Unique) {
-        if (Test-Path -LiteralPath $executable -PathType Leaf) {
-            New-NetFirewallRule -DisplayName "PathLab Evidence Mentor outbound deny $index" -Direction Outbound -Action Block -Program $executable -Profile Any | Out-Null
-            $index++
+    try {
+        foreach ($executable in $executables | Select-Object -Unique) {
+            if (Test-Path -LiteralPath $executable -PathType Leaf) {
+                $name = "PathLab Evidence Mentor outbound deny $Version $index"
+                $desiredNames.Add($name)
+                $existing = Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue
+                if ($null -eq $existing) {
+                    New-NetFirewallRule -DisplayName $name -Direction Outbound -Action Block `
+                        -Program $executable -Profile Any -ErrorAction Stop | Out-Null
+                    $createdNames.Add($name)
+                }
+                $actualProgram = Get-NetFirewallRule -DisplayName $name -ErrorAction Stop |
+                    Get-NetFirewallApplicationFilter | Select-Object -ExpandProperty Program -First 1
+                if (-not $actualProgram -or
+                        [IO.Path]::GetFullPath($actualProgram) -ne [IO.Path]::GetFullPath($executable)) {
+                    throw "Outbound-deny rule does not match the staged executable: $name"
+                }
+                $index++
+            }
         }
+        if ($desiredNames.Count -eq 0) { throw 'No installed analysis executable was available for outbound deny.' }
+        Get-NetFirewallRule -DisplayName 'PathLab Evidence Mentor outbound deny*' -ErrorAction SilentlyContinue |
+            Where-Object { $desiredNames -notcontains $_.DisplayName } | Remove-NetFirewallRule
+    } catch {
+        foreach ($name in $createdNames) {
+            Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+        throw
     }
 }
 
@@ -229,33 +253,40 @@ if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $V
     $previousConfig = if (Test-Path -LiteralPath $configPath) { Get-Content -LiteralPath $configPath -Raw } else { '' }
     $runtimePath = Stage-Runtime
     Ensure-WinSW
-    if ($Action -eq 'Upgrade' -and (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { & $wrapperPath stop }
-    Write-AtomicText $configPath (New-ServiceConfig $runtimePath)
-    if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { & $wrapperPath install }
-    Enable-ServiceSid
-    Grant-PathLabAccess $installingUser
-    Install-FirewallRules $runtimePath
-    & $wrapperPath start
-    if (-not (Wait-RunnerHealth)) {
+    try {
+        if ($Action -eq 'Upgrade' -and (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { & $wrapperPath stop }
+        Write-AtomicText $configPath (New-ServiceConfig $runtimePath)
+        if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { & $wrapperPath install }
+        Enable-ServiceSid
+        Grant-PathLabAccess $installingUser
+        Install-FirewallRules $runtimePath
+        & $wrapperPath start
+        if (-not (Wait-RunnerHealth)) {
+            throw 'New runtime failed health checks.'
+        }
+        Write-AtomicText $activeVersionPath $Version
+        Grant-PathLabAccess $installingUser
+        $launcher = Join-Path $ProgramRoot 'Open-PathLab-Evidence-Dashboard.ps1'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'open-evidence-dashboard.ps1') -Destination $launcher -Force
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test-evidence-mentor-service.ps1') `
+            -Destination (Join-Path $ProgramRoot 'Test-PathLab-Evidence-Service.ps1') -Force
+        $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\PathLab Evidence Mentor Dashboard.lnk'
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = 'powershell.exe'
+        $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -StateRoot `"$StateRoot`""
+        $shortcut.WorkingDirectory = $ProgramRoot
+        $shortcut.Save()
+    } catch {
+        $upgradeError = $_
         & $wrapperPath stop 2>$null
         if ($previousConfig) {
             Write-AtomicText $configPath $previousConfig
-            Install-FirewallRules (Join-Path $runtimeRoot $previousVersion)
+            try { Install-FirewallRules (Join-Path $runtimeRoot $previousVersion) } catch {
+                Write-Warning "Previous firewall rules could not be restored: $($_.Exception.Message)"
+            }
             & $wrapperPath start
         }
-        throw 'New runtime failed health checks; the previous configuration was restored.'
+        throw "Service $Action failed and the previous runtime configuration was restored: $($upgradeError.Exception.Message)"
     }
-    Write-AtomicText $activeVersionPath $Version
-    Grant-PathLabAccess $installingUser
-    $launcher = Join-Path $ProgramRoot 'Open-PathLab-Evidence-Dashboard.ps1'
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'open-evidence-dashboard.ps1') -Destination $launcher -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test-evidence-mentor-service.ps1') `
-        -Destination (Join-Path $ProgramRoot 'Test-PathLab-Evidence-Service.ps1') -Force
-    $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\PathLab Evidence Mentor Dashboard.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = 'powershell.exe'
-    $shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -StateRoot `"$StateRoot`""
-    $shortcut.WorkingDirectory = $ProgramRoot
-    $shortcut.Save()
 }

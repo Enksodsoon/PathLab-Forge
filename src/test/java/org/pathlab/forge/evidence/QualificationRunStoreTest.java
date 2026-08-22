@@ -42,6 +42,31 @@ final class QualificationRunStoreTest {
         }
     }
 
+    @Test
+    void unavailableCandidateFinishesNotEvaluableWithoutBlockingCampaignTick() throws Exception {
+        var missingPack = temporaryDirectory.resolve("missing-pack.json").toAbsolutePath();
+        Files.writeString(temporaryDirectory.resolve("request.json"),
+                "{\"packManifest\":" + new com.fasterxml.jackson.databind.ObjectMapper()
+                        .writeValueAsString(missingPack.toString()) + "}");
+        var campaignPath = temporaryDirectory.resolve("campaign.json");
+        Files.writeString(campaignPath, QualificationCampaignManifestTest.campaign("request.json"));
+        var campaign = QualificationCampaignManifest.load(campaignPath);
+        var state = Files.createDirectories(temporaryDirectory.resolve("state"));
+        try (var store = new QualificationRunStore(state.resolve("jobs.sqlite3"), state);
+                var queue = new EvidenceJobQueue(state.resolve("jobs.sqlite3"))) {
+            store.create(campaign, Instant.parse("2026-08-22T00:00:00Z"));
+            store.tick(queue, Instant.parse("2026-08-22T00:00:01Z"));
+
+            var completed = store.snapshot(campaign.campaignId()).orElseThrow();
+            assertTrue(completed.campaignCompleted());
+            assertFalse(completed.campaignTargetMet());
+            assertEquals("not_evaluable", completed.tracks().get(0).verdict());
+            assertEquals("CANDIDATE_PREFLIGHT_FAILED", completed.tracks().get(0).failureCode());
+            assertTrue(Files.isRegularFile(state.resolve("qualification")
+                    .resolve(campaign.campaignId()).resolve("capability-matrix.json")));
+        }
+    }
+
     private static String deploymentPack() {
         return """
                 {"schema":"pathlab.ai-pack/2","packId":"dinov2-small","version":"1.0.0",

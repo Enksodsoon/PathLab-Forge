@@ -178,7 +178,12 @@ public final class QualificationRunStore implements AutoCloseable {
                         terminalTrack(run.id(), track.id(), "not_evaluable", "DEPENDENCY_NOT_QUALIFIED",
                                 "A frozen dependency did not qualify", now);
                     } else if (dependencyVerdicts.stream().allMatch("qualified"::equals)) {
-                        submitChild(run.id(), declared, track.attempt(), queue, now);
+                        try {
+                            submitChild(run.id(), declared, track.attempt(), queue, now);
+                        } catch (IllegalArgumentException invalidCandidate) {
+                            terminalTrack(run.id(), track.id(), "not_evaluable", "CANDIDATE_PREFLIGHT_FAILED",
+                                    bounded(invalidCandidate.getMessage()), now);
+                        }
                     }
                     continue;
                 }
