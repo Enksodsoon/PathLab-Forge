@@ -19,6 +19,7 @@ public record EvidencePackManifest(
         Capability capability,
         Set<String> acceptedStains,
         String preprocessingId,
+        int tilePixels,
         String allowedUse,
         boolean redistributable,
         boolean derivativesAllowed,
@@ -54,7 +55,7 @@ public record EvidencePackManifest(
         var preprocessing = object(root, "preprocessing");
         var preprocessingId = text(preprocessing, "id");
         require(preprocessingId.length() <= 120, "AI pack preprocessing id is invalid");
-        boundedInt(preprocessing, "tilePixels", 64, 2_048);
+        var tilePixels = boundedInt(preprocessing, "tilePixels", 64, 2_048);
         var rights = object(root, "rights");
         var allowedUse = text(rights, "allowedUse");
         require(Set.of("private-research", "benchmark-only").contains(allowedUse), "AI pack allowed use is invalid");
@@ -81,7 +82,7 @@ public record EvidencePackManifest(
         var licenseLedger = root.has("licenseLedger")
                 ? parseLicenseLedger(root.path("licenseLedger")) : List.<LicenseEntry>of();
         return new EvidencePackManifest(
-                normalized, packId, version, capability, acceptedStains, preprocessingId, allowedUse,
+                normalized, packId, version, capability, acceptedStains, preprocessingId, tilePixels, allowedUse,
                 booleanValue(rights, "redistributable"),
                 booleanValue(rights, "derivativesAllowed"),
                 runtime, licenseLedger,

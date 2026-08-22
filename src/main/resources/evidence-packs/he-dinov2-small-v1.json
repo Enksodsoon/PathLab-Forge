@@ -28,12 +28,16 @@
     "source": "pathlab-local-build:dinov2-worker-v1/windows-x64"
   }, {
     "name": "workerSource",
-    "sha256": "4884827fea5f6b04ecd2ec4b5fd31800e2a6d68547f7142aea506a70dd42fd8f",
+    "sha256": "b80811cc8026152c45248cdcf8123413f9b3f8d64e297bad93dfe198b5aba5c2",
     "source": "pathlab-local-build:dinov2-worker-v1/worker.py"
   }, {
     "name": "runtime-manifest",
     "sha256": "1969c91db66d8acc70b6c8648a57d3bfc923880e03f1f7f1e30c593133c01635",
     "source": "pathlab-local-build:torch-2.7.1-cu126-python-3.12/windows-x64"
+  }, {
+    "name": "qualification-protocol",
+    "sha256": "d5a46da7a2246afc71fec0bf18989903e8442ed255647b9f044b0538c812df72",
+    "source": "repo:docs/evidence/he-retrieval-qualification-protocol-v1.md"
   }],
   "runtimeCompatibility": {
     "workerProtocol": "pathlab.model-worker-result/1",
@@ -66,7 +70,7 @@
   "validation": {
     "status": "not-evaluable",
     "modelCard": "docs/model-cards/he-dinov2-small-v1.md",
-    "heldOutEvaluation": "not-evaluable-held-out-retrieval-pending"
+    "heldOutEvaluation": "not-evaluable-cross-tissue-cohort-incomplete"
   },
   "outputSchema": "pathlab.ai-evidence/1"
 }

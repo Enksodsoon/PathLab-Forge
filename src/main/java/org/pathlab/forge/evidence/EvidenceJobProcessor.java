@@ -24,7 +24,7 @@ public final class EvidenceJobProcessor {
             "schema", "sourcePath", "sourceSha256", "slideRevision", "previewPath",
             "sourceWidth", "sourceHeight", "packManifest", "stain", "marker");
     private static final Set<String> OPTIONAL_REQUEST_FIELDS = Set.of(
-            "compartmentSource", "controlsValidated");
+            "compartmentSource", "controlsValidated", "tileCacheManifest", "tileCacheManifestSha256");
     private final EvidenceJobQueue queue;
     private final Path stateRoot;
 
@@ -62,8 +62,21 @@ public final class EvidenceJobProcessor {
         require(pack.capability() != EvidencePackManifest.Capability.IHC_DESCRIPTIVE
                         || pack.markers().contains(marker),
                 "Requested IHC marker is unsupported and generic fallback is unavailable");
-        require(positiveInt(request, "sourceWidth") > 0 && positiveInt(request, "sourceHeight") > 0,
-                "Evidence source geometry is invalid");
+        var sourceWidth = positiveInt(request, "sourceWidth");
+        var sourceHeight = positiveInt(request, "sourceHeight");
+        if (pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE) {
+            var tileManifestPath = regularPath(request, "tileCacheManifest");
+            var tileManifestSha = text(request, "tileCacheManifestSha256");
+            var tileCache = EvidenceTileCacheManifest.load(tileManifestPath, tileManifestSha);
+            tileCache.requireSource(expectedSha, text(request, "slideRevision"),
+                    sourceWidth, sourceHeight, pack.tilePixels());
+            require(tileCache.sample().bytes() == Files.size(source)
+                            && "private-research".equals(tileCache.sample().permittedUse()),
+                    "H&E source provenance or permitted use is invalid");
+        } else {
+            require(!request.has("tileCacheManifest") && !request.has("tileCacheManifestSha256"),
+                    "Only H&E evidence jobs may provide a tile cache");
+        }
         checkCancellation(job.id(), workerId, now);
         var running = queue.checkpoint(job.id(), workerId, EvidenceJobState.RUNNING,
                 "running", 0.25, "Running offline bounded brightfield analysis", now, LEASE);

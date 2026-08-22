@@ -1,6 +1,6 @@
 # DINOv2-small H&E baseline
 
-Status: `not-evaluable-held-out-retrieval-pending`.
+Status: `not-evaluable-cross-tissue-cohort-incomplete`.
 
 The public `facebook/dinov2-small` repository is pinned at
 `ed25f3a31f01632728cabb09d1542f84ab7b0056`. Acquisition accepts only the
@@ -31,3 +31,25 @@ lymph-node, benign/reactive, OOD, restart, and five-minute refinement gates have
 not run. The model pack therefore remains `not-evaluable`, default-off, and
 ineligible for Viewer evidence or staff/demo activation. Embeddings remain local
 and only bounded evidence regions may leave Forge after model qualification.
+
+## Real BRACS tile-cache smoke
+
+The frozen `bracs-roi-smoke-v1` cache contains seven patient-distinct validation
+ROI samples and 28 deterministic 512 x 512 RGB PNG tiles. Its cohort manifest is
+19,860,731 bytes including tiles and has SHA-256
+`4653fa49c1b488a7ab90f40a7722e802082a02dbeb967303b09078c4b2bbb2bb`.
+Every source, sample manifest, tile manifest, tile pixel file, coordinate, and
+revision is independently checksum-bound before inference.
+
+One real BRACS ROI worker smoke was repeated three times. Evidence-region content
+was identical (`2e4f597caf50837bbf67de8179742a6c233a6160a723f7933adb8e5709860457`).
+Cold wall time was 6.88-7.23 seconds, bounded four-tile model time was 0.19-0.23
+seconds, peak reserved VRAM was 122 MiB, and peak process RAM was 761.30-762.21
+MiB. A stale slide revision and an incorrect tile-manifest checksum both failed
+without a result artifact.
+
+This remains a protocol smoke, not held-out retrieval qualification: BRACS ROI is
+breast-only, the bounded cache is not a whole-slide cohort, and reference, GI,
+lung, lymph-node, independent benign/reactive-source, and OOD coverage are
+absent. The pre-registered protocol therefore returns `NOT_EVALUABLE` without
+computing or relaxing model-performance thresholds.

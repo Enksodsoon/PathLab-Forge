@@ -89,6 +89,38 @@ final class EvidenceJobProcessorTest {
     }
 
     @Test
+    void rejectsHeEvidenceWithoutChecksumBoundTileCache() throws Exception {
+        var source = temporaryDirectory.resolve("he-source.bin");
+        Files.writeString(source, "immutable H&E source bytes");
+        var preview = temporaryDirectory.resolve("he-preview.png");
+        var image = new BufferedImage(16, 12, BufferedImage.TYPE_INT_RGB);
+        ImageIO.write(image, "png", preview.toFile());
+        var pack = temporaryDirectory.resolve("he-pack.json");
+        Files.writeString(pack, hePackJson());
+        var request = temporaryDirectory.resolve("he-request.json");
+        JSON.writeValue(request.toFile(), java.util.Map.of(
+                "schema", "pathlab.evidence-job/1",
+                "sourcePath", source.toString(),
+                "sourceSha256", sha256(source),
+                "slideRevision", "revision-he",
+                "previewPath", preview.toString(),
+                "sourceWidth", 1600,
+                "sourceHeight", 1200,
+                "packManifest", pack.toString(),
+                "stain", "he",
+                "marker", "generic"));
+        var now = Instant.parse("2026-08-22T00:00:00Z");
+
+        try (var queue = new EvidenceJobQueue(temporaryDirectory.resolve("he-state/jobs.sqlite3"))) {
+            queue.submit("job-he-no-tiles", request, now);
+            var claimed = queue.claimNext("worker-1", now, Duration.ofMinutes(2)).orElseThrow();
+            assertThrows(IllegalArgumentException.class, () ->
+                    new EvidenceJobProcessor(queue, temporaryDirectory.resolve("he-state"))
+                            .process(claimed, "worker-1", now.plusSeconds(1)));
+        }
+    }
+
+    @Test
     void completesOfflineDescriptiveIhcJobIntoSignedAtomicEvidence() throws Exception {
         var source = temporaryDirectory.resolve("source.bin");
         Files.writeString(source, "immutable source bytes");
@@ -151,6 +183,19 @@ final class EvidenceJobProcessorTest {
                 "\"resourceEnvelope\":{\"maxRamMiB\":1024,\"maxVramMiB\":0,\"maxSeconds\":300,\"network\":false}," +
                 "\"validation\":{\"status\":\"experimental\",\"modelCard\":\"model.md\",\"heldOutEvaluation\":\"evaluation.json\"}," +
                 "\"outputSchema\":\"pathlab.ai-evidence/1\",\"markers\":[\"generic\",\"ki-67\"]}";
+    }
+
+    private static String hePackJson() {
+        return "{\"schema\":\"pathlab.ai-pack/1\",\"packId\":\"he-fixture-v1\",\"version\":\"1\","
+                + "\"capability\":\"he-evidence\",\"acceptedStains\":[\"he\"],"
+                + "\"preprocessing\":{\"id\":\"he-fixture-v1\",\"tilePixels\":512},\"artifacts\":[],"
+                + "\"rights\":{\"license\":\"internal\",\"allowedUse\":\"private-research\","
+                + "\"redistributable\":false,\"derivativesAllowed\":false,"
+                + "\"reviewedAt\":\"2026-08-22T00:00:00Z\"},"
+                + "\"resourceEnvelope\":{\"maxRamMiB\":1024,\"maxVramMiB\":0,"
+                + "\"maxSeconds\":300,\"network\":false},"
+                + "\"validation\":{\"status\":\"experimental\",\"modelCard\":\"model.md\","
+                + "\"heldOutEvaluation\":\"fixture.json\"},\"outputSchema\":\"pathlab.ai-evidence/1\"}";
     }
 
     private Path request(Path source, Path preview, Path pack, String revision) throws Exception {
