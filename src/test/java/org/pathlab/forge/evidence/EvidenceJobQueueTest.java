@@ -38,6 +38,25 @@ final class EvidenceJobQueueTest {
     }
 
     @Test
+    void newRunnerBootImmediatelyReclaimsOrphanedActiveLease() throws Exception {
+        var database = temporaryDirectory.resolve("boot-recovery.sqlite");
+        var request = temporaryDirectory.resolve("boot-request.json");
+        Files.writeString(request, "{}");
+        var start = Instant.parse("2026-08-22T00:00:00Z");
+        try (var queue = new EvidenceJobQueue(database)) {
+            queue.submit("boot-job", request, start);
+            queue.claimNext("old-boot-worker", start, Duration.ofMinutes(5)).orElseThrow();
+        }
+        try (var restarted = new EvidenceJobQueue(database)) {
+            assertEquals(1, restarted.recoverOrphanedActiveJobs(start.plusSeconds(2)));
+            var recovered = restarted.claimNext("new-boot-worker", start.plusSeconds(2),
+                    Duration.ofSeconds(45)).orElseThrow();
+            assertEquals("boot-job", recovered.id());
+            assertEquals("new-boot-worker", recovered.leaseOwner());
+        }
+    }
+
+    @Test
     void cancellationFlagSurvivesRestart() throws Exception {
         var database = temporaryDirectory.resolve("jobs.sqlite");
         var request = temporaryDirectory.resolve("request.json");

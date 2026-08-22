@@ -315,10 +315,9 @@ function Wait-Job([string] $ResolvedJobId, [bool] $RestartWhenActive) {
     $deadline = [DateTimeOffset]::UtcNow.AddMinutes($TimeoutMinutes)
     $restarted = $false
     do {
-        Start-Sleep -Seconds 1
         try {
             $response = Invoke-Runner 'GET' "/v1/jobs/$ResolvedJobId"
-            if ($response.StatusCode -ne 200) { continue }
+            if ($response.StatusCode -ne 200) { Start-Sleep -Seconds 1; continue }
             $job = $response.Content | ConvertFrom-Json
             if ($RestartWhenActive -and -not $restarted -and $job.state -in @('validating','running','refining','packaging')) {
                 if (-not (Test-Administrator)) { Add-Check 'service-restart' 'NOT_EVALUABLE' 'Administrator privileges are required.'; $RestartWhenActive = $false; continue }
@@ -344,6 +343,7 @@ function Wait-Job([string] $ResolvedJobId, [bool] $RestartWhenActive) {
                 return $passed
             }
         } catch { }
+        Start-Sleep -Seconds 1
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
     Add-Check 'bounded-job-completion' 'FAIL' 'Bounded job did not complete before the acceptance timeout.' @{ jobId = $ResolvedJobId }
     return $false
@@ -353,10 +353,9 @@ function Wait-JobActive([string] $ResolvedJobId, [int] $Seconds = 60) {
     if (-not $ResolvedJobId) { return $false }
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($Seconds)
     do {
-        Start-Sleep -Seconds 1
         try {
             $response = Invoke-Runner 'GET' "/v1/jobs/$ResolvedJobId"
-            if ($response.StatusCode -ne 200) { continue }
+            if ($response.StatusCode -ne 200) { Start-Sleep -Seconds 1; continue }
             $job = $response.Content | ConvertFrom-Json
             if ($job.state -in @('validating','running','refining','packaging')) {
                 Add-Check 'reboot-job-active' 'PASS' 'The bounded job is active and checkpoint-capable before manual reboot.' @{
@@ -371,6 +370,7 @@ function Wait-JobActive([string] $ResolvedJobId, [int] $Seconds = 60) {
                 return $false
             }
         } catch { }
+        Start-Sleep -Seconds 1
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
     Add-Check 'reboot-job-active' 'FAIL' 'The bounded job did not become active before the reboot challenge timeout.' @{ jobId = $ResolvedJobId }
     return $false

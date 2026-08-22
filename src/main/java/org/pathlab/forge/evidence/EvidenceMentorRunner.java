@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.0.2";
+    private static final String VERSION = "2.0.3";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;
@@ -50,6 +50,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         require(token != null && token.length() >= 32, "Loopback token is too short");
         Files.createDirectories(this.stateRoot);
         queue = new EvidenceJobQueue(this.stateRoot.resolve("jobs.sqlite3"));
+        queue.recoverOrphanedActiveJobs(startedAt);
         dashboardHtml = readResource("/evidence-dashboard/index.html");
         server = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 32);
         server.createContext("/", this::handle);

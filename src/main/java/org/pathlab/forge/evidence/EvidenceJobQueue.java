@@ -125,6 +125,22 @@ public final class EvidenceJobQueue implements AutoCloseable {
         } catch (SQLException error) { throw new IOException("Unable to read evidence job snapshot", error); }
     }
 
+    /** Makes leases from the previous runner boot immediately reclaimable without changing checkpoints. */
+    public synchronized int recoverOrphanedActiveJobs(Instant now) throws IOException {
+        try (var statement = connection.prepareStatement("""
+                UPDATE evidence_jobs SET lease_owner='',lease_expires_at=?,last_heartbeat=?,
+                  detail=?,updated_at=? WHERE state IN ('VALIDATING','RUNNING','REFINING','PACKAGING')
+                """)) {
+            statement.setString(1, Instant.EPOCH.toString());
+            statement.setString(2, now.toString());
+            statement.setString(3, "Recovered after runner restart; verified checkpoint will be revalidated");
+            statement.setString(4, now.toString());
+            return statement.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to recover orphaned Evidence Mentor leases", error);
+        }
+    }
+
     public synchronized List<EvidenceJobSnapshot> list(EvidenceJobState state, EvidenceExecutionLane lane, int limit) throws IOException {
         if (limit < 1 || limit > 200) throw new IllegalArgumentException("Evidence job list limit is invalid");
         var sql = new StringBuilder("SELECT * FROM evidence_jobs WHERE 1=1");
