@@ -32,7 +32,7 @@
     "source": "pathlab-local-build:dinov2-worker-v1/worker.py"
   }, {
     "name": "runtime-manifest",
-    "sha256": "1969c91db66d8acc70b6c8648a57d3bfc923880e03f1f7f1e30c593133c01635",
+    "sha256": "b52c4d80f914c7e6e56d05e594d9478333d763861b5133e3c82af2a6a17fd942",
     "source": "pathlab-local-build:torch-2.7.1-cu126-python-3.12/windows-x64"
   }, {
     "name": "qualification-protocol",

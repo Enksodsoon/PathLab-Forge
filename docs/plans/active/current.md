@@ -29,12 +29,13 @@ appear in monitoring payloads.
 
 ## Current status
 
-Gates 1-4 are implemented on the draft feature branch. Gate 5 now has an
-atomic, fail-closed host acceptance harness and operator procedure. It remains
-incomplete until an administrator installs the service and the same installed
-runtime earns a `PASS` aggregate report after live LocalService, Session 0 GPU,
-service-restart, offline, and manual-reboot recovery checks. Gate 6 has not been
-qualified, and Gate 7 has not begun.
+Gates 1-4 are implemented on the draft feature branch. The installed 2.0.11
+runtime has separate passing `Inspect` and `ServiceRestart` reports proving
+live `LocalService`, outbound-deny coverage, P2000 CUDA 12.6 `sm_61` inference,
+resource bounds, signed evidence packaging, and restart recovery. Its latest
+aggregate report is still `NOT_EVALUABLE` solely because the operator-controlled
+manual-reboot challenge has not run. Gate 5 therefore remains incomplete. Gate
+6 has not been qualified, and Gate 7 has not begun.
 
 Implementation, service installation, model qualification, merge, deployment,
 feature activation, and any future clinical/capacity study are separate gates.

@@ -310,6 +310,47 @@ function Submit-BoundedJob {
     } catch { Add-Check 'bounded-job-submission' 'FAIL' 'Bounded job submission failed.'; return $null }
 }
 
+function Test-Session0GpuResult([string] $ResolvedJobId, [object] $Job) {
+    $resultPath = Join-Path $StateRoot "worker-output\$ResolvedJobId\result.json"
+    try {
+        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            return [pscustomobject]@{ Passed = $false; Evidence = @{ reason = 'worker-result-missing' } }
+        }
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        $runtime = $result.runtime
+        $passed = $result.schema -eq 'pathlab.model-worker-result/1' -and
+            $result.status -eq 'completed' -and
+            $result.packManifestSha256 -eq $Job.packSha256 -and
+            [string]$runtime.device -match 'Quadro P2000' -and
+            [string]$runtime.cuda -eq '12.6' -and
+            [string]$runtime.architecture -eq 'sm_61' -and
+            [string]$runtime.analysisNetwork -eq 'disabled' -and
+            [int]$runtime.tiles -gt 0 -and
+            [double]$runtime.elapsedSeconds -gt 0 -and
+            [double]$runtime.peakVramMiB -gt 0 -and
+            [double]$runtime.peakVramMiB -le 4608 -and
+            [double]$runtime.peakRamMiB -gt 0 -and
+            [double]$runtime.peakRamMiB -le 16384
+        return [pscustomobject]@{
+            Passed = $passed
+            Evidence = @{
+                resultSha256 = (Get-FileHash -LiteralPath $resultPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                device = [string]$runtime.device
+                cuda = [string]$runtime.cuda
+                architecture = [string]$runtime.architecture
+                tiles = [int]$runtime.tiles
+                batchSize = [int]$runtime.batchSize
+                elapsedSeconds = [double]$runtime.elapsedSeconds
+                peakVramMiB = [double]$runtime.peakVramMiB
+                peakRamMiB = [double]$runtime.peakRamMiB
+                analysisNetwork = [string]$runtime.analysisNetwork
+            }
+        }
+    } catch {
+        return [pscustomobject]@{ Passed = $false; Evidence = @{ reason = 'worker-result-invalid' } }
+    }
+}
+
 function Wait-Job([string] $ResolvedJobId, [bool] $RestartWhenActive) {
     if (-not $ResolvedJobId) { return $false }
     $deadline = [DateTimeOffset]::UtcNow.AddMinutes($TimeoutMinutes)
@@ -337,9 +378,12 @@ function Wait-Job([string] $ResolvedJobId, [bool] $RestartWhenActive) {
                     jobId = $ResolvedJobId; state = $job.state; lane = $job.lane; failureCode = $job.failureCode; finalArtifactSha256 = $job.finalArtifactSha256
                 }
                 if ($job.lane -eq 'gpu') {
-                    Add-Check 'session0-gpu-inference' $(if ($passed) {'PASS'} else {'FAIL'}) 'A CUDA-declared pack completed in the service GPU lane.' @{
-                        jobId = $ResolvedJobId; state = $job.state
-                    }
+                    $gpuResult = Test-Session0GpuResult $ResolvedJobId $job
+                    $gpuPassed = $passed -and $gpuResult.Passed
+                    $gpuEvidence = @{} + $gpuResult.Evidence
+                    $gpuEvidence.jobId = $ResolvedJobId
+                    $gpuEvidence.state = $job.state
+                    Add-Check 'session0-gpu-inference' $(if ($gpuPassed) {'PASS'} else {'FAIL'}) 'The retained worker result proves bounded offline CUDA inference on the P2000.' $gpuEvidence
                 } else { Add-Check 'session0-gpu-inference' 'NOT_EVALUABLE' 'The bounded acceptance job did not use the GPU lane.' }
                 return $passed
             }

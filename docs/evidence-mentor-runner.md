@@ -38,7 +38,7 @@ First build a versioned distribution:
 Then run the administrator-approved installer with a Java 17 runtime:
 
 ```powershell
-.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.6' `
+.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.11' `
   -DistributionPath '.\build\install\pathlab-forge' -JavaHome 'C:\Path\To\jdk-17'
 ```
 
@@ -81,15 +81,22 @@ and a benchmark-only, not-evaluable DINOv2 Session 0 manifest. It does not
 activate or qualify the H&E model:
 
 ```powershell
+.\scripts\make-dinov2-runtime-portable.ps1 `
+  -BasePython 'C:\Path\To\Python312'
 .\scripts\stage-dinov2-session0-acceptance.ps1
 ```
+
+The one-time portability step copies the Python base needed by the external
+pack into protected model storage, removes the user-profile runtime dependency,
+and extends the checksum ledger. It refuses to overwrite an existing portable
+base. Forge itself still contains no Python, PyTorch, CUDA, or model weights.
 
 Then prove service restart recovery while that bounded job is active:
 
 ```powershell
 & 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
   -Mode ServiceRestart `
-  -JobRequestPath 'D:\PathLabData\EvidenceMentor\state\requests\acceptance-gpu.json' `
+  -JobRequestPath 'D:\PathLabData\EvidenceMentor\state\acceptance\gpu-session0-v1\request.json' `
   -JobId 'acceptance-0123abcd' `
   -TimeoutMinutes 10
 ```
@@ -100,7 +107,7 @@ The harness never initiates a reboot:
 ```powershell
 & 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
   -Mode PrepareReboot `
-  -JobRequestPath 'D:\PathLabData\EvidenceMentor\state\requests\acceptance-reboot.json' `
+  -JobRequestPath 'D:\PathLabData\EvidenceMentor\state\acceptance\gpu-session0-v1\request.json' `
   -JobId 'acceptance-89abcdef'
 
 # Reboot Windows manually while the bounded job is active. Do not log in first.
@@ -129,8 +136,8 @@ an incomplete report into passing evidence.
 
 ## Model boundary
 
-The deterministic cell/IHC baseline is runnable. DINOv2-small remains an
-experimental executable baseline until its cross-tissue held-out cohort is
+The deterministic cell/IHC baseline is runnable. DINOv2-small remains a
+`not_evaluable` executable candidate until its cross-tissue held-out cohort is
 complete. Hibou-B and HoVer-Net remain `not_evaluable` until exact,
 rights-approved workers and artifacts pass qualification. H&E, cells, IHC,
 special stains, cytology, and later Atlas tracks stay independently signed and

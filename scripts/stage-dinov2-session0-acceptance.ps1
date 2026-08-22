@@ -61,7 +61,22 @@ foreach ($artifact in $manifest.artifacts) {
 $targetPartial = "$manifestTarget.partial"
 if (Test-Path -LiteralPath $manifestTarget -PathType Leaf) {
     if ((Get-Sha256 $manifestTarget) -ne (Get-Sha256 $manifestSource)) {
-        throw 'Installed Session 0 acceptance manifest differs from the bundled manifest.'
+        $installed = Get-Content -LiteralPath $manifestTarget -Raw | ConvertFrom-Json
+        if ($installed.schema -ne 'pathlab.ai-pack/1' -or
+                $installed.packId -ne $manifest.packId -or
+                $installed.version -ne $manifest.version -or
+                $installed.usageLimits.acceptanceOnly -ne $true -or
+                $installed.rights.allowedUse -ne 'benchmark-only' -or
+                $installed.validation.status -ne 'not-evaluable') {
+            throw 'Refusing to replace a manifest that is not the same fail-closed acceptance pack.'
+        }
+        Copy-Item -LiteralPath $manifestSource -Destination $targetPartial
+        $backup = "$manifestTarget.backup-$([Guid]::NewGuid().ToString('N'))"
+        try {
+            [IO.File]::Replace($targetPartial, $manifestTarget, $backup)
+        } finally {
+            if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+        }
     }
 } else {
     Copy-Item -LiteralPath $manifestSource -Destination $targetPartial

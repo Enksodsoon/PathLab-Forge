@@ -2,7 +2,10 @@ package org.pathlab.forge.evidence;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -52,6 +55,10 @@ public final class ExternalModelWorker {
                 .map(EvidencePackManifest.Artifact::sha256).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Model worker checksum is not declared"));
         require(expected.equals(sha256(executable)), "Model worker checksum does not match");
+        verifyArtifact(pack, "workerSource", install.resolve("worker.py"));
+        var runtimeManifestPath = install.resolve("runtime-manifest.json");
+        verifyArtifact(pack, "runtime-manifest", runtimeManifestPath);
+        validateRuntimeFileLedger(JSON.readTree(runtimeManifestPath.toFile()), install);
 
         var outputRoot = stateRoot.resolve("worker-output").resolve(jobId).normalize();
         require(outputRoot.startsWith(stateRoot.resolve("worker-output")), "Model output path escaped state root");
@@ -59,7 +66,9 @@ public final class ExternalModelWorker {
         var output = outputRoot.resolve("result.json");
         var partial = outputRoot.resolve("result.json.partial");
         var progressPath = outputRoot.resolve("progress.json");
+        var diagnosticPath = outputRoot.resolve("diagnostic.log");
         Files.deleteIfExists(partial);
+        Files.deleteIfExists(diagnosticPath);
         var command = new java.util.ArrayList<String>();
         command.add(executable.toString()); command.add("--request"); command.add(request.toString());
         command.add("--output"); command.add(partial.toString()); command.add("--offline");
@@ -77,8 +86,12 @@ public final class ExternalModelWorker {
         environment.put("PATHLAB_ANALYSIS_NETWORK", "disabled");
         environment.put("PATHLAB_MAX_VRAM_MIB", Integer.toString(pack.maxVramMiB()));
         environment.put("PATHLAB_MAX_RAM_MIB", Integer.toString(pack.maxRamMiB()));
-        var process = ChildProcessContainment.global().register(builder.redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD).start());
+        var process = ChildProcessContainment.global().register(builder.redirectErrorStream(true).start());
+        var diagnosticBytes = new ByteArrayOutputStream(16_384);
+        var outputReader = new Thread(() -> drainBounded(process.getInputStream(), diagnosticBytes),
+                "pathlab-model-worker-output-" + jobId);
+        outputReader.setDaemon(true);
+        outputReader.start();
         try {
             var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(pack.maxSeconds());
             var lastProgressModified = -1L;
@@ -106,16 +119,23 @@ public final class ExternalModelWorker {
             }
         } catch (IOException error) {
             process.destroyForcibly();
+            awaitOutput(outputReader, process.getInputStream());
             Files.deleteIfExists(partial);
             throw error;
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt(); process.destroyForcibly();
+            awaitOutput(outputReader, process.getInputStream());
             Files.deleteIfExists(partial);
             throw new IOException("Model worker was interrupted", error);
         }
+        awaitOutput(outputReader, process.getInputStream());
         if (process.exitValue() != 0 || !Files.isRegularFile(partial)) {
             Files.deleteIfExists(partial);
-            throw new IllegalArgumentException("Model worker failed closed");
+            writeDiagnostic(diagnosticPath, diagnosticBytes.toByteArray());
+            var detail = safeFailureDetail(diagnosticBytes.toString(StandardCharsets.UTF_8));
+            throw new IllegalArgumentException(detail.isBlank()
+                    ? "Model worker failed closed with exit code " + process.exitValue()
+                    : "Model worker failed closed with exit code " + process.exitValue() + ": " + detail);
         }
         var result = JSON.readTree(partial.toFile());
         validateResult(result, pack);
@@ -126,6 +146,22 @@ public final class ExternalModelWorker {
             Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
         return result;
+    }
+
+    private static void writeDiagnostic(Path path, byte[] value) {
+        if (value.length == 0) return;
+        try {
+            var partial = path.resolveSibling(path.getFileName() + ".partial");
+            Files.write(partial, value);
+            try {
+                Files.move(partial, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                Files.move(partial, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException ignored) {
+            // Failure diagnostics never change durable model job state.
+        }
     }
 
     private static Progress readProgress(Path path, String jobId, EvidencePackManifest pack) throws IOException {
@@ -153,6 +189,97 @@ public final class ExternalModelWorker {
 
     private static Set<String> fieldNames(JsonNode value) {
         var names = new java.util.HashSet<String>(); value.fieldNames().forEachRemaining(names::add); return names;
+    }
+
+    private static void drainBounded(InputStream input, ByteArrayOutputStream output) {
+        try (input) {
+            var buffer = new byte[4_096];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                var remaining = 16_384 - output.size();
+                if (remaining > 0) output.write(buffer, 0, Math.min(read, remaining));
+            }
+        } catch (IOException ignored) {
+            // Diagnostics are best-effort and never alter worker state.
+        }
+    }
+
+    private static void awaitOutput(Thread reader, InputStream input) {
+        try {
+            reader.join(2_000);
+            if (reader.isAlive()) input.close();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        } catch (IOException ignored) {
+            // Diagnostics are best-effort and never alter worker state.
+        }
+    }
+
+    static String safeFailureDetail(String output) {
+        if (output == null || output.isBlank()) return "";
+        var prefix = "PathLab DINOv2 worker failed closed: ";
+        for (var line : output.split("\\R")) {
+            if (!line.startsWith(prefix)) continue;
+            var detail = line.substring(prefix.length()).trim();
+            if (Set.of(
+                    "offline analysis contract was not enforced",
+                    "model library offline flags were not enforced",
+                    "runtime manifest schema is invalid",
+                    "runtime file ledger is invalid",
+                    "CUDA sm_61 host is unavailable",
+                    "runtime does not contain the pinned Pascal CUDA target",
+                    "resource envelope is invalid",
+                    "source geometry is invalid",
+                    "tile-cache manifest checksum does not match",
+                    "tile-cache schema is unsupported",
+                    "tile cache is stale or belongs to another source revision",
+                    "tile-cache pixel contract is unsupported",
+                    "tile-cache tile list is invalid",
+                    "tile-cache tile entry is invalid",
+                    "tile-cache tile path must be relative",
+                    "tile-cache tile checksum or path is invalid",
+                    "tile-cache tile coordinates are invalid or duplicated",
+                    "tile-cache tile geometry is invalid",
+                    "worker exceeded its declared resource envelope",
+                    "pack manifest is unavailable").contains(detail)
+                    || detail.matches("(required artifact is unavailable|artifact checksum mismatch): [A-Za-z0-9_-]{1,80}")) {
+                return detail;
+            }
+        }
+        return "";
+    }
+
+    private static void verifyArtifact(EvidencePackManifest pack, String name, Path path) throws IOException {
+        var expected = pack.artifacts().stream().filter(item -> name.equals(item.name()))
+                .map(EvidencePackManifest.Artifact::sha256).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Model worker artifact is not declared: " + name));
+        require(Files.isRegularFile(path) && expected.equals(sha256(path)),
+                "Model worker artifact checksum does not match: " + name);
+    }
+
+    static void validateRuntimeFileLedger(JsonNode manifest, Path installRoot) throws IOException {
+        require(manifest.isObject() && "pathlab.model-runtime/1".equals(manifest.path("schema").asText()),
+                "Model runtime manifest schema is invalid");
+        var files = manifest.path("files");
+        require(files.isArray() && !files.isEmpty() && files.size() <= 8_192,
+                "Model runtime file ledger is invalid");
+        var root = installRoot.toAbsolutePath().normalize();
+        var realRoot = root.toRealPath();
+        var seen = new java.util.HashSet<String>();
+        for (var item : files) {
+            var relativeText = item.path("path").asText("");
+            require(!relativeText.isBlank() && relativeText.length() <= 500
+                            && !Path.of(relativeText).isAbsolute() && seen.add(relativeText),
+                    "Model runtime file ledger is invalid");
+            var path = root.resolve(relativeText).normalize();
+            require(path.startsWith(root) && Files.isRegularFile(path)
+                            && path.toRealPath().startsWith(realRoot)
+                            && item.path("bytes").isIntegralNumber()
+                            && item.path("bytes").asLong(-1) == Files.size(path)
+                            && item.path("sha256").asText("").matches("[a-f0-9]{64}")
+                            && item.path("sha256").asText().equals(sha256(path)),
+                    "Model runtime file checksum does not match");
+        }
     }
 
     @FunctionalInterface
