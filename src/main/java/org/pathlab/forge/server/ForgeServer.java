@@ -1,5 +1,6 @@
 package org.pathlab.forge.server;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -54,6 +55,7 @@ import org.pathlab.forge.viewer.ViewerUploadStatus;
 import org.pathlab.forge.viewer.WindowsCredentialStore;
 
 public final class ForgeServer implements AutoCloseable {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_WRITE_BYTES = 65_536;
     private static final int DEFAULT_DESKTOP_PORT = 51_274;
     private static final long SESSION_MAX_AGE_SECONDS = 315_360_000L;
@@ -305,6 +307,8 @@ public final class ForgeServer implements AutoCloseable {
                 capabilities(exchange);
             } else if ("/api/evidence/status".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 evidenceRunnerStatus(exchange);
+            } else if ("/api/evidence/dashboard".equals(path) && "POST".equals(exchange.getRequestMethod())) {
+                openEvidenceDashboard(exchange);
             } else if ("/api/features".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 features(exchange);
             } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}/install")
@@ -762,15 +766,23 @@ public final class ForgeServer implements AutoCloseable {
 
     private void evidenceRunnerStatus(HttpExchange exchange) throws IOException {
         if (!requireAuthenticated(exchange)) return;
-        var tokenPath = EvidenceMentorRunner.defaultStateRoot().resolve("ipc-token");
-        if (!Files.isRegularFile(tokenPath)) {
+        var stateRoot = EvidenceMentorRunner.defaultStateRoot();
+        var tokenPath = stateRoot.resolve("ipc-token");
+        var endpointPath = stateRoot.resolve("endpoint.json");
+        if (!Files.isRegularFile(tokenPath) || !Files.isRegularFile(endpointPath)) {
             respond(exchange, 503, "application/json",
-                    "{\"schema\":\"pathlab.evidence-runner-status/1\",\"status\":\"unavailable\","
+                    "{\"schema\":\"pathlab.evidence-runner-status/2\",\"status\":\"unavailable\","
                             + "\"detail\":\"Evidence Mentor runner is not installed\"}");
             return;
         }
         try {
-            var port = Integer.getInteger("pathlab.evidence.port", 8765);
+            var endpoint = JSON.readTree(endpointPath.toFile());
+            if (!"pathlab.runner-endpoint/1".equals(endpoint.path("schema").asText())
+                    || !endpoint.path("port").canConvertToInt()
+                    || endpoint.path("port").asInt() < 1 || endpoint.path("port").asInt() > 65535) {
+                throw new IOException("Evidence Mentor endpoint is invalid");
+            }
+            var port = endpoint.path("port").asInt();
             var request = java.net.http.HttpRequest.newBuilder(
                             URI.create("http://127.0.0.1:" + port + "/v1/status"))
                     .timeout(java.time.Duration.ofSeconds(2))
@@ -784,11 +796,39 @@ public final class ForgeServer implements AutoCloseable {
             respond(exchange, 200, "application/json", response.body());
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            respond(exchange, 503, "application/json", "{\"schema\":\"pathlab.evidence-runner-status/1\","
+            respond(exchange, 503, "application/json", "{\"schema\":\"pathlab.evidence-runner-status/2\","
                     + "\"status\":\"unavailable\",\"detail\":\"Status request was interrupted\"}");
         } catch (IOException | IllegalArgumentException error) {
-            respond(exchange, 503, "application/json", "{\"schema\":\"pathlab.evidence-runner-status/1\","
+            respond(exchange, 503, "application/json", "{\"schema\":\"pathlab.evidence-runner-status/2\","
                     + "\"status\":\"unavailable\",\"detail\":\"Runner is not reachable\"}");
+        }
+    }
+
+    private void openEvidenceDashboard(HttpExchange exchange) throws IOException {
+        if (!requireWrite(exchange)) return;
+        var stateRoot = EvidenceMentorRunner.defaultStateRoot();
+        try {
+            var endpoint = JSON.readTree(stateRoot.resolve("endpoint.json").toFile());
+            var port = endpoint.path("port").asInt();
+            if (!"pathlab.runner-endpoint/1".equals(endpoint.path("schema").asText())
+                    || port < 1 || port > 65535) throw new IOException("Runner endpoint is invalid");
+            var origin = "http://127.0.0.1:" + port;
+            var request = java.net.http.HttpRequest.newBuilder(URI.create(origin + "/v1/dashboard-sessions"))
+                    .timeout(java.time.Duration.ofSeconds(2))
+                    .header("Authorization", "Bearer " + Files.readString(stateRoot.resolve("ipc-token")).trim())
+                    .POST(java.net.http.HttpRequest.BodyPublishers.noBody()).build();
+            var response = java.net.http.HttpClient.newHttpClient().send(request,
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 201 || response.body().length() > 4_096) throw new IOException("Dashboard session was refused");
+            var result = JSON.readTree(response.body());
+            var code = result.path("code").asText();
+            if (!code.matches("[A-Za-z0-9_-]{40,80}")) throw new IOException("Dashboard session code is invalid");
+            respond(exchange, 200, "application/json", "{\"url\":" + json(origin + "/dashboard/#" + code) + "}");
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            respond(exchange, 503, "application/json", "{\"error\":\"dashboard_unavailable\",\"detail\":\"Dashboard request was interrupted\"}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 503, "application/json", "{\"error\":\"dashboard_unavailable\",\"detail\":\"Evidence Mentor dashboard is not reachable\"}");
         }
     }
 

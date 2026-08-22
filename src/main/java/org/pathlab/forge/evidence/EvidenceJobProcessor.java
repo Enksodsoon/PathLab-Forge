@@ -34,6 +34,28 @@ public final class EvidenceJobProcessor {
         Files.createDirectories(this.stateRoot.resolve("artifacts"));
     }
 
+    /** Resolves the lane from the validated pack manifest; the IPC caller cannot select it. */
+    public static EvidenceExecutionLane executionLane(Path requestPath) throws IOException {
+        return executionPlan(requestPath).lane();
+    }
+
+    public static ExecutionPlan executionPlan(Path requestPath) throws IOException {
+        final JsonNode request;
+        try {
+            request = JSON.readTree(requestPath.toAbsolutePath().normalize().toFile());
+        } catch (JsonProcessingException invalidJson) {
+            throw new IllegalArgumentException("Evidence job request JSON is invalid", invalidJson);
+        }
+        // Legacy v1 submissions were accepted before lane metadata existed and migrate to CPU/I/O.
+        if (request == null || !request.path("packManifest").isTextual()) return new ExecutionPlan(EvidenceExecutionLane.CPU_IO, "");
+        var pack = EvidencePackManifest.load(regularPath(request, "packManifest"));
+        pack.requirePilotEligible();
+        return new ExecutionPlan("cuda".equals(pack.runtimeCompatibility().executionProvider())
+                ? EvidenceExecutionLane.GPU : EvidenceExecutionLane.CPU_IO, pack.sha256());
+    }
+
+    public record ExecutionPlan(EvidenceExecutionLane lane, String packSha256) { }
+
     public EvidenceJob process(EvidenceJob job, String workerId, Instant now) throws IOException {
         final JsonNode request;
         try {
@@ -46,7 +68,7 @@ public final class EvidenceJobProcessor {
                         && java.util.stream.Stream.concat(REQUIRED_REQUEST_FIELDS.stream(), OPTIONAL_REQUEST_FIELDS.stream())
                                 .collect(java.util.stream.Collectors.toSet()).containsAll(requestFields),
                 "Evidence job request is invalid");
-        require("pathlab.evidence-job/1".equals(text(request, "schema")),
+        require(Set.of("pathlab.evidence-job/1", "pathlab.evidence-job/2").contains(text(request, "schema")),
                 "Evidence job schema is unsupported");
         var source = regularPath(request, "sourcePath");
         var preview = regularPath(request, "previewPath");
@@ -55,6 +77,16 @@ public final class EvidenceJobProcessor {
                 "Evidence source checksum does not match");
         var pack = EvidencePackManifest.load(regularPath(request, "packManifest"));
         pack.requirePilotEligible();
+        var durable = queue.snapshot(job.id()).orElseThrow();
+        require(durable.requestSha256().isBlank() || durable.requestSha256().equals(sha256(job.requestPath())),
+                "Evidence request changed after submission");
+        require(durable.packSha256().isBlank() || durable.packSha256().equals(pack.sha256()),
+                "Evidence pack changed after submission");
+        if (durable.checkpointPath() != null) {
+            require(Files.isRegularFile(durable.checkpointPath())
+                            && durable.checkpointSha256().equals(sha256(durable.checkpointPath())),
+                    "Evidence checkpoint checksum does not match");
+        }
         var stain = text(request, "stain");
         pack.requireStain(stain);
         var marker = text(request, "marker").toLowerCase();
@@ -91,7 +123,15 @@ public final class EvidenceJobProcessor {
         var analysis = BrightfieldTileAnalyzer.analyze(image, marker);
         JsonNode modelResult = null;
         if (pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE) {
-            modelResult = new ExternalModelWorker(stateRoot).execute(pack, job.requestPath(), job.id());
+            modelResult = new ExternalModelWorker(stateRoot).execute(pack, job.requestPath(), job.id(),
+                    durable.checkpointPath(), progress -> {
+                var current = queue.find(job.id()).orElseThrow();
+                if (current.cancelRequested()) {
+                    throw new CancellationException();
+                }
+                queue.heartbeat(job.id(), workerId, progress.completedUnits(), progress.totalUnits(),
+                        progress.checkpointPath(), progress.checkpointSha256(), Instant.now(), LEASE);
+            });
             require("completed".equals(modelResult.path("status").asText()),
                     "H&E model worker returned unsupported or not_evaluable");
         }
@@ -128,8 +168,9 @@ public final class EvidenceJobProcessor {
         Files.createDirectories(artifactRoot);
         var unsigned = evidence(request, pack, image, analysis, stainQc, modelResult, focus, tissue,
                 abstentionReasons, compartmentSource, compartmentWarning, now);
-        new EvidenceBundleWriter(stateRoot.resolve("signing"))
-                .write(artifactRoot.resolve("evidence.json"), unsigned);
+        var finalArtifact = artifactRoot.resolve("evidence.json");
+        new EvidenceBundleWriter(stateRoot.resolve("signing")).write(finalArtifact, unsigned);
+        queue.recordFinalArtifact(job.id(), workerId, sha256(finalArtifact), now.plusMillis(2500));
         var terminal = abstained ? EvidenceJobState.ABSTAINED : EvidenceJobState.COMPLETED;
         var detail = abstained
                 ? "Signed QC evidence abstained from descriptive analysis"

@@ -194,7 +194,7 @@ export function App() {
     const update = () => void api.evidenceRunnerStatus()
       .then(setEvidenceStatus)
       .catch(() => setEvidenceStatus({
-        schema: 'pathlab.evidence-runner-status/1', status: 'unavailable', detail: 'Runner is not reachable',
+        schema: 'pathlab.evidence-runner-status/2', status: 'unavailable', detail: 'Runner is not reachable',
       }))
     update()
     const timer = window.setInterval(update, 5_000)
@@ -813,10 +813,26 @@ export function App() {
       <section className={`evidence-runner-dashboard ${evidenceStatus?.status === 'ready' ? 'ready' : ''}`}
         aria-label="Evidence Mentor runner" aria-live="polite">
         <strong>Evidence Mentor</strong>
-        <span>{evidenceStatus?.status === 'ready' ? 'Autonomous runner ready' : 'Runner unavailable'}</span>
+        <span>{evidenceStatus?.status === 'ready'
+          ? `${evidenceStatus.queue?.active || 0} active · ${evidenceStatus.queue?.queued || 0} queued`
+          : 'Runner unavailable'}</span>
         {evidenceStatus?.status === 'ready' ? <small>
-          Analysis network off · RAM {formatBytes(evidenceStatus.processMemoryUsedBytes || 0)} / {formatBytes(evidenceStatus.processMemoryLimitBytes || 0)} · VRAM cap {evidenceStatus.vramLimitMiB} MiB
+          {evidenceStatus.acceptingJobs === false ? 'New claims paused' : 'Analysis network off'}
+          {evidenceStatus.leadingJob
+            ? ` · ${evidenceStatus.leadingJob.id} ${Math.round(evidenceStatus.leadingJob.progress * 100)}%`
+            : ''}
+          {evidenceStatus.heartbeat ? ` · heartbeat ${new Date(evidenceStatus.heartbeat).toLocaleTimeString()}` : ''}
         </small> : <small>{evidenceStatus?.detail || 'Checking local runner…'}</small>}
+        {evidenceStatus?.status === 'ready' ? <button type="button" onClick={() => {
+          const dashboard = window.open('about:blank', '_blank')
+          if (dashboard) dashboard.opener = null
+          void api.openEvidenceDashboard()
+            .then(({ url }) => dashboard ? dashboard.location.replace(url) : window.location.assign(url))
+            .catch((nextError) => {
+              dashboard?.close()
+              setError(message(nextError))
+            })
+        }}>Open dashboard</button> : null}
       </section>
       {connection?.connected && viewerUpload?.viewerSlideId
         && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (

@@ -1,38 +1,33 @@
-# Active Task — Modular Capability Release
+# Active Task — Autonomous Evidence Mentor Service
 
-Supersedes the completed direct-OME release-candidate brief by explicit
-product-owner direction on 2026-08-11.
+Supersedes the modular-capability stop rule by explicit product-owner direction
+on 2026-08-22. The research, licensing, privacy, and fail-closed boundaries remain.
 
 ## Fixed endpoint
 
-Deliver a lightweight Forge base plus a signed, offline-by-default Feature
-Center. The base owns WSI inspection, direct preview, annotations, geometry
-measurements, conversion, validation and upload. Optional Pathology Tools and
-Classical Analysis packs are downloaded only after an explicit user action.
+Forge submits immutable local-analysis requests to the independently running
+`PathLabEvidenceMentor` Windows service. The service owns the WAL queue,
+checkpoint recovery, signed evidence packaging, and an operations-only loopback
+dashboard. Forge, the dashboard, and Codex may close after a `202 Accepted`
+response without interrupting work.
 
-AI is not a core feature. Forge bundles no weights or training runtime. At most
-one separately downloaded pretrained research model may be published after
-license, provenance, resource and deterministic self-test gates pass. Training
-Lab is a separate advanced pack using user-provided labelled data.
+The service uses a dynamic loopback port published through
+`pathlab.runner-endpoint/1`, boot-scoped browser sessions, one GPU lane and one
+low-priority CPU/I/O lane. Analysis is network-disabled. No raw pixels,
+embeddings, patient identifiers, provisional regions, or scientific outcomes
+appear in monitoring payloads.
 
-## Milestones
+## Delivery gates
 
-1. Remove redundant preview work and finish adaptive runtime limits.
-2. Add signed catalog, staged installation, self-test, rollback and uninstall.
-3. Add bounded raw-region, PathObject, measurement and analysis-run contracts.
-4. Add the Pathology Tools pack boundary: hierarchy, H&E, stains and TMA.
-5. Add the Classical Analysis pack boundary: tissue/cells/classifier/QC/registration.
-6. Add the optional pretrained-AI and Training Lab availability gates.
-7. Add explicit private Viewer synchronization with conflict-safe verification.
+1. Queue v2 migration, progress sidecars, renewable leases, retry classes, and pause control.
+2. Dynamic endpoint discovery and authenticated standalone dashboard.
+3. Forge compact status and one-time dashboard launcher.
+4. Checksum-pinned WinSW packaging, ACLs, firewall policy, side-by-side rollback.
+5. Actual LocalService, reboot, Session 0 P2000, offline, and recovery acceptance.
+6. Independent expert-pack qualification for H&E, cells, IHC, special stains, and cytology.
+7. Dual-lineage Atlas feasibility only after lawful frozen teachers exist.
 
-## Stop rule
-
-Stop after these seven milestones and their local validation report. Do not add
-third-party plugins, arbitrary scripting, a dependency solver, cloud services,
-microservices, distributed workers, additional models, merge or deployment.
-
-New conversions use only the measured `ome-dynamic-v1` direct path. The governed
-same-slide release-candidate comparison found it 46.67% faster and 72.96% smaller
-than prepared-v2. Existing prepared artifacts remain readable, but Forge does not
-select or retry into that larger route. Image-quality gates, artifact reuse,
-privacy and resumable upload remain regression contracts.
+Implementation, service installation, model qualification, merge, deployment,
+feature activation, and any future clinical/capacity study are separate gates.
+Feature flags remain default-off and no diagnostic or clinical-scoring claims
+are permitted.

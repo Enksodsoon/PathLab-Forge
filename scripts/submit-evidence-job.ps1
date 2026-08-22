@@ -8,8 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$PackManifest,
     [ValidateSet('he', 'ihc_dab')][string]$Stain,
     [string]$Marker = 'generic',
-    [string]$StateRoot,
-    [int]$Port = 8765
+    [string]$StateRoot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,15 +24,26 @@ $source = Get-Item -LiteralPath $SourcePath
 $preview = Get-Item -LiteralPath $PreviewPath
 $pack = Get-Item -LiteralPath $PackManifest
 $tokenPath = Join-Path $state 'ipc-token'
-if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+$endpointPath = Join-Path $state 'endpoint.json'
+if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf) -or -not (Test-Path -LiteralPath $endpointPath -PathType Leaf)) {
     throw 'Evidence Mentor runner is not installed or has not started.'
+}
+$endpoint = Get-Content -LiteralPath $endpointPath -Raw | ConvertFrom-Json
+if ($endpoint.schema -ne 'pathlab.runner-endpoint/1' -or $endpoint.port -lt 1 -or $endpoint.port -gt 65535) {
+    throw 'Evidence Mentor endpoint is invalid.'
+}
+$statePrefix = $state.TrimEnd('\') + '\'
+foreach ($input in @($source.FullName, $preview.FullName, $pack.FullName)) {
+    if (-not $input.StartsWith($statePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "LocalService cannot read an input outside the protected Evidence Mentor state root: $input"
+    }
 }
 $jobId = [Guid]::NewGuid().ToString()
 $requestRoot = Join-Path $state 'requests'
 New-Item -ItemType Directory -Path $requestRoot -Force | Out-Null
 $requestPath = Join-Path $requestRoot "$jobId.json"
 $request = [ordered]@{
-    schema = 'pathlab.evidence-job/1'
+    schema = 'pathlab.evidence-job/2'
     sourcePath = $source.FullName
     sourceSha256 = (Get-FileHash -LiteralPath $source.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     slideRevision = $SlideRevision
@@ -44,8 +54,10 @@ $request = [ordered]@{
     stain = $Stain
     marker = $Marker.ToLowerInvariant()
 }
-$request | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $requestPath -Encoding utf8NoBOM
+$partial = "$requestPath.partial"
+$request | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $partial -Encoding utf8NoBOM
+Move-Item -LiteralPath $partial -Destination $requestPath
 $token = [IO.File]::ReadAllText($tokenPath).Trim()
 $headers = @{ Authorization = "Bearer $token" }
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/v1/jobs" -Headers $headers `
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($endpoint.port)/v1/jobs" -Headers $headers `
     -ContentType 'application/json' -Body (@{ id = $jobId; requestPath = $requestPath } | ConvertTo-Json)

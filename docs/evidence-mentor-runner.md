@@ -1,63 +1,65 @@
-# Evidence Mentor runner
+# Evidence Mentor autonomous service
 
-`EvidenceMentorRunner` is a standalone per-user process. It binds only to
-`127.0.0.1`, requires a 256-bit bearer token from `ipc-token`, and owns the
-SQLite WAL queue, leases, checkpoints, signing key, and result artifacts.
+`EvidenceMentorRunner` is an offline Windows-service workload. It binds only to
+`127.0.0.1` on a Windows-assigned port, atomically publishes
+`state/endpoint.json`, and authenticates API clients with the existing 256-bit
+token in `state/ipc-token`. The endpoint file never contains the token.
 
-Install from a versioned Forge distribution:
+The SQLite WAL queue migrates v1 records in place. It persists the execution
+lane, monotonic work units, verified checkpoint identity, lease heartbeat,
+rolling throughput, ETA, retry schedule, stable failure classification, and
+request/pack/final-artifact checksums. Exactly one GPU job and one low-priority
+CPU/I/O job may execute. Live external workers renew their lease no less often
+than every 10 seconds; only transient I/O failures receive 5-second, 30-second,
+and 2-minute retries.
 
-```powershell
-.\scripts\evidence-mentor-task.ps1 -RuntimeRoot 'C:\Path\To\pathlab-forge'
-```
+## Dashboard
 
-Default state is `D:\PathLabData\EvidenceMentor\state` when the data drive is
-present, otherwise `%LOCALAPPDATA%\PathLab\EvidenceMentor\state`. Analysis is
-offline. Acquisition is a separate allowlisted operation and must reserve quota before download or
-extraction. `GET /v1/status` returns authenticated, non-outcome runtime and quota telemetry. A
-dashboard failure does not stop processing.
+Forge or the operator launcher uses the bearer token to request a single-use
+60-second code and opens `/dashboard/#<code>`. The dashboard exchanges it once
+for an HttpOnly, SameSite=Strict boot-scoped cookie, removes the fragment, and
+uses a per-session CSRF token for mutations. It polls with ETags every two
+seconds while active and ten seconds while idle.
 
-The deterministic cell/IHC baseline is runnable. The checksum-pinned DINOv2-small worker is locally
-executable on the P2000 but remains `not-evaluable` because its cross-tissue held-out cohort is
-incomplete. Hibou-B and HoVer-Net remain `not-evaluable` until exact, rights-approved workers and
-model artifacts are installed beneath `state/models/<pack-id>/<version>`. External workers use
-`pathlab.model-worker-result/1`, inherit the
-16 GB RAM and 4.5 GB VRAM envelope, receive offline environment controls, and are rejected on the
-P2000 unless they declare CUDA 12.6 and `sm_61`. Forge signs only bounded regions and descriptors;
-embeddings, raw pixels and clinical outputs are rejected.
+The dependency-free page exposes operational metadata only. It can pause or
+resume new claims, request checkpoint-safe cancellation, and retry failed or
+cancelled work after immutable-request verification. It cannot delete jobs,
+change priority, activate packs, approve evidence, or publish results. Dashboard
+and telemetry failures never alter processing state.
 
-Acquire only the pinned DINOv2 safetensors baseline (never the pickle artifact) with:
+## Service installation
 
-```powershell
-.\scripts\acquire-dinov2-small.ps1
-```
-
-The acquisition command reserves the fixed model quota, downloads from the exact upstream commit,
-verifies byte counts and SHA-256 values before atomic installation, and records a local receipt. It
-does not activate the pack. Worker installation, runtime qualification, model qualification, and
-activation remain separate gates.
-
-H&E jobs additionally require a `pathlab.tile-cache/1` manifest and its SHA-256 in
-`tileCacheManifest` and `tileCacheManifestSha256`. Forge verifies the source revision, source/sample
-provenance, every 512 x 512 RGB PNG tile, coordinates, and checksums before starting the external
-worker. Preview-only H&E model inference is rejected. A bounded, breast-only BRACS contract smoke can
-be built idempotently with:
+First build a versioned distribution:
 
 ```powershell
-.\scripts\build-bracs-dinov2-tile-cache.ps1
+.\gradlew.bat installDist
 ```
 
-That cache is real research data but not a qualifying cohort: it lacks the frozen reference, GI,
-lung, lymph-node, independent benign/reactive-source, and OOD groups.
-
-New material uses fixed hard buckets: 45 GB source, 25 GB derived, 10 GB models, 10 GB evidence/test,
-and a 10 GB untouchable reserve. Existing BRACS remains grandfathered read-only and is not copied.
-
-Atlas-H&E remains a Training Lab research track. Its four-hour probe may continue locally only when
-resource limits hold, no OOM occurs, validation improves, and projected completion is within seven
-days. This runner performs no cloud provisioning or spending.
-
-Rollback removes the scheduled task but preserves queue, evidence, and keys:
+Then run the administrator-approved installer with a Java 17 runtime:
 
 ```powershell
-.\scripts\evidence-mentor-task.ps1 -RuntimeRoot 'C:\Path\To\pathlab-forge' -Uninstall
+.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.0' `
+  -DistributionPath '.\build\install\pathlab-forge' -JavaHome 'C:\Path\To\jdk-17'
 ```
+
+The installer downloads WinSW 2.12.0 from its official release URL and requires
+SHA-256 `05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da`.
+It installs `PathLabEvidenceMentor` as delayed-auto-start under
+`NT AUTHORITY\LocalService`, stages runtimes side-by-side under
+`C:\ProgramData\PathLab\EvidenceMentor\runtime\<version>`, keeps state under
+`D:\PathLabData\EvidenceMentor\state`, applies service-SID ACLs and outbound-deny
+rules, and rolls back the active configuration if health checks fail.
+
+Use `-Action Upgrade` with a new immutable version. `-Action Uninstall` removes
+the service, firewall rules, and Start Menu shortcut while preserving queues,
+checkpoints, signing material, evidence, and model packs.
+
+## Model boundary
+
+The deterministic cell/IHC baseline is runnable. DINOv2-small remains an
+experimental executable baseline until its cross-tissue held-out cohort is
+complete. Hibou-B and HoVer-Net remain `not_evaluable` until exact,
+rights-approved workers and artifacts pass qualification. H&E, cells, IHC,
+special stains, cytology, and later Atlas tracks stay independently signed and
+fail closed; none may emit diagnosis, clinical categories, TPS/CPS, prognosis,
+or treatment guidance.

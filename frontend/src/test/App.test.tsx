@@ -41,9 +41,12 @@ vi.mock('../SlideViewer', () => ({
 
 vi.mock('../api', () => ({
   evidenceRunnerStatus: vi.fn(async () => ({
-    schema: 'pathlab.evidence-runner-status/1',
+    schema: 'pathlab.evidence-runner-status/2',
     status: 'unavailable',
     detail: 'Runner is not configured in frontend tests',
+  })),
+  openEvidenceDashboard: vi.fn(async () => ({
+    url: 'http://127.0.0.1:43210/dashboard/#single-use',
   })),
   bootstrap: vi.fn(async () => [[], {
     conversionRuntime: 'Bio-Formats test',

@@ -52,4 +52,65 @@ final class EvidenceJobQueueTest {
             assertTrue(queue.claimNext("worker", now.plusSeconds(2), Duration.ofSeconds(30)).isEmpty());
         }
     }
+
+    @Test
+    void separatesExecutionLanesAndRenewsLiveLease() throws Exception {
+        var database = temporaryDirectory.resolve("jobs.sqlite");
+        var gpuRequest = temporaryDirectory.resolve("gpu.json");
+        var cpuRequest = temporaryDirectory.resolve("cpu.json");
+        Files.writeString(gpuRequest, "{}");
+        Files.writeString(cpuRequest, "{}");
+        var now = Instant.parse("2026-08-22T00:00:00Z");
+        try (var queue = new EvidenceJobQueue(database)) {
+            queue.submit("gpu-job", gpuRequest, EvidenceExecutionLane.GPU, now);
+            queue.submit("cpu-job", cpuRequest, EvidenceExecutionLane.CPU_IO, now.plusMillis(1));
+
+            var cpu = queue.claimNext(EvidenceExecutionLane.CPU_IO, "cpu-worker", now,
+                    Duration.ofSeconds(30)).orElseThrow();
+            assertEquals("cpu-job", cpu.id());
+            var gpu = queue.claimNext(EvidenceExecutionLane.GPU, "gpu-worker", now,
+                    Duration.ofSeconds(30)).orElseThrow();
+            assertEquals("gpu-job", gpu.id());
+
+            queue.heartbeat("gpu-job", "gpu-worker", 32, 100,
+                    temporaryDirectory.resolve("gpu.checkpoint"), "a".repeat(64),
+                    now.plusSeconds(15), Duration.ofSeconds(30));
+            var snapshot = queue.snapshot("gpu-job").orElseThrow();
+            assertEquals(32, snapshot.completedUnits());
+            assertEquals(100, snapshot.totalUnits());
+            assertEquals(now.plusSeconds(45), snapshot.leaseExpiresAt());
+            assertEquals(null, snapshot.etaSeconds());
+            queue.heartbeat("gpu-job", "gpu-worker", 64, 100,
+                    temporaryDirectory.resolve("gpu.checkpoint"), "a".repeat(64),
+                    now.plusSeconds(30), Duration.ofSeconds(30));
+            snapshot = queue.snapshot("gpu-job").orElseThrow();
+            assertTrue(snapshot.throughput() > 0);
+            assertTrue(snapshot.etaSeconds() != null);
+        }
+    }
+
+    @Test
+    void pauseStopsClaimsAndOperatorRetryUsesBoundedDelay() throws Exception {
+        var database = temporaryDirectory.resolve("jobs.sqlite");
+        var request = temporaryDirectory.resolve("request.json");
+        Files.writeString(request, "{}");
+        var now = Instant.parse("2026-08-22T00:00:00Z");
+        try (var queue = new EvidenceJobQueue(database)) {
+            queue.submit("job", request, EvidenceExecutionLane.CPU_IO, now);
+            queue.setAcceptingJobs(false, now.plusSeconds(1));
+            assertFalse(queue.acceptingJobs());
+            assertTrue(queue.claimNext(EvidenceExecutionLane.CPU_IO, "worker", now.plusSeconds(2),
+                    Duration.ofSeconds(30)).isEmpty());
+            queue.setAcceptingJobs(true, now.plusSeconds(3));
+            var claimed = queue.claimNext(EvidenceExecutionLane.CPU_IO, "worker", now.plusSeconds(4),
+                    Duration.ofSeconds(30)).orElseThrow();
+            queue.fail(claimed.id(), "worker", "transient_io", "IO_READ_FAILED", "disk busy",
+                    true, now.plusSeconds(5));
+            var retry = queue.snapshot("job").orElseThrow();
+            assertEquals(EvidenceJobState.QUEUED, retry.state());
+            assertEquals(now.plusSeconds(10), retry.nextRetryAt());
+            assertTrue(queue.claimNext(EvidenceExecutionLane.CPU_IO, "worker-2", now.plusSeconds(9),
+                    Duration.ofSeconds(30)).isEmpty());
+        }
+    }
 }

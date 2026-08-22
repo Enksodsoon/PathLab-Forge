@@ -212,9 +212,15 @@ export async function capabilities() {
 }
 
 export type EvidenceRunnerStatus = {
-  schema: 'pathlab.evidence-runner-status/1'
+  schema: 'pathlab.evidence-runner-status/2'
   status: 'ready' | 'unavailable'
   detail?: string
+  serviceVersion?: string
+  startedAt?: string
+  heartbeat?: string
+  acceptingJobs?: boolean
+  queue?: { queued: number; active: number; gpu: number; cpuIo: number }
+  leadingJob?: { id: string; state: string; stage: string; progress: number; lane: 'gpu' | 'cpu_io' }
   networkDisabledForAnalysis?: boolean
   processMemoryUsedBytes?: number
   processMemoryLimitBytes?: number
@@ -226,6 +232,10 @@ export type EvidenceRunnerStatus = {
 
 export async function evidenceRunnerStatus() {
   return request<EvidenceRunnerStatus>('/api/evidence/status')
+}
+
+export async function openEvidenceDashboard() {
+  return request<{ url: string }>('/api/evidence/dashboard', { method: 'POST' })
 }
 
 export async function importProjectFolder(path?: string) {
