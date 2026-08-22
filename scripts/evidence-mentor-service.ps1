@@ -33,7 +33,14 @@ function Write-AtomicText([string] $Path, [string] $Content) {
     $partial = "$Path.partial"
     [IO.File]::WriteAllText($partial, $Content, [Text.UTF8Encoding]::new($false))
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        [IO.File]::Replace($partial, $Path, $null)
+        $backup = "$Path.backup-$([Guid]::NewGuid().ToString('N'))"
+        try {
+            [IO.File]::Replace($partial, $Path, $backup)
+        } finally {
+            if (Test-Path -LiteralPath $backup -PathType Leaf) {
+                Remove-Item -LiteralPath $backup -Force
+            }
+        }
     } else {
         [IO.File]::Move($partial, $Path)
     }
@@ -55,7 +62,7 @@ function Ensure-WinSW {
 function Grant-PathLabAccess([string] $InstallingUser) {
     & icacls.exe $ProgramRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)RX" "${InstallingUser}:(OI)(CI)RX" | Out-Null
     & icacls.exe $StateRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" "${InstallingUser}:(RX)" | Out-Null
-    foreach ($operatorPath in @('inputs','requests','models','artifacts')) {
+    foreach ($operatorPath in @('inputs','requests','models','artifacts','acceptance')) {
         $resolved = Join-Path $StateRoot $operatorPath
         & icacls.exe $resolved /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" "${InstallingUser}:(OI)(CI)M" | Out-Null
     }
@@ -64,10 +71,15 @@ function Grant-PathLabAccess([string] $InstallingUser) {
         & icacls.exe $resolved /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" | Out-Null
     }
     & icacls.exe $logRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" "${InstallingUser}:(OI)(CI)R" | Out-Null
-    foreach ($sensitive in @((Join-Path $StateRoot 'ipc-token'), (Join-Path $StateRoot 'endpoint.json'))) {
-        if (Test-Path -LiteralPath $sensitive) {
-            & icacls.exe $sensitive /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' "NT SERVICE\${serviceName}:R" "${InstallingUser}:R" | Out-Null
-        }
+    $tokenPath = Join-Path $StateRoot 'ipc-token'
+    if (Test-Path -LiteralPath $tokenPath) {
+        & icacls.exe $tokenPath /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' `
+            "NT SERVICE\${serviceName}:R" "${InstallingUser}:R" | Out-Null
+    }
+    $endpointPath = Join-Path $StateRoot 'endpoint.json'
+    if (Test-Path -LiteralPath $endpointPath) {
+        & icacls.exe $endpointPath /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' `
+            "NT SERVICE\${serviceName}:M" "${InstallingUser}:R" | Out-Null
     }
 }
 
@@ -209,7 +221,7 @@ if ($Action -eq 'Uninstall') {
 
 $installingUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $Version")) {
-    $stateDirectories = @('inputs','requests','models','artifacts','checkpoints','signing','logs') | ForEach-Object { Join-Path $StateRoot $_ }
+    $stateDirectories = @('inputs','requests','models','artifacts','acceptance','checkpoints','signing','logs') | ForEach-Object { Join-Path $StateRoot $_ }
     New-Item -ItemType Directory -Path @($ProgramRoot, $runtimeRoot, $StateRoot) -Force | Out-Null
     New-Item -ItemType Directory -Path $stateDirectories -Force | Out-Null
     $previousVersion = if (Test-Path -LiteralPath $activeVersionPath) { (Get-Content -LiteralPath $activeVersionPath -Raw).Trim() } else { '' }

@@ -126,7 +126,14 @@ function Write-Atomic([string] $Path, [string] $Content) {
     $partial = "$Path.partial"
     [IO.File]::WriteAllText($partial, $Content, [Text.UTF8Encoding]::new($false))
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        [IO.File]::Replace($partial, $Path, $null)
+        $backup = "$Path.backup-$([Guid]::NewGuid().ToString('N'))"
+        try {
+            [IO.File]::Replace($partial, $Path, $backup)
+        } finally {
+            if (Test-Path -LiteralPath $backup -PathType Leaf) {
+                Remove-Item -LiteralPath $backup -Force
+            }
+        }
     } else {
         [IO.File]::Move($partial, $Path)
     }
