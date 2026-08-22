@@ -40,6 +40,11 @@ vi.mock('../SlideViewer', () => ({
 }))
 
 vi.mock('../api', () => ({
+  evidenceRunnerStatus: vi.fn(async () => ({
+    schema: 'pathlab.evidence-runner-status/1',
+    status: 'unavailable',
+    detail: 'Runner is not configured in frontend tests',
+  })),
   bootstrap: vi.fn(async () => [[], {
     conversionRuntime: 'Bio-Formats test',
     derivativeRuntime: 'libvips test',
