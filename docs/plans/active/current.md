@@ -29,12 +29,12 @@ appear in monitoring payloads.
 
 ## Current status
 
-Gates 1-4 remain implemented and service `2.1.0` is staged as a side-by-side,
-idempotent upgrade. An existing byte-identical runtime is reused; a mismatch
-fails before the active configuration changes. The generated elevated launcher
-does not request a reboot. The installed `2.0.12` runtime remains active until
-that separate administrator action. The manual reboot-continuation acceptance
-is still deferred, so Gate 5 and activation remain incomplete.
+Gates 1-4 remain implemented. Service `2.1.0` was installed side-by-side on
+2026-08-22 and passed the 19-check non-reboot acceptance, including a real
+offline DINOv2 CUDA job on the P2000 across a service restart. An existing
+byte-identical runtime is reused; a mismatch fails before the active
+configuration changes. The manual reboot-continuation acceptance is still
+deferred, so Gate 5 and activation remain incomplete.
 
 The branch now implements `pathlab.qualification-campaign/1` as a durable
 parent coordinator above the existing GPU and CPU/I/O lanes. It records frozen
@@ -57,6 +57,14 @@ rights-cleared held-out reference sets and the frozen quantitative gates still
 must run. Gated DINOv2/Hibou/GigaPath, HoVer-Net/PathoSAM, Qwen assets, and public
 cytology data are not represented as acquired or built when their exact
 artifacts or rights are absent.
+
+The checksum-frozen `deterministic-baselines-20260822-v1` campaign completed
+autonomously against a grandfathered, patient-disjoint BRACS test input. Cell,
+IHC, special-stain, and cytology execution tracks each produced a signed
+`experimental` attestation. `campaignCompleted=true` and
+`campaignTargetMet=false`: this proves durable execution and signing, not the
+pre-registered held-out quality gates. The reusable staging command is
+`scripts/stage-local-deterministic-campaign.ps1`.
 
 Gate 7 has an executable four-hour feasibility decision contract using
 checkpointed 15-20 minute segments, fixed RAM/VRAM limits, validation
