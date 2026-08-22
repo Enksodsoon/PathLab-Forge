@@ -178,10 +178,14 @@ function Add-StaticChecks {
         Add-Check 'service-installed' 'FAIL' 'Windows service is not installed.'
         Add-Check 'service-running' 'NOT_EVALUABLE' 'Service installation is required first.'
         Add-Check 'service-identity' 'NOT_EVALUABLE' 'Service installation is required first.'
+        Add-Check 'service-sid-enabled' 'NOT_EVALUABLE' 'Service installation is required first.'
     } else {
         Add-Check 'service-installed' 'PASS' 'Windows service is installed.' @{ startMode = $service.StartMode }
         Add-Check 'service-running' $(if ($service.State -eq 'Running') {'PASS'} else {'FAIL'}) "Service state is $($service.State)."
         Add-Check 'service-identity' $(if ($service.StartName -ieq 'NT AUTHORITY\LocalService') {'PASS'} else {'FAIL'}) "Service identity is $($service.StartName)."
+        $sidType = (& sc.exe qsidtype $serviceName 2>$null) -join [Environment]::NewLine
+        $sidEnabled = $LASTEXITCODE -eq 0 -and $sidType -match 'UNRESTRICTED'
+        Add-Check 'service-sid-enabled' $(if ($sidEnabled) {'PASS'} else {'FAIL'}) 'The service SID must be enabled before SID-only runtime ACLs can authorize startup.'
     }
 
     $serviceRegistry = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"

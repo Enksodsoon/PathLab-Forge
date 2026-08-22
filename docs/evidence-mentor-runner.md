@@ -38,7 +38,7 @@ First build a versioned distribution:
 Then run the administrator-approved installer with a Java 17 runtime:
 
 ```powershell
-.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.1' `
+.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.2' `
   -DistributionPath '.\build\install\pathlab-forge' -JavaHome 'C:\Path\To\jdk-17'
 ```
 
@@ -48,7 +48,8 @@ It installs `PathLabEvidenceMentor` as delayed-auto-start under
 `NT AUTHORITY\LocalService`, stages runtimes side-by-side under
 `C:\ProgramData\PathLab\EvidenceMentor\runtime\<version>`, keeps state under
 `D:\PathLabData\EvidenceMentor\state`, applies service-SID ACLs and outbound-deny
-rules, and rolls back the active configuration if health checks fail.
+rules, enables the restricted service identity's per-service SID, and rolls back
+the active configuration if health checks fail.
 
 Use `-Action Upgrade` with a new immutable version. `-Action Uninstall` removes
 the service, firewall rules, and Start Menu shortcut while preserving queues,

@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [ValidateSet('Install','Upgrade','Uninstall','Status')] [string] $Action,
-    [string] $Version = '2.0.1',
+    [string] $Version = '2.0.2',
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
@@ -67,6 +67,13 @@ function Grant-PathLabAccess([string] $InstallingUser) {
         if (Test-Path -LiteralPath $sensitive) {
             & icacls.exe $sensitive /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F' "NT SERVICE\${serviceName}:R" "${InstallingUser}:R" | Out-Null
         }
+    }
+}
+
+function Enable-ServiceSid {
+    & sc.exe sidtype $serviceName unrestricted | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Windows could not enable the PathLab service SID.'
     }
 }
 
@@ -179,6 +186,7 @@ if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $V
     if ($Action -eq 'Upgrade' -and (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { & $wrapperPath stop }
     Write-AtomicText $configPath (New-ServiceConfig $runtimePath)
     if (-not (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { & $wrapperPath install }
+    Enable-ServiceSid
     Grant-PathLabAccess $installingUser
     Install-FirewallRules $runtimePath
     & $wrapperPath start
