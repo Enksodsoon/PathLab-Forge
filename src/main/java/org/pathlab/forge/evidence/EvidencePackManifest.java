@@ -22,6 +22,8 @@ public record EvidencePackManifest(
         String allowedUse,
         boolean redistributable,
         boolean derivativesAllowed,
+        RuntimeCompatibility runtimeCompatibility,
+        List<LicenseEntry> licenseLedger,
         int maxRamMiB,
         int maxVramMiB,
         int maxSeconds,
@@ -73,16 +75,23 @@ public record EvidencePackManifest(
         } else {
             require(markers.isEmpty(), "Only IHC packs may declare markers");
         }
+        var runtime = root.has("runtimeCompatibility")
+                ? parseRuntime(root.path("runtimeCompatibility"))
+                : new RuntimeCompatibility("java17", "cpu", "none", "none", false);
+        var licenseLedger = root.has("licenseLedger")
+                ? parseLicenseLedger(root.path("licenseLedger")) : List.<LicenseEntry>of();
         return new EvidencePackManifest(
                 normalized, packId, version, capability, acceptedStains, preprocessingId, allowedUse,
                 booleanValue(rights, "redistributable"),
                 booleanValue(rights, "derivativesAllowed"),
+                runtime, licenseLedger,
                 maxRam, maxVram, maxSeconds, status, sha256(bytes), artifacts, markers);
     }
 
     public boolean pilotEligible() {
         return "private-research".equals(allowedUse)
                 && validationStatus != ValidationStatus.BLOCKED
+                && validationStatus != ValidationStatus.UNSUPPORTED
                 && validationStatus != ValidationStatus.NOT_EVALUABLE;
     }
 
@@ -104,6 +113,37 @@ public record EvidencePackManifest(
             require(name.length() <= 160 && SHA.matcher(hash).matches()
                     && source.length() <= 1_000, "AI pack artifact is invalid");
             result.add(new Artifact(name, hash, source));
+        }
+        return List.copyOf(result);
+    }
+
+    private static RuntimeCompatibility parseRuntime(JsonNode node) {
+        require(node.isObject(), "AI pack runtime compatibility is invalid");
+        var protocol = text(node, "workerProtocol");
+        var provider = text(node, "executionProvider");
+        var cuda = text(node, "cuda");
+        var architecture = text(node, "gpuArchitecture");
+        require(protocol.length() <= 80 && Set.of("cpu", "cuda").contains(provider)
+                        && cuda.length() <= 40 && architecture.length() <= 40,
+                "AI pack runtime compatibility is invalid");
+        return new RuntimeCompatibility(protocol, provider, cuda, architecture,
+                node.path("requiresExternalWorker").asBoolean(false));
+    }
+
+    private static List<LicenseEntry> parseLicenseLedger(JsonNode node) {
+        require(node.isArray() && node.size() <= 32, "AI pack license ledger is invalid");
+        var result = new java.util.ArrayList<LicenseEntry>();
+        for (var item : node) {
+            var component = text(item, "component");
+            var license = text(item, "license");
+            var revision = text(item, "revision");
+            var permittedUse = text(item, "permittedUse");
+            require(component.length() <= 160 && license.length() <= 200 && revision.length() <= 160
+                            && Set.of("private-research", "benchmark-only").contains(permittedUse),
+                    "AI pack license ledger is invalid");
+            result.add(new LicenseEntry(component, license, revision, permittedUse,
+                    item.path("redistributable").asBoolean(false),
+                    item.path("derivativesAllowed").asBoolean(false)));
         }
         return List.copyOf(result);
     }
@@ -158,6 +198,10 @@ public record EvidencePackManifest(
     }
 
     public record Artifact(String name, String sha256, String source) {}
+    public record RuntimeCompatibility(String workerProtocol, String executionProvider, String cuda,
+            String gpuArchitecture, boolean requiresExternalWorker) {}
+    public record LicenseEntry(String component, String license, String revision, String permittedUse,
+            boolean redistributable, boolean derivativesAllowed) {}
 
     public enum Capability {
         HE_EVIDENCE("he-evidence"),
@@ -174,7 +218,8 @@ public record EvidencePackManifest(
     }
 
     public enum ValidationStatus {
-        EXPERIMENTAL("experimental"), QUALIFIED("qualified"), NOT_EVALUABLE("not-evaluable"), BLOCKED("blocked");
+        EXPERIMENTAL("experimental"), QUALIFIED("qualified"), NOT_EVALUABLE("not-evaluable"),
+        UNSUPPORTED("unsupported"), BLOCKED("blocked");
         private final String wire;
         ValidationStatus(String wire) { this.wire = wire; }
         public String wire() { return wire; }

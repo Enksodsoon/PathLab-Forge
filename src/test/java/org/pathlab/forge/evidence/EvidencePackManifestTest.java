@@ -48,6 +48,10 @@ final class EvidencePackManifestTest {
         assertTrue(EvidencePackManifest.load(root.resolve("ihc-descriptive-v1.json")).pilotEligible());
         assertFalse(EvidencePackManifest.load(root.resolve("he-dinov2-small-v1.json")).pilotEligible());
         assertFalse(EvidencePackManifest.load(root.resolve("he-hibou-b-v1.json")).pilotEligible());
+        var hoverNet = EvidencePackManifest.load(root.resolve("cell-hovernet-fast-v1.json"));
+        assertFalse(hoverNet.pilotEligible());
+        assertEquals("cuda", hoverNet.runtimeCompatibility().executionProvider());
+        assertEquals(2, hoverNet.licenseLedger().size());
         assertFalse(EvidencePackManifest.load(root.resolve("he-gigapath-benchmark-v1.json")).pilotEligible());
     }
 

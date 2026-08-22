@@ -53,6 +53,7 @@ const DEFAULT_LOCAL_FOLDER = 'Unfiled'
 export function App() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.capabilities>>>()
+  const [evidenceStatus, setEvidenceStatus] = useState<api.EvidenceRunnerStatus>()
   const [selectedId, setSelectedId] = useState('')
   const [seriesByDataset, setSeriesByDataset] = useState<Record<string, SeriesInfo[]>>({})
   const [artifactByDataset, setArtifactByDataset] = useState<Record<string, ArtifactRevision[]>>({})
@@ -187,6 +188,17 @@ export function App() {
         void refresh()
       })
       .catch((nextError) => setError(message(nextError)))
+  }, [])
+
+  useEffect(() => {
+    const update = () => void api.evidenceRunnerStatus()
+      .then(setEvidenceStatus)
+      .catch(() => setEvidenceStatus({
+        schema: 'pathlab.evidence-runner-status/1', status: 'unavailable', detail: 'Runner is not reachable',
+      }))
+    update()
+    const timer = window.setInterval(update, 5_000)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => {
@@ -798,6 +810,14 @@ export function App() {
           )}
         />
       </div>
+      <section className={`evidence-runner-dashboard ${evidenceStatus?.status === 'ready' ? 'ready' : ''}`}
+        aria-label="Evidence Mentor runner" aria-live="polite">
+        <strong>Evidence Mentor</strong>
+        <span>{evidenceStatus?.status === 'ready' ? 'Autonomous runner ready' : 'Runner unavailable'}</span>
+        {evidenceStatus?.status === 'ready' ? <small>
+          Analysis network off · RAM {formatBytes(evidenceStatus.processMemoryUsedBytes || 0)} / {formatBytes(evidenceStatus.processMemoryLimitBytes || 0)} · VRAM cap {evidenceStatus.vramLimitMiB} MiB
+        </small> : <small>{evidenceStatus?.detail || 'Checking local runner…'}</small>}
+      </section>
       {connection?.connected && viewerUpload?.viewerSlideId
         && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (
         <a

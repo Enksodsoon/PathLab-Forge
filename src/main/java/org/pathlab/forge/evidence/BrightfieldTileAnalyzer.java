@@ -43,6 +43,9 @@ public final class BrightfieldTileAnalyzer {
                 compartment(marker),
                 components.count,
                 components.count == 0 ? null : (double) components.pixels / components.count,
+                components.count == 0 ? null : components.perimeter / components.count,
+                components.count == 0 ? null : components.eccentricity / components.count,
+                components.count == 0 ? null : components.solidity / components.count,
                 (double) dabPixels / (width * height),
                 dabPixels == 0 ? 0 : dabOd / dabPixels,
                 true);
@@ -53,16 +56,32 @@ public final class BrightfieldTileAnalyzer {
         var queue = new ArrayDeque<Integer>();
         var count = 0;
         var pixels = 0;
+        double perimeter = 0;
+        double eccentricity = 0;
+        double solidity = 0;
         for (var start = 0; start < mask.length; start++) {
             if (!mask[start] || seen[start]) continue;
             seen[start] = true;
             queue.add(start);
             var size = 0;
+            var minX = width;
+            var minY = height;
+            var maxX = -1;
+            var maxY = -1;
+            var componentPerimeter = 0;
             while (!queue.isEmpty()) {
                 var current = queue.removeFirst();
                 size++;
                 var x = current % width;
                 var y = current / width;
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+                if (x == 0 || !mask[current - 1]) componentPerimeter++;
+                if (x == width - 1 || !mask[current + 1]) componentPerimeter++;
+                if (y == 0 || !mask[current - width]) componentPerimeter++;
+                if (y == height - 1 || !mask[current + width]) componentPerimeter++;
                 for (var ny = Math.max(0, y - 1); ny <= Math.min(height - 1, y + 1); ny++) {
                     for (var nx = Math.max(0, x - 1); nx <= Math.min(width - 1, x + 1); nx++) {
                         var next = ny * width + nx;
@@ -76,9 +95,16 @@ public final class BrightfieldTileAnalyzer {
             if (size >= 4) {
                 count++;
                 pixels += size;
+                perimeter += componentPerimeter;
+                var boxWidth = maxX - minX + 1.0;
+                var boxHeight = maxY - minY + 1.0;
+                var major = Math.max(boxWidth, boxHeight);
+                var minor = Math.min(boxWidth, boxHeight);
+                eccentricity += major == 0 ? 0 : Math.sqrt(Math.max(0, 1 - (minor * minor) / (major * major)));
+                solidity += size / (boxWidth * boxHeight);
             }
         }
-        return new Components(count, pixels);
+        return new Components(count, pixels, perimeter, eccentricity, solidity);
     }
 
     private static String compartment(String marker) {
@@ -90,13 +116,16 @@ public final class BrightfieldTileAnalyzer {
         };
     }
 
-    private record Components(int count, int pixels) {}
+    private record Components(int count, int pixels, double perimeter, double eccentricity, double solidity) {}
 
     public record Result(
             String marker,
             String compartment,
             int cellCount,
             Double meanNucleusAreaPx2,
+            Double meanNucleusPerimeterPx,
+            Double meanNucleusEccentricity,
+            Double meanNucleusSolidity,
             double dabAreaFraction,
             double meanDabOd,
             boolean researchEstimate) {}

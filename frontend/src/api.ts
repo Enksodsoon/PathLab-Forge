@@ -211,6 +211,23 @@ export async function capabilities() {
   }>('/api/capabilities')
 }
 
+export type EvidenceRunnerStatus = {
+  schema: 'pathlab.evidence-runner-status/1'
+  status: 'ready' | 'unavailable'
+  detail?: string
+  networkDisabledForAnalysis?: boolean
+  processMemoryUsedBytes?: number
+  processMemoryLimitBytes?: number
+  vramLimitMiB?: number
+  diskUsableBytes?: number
+  updatedAt?: string
+  quota?: Record<string, { usedBytes: number; reservedBytes: number; limitBytes: number; untouchable: boolean }>
+}
+
+export async function evidenceRunnerStatus() {
+  return request<EvidenceRunnerStatus>('/api/evidence/status')
+}
+
 export async function importProjectFolder(path?: string) {
   const query = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : ''
   return request<{ datasets: Dataset[]; project?: { root: string; imported: number; failed: string } }>(

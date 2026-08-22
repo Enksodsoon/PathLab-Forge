@@ -28,6 +28,7 @@ import org.pathlab.forge.conversion.ConversionService;
 import org.pathlab.forge.conversion.SeriesInfo;
 import org.pathlab.forge.derivative.DerivativeEngine;
 import org.pathlab.forge.derivative.VipsRuntime;
+import org.pathlab.forge.evidence.EvidenceMentorRunner;
 import org.pathlab.forge.feature.CapabilityRegistry;
 import org.pathlab.forge.feature.FeaturePackDescriptor;
 import org.pathlab.forge.feature.FeaturePackManager;
@@ -302,6 +303,8 @@ public final class ForgeServer implements AutoCloseable {
                 session(exchange);
             } else if ("/api/capabilities".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 capabilities(exchange);
+            } else if ("/api/evidence/status".equals(path) && "GET".equals(exchange.getRequestMethod())) {
+                evidenceRunnerStatus(exchange);
             } else if ("/api/features".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 features(exchange);
             } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}/install")
@@ -754,6 +757,38 @@ public final class ForgeServer implements AutoCloseable {
                     "application/json",
                     "{\"error\":\"viewer_revoke_failed\",\"detail\":"
                             + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void evidenceRunnerStatus(HttpExchange exchange) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        var tokenPath = EvidenceMentorRunner.defaultStateRoot().resolve("ipc-token");
+        if (!Files.isRegularFile(tokenPath)) {
+            respond(exchange, 503, "application/json",
+                    "{\"schema\":\"pathlab.evidence-runner-status/1\",\"status\":\"unavailable\","
+                            + "\"detail\":\"Evidence Mentor runner is not installed\"}");
+            return;
+        }
+        try {
+            var port = Integer.getInteger("pathlab.evidence.port", 8765);
+            var request = java.net.http.HttpRequest.newBuilder(
+                            URI.create("http://127.0.0.1:" + port + "/v1/status"))
+                    .timeout(java.time.Duration.ofSeconds(2))
+                    .header("Authorization", "Bearer " + Files.readString(tokenPath).trim())
+                    .GET().build();
+            var response = java.net.http.HttpClient.newHttpClient().send(
+                    request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200 || response.body().length() > 65_536) {
+                throw new IOException("Evidence Mentor status is unavailable");
+            }
+            respond(exchange, 200, "application/json", response.body());
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            respond(exchange, 503, "application/json", "{\"schema\":\"pathlab.evidence-runner-status/1\","
+                    + "\"status\":\"unavailable\",\"detail\":\"Status request was interrupted\"}");
+        } catch (IOException | IllegalArgumentException error) {
+            respond(exchange, 503, "application/json", "{\"schema\":\"pathlab.evidence-runner-status/1\","
+                    + "\"status\":\"unavailable\",\"detail\":\"Runner is not reachable\"}");
         }
     }
 

@@ -130,6 +130,12 @@ final class EvidenceJobProcessorTest {
                     temporaryDirectory.resolve("state/artifacts/job-1/evidence.json").toFile());
             assertEquals("pathlab.ai-evidence/1", evidence.path("schema").asText());
             assertEquals("ki-67", evidence.path("ihcDescriptors").get(0).path("marker").asText());
+            assertEquals("relative_only", evidence.path("ihcDescriptors").get(0)
+                    .path("calibrationStatus").asText());
+            assertEquals("od-watershed", evidence.path("ihcDescriptors").get(0)
+                    .path("cellMaskSource").asText());
+            assertTrue(evidence.path("cellAggregates").get(0)
+                    .path("meanNucleusPerimeterPx").asDouble() > 0);
             assertTrue(evidence.path("researchOnly").asBoolean());
             assertTrue(evidence.path("provenance").path("offlineAnalysis").asBoolean());
             assertEquals(64, evidence.path("manifestSha256").asText().length());

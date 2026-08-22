@@ -20,10 +20,11 @@ import javax.imageio.ImageIO;
 public final class EvidenceJobProcessor {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Duration LEASE = Duration.ofMinutes(2);
-    private static final long ARTIFACT_QUOTA = 10L * 1024 * 1024 * 1024;
-    private static final Set<String> REQUEST_FIELDS = Set.of(
+    private static final Set<String> REQUIRED_REQUEST_FIELDS = Set.of(
             "schema", "sourcePath", "sourceSha256", "slideRevision", "previewPath",
             "sourceWidth", "sourceHeight", "packManifest", "stain", "marker");
+    private static final Set<String> OPTIONAL_REQUEST_FIELDS = Set.of(
+            "compartmentSource", "controlsValidated");
     private final EvidenceJobQueue queue;
     private final Path stateRoot;
 
@@ -40,7 +41,10 @@ public final class EvidenceJobProcessor {
         } catch (JsonProcessingException invalidJson) {
             throw new IllegalArgumentException("Evidence job request JSON is invalid", invalidJson);
         }
-        require(request.isObject() && fieldNames(request).equals(REQUEST_FIELDS),
+        var requestFields = fieldNames(request);
+        require(request.isObject() && requestFields.containsAll(REQUIRED_REQUEST_FIELDS)
+                        && java.util.stream.Stream.concat(REQUIRED_REQUEST_FIELDS.stream(), OPTIONAL_REQUEST_FIELDS.stream())
+                                .collect(java.util.stream.Collectors.toSet()).containsAll(requestFields),
                 "Evidence job request is invalid");
         require("pathlab.evidence-job/1".equals(text(request, "schema")),
                 "Evidence job schema is unsupported");
@@ -53,8 +57,6 @@ public final class EvidenceJobProcessor {
         pack.requirePilotEligible();
         var stain = text(request, "stain");
         pack.requireStain(stain);
-        require(pack.capability() != EvidencePackManifest.Capability.HE_EVIDENCE,
-                "H&E encoder artifact is not installed");
         var marker = text(request, "marker").toLowerCase();
         if (!pack.markers().contains(marker)) marker = "generic";
         require(pack.capability() != EvidencePackManifest.Capability.IHC_DESCRIPTIVE
@@ -74,11 +76,29 @@ public final class EvidenceJobProcessor {
         }
         require(image != null, "Evidence preview could not be decoded");
         var analysis = BrightfieldTileAnalyzer.analyze(image, marker);
+        JsonNode modelResult = null;
+        if (pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE) {
+            modelResult = new ExternalModelWorker(stateRoot).execute(pack, job.requestPath(), job.id());
+            require("completed".equals(modelResult.path("status").asText()),
+                    "H&E model worker returned unsupported or not_evaluable");
+        }
+        var stainQc = BrightfieldStainQc.inspect(image,
+                request.path("controlsValidated").isBoolean()
+                        && request.path("controlsValidated").booleanValue());
         var tissue = tissueFraction(image);
         var focus = focus(image);
         var abstentionReasons = new java.util.ArrayList<String>();
         if (tissue < 0.05) abstentionReasons.add("insufficient_tissue");
         if (focus < 0.05) abstentionReasons.add("out_of_focus_or_uninformative_preview");
+        abstentionReasons.addAll(stainQc.reasons().stream()
+                .filter(reason -> !abstentionReasons.contains(reason)).toList());
+        var compartmentSource = request.path("compartmentSource").isTextual()
+                ? request.path("compartmentSource").textValue() : "none";
+        require(Set.of("none", "faculty-authored", "faculty-approved", "model-suggested")
+                .contains(compartmentSource), "Evidence compartment source is invalid");
+        var reviewedCompartment = Set.of("faculty-authored", "faculty-approved").contains(compartmentSource);
+        var compartmentWarning = "pd-l1".equals(marker) && !reviewedCompartment
+                ? "COMPARTMENT_REVIEW_REQUIRED" : null;
         var abstained = !abstentionReasons.isEmpty();
         var refiningAt = now.plusSeconds(1);
         checkCancellation(job.id(), workerId, refiningAt);
@@ -90,11 +110,11 @@ public final class EvidenceJobProcessor {
 
         var artifactRoot = stateRoot.resolve("artifacts").resolve(job.id()).normalize();
         require(artifactRoot.startsWith(stateRoot.resolve("artifacts")), "Evidence artifact path escaped state root");
-        require(directoryBytes(stateRoot.resolve("artifacts")) < ARTIFACT_QUOTA,
-                "Evidence artifact quota is exhausted");
+        new EvidenceQuotaManager(stateRoot).requireReservation(EvidenceQuotaManager.Bucket.EVIDENCE_TEST,
+                Math.max(1, Files.size(preview)));
         Files.createDirectories(artifactRoot);
-        var unsigned = evidence(request, pack, image, analysis, focus, tissue,
-                abstentionReasons, now);
+        var unsigned = evidence(request, pack, image, analysis, stainQc, modelResult, focus, tissue,
+                abstentionReasons, compartmentSource, compartmentWarning, now);
         new EvidenceBundleWriter(stateRoot.resolve("signing"))
                 .write(artifactRoot.resolve("evidence.json"), unsigned);
         var terminal = abstained ? EvidenceJobState.ABSTAINED : EvidenceJobState.COMPLETED;
@@ -111,9 +131,13 @@ public final class EvidenceJobProcessor {
             EvidencePackManifest pack,
             BufferedImage image,
             BrightfieldTileAnalyzer.Result analysis,
+            BrightfieldStainQc.Result stainQc,
+            JsonNode modelResult,
             double focus,
             double tissue,
             java.util.List<String> abstentionReasons,
+            String compartmentSource,
+            String compartmentWarning,
             Instant now) {
         var root = JSON.createObjectNode();
         root.put("schema", EvidenceBundleWriter.SCHEMA);
@@ -139,31 +163,56 @@ public final class EvidenceJobProcessor {
                 "space", "source-pixel", "originX", 0, "originY", 0,
                 "scaleX", (double) sourceWidth / image.getWidth(),
                 "scaleY", (double) sourceHeight / image.getHeight())));
-        root.set("evidence", JSON.valueToTree(java.util.List.of(java.util.Map.of(
-                "id", "region-1", "stage", "refined", "kind", "support",
-                "x", 0, "y", 0, "width", sourceWidth, "height", sourceHeight,
-                "score", Math.max(0, Math.min(1, 1 - analysis.dabAreaFraction()))))));
+        root.set("evidence", modelResult == null
+                ? JSON.valueToTree(java.util.List.of(java.util.Map.of(
+                        "id", "region-1", "stage", "refined", "kind", "support",
+                        "x", 0, "y", 0, "width", sourceWidth, "height", sourceHeight,
+                        "score", Math.max(0, Math.min(1, 1 - analysis.dabAreaFraction())))))
+                : modelResult.path("regions").deepCopy());
         var aggregate = new java.util.LinkedHashMap<String, Object>();
         aggregate.put("regionId", "region-1");
         aggregate.put("algorithm", "od-watershed");
         aggregate.put("count", analysis.cellCount());
         aggregate.put("densityPerMm2", null);
         aggregate.put("meanNucleusAreaPx2", analysis.meanNucleusAreaPx2());
-        root.set("cellAggregates", JSON.valueToTree(java.util.List.of(aggregate)));
-        root.set("ihcDescriptors", JSON.valueToTree(
-                pack.capability() == EvidencePackManifest.Capability.IHC_DESCRIPTIVE
-                        ? java.util.List.of(java.util.Map.of(
-                                "regionId", "region-1", "marker", analysis.marker(),
-                                "compartment", analysis.compartment(),
-                                "dabAreaFraction", analysis.dabAreaFraction(),
-                                "meanDabOd", analysis.meanDabOd(),
-                                "researchEstimate", true))
-                        : java.util.List.of()));
+        aggregate.put("meanNucleusPerimeterPx", analysis.meanNucleusPerimeterPx());
+        aggregate.put("meanNucleusEccentricity", analysis.meanNucleusEccentricity());
+        aggregate.put("meanNucleusSolidity", analysis.meanNucleusSolidity());
+        aggregate.put("uncertainty", 1 - Math.min(focus, tissue));
+        root.set("cellAggregates", JSON.valueToTree(
+                pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE
+                        ? java.util.List.of() : java.util.List.of(aggregate)));
+        var ihc = new java.util.ArrayList<java.util.Map<String, Object>>();
+        if (pack.capability() == EvidencePackManifest.Capability.IHC_DESCRIPTIVE) {
+            var descriptor = new java.util.LinkedHashMap<String, Object>();
+            descriptor.put("regionId", "region-1");
+            descriptor.put("markerId", analysis.marker());
+            descriptor.put("marker", analysis.marker());
+            descriptor.put("analysisMode", compartmentWarning == null ? "marker-aware" : "generic-fallback");
+            descriptor.put("cellMaskSource", "od-watershed");
+            descriptor.put("compartmentSource", compartmentSource);
+            descriptor.put("calibrationStatus", stainQc.calibrationStatus());
+            descriptor.put("compartment", compartmentWarning == null ? analysis.compartment() : "generic-region");
+            descriptor.put("dabAreaFraction", analysis.dabAreaFraction());
+            descriptor.put("meanDabOd", analysis.meanDabOd());
+            descriptor.put("uncertainty", 1 - Math.min(focus, tissue));
+            descriptor.put("abstentionReason", compartmentWarning);
+            descriptor.put("researchEstimate", true);
+            ihc.add(descriptor);
+        }
+        root.set("ihcDescriptors", JSON.valueToTree(ihc));
         root.set("citations", JSON.createArrayNode());
-        root.set("qc", JSON.valueToTree(java.util.Map.of(
-                "focus", focus, "tissueFraction", tissue,
-                "uncertainty", 1 - Math.min(focus, tissue),
-                "abstentionReasons", abstentionReasons)));
+        var qc = new java.util.LinkedHashMap<String, Object>();
+        qc.put("focus", focus);
+        qc.put("tissueFraction", tissue);
+        qc.put("uncertainty", 1 - Math.min(focus, tissue));
+        qc.put("abstentionReasons", abstentionReasons);
+        qc.put("calibrationStatus", stainQc.calibrationStatus());
+        qc.put("backgroundFraction", stainQc.backgroundFraction());
+        qc.put("saturationFraction", stainQc.saturationFraction());
+        qc.put("stainSeparation", stainQc.separationScore());
+        qc.put("warnings", compartmentWarning == null ? java.util.List.of() : java.util.List.of(compartmentWarning));
+        root.set("qc", JSON.valueToTree(qc));
         root.set("provenance", JSON.valueToTree(java.util.Map.of(
                 "createdAt", now.toString(), "codeRevision", "pathlab-forge-evidence-mentor-v1",
                 "offlineAnalysis", true)));
@@ -234,15 +283,6 @@ public final class EvidenceJobProcessor {
             return HexFormat.of().formatHex(digest.digest());
         } catch (java.security.GeneralSecurityException impossible) {
             throw new IOException("SHA-256 is unavailable", impossible);
-        }
-    }
-
-    private static long directoryBytes(Path root) throws IOException {
-        if (!Files.exists(root)) return 0;
-        try (var paths = Files.walk(root)) {
-            return paths.filter(Files::isRegularFile).mapToLong(path -> {
-                try { return Files.size(path); } catch (IOException ignored) { return Long.MAX_VALUE; }
-            }).sum();
         }
     }
 

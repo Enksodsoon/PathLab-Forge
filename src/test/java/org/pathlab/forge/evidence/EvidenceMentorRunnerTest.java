@@ -43,6 +43,13 @@ final class EvidenceMentorRunnerTest {
             assertTrue(accepted.body().contains("job-http-1"));
             assertTrue(runner.find("job-http-1").isPresent());
             assertEquals("127.0.0.1", runner.uri("/health").getHost());
+
+            var status = client.send(HttpRequest.newBuilder(runner.uri("/v1/status"))
+                    .header("Authorization", "Bearer test-loopback-token-0123456789abcdef")
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, status.statusCode());
+            assertTrue(status.body().contains("networkDisabledForAnalysis"));
+            assertTrue(status.body().contains("evidence-test"));
         }
     }
 

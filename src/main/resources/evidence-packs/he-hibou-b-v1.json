@@ -11,6 +11,21 @@
     "tilePixels": 512
   },
   "artifacts": [],
+  "runtimeCompatibility": {
+    "workerProtocol": "pathlab.model-worker-result/1",
+    "executionProvider": "cuda",
+    "cuda": "12.6",
+    "gpuArchitecture": "sm_61",
+    "requiresExternalWorker": true
+  },
+  "licenseLedger": [{
+    "component": "histai/hibou-b",
+    "license": "Apache-2.0 with gated contact-sharing access",
+    "revision": "USER_ACCEPTANCE_AND_PIN_REQUIRED",
+    "permittedUse": "private-research",
+    "redistributable": false,
+    "derivativesAllowed": false
+  }],
   "rights": {
     "license": "Upstream terms require exact artifact review",
     "allowedUse": "private-research",

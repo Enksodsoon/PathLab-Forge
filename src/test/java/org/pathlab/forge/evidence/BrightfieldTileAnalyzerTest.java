@@ -25,6 +25,9 @@ final class BrightfieldTileAnalyzerTest {
 
         assertEquals(2, result.cellCount());
         assertTrue(result.meanNucleusAreaPx2() >= 25);
+        assertTrue(result.meanNucleusPerimeterPx() > 0);
+        assertTrue(result.meanNucleusEccentricity() >= 0);
+        assertTrue(result.meanNucleusSolidity() > 0);
         assertTrue(result.dabAreaFraction() > 0);
         assertTrue(result.meanDabOd() > 0);
         assertEquals("nuclear", result.compartment());
@@ -37,5 +40,20 @@ final class BrightfieldTileAnalyzerTest {
         var result = BrightfieldTileAnalyzer.analyze(image, "cdx2");
         assertEquals("generic", result.marker());
         assertEquals("generic-region", result.compartment());
+    }
+
+    @Test
+    void stainQcDefaultsToRelativeOnlyWithoutValidatedControls() {
+        var image = new BufferedImage(16, 16, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(Color.WHITE); graphics.fillRect(0, 0, 16, 16);
+        graphics.setColor(new Color(80, 50, 125)); graphics.fillRect(1, 1, 7, 7);
+        graphics.setColor(new Color(140, 90, 40)); graphics.fillRect(8, 8, 7, 7);
+        graphics.dispose();
+
+        var qc = BrightfieldStainQc.inspect(image, false);
+
+        assertEquals("relative_only", qc.calibrationStatus());
+        assertTrue(qc.separationScore() > 0);
     }
 }

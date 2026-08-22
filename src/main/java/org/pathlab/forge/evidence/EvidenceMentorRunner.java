@@ -43,6 +43,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         server = HttpServer.create(
                 new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 16);
         server.createContext("/health", this::handle);
+        server.createContext("/v1/status", this::handle);
         server.createContext("/v1/jobs", this::handle);
         http = Executors.newFixedThreadPool(2, runnable -> {
             var thread = new Thread(runnable, "pathlab-evidence-ipc");
@@ -87,6 +88,24 @@ public final class EvidenceMentorRunner implements AutoCloseable {
             if ("/health".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 respond(exchange, 200, java.util.Map.of(
                         "schema", "pathlab.evidence-runner-status/1", "status", "ready"));
+                return;
+            }
+            if ("/v1/status".equals(path) && "GET".equals(exchange.getRequestMethod())) {
+                var runtime = Runtime.getRuntime();
+                var fileStore = Files.getFileStore(stateRoot);
+                var status = new java.util.LinkedHashMap<String, Object>();
+                status.put("schema", "pathlab.evidence-runner-status/1");
+                status.put("status", "ready");
+                status.put("networkDisabledForAnalysis", true);
+                status.put("gpuConcurrency", 1);
+                status.put("cpuIoConcurrency", 1);
+                status.put("processMemoryUsedBytes", runtime.totalMemory() - runtime.freeMemory());
+                status.put("processMemoryLimitBytes", 16L * 1024 * 1024 * 1024);
+                status.put("vramLimitMiB", 4608);
+                status.put("diskUsableBytes", fileStore.getUsableSpace());
+                status.put("quota", new EvidenceQuotaManager(stateRoot).snapshot().buckets());
+                status.put("updatedAt", Instant.now().toString());
+                respond(exchange, 200, status);
                 return;
             }
             if ("/v1/jobs".equals(path) && "POST".equals(exchange.getRequestMethod())) {

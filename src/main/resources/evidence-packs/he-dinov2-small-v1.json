@@ -11,6 +11,21 @@
     "tilePixels": 512
   },
   "artifacts": [],
+  "runtimeCompatibility": {
+    "workerProtocol": "pathlab.model-worker-result/1",
+    "executionProvider": "cuda",
+    "cuda": "12.6",
+    "gpuArchitecture": "sm_61",
+    "requiresExternalWorker": true
+  },
+  "licenseLedger": [{
+    "component": "facebook/dinov2-small",
+    "license": "Apache-2.0",
+    "revision": "PIN_REQUIRED_BEFORE_ACQUISITION",
+    "permittedUse": "private-research",
+    "redistributable": false,
+    "derivativesAllowed": false
+  }],
   "rights": {
     "license": "Apache-2.0 upstream; exact artifact ledger pending",
     "allowedUse": "private-research",
