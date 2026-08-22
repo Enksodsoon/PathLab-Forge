@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [ValidateSet('Install','Upgrade','Uninstall','Status')] [string] $Action,
-    [string] $Version = '2.0.0',
+    [string] $Version = '2.0.1',
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
@@ -31,7 +31,11 @@ function Assert-Administrator {
 function Write-AtomicText([string] $Path, [string] $Content) {
     $partial = "$Path.partial"
     [IO.File]::WriteAllText($partial, $Content, [Text.UTF8Encoding]::new($false))
-    [IO.File]::Move($partial, $Path, $true)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        [IO.File]::Replace($partial, $Path, $null)
+    } else {
+        [IO.File]::Move($partial, $Path)
+    }
 }
 
 function Ensure-WinSW {

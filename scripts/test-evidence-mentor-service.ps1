@@ -54,6 +54,31 @@ function Read-Token {
     return $value
 }
 
+function Invoke-WebRequestCompat([hashtable] $Parameters) {
+    $request = @{} + $Parameters
+    if ($PSVersionTable.PSVersion.Major -le 5) {
+        $request.UseBasicParsing = $true
+    } else {
+        $request.SkipHttpErrorCheck = $true
+    }
+    try {
+        return Invoke-WebRequest @request
+    } catch [Net.WebException] {
+        $response = $_.Exception.Response
+        if ($null -eq $response) { throw }
+        $stream = $response.GetResponseStream()
+        try {
+            $reader = [IO.StreamReader]::new($stream)
+            try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { if ($null -ne $stream) { $stream.Dispose() } }
+        return [pscustomobject]@{
+            StatusCode = [int]$response.StatusCode
+            Content = $content
+            Headers = $response.Headers
+        }
+    }
+}
+
 function Invoke-Runner([string] $Method, [string] $Path, [object] $Body = $null) {
     $endpoint = Read-Endpoint
     $token = Read-Token
@@ -63,13 +88,12 @@ function Invoke-Runner([string] $Method, [string] $Path, [object] $Body = $null)
         Uri = "http://127.0.0.1:$($endpoint.port)$Path"
         Headers = @{ Authorization = "Bearer $token" }
         TimeoutSec = 3
-        SkipHttpErrorCheck = $true
     }
     if ($null -ne $Body) {
         $parameters.ContentType = 'application/json'
         $parameters.Body = $Body | ConvertTo-Json -Compress -Depth 8
     }
-    return Invoke-WebRequest @parameters
+    return Invoke-WebRequestCompat $parameters
 }
 
 function Wait-Runner([string] $PreviousBootId = '', [int] $Seconds = 60) {
@@ -101,7 +125,11 @@ function Test-Acl([string] $Path, [string] $Identity, [Security.AccessControl.Fi
 function Write-Atomic([string] $Path, [string] $Content) {
     $partial = "$Path.partial"
     [IO.File]::WriteAllText($partial, $Content, [Text.UTF8Encoding]::new($false))
-    [IO.File]::Move($partial, $Path, $true)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        [IO.File]::Replace($partial, $Path, $null)
+    } else {
+        [IO.File]::Move($partial, $Path)
+    }
 }
 
 function Write-AcceptanceReport {
@@ -224,18 +252,18 @@ function Add-StaticChecks {
         } catch { Add-Check 'authenticated-health' 'FAIL' 'Authenticated health request failed.' }
         try {
             $origin = "http://127.0.0.1:$($endpoint.port)"
-            $unauthorized = Invoke-WebRequest -Uri "$origin/v1/status" -SkipHttpErrorCheck -TimeoutSec 3
+            $unauthorized = Invoke-WebRequestCompat @{ Uri = "$origin/v1/status"; TimeoutSec = 3 }
             $created = Invoke-Runner 'POST' '/v1/dashboard-sessions'
             $code = ($created.Content | ConvertFrom-Json).code
             $exchangeBody = @{ code = $code } | ConvertTo-Json -Compress
-            $first = Invoke-WebRequest -Method Post -Uri "$origin/v1/dashboard-session/exchange" -Headers @{ Origin = $origin } `
-                -ContentType 'application/json' -Body $exchangeBody -SkipHttpErrorCheck -TimeoutSec 3
-            $reuse = Invoke-WebRequest -Method Post -Uri "$origin/v1/dashboard-session/exchange" -Headers @{ Origin = $origin } `
-                -ContentType 'application/json' -Body $exchangeBody -SkipHttpErrorCheck -TimeoutSec 3
+            $first = Invoke-WebRequestCompat @{ Method = 'Post'; Uri = "$origin/v1/dashboard-session/exchange";
+                Headers = @{ Origin = $origin }; ContentType = 'application/json'; Body = $exchangeBody; TimeoutSec = 3 }
+            $reuse = Invoke-WebRequestCompat @{ Method = 'Post'; Uri = "$origin/v1/dashboard-session/exchange";
+                Headers = @{ Origin = $origin }; ContentType = 'application/json'; Body = $exchangeBody; TimeoutSec = 3 }
+            $setCookie = [string]($first.Headers['Set-Cookie'] -join ';')
             $secure = $unauthorized.StatusCode -eq 401 -and $created.StatusCode -eq 201 `
                 -and $first.StatusCode -eq 200 -and $reuse.StatusCode -eq 401 `
-                -and ($first.Headers.'Set-Cookie' -join ';') -match 'HttpOnly' `
-                -and ($first.Headers.'Set-Cookie' -join ';') -match 'SameSite=Strict'
+                -and $setCookie -match 'HttpOnly' -and $setCookie -match 'SameSite=Strict'
             Add-Check 'dashboard-session-security' $(if ($secure) {'PASS'} else {'FAIL'}) 'Bearer protection and one-time dashboard exchange.' @{
                 unauthorized = $unauthorized.StatusCode; created = $created.StatusCode; exchanged = $first.StatusCode; reused = $reuse.StatusCode
             }
