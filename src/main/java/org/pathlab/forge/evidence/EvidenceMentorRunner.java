@@ -11,6 +11,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Duration;
@@ -29,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.0.3";
+    private static final String VERSION = "2.0.4";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;
@@ -273,8 +274,16 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         var body=JSON.writeValueAsBytes(Map.of("schema","pathlab.runner-endpoint/1","port",server.getAddress().getPort(),"serviceVersion",VERSION,
                 "bootId",bootId,"pid",ProcessHandle.current().pid(),"startedAt",startedAt.toString()));
         var partial=endpointPath.resolveSibling("endpoint.json.partial"); Files.write(partial,body);
+        preserveEndpointAcl(endpointPath, partial);
         try{Files.move(partial,endpointPath,java.nio.file.StandardCopyOption.REPLACE_EXISTING,java.nio.file.StandardCopyOption.ATOMIC_MOVE);}
         catch(java.nio.file.AtomicMoveNotSupportedException ignored){Files.move(partial,endpointPath,java.nio.file.StandardCopyOption.REPLACE_EXISTING);}
+    }
+
+    private static void preserveEndpointAcl(Path endpoint, Path partial) throws IOException {
+        if (!Files.exists(endpoint)) return;
+        var source = Files.getFileAttributeView(endpoint, AclFileAttributeView.class);
+        var target = Files.getFileAttributeView(partial, AclFileAttributeView.class);
+        if (source != null && target != null) target.setAcl(source.getAcl());
     }
 
     private static Map<String,String> query(String raw){var result=new java.util.HashMap<String,String>();if(raw==null||raw.isBlank())return result;for(var part:raw.split("&")){var pair=part.split("=",2);require(pair.length==2&&!pair[0].isBlank(),"Invalid query");result.put(pair[0],java.net.URLDecoder.decode(pair[1],StandardCharsets.UTF_8));}return result;}

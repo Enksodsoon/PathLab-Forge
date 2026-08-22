@@ -9,13 +9,43 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 final class EvidenceMentorRunnerTest {
     private static final ObjectMapper JSON = new ObjectMapper();
     @TempDir Path temporaryDirectory;
+
+    @Test
+    void endpointPublicationPreservesExplicitWindowsAclEntries() throws Exception {
+        var state = Files.createDirectories(temporaryDirectory.resolve("acl-state"));
+        var endpoint = state.resolve("endpoint.json");
+        Files.writeString(endpoint, "{}");
+        var aclView = Files.getFileAttributeView(endpoint, AclFileAttributeView.class);
+        Assumptions.assumeTrue(aclView != null, "Windows ACLs are required for this host-specific test");
+        var principal = Files.getOwner(endpoint);
+        var marker = AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(principal)
+                .setPermissions(AclEntryPermission.READ_ATTRIBUTES)
+                .build();
+        var acl = new java.util.ArrayList<>(aclView.getAcl());
+        acl.add(0, marker);
+        aclView.setAcl(acl);
+
+        try (var runner = EvidenceMentorRunner.start(
+                state, 0, "test-loopback-token-0123456789abcdef", false)) {
+            assertTrue(runner.uri("/health").getPort() > 0);
+            var publishedAcl = Files.getFileAttributeView(endpoint, AclFileAttributeView.class).getAcl();
+            assertTrue(publishedAcl.contains(marker));
+        }
+    }
 
     @Test
     void acceptsAuthenticatedLoopbackSubmissionIntoDurableQueue() throws Exception {
@@ -66,7 +96,7 @@ final class EvidenceMentorRunnerTest {
 
             var endpoint = JSON.readTree(temporaryDirectory.resolve("state/endpoint.json").toFile());
             assertEquals("pathlab.runner-endpoint/1", endpoint.path("schema").asText());
-            assertEquals("2.0.3", endpoint.path("serviceVersion").asText());
+            assertEquals("2.0.4", endpoint.path("serviceVersion").asText());
             assertEquals(runner.uri("/").getPort(), endpoint.path("port").asInt());
             assertTrue(!endpoint.has("token"));
         }
