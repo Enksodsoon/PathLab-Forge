@@ -55,6 +55,12 @@ Use `-Action Upgrade` with a new immutable version. `-Action Uninstall` removes
 the service, firewall rules, and Start Menu shortcut while preserving queues,
 checkpoints, signing material, evidence, and model packs.
 
+If an elevated install is interrupted after staging but before activation, rerun
+the identical command with `-ReuseStagedRuntime`. The installer hashes every
+application and Java runtime file against the requested inputs before reuse. It
+refuses missing, extra, modified, or mismatched files and never overwrites the
+staged version.
+
 ## Host acceptance and the definition of done
 
 Installation is not acceptance. Run the installed acceptance harness from an

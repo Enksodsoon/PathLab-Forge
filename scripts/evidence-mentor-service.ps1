@@ -5,7 +5,8 @@ param(
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
-    [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state'
+    [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
+    [switch] $ReuseStagedRuntime
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,11 +144,43 @@ function Wait-RunnerHealth([int] $Seconds = 30) {
     return $false
 }
 
+function Assert-DirectoryMirror([string] $Source, [string] $Target, [string] $Label) {
+    if (-not (Test-Path -LiteralPath $Source -PathType Container) -or
+            -not (Test-Path -LiteralPath $Target -PathType Container)) {
+        throw "$Label staging directory is incomplete."
+    }
+    $sourceRoot = [IO.Path]::GetFullPath($Source).TrimEnd('\')
+    $targetRoot = [IO.Path]::GetFullPath($Target).TrimEnd('\')
+    $sourceFiles = @(Get-ChildItem -LiteralPath $sourceRoot -File -Recurse)
+    $targetFiles = @(Get-ChildItem -LiteralPath $targetRoot -File -Recurse)
+    if ($sourceFiles.Count -ne $targetFiles.Count) {
+        throw "$Label staged file count does not match the requested input."
+    }
+    foreach ($sourceFile in $sourceFiles) {
+        $relative = $sourceFile.FullName.Substring($sourceRoot.Length).TrimStart('\')
+        $targetFile = Join-Path $targetRoot $relative
+        if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf)) {
+            throw "$Label staged file is missing: $relative"
+        }
+        $candidate = Get-Item -LiteralPath $targetFile
+        if ($candidate.Length -ne $sourceFile.Length -or
+                (Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $candidate.FullName -Algorithm SHA256).Hash) {
+            throw "$Label staged file checksum does not match: $relative"
+        }
+    }
+}
+
 function Stage-Runtime {
     if (-not $DistributionPath -or -not (Test-Path -LiteralPath $DistributionPath -PathType Container)) { throw 'DistributionPath must reference a completed installDist directory.' }
     if (-not $JavaHome -or -not (Test-Path -LiteralPath (Join-Path $JavaHome 'bin\java.exe') -PathType Leaf)) { throw 'JavaHome must reference a Java 17 runtime.' }
     $target = Join-Path $runtimeRoot $Version
-    if (Test-Path -LiteralPath $target) { throw "Runtime version already exists: $target" }
+    if (Test-Path -LiteralPath $target) {
+        if (-not $ReuseStagedRuntime) { throw "Runtime version already exists: $target" }
+        Assert-DirectoryMirror $DistributionPath (Join-Path $target 'app') 'Application runtime'
+        Assert-DirectoryMirror $JavaHome (Join-Path $target 'jre') 'Java runtime'
+        return $target
+    }
     New-Item -ItemType Directory -Path (Join-Path $target 'app') -Force | Out-Null
     Copy-Item -Path (Join-Path $DistributionPath '*') -Destination (Join-Path $target 'app') -Recurse -Force
     Copy-Item -LiteralPath $JavaHome -Destination (Join-Path $target 'jre') -Recurse -Force
