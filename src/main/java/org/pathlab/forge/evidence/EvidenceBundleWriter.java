@@ -18,9 +18,12 @@ public final class EvidenceBundleWriter {
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
     private final EvidenceSigner signer;
+    private final TrustedSignerRegistry registry;
 
     public EvidenceBundleWriter(Path signingRoot) {
         signer = new EvidenceSigner(signingRoot);
+        var normalized = signingRoot.toAbsolutePath().normalize();
+        registry = new TrustedSignerRegistry(normalized.getParent());
     }
 
     public Result write(Path output, ObjectNode unsigned) throws IOException {
@@ -35,6 +38,7 @@ public final class EvidenceBundleWriter {
         var canonical = canonicalBytes(unsigned);
         var manifestSha = sha256(canonical);
         var signed = signer.sign(SCHEMA + "\n" + manifestSha);
+        registry.pin(signed.keyId(), signed.publicKeyDer(), "evidence");
         var complete = unsigned.deepCopy();
         complete.put("manifestSha256", manifestSha);
         complete.set("signature", JSON.valueToTree(java.util.Map.of(

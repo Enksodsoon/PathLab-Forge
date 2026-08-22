@@ -29,24 +29,41 @@ appear in monitoring payloads.
 
 ## Current status
 
-Gates 1-4 are implemented on the draft feature branch. The installed 2.0.12
-runtime has separate passing `Inspect` and `ServiceRestart` reports proving
-live `LocalService`, outbound-deny coverage, P2000 CUDA 12.6 `sm_61` inference,
-resource bounds, signed evidence packaging, and restart recovery. Its latest
-aggregate report is still `NOT_EVALUABLE` solely because the operator-controlled
-manual-reboot challenge has not run. Gate 5 therefore remains incomplete. Gate
-6 qualification preparation has begun: ordinary jobs now require a `qualified`
-pack, while `experimental` packs are restricted to non-identifying
-`qualification-<hex>` jobs. The deterministic cell fallback is accurately
-identified as connected-component morphometry, and IHC marker-specific or PD-L1
-compartment claims fail closed to generic descriptive output. Neither track is
-qualified. A checksum-bound `pathlab.model-qualification-report/1` synthetic
-harness now records separated-cell counting, touching-cell separation,
-determinism, generic DAB area, relative calibration, and failed-stain refusal
-independently. Its current truthful outcome is `experimental`: touching nuclei
-are not split, instance masks are unavailable, and marker-specific/PD-L1
-fixtures remain `not_evaluable`. Special stains and cytology remain
-unimplemented, and Gate 7 has not begun.
+Gates 1-4 remain implemented and service `2.1.0` is staged as a side-by-side,
+idempotent upgrade. An existing byte-identical runtime is reused; a mismatch
+fails before the active configuration changes. The generated elevated launcher
+does not request a reboot. The installed `2.0.12` runtime remains active until
+that separate administrator action. The manual reboot-continuation acceptance
+is still deferred, so Gate 5 and activation remain incomplete.
+
+The branch now implements `pathlab.qualification-campaign/1` as a durable
+parent coordinator above the existing GPU and CPU/I/O lanes. It records frozen
+dependencies, attempts, signed attestations, completion versus target success,
+and a signed capability matrix. One bounded remediation is enforced. Candidate
+manifests cannot activate themselves: v2 execution requires an exact trusted
+registry entry binding pack, artifacts, protocol, and qualification attestation.
+Evidence and qualification signatures are verified against ACL-protected local
+trust registries rather than payload-embedded keys.
+
+Gate 6 now includes executable deterministic baselines for true optical-density
+watershed instance masks and morphometry, marker-aware nuclear ER/PR/Ki-67
+descriptors, HER2 membrane descriptors, PD-L1 reviewed-compartment enforcement,
+generic H/DAB output, PAS/PAS-D, trichrome, GMS, AFB, and Papanicolaou
+descriptors. The four deterministic v2 candidate manifests are pinned to
+pre-registered protocol files. Evidence v2 and signed multi-pack evidence-set
+fusion preserve coordinates, QC, provenance, and uncertainty and explicitly
+forbid serial-section cell matching. These implementations are not qualified:
+rights-cleared held-out reference sets and the frozen quantitative gates still
+must run. Gated DINOv2/Hibou/GigaPath, HoVer-Net/PathoSAM, Qwen assets, and public
+cytology data are not represented as acquired or built when their exact
+artifacts or rights are absent.
+
+Gate 7 has an executable four-hour feasibility decision contract using
+checkpointed 15-20 minute segments, fixed RAM/VRAM limits, validation
+improvement, seven-day projection, 24 GiB rental minimum, and USD 100 ceiling.
+No Atlas weights have been trained. The campaign must return
+`LOCAL_INSUFFICIENT`/`not_evaluable` or pause for an exact user-approved quote
+when lawful teachers, data, checkpoints, or hardware evidence are missing.
 
 Implementation, service installation, model qualification, merge, deployment,
 feature activation, and any future clinical/capacity study are separate gates.

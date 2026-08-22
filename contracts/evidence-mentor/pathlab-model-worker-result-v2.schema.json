@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://pathlab.local/schemas/pathlab-model-worker-result-v2.schema.json",
+  "title": "PathLab Model Worker Result v2", "type": "object", "additionalProperties": false,
+  "required": ["schema", "jobId", "capability", "packManifestSha256", "terminalStatus", "artifactKind", "artifactPath", "artifactSha256", "completedUnits", "totalUnits", "offlineAnalysis"],
+  "properties": {
+    "schema": {"const": "pathlab.model-worker-result/2"}, "jobId": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"},
+    "capability": {"enum": ["he-evidence", "cell-morphology", "ihc-descriptive", "special-stain-descriptive", "cytology-descriptive", "grounded-tutor", "atlas-distillation"]},
+    "packManifestSha256": {"$ref": "#/$defs/sha"}, "terminalStatus": {"enum": ["completed", "abstained", "unsupported", "failed"]},
+    "artifactKind": {"enum": ["evidence", "qualification", "checkpoint", "browser-attestation", "training-attestation"]},
+    "artifactPath": {"type": "string", "minLength": 1, "maxLength": 1000}, "artifactSha256": {"$ref": "#/$defs/sha"},
+    "completedUnits": {"type": "integer", "minimum": 0}, "totalUnits": {"type": "integer", "minimum": 0},
+    "offlineAnalysis": {"const": true}
+  }, "$defs": {"sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

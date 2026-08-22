@@ -165,17 +165,18 @@ final class EvidenceJobProcessorTest {
             assertEquals("ki-67", evidence.path("ihcDescriptors").get(0).path("marker").asText());
             assertEquals("relative_only", evidence.path("ihcDescriptors").get(0)
                     .path("calibrationStatus").asText());
-            assertEquals("generic-fallback", evidence.path("ihcDescriptors").get(0)
+            assertEquals("marker-aware", evidence.path("ihcDescriptors").get(0)
                     .path("analysisMode").asText());
             assertEquals("slide-label", evidence.path("ihcDescriptors").get(0)
                     .path("markerIdentitySource").asText());
-            assertEquals("generic-region", evidence.path("ihcDescriptors").get(0)
+            assertEquals("nuclear", evidence.path("ihcDescriptors").get(0)
                     .path("compartment").asText());
-            assertEquals("MARKER_SPECIFIC_QUALIFICATION_REQUIRED", evidence.path("ihcDescriptors").get(0)
-                    .path("abstentionReason").asText());
-            assertEquals("od-connected-components", evidence.path("ihcDescriptors").get(0)
+            assertTrue(evidence.path("ihcDescriptors").get(0).path("abstentionReason").isNull());
+            assertTrue(evidence.path("ihcDescriptors").get(0).path("measurements")
+                    .has("intensityDistribution"));
+            assertEquals("od-watershed", evidence.path("ihcDescriptors").get(0)
                     .path("cellMaskSource").asText());
-            assertEquals("od-connected-components", evidence.path("cellAggregates").get(0)
+            assertEquals("od-watershed", evidence.path("cellAggregates").get(0)
                     .path("algorithm").asText());
             assertTrue(evidence.path("cellAggregates").get(0)
                     .path("meanNucleusPerimeterPx").asDouble() > 0);
@@ -193,7 +194,7 @@ final class EvidenceJobProcessorTest {
         assertEquals("pd-l1", descriptor.path("markerId").asText());
         assertEquals("generic-fallback", descriptor.path("analysisMode").asText());
         assertEquals("generic-region", descriptor.path("compartment").asText());
-        assertEquals("faculty-approved", descriptor.path("compartmentSource").asText());
+        assertEquals("none", descriptor.path("compartmentSource").asText());
         assertEquals("COMPARTMENT_REVIEW_REQUIRED", descriptor.path("abstentionReason").asText());
         assertTrue(evidence.path("qc").path("warnings").toString()
                 .contains("COMPARTMENT_REVIEW_REQUIRED"));

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://pathlab.local/schemas/pathlab-capability-matrix-v1.schema.json",
+  "title": "PathLab Capability Matrix v1", "type": "object", "additionalProperties": false,
+  "required": ["schema", "campaignId", "campaignManifestSha256", "campaignCompleted", "campaignTargetMet", "generatedAt", "tracks", "manifestSha256", "signature"],
+  "properties": {
+    "schema": {"const": "pathlab.capability-matrix/1"}, "campaignId": {"$ref": "#/$defs/id"}, "campaignManifestSha256": {"$ref": "#/$defs/sha"},
+    "campaignCompleted": {"type": "boolean"}, "campaignTargetMet": {"type": "boolean"}, "generatedAt": {"type": "string", "format": "date-time"},
+    "tracks": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["trackId", "candidateId", "capability", "scope", "status", "activationEligible", "qualificationReportSha256", "failureCode"], "properties": {"trackId": {"$ref": "#/$defs/id"}, "candidateId": {"$ref": "#/$defs/id"}, "capability": {"type": "string", "maxLength": 120}, "scope": {"enum": ["deployment", "research-restricted", "local-benchmark"]}, "status": {"enum": ["qualified", "experimental", "unsupported", "not_evaluable"]}, "activationEligible": {"type": "boolean"}, "qualificationReportSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}, "failureCode": {"type": ["string", "null"], "maxLength": 120}}}},
+    "manifestSha256": {"$ref": "#/$defs/sha"}, "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {"id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "signature": {"type": "object", "additionalProperties": false, "required": ["algorithm", "keyId", "value"], "properties": {"algorithm": {"const": "Ed25519"}, "keyId": {"$ref": "#/$defs/sha"}, "value": {"type": "string", "minLength": 1, "maxLength": 1000}}}}
+}

@@ -1,0 +1,1 @@
+{"schema":"pathlab.qualification-protocol/1","id":"cytology-descriptive-v2","gates":{"cellAccuracyRequired":true,"overlapAbstentionRequired":true,"insufficientTissueAbstentionRequired":true,"clinicalIdentityForbidden":true},"tracks":["papanicolaou"],"researchOnly":true}

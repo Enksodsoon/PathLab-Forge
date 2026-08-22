@@ -96,9 +96,34 @@ final class EvidenceMentorRunnerTest {
 
             var endpoint = JSON.readTree(temporaryDirectory.resolve("state/endpoint.json").toFile());
             assertEquals("pathlab.runner-endpoint/1", endpoint.path("schema").asText());
-            assertEquals("2.0.12", endpoint.path("serviceVersion").asText());
+            assertEquals("2.1.0", endpoint.path("serviceVersion").asText());
             assertEquals(runner.uri("/").getPort(), endpoint.path("port").asInt());
             assertTrue(!endpoint.has("token"));
+        }
+    }
+
+    @Test
+    void createsAndReadsDurableQualificationCampaign() throws Exception {
+        var campaignDirectory = Files.createDirectories(temporaryDirectory.resolve("campaign"));
+        Files.writeString(campaignDirectory.resolve("request.json"), "{}");
+        var manifest = campaignDirectory.resolve("campaign.json");
+        Files.writeString(manifest, QualificationCampaignManifestTest.campaign("request.json"));
+        try (var runner = EvidenceMentorRunner.start(
+                temporaryDirectory.resolve("state"), 0, "test-loopback-token-0123456789abcdef", false)) {
+            var client = HttpClient.newHttpClient();
+            var body = "{\"manifestPath\":" + quote(manifest.toString()) + "}";
+            var accepted = client.send(HttpRequest.newBuilder(runner.uri("/v1/qualification-runs"))
+                    .header("Authorization", "Bearer test-loopback-token-0123456789abcdef")
+                    .POST(HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(202, accepted.statusCode());
+            assertTrue(accepted.body().contains("pathlab.qualification-run/1"));
+            assertTrue(accepted.body().contains("all-rounder-1"));
+
+            var read = client.send(HttpRequest.newBuilder(runner.uri("/v1/qualification-runs/all-rounder-1"))
+                    .header("Authorization", "Bearer test-loopback-token-0123456789abcdef")
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, read.statusCode());
+            assertTrue(read.body().contains("dinov2-small"));
         }
     }
 

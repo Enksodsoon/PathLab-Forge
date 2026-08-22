@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pathlab.local/schemas/pathlab-qualification-campaign-v1.schema.json",
+  "title": "PathLab Qualification Campaign v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "campaignId", "createdAt", "researchOnly", "notDiagnostic", "maxRemediationAttempts", "quota", "tracks"],
+  "properties": {
+    "schema": {"const": "pathlab.qualification-campaign/1"},
+    "campaignId": {"$ref": "#/$defs/id"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "researchOnly": {"const": true},
+    "notDiagnostic": {"const": true},
+    "maxRemediationAttempts": {"const": 1},
+    "quota": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceBytes", "derivedBytes", "modelBytes", "evidenceBytes", "reserveBytes"],
+      "properties": {
+        "sourceBytes": {"const": 48318382080}, "derivedBytes": {"const": 26843545600},
+        "modelBytes": {"const": 10737418240}, "evidenceBytes": {"const": 10737418240},
+        "reserveBytes": {"const": 10737418240}
+      }
+    },
+    "tracks": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/track"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"},
+    "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "track": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "candidateId", "capability", "scope", "requestPath", "remediationRequestPath", "expectedAttestationPath", "protocolSha256", "dependsOn", "required"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "candidateId": {"$ref": "#/$defs/id"},
+        "capability": {"enum": ["he-evidence", "cell-morphology", "ihc-descriptive", "special-stain-descriptive", "cytology-descriptive", "grounded-tutor", "atlas-distillation"]},
+        "scope": {"enum": ["deployment", "research-restricted", "local-benchmark"]},
+        "requestPath": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "remediationRequestPath": {"type": ["string", "null"], "maxLength": 1000},
+        "expectedAttestationPath": {"type": ["string", "null"], "maxLength": 1000},
+        "protocolSha256": {"$ref": "#/$defs/sha"},
+        "dependsOn": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "required": {"type": "boolean"}
+      }
+    }
+  }
+}

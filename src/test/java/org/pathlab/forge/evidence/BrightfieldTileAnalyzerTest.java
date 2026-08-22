@@ -32,6 +32,23 @@ final class BrightfieldTileAnalyzerTest {
         assertTrue(result.meanDabOd() > 0);
         assertEquals("nuclear", result.compartment());
         assertTrue(result.researchEstimate());
+        assertEquals(2, result.instances().size());
+        assertTrue(result.instances().stream().allMatch(instance -> !instance.rle().isEmpty()));
+    }
+
+    @Test
+    void markerControlledWatershedSplitsTouchingElongatedNuclearMask() {
+        var image = new BufferedImage(24, 16, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(Color.WHITE); graphics.fillRect(0, 0, 24, 16);
+        graphics.setColor(new Color(75, 45, 125)); graphics.fillRect(6, 5, 10, 5);
+        graphics.dispose();
+
+        var result = BrightfieldTileAnalyzer.analyze(image, "generic");
+
+        assertEquals(2, result.cellCount());
+        assertEquals("cell-1", result.instances().get(0).id());
+        assertTrue(result.instances().stream().allMatch(instance -> instance.areaPx2() == 25));
     }
 
     @Test

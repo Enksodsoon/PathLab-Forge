@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://pathlab.local/schemas/pathlab-study-pack-v3.schema.json",
+  "title": "PathLab Study Pack v3", "type": "object", "additionalProperties": false,
+  "required": ["schema", "packKey", "version", "title", "author", "license", "provenance", "revision", "languages", "knowledgePackChecksum", "slides", "tasks", "checksum", "facultyPreview"],
+  "properties": {
+    "schema": {"const": "pathlab.study-pack/3"}, "packKey": {"$ref": "#/$defs/id"}, "version": {"type": "integer", "minimum": 1},
+    "title": {"type": "string", "minLength": 1, "maxLength": 240}, "author": {"type": "string", "minLength": 1, "maxLength": 240}, "license": {"type": "string", "minLength": 1, "maxLength": 240}, "provenance": {"type": "string", "minLength": 1, "maxLength": 1000}, "revision": {"type": "string", "minLength": 1, "maxLength": 120},
+    "languages": {"const": ["en"]}, "knowledgePackChecksum": {"$ref": "#/$defs/sha"},
+    "slides": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"type": "object", "additionalProperties": false, "required": ["viewerSlideId", "sha256", "displayName", "evidenceSetSha256"], "properties": {"viewerSlideId": {"type": "string", "maxLength": 100}, "sha256": {"$ref": "#/$defs/sha"}, "displayName": {"type": "string", "maxLength": 200}, "evidenceSetSha256": {"$ref": "#/$defs/sha"}}}},
+    "tasks": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"type": "object"}},
+    "checksum": {"$ref": "#/$defs/sha"}, "facultyPreview": {"type": "object"}
+  }, "$defs": {"id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [ValidateSet('Install','Upgrade','Uninstall','Status')] [string] $Action,
-    [string] $Version = '2.0.12',
+    [string] $Version = '2.1.0',
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
@@ -188,7 +188,8 @@ function Stage-Runtime {
     if (-not $JavaHome -or -not (Test-Path -LiteralPath (Join-Path $JavaHome 'bin\java.exe') -PathType Leaf)) { throw 'JavaHome must reference a Java 17 runtime.' }
     $target = Join-Path $runtimeRoot $Version
     if (Test-Path -LiteralPath $target) {
-        if (-not $ReuseStagedRuntime) { throw "Runtime version already exists: $target" }
+        # Idempotent upgrades reuse a byte-identical staged runtime. Any mismatch fails
+        # before the installed directory or active service configuration is touched.
         Assert-DirectoryMirror $DistributionPath (Join-Path $target 'app') 'Application runtime'
         Assert-DirectoryMirror $JavaHome (Join-Path $target 'jre') 'Java runtime'
         return $target

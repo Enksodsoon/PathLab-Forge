@@ -39,9 +39,10 @@ final class BrightfieldQualificationHarnessTest {
         assertEquals("cell-od-watershed-v1", cell.path("packId").asText());
         assertEquals(64, cell.path("packManifestSha256").asText().length());
         assertEquals("experimental", cell.path("status").asText());
-        assertEquals("fail", check(cell, "touching-nuclei-separation").path("outcome").asText());
-        assertEquals(1, check(cell, "touching-nuclei-separation").path("observed").asInt());
+        assertEquals("pass", check(cell, "touching-nuclei-separation").path("outcome").asText());
+        assertEquals(2, check(cell, "touching-nuclei-separation").path("observed").asInt());
         assertEquals(2, check(cell, "touching-nuclei-separation").path("required").asInt());
+        assertEquals("pass", check(cell, "instance-mask-output").path("outcome").asText());
 
         var ihc = track(report, "ihc-descriptive");
         assertEquals("ihc-descriptive-v1", ihc.path("packId").asText());

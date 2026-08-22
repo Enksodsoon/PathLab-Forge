@@ -25,7 +25,8 @@ public final class EvidenceJobProcessor {
             "sourceWidth", "sourceHeight", "packManifest", "stain", "marker");
     private static final Set<String> OPTIONAL_REQUEST_FIELDS = Set.of(
             "compartmentSource", "controlsValidated", "markerIdentitySource",
-            "tileCacheManifest", "tileCacheManifestSha256");
+            "tileCacheManifest", "tileCacheManifestSha256", "qualificationAttestationSha256",
+            "qualificationCampaignManifest", "reviewedRegions");
     private final EvidenceJobQueue queue;
     private final Path stateRoot;
 
@@ -45,6 +46,10 @@ public final class EvidenceJobProcessor {
     }
 
     public static ExecutionPlan executionPlan(Path requestPath, String jobId) throws IOException {
+        return executionPlan(requestPath, jobId, null);
+    }
+
+    public static ExecutionPlan executionPlan(Path requestPath, String jobId, Path stateRoot) throws IOException {
         final JsonNode request;
         try {
             request = JSON.readTree(requestPath.toAbsolutePath().normalize().toFile());
@@ -54,7 +59,9 @@ public final class EvidenceJobProcessor {
         // Legacy v1 submissions were accepted before lane metadata existed and migrate to CPU/I/O.
         if (request == null || !request.path("packManifest").isTextual()) return new ExecutionPlan(EvidenceExecutionLane.CPU_IO, "");
         var pack = EvidencePackManifest.load(regularPath(request, "packManifest"));
-        pack.requireExecutableForJob(jobId);
+        if (stateRoot == null) pack.requireExecutableForJob(jobId);
+        else pack.requireExecutableForJob(jobId, new QualifiedPackRegistry(stateRoot),
+                request.path("qualificationAttestationSha256").asText(""));
         return new ExecutionPlan("cuda".equals(pack.runtimeCompatibility().executionProvider())
                 ? EvidenceExecutionLane.GPU : EvidenceExecutionLane.CPU_IO, pack.sha256());
     }
@@ -75,13 +82,17 @@ public final class EvidenceJobProcessor {
                 "Evidence job request is invalid");
         require(Set.of("pathlab.evidence-job/1", "pathlab.evidence-job/2").contains(text(request, "schema")),
                 "Evidence job schema is unsupported");
+        require(!request.has("qualificationCampaignManifest")
+                        || job.id().matches("qualification-[a-f0-9]{8,64}"),
+                "Only qualification jobs may bind a campaign manifest");
         var source = regularPath(request, "sourcePath");
         var preview = regularPath(request, "previewPath");
         var expectedSha = text(request, "sourceSha256");
         require(expectedSha.matches("[a-f0-9]{64}") && expectedSha.equals(sha256(source)),
                 "Evidence source checksum does not match");
         var pack = EvidencePackManifest.load(regularPath(request, "packManifest"));
-        pack.requireExecutableForJob(job.id());
+        pack.requireExecutableForJob(job.id(), new QualifiedPackRegistry(stateRoot),
+                request.path("qualificationAttestationSha256").asText(""));
         var durable = queue.snapshot(job.id()).orElseThrow();
         require(durable.requestSha256().isBlank() || durable.requestSha256().equals(sha256(job.requestPath())),
                 "Evidence request changed after submission");
@@ -161,13 +172,22 @@ public final class EvidenceJobProcessor {
                 ? request.path("markerIdentitySource").textValue() : "unknown";
         require(Set.of("unknown", "faculty-authored", "slide-label", "import-metadata")
                 .contains(markerIdentitySource), "Evidence marker identity source is invalid");
-        // This pack has no compartment geometry and no qualified marker-specific algorithms yet.
-        // A provenance label alone must never be promoted into a tumor/immune measurement claim.
-        var descriptorWarning = pack.capability() != EvidencePackManifest.Capability.IHC_DESCRIPTIVE
-                || "generic".equals(marker) ? null
-                : "pd-l1".equals(marker)
-                        ? "COMPARTMENT_REVIEW_REQUIRED"
-                        : "MARKER_SPECIFIC_QUALIFICATION_REQUIRED";
+        var reviewedRegions = reviewedRegions(request.path("reviewedRegions"), image,
+                sourceWidth, sourceHeight);
+        if (reviewedRegions.isEmpty()) compartmentSource = "none";
+        else if (reviewedRegions.stream().allMatch(region -> "faculty-authored".equals(region.reviewSource()))) {
+            compartmentSource = "faculty-authored";
+        } else if (reviewedRegions.stream().anyMatch(region -> "faculty-approved".equals(region.reviewSource()))) {
+            compartmentSource = "faculty-approved";
+        } else compartmentSource = "model-suggested";
+        var ihcResult = pack.capability() == EvidencePackManifest.Capability.IHC_DESCRIPTIVE
+                ? IhcMeasurementAnalyzer.analyze(image, marker, reviewedRegions,
+                        request.path("controlsValidated").asBoolean(false)) : null;
+        var specialResult = Set.of(EvidencePackManifest.Capability.SPECIAL_STAIN_DESCRIPTIVE,
+                        EvidencePackManifest.Capability.CYTOLOGY_DESCRIPTIVE).contains(pack.capability())
+                ? SpecialStainAnalyzer.analyze(image, stain) : null;
+        var descriptorWarning = ihcResult != null ? ihcResult.abstentionReason()
+                : specialResult != null ? specialResult.abstentionReason() : null;
         var abstained = !abstentionReasons.isEmpty();
         var refiningAt = now.plusSeconds(1);
         checkCancellation(job.id(), workerId, refiningAt);
@@ -185,10 +205,22 @@ public final class EvidenceJobProcessor {
         new EvidenceQuotaManager(stateRoot).requireReservation(EvidenceQuotaManager.Bucket.EVIDENCE_TEST,
                 Math.max(1, Files.size(preview)));
         Files.createDirectories(artifactRoot);
-        var unsigned = evidence(request, pack, image, analysis, stainQc, modelResult, focus, tissue,
-                abstentionReasons, compartmentSource, markerIdentitySource, descriptorWarning, now);
+        var qualificationOnly = job.id().matches("qualification-[a-f0-9]{8,64}");
+        var evidenceV2 = EvidencePackManifest.SCHEMA_V2.equals(pack.schema()) && !qualificationOnly;
+        var unsigned = evidenceV2
+                ? evidenceV2(request, pack, image, analysis, modelResult, focus, tissue,
+                        abstentionReasons, compartmentSource, ihcResult, specialResult,
+                        reviewedRegions, now)
+                : evidence(request, pack, image, analysis, stainQc, modelResult, focus, tissue,
+                        abstentionReasons, compartmentSource, markerIdentitySource, descriptorWarning,
+                        ihcResult, specialResult, reviewedRegions, now);
         var finalArtifact = artifactRoot.resolve("evidence.json");
-        new EvidenceBundleWriter(stateRoot.resolve("signing")).write(finalArtifact, unsigned);
+        if (evidenceV2) new EvidenceBundleWriterV2(stateRoot).write(finalArtifact, unsigned);
+        else new EvidenceBundleWriter(stateRoot.resolve("signing")).write(finalArtifact, unsigned);
+        if (job.id().matches("qualification-[a-f0-9]{8,64}")
+                && request.path("qualificationCampaignManifest").isTextual()) {
+            writeQualificationReport(job, request, pack, abstained, now.plusMillis(2400));
+        }
         queue.recordFinalArtifact(job.id(), workerId, sha256(finalArtifact), now.plusMillis(2500));
         var terminal = abstained ? EvidenceJobState.ABSTAINED : EvidenceJobState.COMPLETED;
         var detail = abstained
@@ -197,6 +229,50 @@ public final class EvidenceJobProcessor {
         return queue.checkpoint(packaging.id(), workerId, terminal,
                 terminal.name().toLowerCase(), 1, detail,
                 now.plusSeconds(3), LEASE);
+    }
+
+    private void writeQualificationReport(EvidenceJob job, JsonNode request, EvidencePackManifest pack,
+            boolean abstained, Instant now) throws IOException {
+        var campaign = QualificationCampaignManifest.load(
+                regularPath(request, "qualificationCampaignManifest"));
+        var normalizedRequest = job.requestPath().toAbsolutePath().normalize();
+        var track = campaign.tracks().stream().filter(candidate ->
+                normalizedRequest.equals(candidate.requestPath())
+                        || normalizedRequest.equals(candidate.remediationRequestPath()))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException(
+                        "Qualification request is not bound to the frozen campaign"));
+        require(track.candidateId().equals(pack.packId())
+                        && track.capability().equals(pack.capability().wire())
+                        && track.scope().equals(pack.scope()),
+                "Qualification request pack identity changed");
+        if (track.expectedAttestationPath() == null) return;
+        var report = JSON.createObjectNode();
+        report.put("schema", QualificationReportWriter.SCHEMA);
+        report.put("campaignId", campaign.campaignId());
+        report.put("campaignManifestSha256", campaign.sha256());
+        report.put("trackId", track.id());
+        report.put("candidateId", track.candidateId());
+        report.put("capability", track.capability());
+        report.put("scope", track.scope());
+        report.put("packManifestSha256", pack.sha256());
+        report.put("protocolSha256", track.protocolSha256());
+        report.put("generatedAt", now.toString());
+        report.put("researchOnly", true);
+        report.put("notDiagnostic", true);
+        var heldOutRequired = switch (pack.capability()) {
+            case CELL_MORPHOLOGY, IHC_DESCRIPTIVE, SPECIAL_STAIN_DESCRIPTIVE,
+                    CYTOLOGY_DESCRIPTIVE, HE_EVIDENCE, GROUNDED_TUTOR, ATLAS_DISTILLATION -> true;
+        };
+        report.put("status", abstained ? "not_evaluable" : heldOutRequired ? "experimental" : "experimental");
+        var checks = report.putArray("checks");
+        checks.addObject().put("id", "offline-bounded-execution").put("outcome",
+                abstained ? "not_evaluable" : "pass")
+                .put("detail", "Candidate executed without network access inside its declared resource envelope");
+        checks.addObject().put("id", "preregistered-held-out-gates").put("outcome", "not_evaluable")
+                .put("detail", "Required rights-cleared patient/source-held-out fixtures are not attached to this request");
+        var reasons = report.putArray("reasons");
+        reasons.add(abstained ? "INPUT_QC_FAILED" : "HELD_OUT_QUALIFICATION_PENDING");
+        new QualificationReportWriter(stateRoot).write(track.expectedAttestationPath(), report);
     }
 
     private static ObjectNode evidence(
@@ -212,6 +288,9 @@ public final class EvidenceJobProcessor {
             String compartmentSource,
             String markerIdentitySource,
             String descriptorWarning,
+            IhcMeasurementAnalyzer.Result ihcResult,
+            SpecialStainAnalyzer.Result specialResult,
+            java.util.List<IhcMeasurementAnalyzer.ReviewedRegion> reviewedRegions,
             Instant now) {
         var root = JSON.createObjectNode();
         root.put("schema", EvidenceBundleWriter.SCHEMA);
@@ -232,21 +311,36 @@ public final class EvidenceJobProcessor {
         root.put("researchOnly", true);
         root.put("notDiagnostic", true);
         root.put("reviewRequired", true);
+        if (request.path("qualificationCampaignManifest").isTextual()) {
+            root.put("qualificationOnly", true);
+        }
         var sourceWidth = positiveInt(request, "sourceWidth");
         var sourceHeight = positiveInt(request, "sourceHeight");
         root.set("coordinates", JSON.valueToTree(java.util.Map.of(
                 "space", "source-pixel", "originX", 0, "originY", 0,
                 "scaleX", (double) sourceWidth / image.getWidth(),
                 "scaleY", (double) sourceHeight / image.getHeight())));
-        root.set("evidence", modelResult == null
-                ? JSON.valueToTree(java.util.List.of(java.util.Map.of(
+        var regions = new java.util.ArrayList<java.util.Map<String, Object>>();
+        if (modelResult == null) {
+            regions.add(java.util.Map.of(
                         "id", "region-1", "stage", "refined", "kind", "support",
                         "x", 0, "y", 0, "width", sourceWidth, "height", sourceHeight,
-                        "score", Math.max(0, Math.min(1, 1 - analysis.dabAreaFraction())))))
-                : modelResult.path("regions").deepCopy());
+                        "score", Math.max(0, Math.min(1, 1 - analysis.dabAreaFraction()))));
+            for (var region : reviewedRegions) {
+                regions.add(java.util.Map.of(
+                        "id", region.id(), "stage", "refined",
+                        "kind", region.kind() + "-compartment", "reviewStatus", region.reviewSource(),
+                        "x", (int) Math.round(region.x() * (double) sourceWidth / image.getWidth()),
+                        "y", (int) Math.round(region.y() * (double) sourceHeight / image.getHeight()),
+                        "width", (int) Math.round(region.width() * (double) sourceWidth / image.getWidth()),
+                        "height", (int) Math.round(region.height() * (double) sourceHeight / image.getHeight()),
+                        "score", 1.0));
+            }
+            root.set("evidence", JSON.valueToTree(regions));
+        } else root.set("evidence", modelResult.path("regions").deepCopy());
         var aggregate = new java.util.LinkedHashMap<String, Object>();
         aggregate.put("regionId", "region-1");
-        aggregate.put("algorithm", "od-connected-components");
+        aggregate.put("algorithm", "od-watershed");
         aggregate.put("count", analysis.cellCount());
         aggregate.put("densityPerMm2", null);
         aggregate.put("meanNucleusAreaPx2", analysis.meanNucleusAreaPx2());
@@ -258,26 +352,42 @@ public final class EvidenceJobProcessor {
                 pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE
                         ? java.util.List.of() : java.util.List.of(aggregate)));
         var ihc = new java.util.ArrayList<java.util.Map<String, Object>>();
-        if (pack.capability() == EvidencePackManifest.Capability.IHC_DESCRIPTIVE) {
+        if (ihcResult != null) {
             var descriptor = new java.util.LinkedHashMap<String, Object>();
             descriptor.put("regionId", "region-1");
             descriptor.put("markerId", analysis.marker());
             descriptor.put("marker", analysis.marker());
             descriptor.put("markerIdentitySource", markerIdentitySource);
-            descriptor.put("analysisMode", "generic".equals(analysis.marker())
-                    ? "generic-descriptive" : "generic-fallback");
-            descriptor.put("cellMaskSource", "od-connected-components");
+            descriptor.put("analysisMode", ihcResult.analysisMode());
+            descriptor.put("cellMaskSource", "od-watershed");
             descriptor.put("compartmentSource", compartmentSource);
             descriptor.put("calibrationStatus", stainQc.calibrationStatus());
-            descriptor.put("compartment", "generic-region");
-            descriptor.put("dabAreaFraction", analysis.dabAreaFraction());
-            descriptor.put("meanDabOd", analysis.meanDabOd());
-            descriptor.put("uncertainty", 1 - Math.min(focus, tissue));
-            descriptor.put("abstentionReason", descriptorWarning);
+            descriptor.put("compartment", ihcResult.compartment());
+            descriptor.put("measurements", ihcResult.measurements());
+            descriptor.put("qc", ihcResult.qc());
+            descriptor.put("uncertainty", Math.max(1 - Math.min(focus, tissue), ihcResult.uncertainty()));
+            descriptor.put("abstentionReason", ihcResult.abstentionReason());
             descriptor.put("researchEstimate", true);
             ihc.add(descriptor);
         }
         root.set("ihcDescriptors", JSON.valueToTree(ihc));
+        var special = new java.util.ArrayList<java.util.Map<String, Object>>();
+        if (specialResult != null) {
+            var descriptor = new java.util.LinkedHashMap<String, Object>();
+            descriptor.put("regionId", "region-1");
+            descriptor.put("stainId", specialResult.stainId());
+            descriptor.put("analysisMode", specialResult.analysisMode());
+            descriptor.put("cellMaskSource", pack.capability() == EvidencePackManifest.Capability.CYTOLOGY_DESCRIPTIVE
+                    ? "od-watershed" : "none");
+            descriptor.put("measurements", specialResult.measurements());
+            descriptor.put("qc", specialResult.qc());
+            descriptor.put("uncertainty", specialResult.uncertainty());
+            descriptor.put("abstentionReason", specialResult.abstentionReason());
+            descriptor.put("researchEstimate", true);
+            special.add(descriptor);
+        }
+        root.set(pack.capability() == EvidencePackManifest.Capability.CYTOLOGY_DESCRIPTIVE
+                ? "cytologyDescriptors" : "specialStainDescriptors", JSON.valueToTree(special));
         root.set("citations", JSON.createArrayNode());
         var qc = new java.util.LinkedHashMap<String, Object>();
         qc.put("focus", focus);
@@ -294,6 +404,162 @@ public final class EvidenceJobProcessor {
                 "createdAt", now.toString(), "codeRevision", "pathlab-forge-evidence-mentor-v1",
                 "offlineAnalysis", true)));
         return root;
+    }
+
+    private static java.util.List<IhcMeasurementAnalyzer.ReviewedRegion> reviewedRegions(
+            JsonNode node, BufferedImage image, int sourceWidth, int sourceHeight) {
+        if (node.isMissingNode() || node.isNull()) return java.util.List.of();
+        require(node.isArray() && node.size() <= 64, "Reviewed regions are invalid");
+        var result = new java.util.ArrayList<IhcMeasurementAnalyzer.ReviewedRegion>();
+        for (var item : node) {
+            require(fieldNames(item).equals(Set.of("id", "kind", "reviewSource", "x", "y", "width", "height")),
+                    "Reviewed region fields are invalid");
+            var x = boundedCoordinate(item, "x", sourceWidth - 1);
+            var y = boundedCoordinate(item, "y", sourceHeight - 1);
+            var width = boundedCoordinate(item, "width", sourceWidth - x);
+            var height = boundedCoordinate(item, "height", sourceHeight - y);
+            require(width > 0 && height > 0, "Reviewed region geometry is invalid");
+            result.add(new IhcMeasurementAnalyzer.ReviewedRegion(
+                    text(item, "id"), text(item, "kind"), text(item, "reviewSource"),
+                    (int) Math.floor(x * (double) image.getWidth() / sourceWidth),
+                    (int) Math.floor(y * (double) image.getHeight() / sourceHeight),
+                    Math.max(1, (int) Math.ceil(width * (double) image.getWidth() / sourceWidth)),
+                    Math.max(1, (int) Math.ceil(height * (double) image.getHeight() / sourceHeight))));
+        }
+        return java.util.List.copyOf(result);
+    }
+
+    private static ObjectNode evidenceV2(
+            JsonNode request, EvidencePackManifest pack, BufferedImage image,
+            BrightfieldTileAnalyzer.Result analysis, JsonNode modelResult, double focus, double tissue,
+            java.util.List<String> abstentionReasons, String compartmentSource,
+            IhcMeasurementAnalyzer.Result ihcResult, SpecialStainAnalyzer.Result specialResult,
+            java.util.List<IhcMeasurementAnalyzer.ReviewedRegion> reviewedRegions, Instant now) {
+        var sourceWidth = positiveInt(request, "sourceWidth");
+        var sourceHeight = positiveInt(request, "sourceHeight");
+        var root = JSON.createObjectNode();
+        root.put("schema", EvidenceBundleWriterV2.SCHEMA);
+        root.put("bundleId", "evidence-" + java.util.UUID.randomUUID());
+        root.set("source", JSON.valueToTree(java.util.Map.of(
+                "slideSha256", text(request, "sourceSha256"), "revision", text(request, "slideRevision"),
+                "width", sourceWidth, "height", sourceHeight)));
+        root.set("pack", JSON.valueToTree(java.util.Map.of(
+                "id", pack.packId(), "version", pack.version(), "manifestSha256", pack.sha256(),
+                "capability", pack.capability().wire(), "scope", pack.scope(),
+                "preprocessing", pack.preprocessingId(),
+                "artifacts", pack.artifacts().stream().map(EvidencePackManifest.Artifact::sha256).toList())));
+        root.put("qualificationAttestationSha256", text(request, "qualificationAttestationSha256"));
+        root.put("status", abstentionReasons.isEmpty() ? "completed" : "abstained");
+        root.put("researchOnly", true);
+        root.put("notDiagnostic", true);
+        root.put("reviewRequired", true);
+        root.set("coordinates", JSON.valueToTree(java.util.Map.of(
+                "space", "source-pixel", "originX", 0, "originY", 0,
+                "scaleX", (double) sourceWidth / image.getWidth(),
+                "scaleY", (double) sourceHeight / image.getHeight())));
+        var regions = root.putArray("regions");
+        if (modelResult != null && modelResult.path("regions").isArray()) {
+            for (var candidate : modelResult.path("regions")) {
+                var region = regions.addObject();
+                region.put("id", candidate.path("id").asText("region-" + regions.size()));
+                region.put("stage", candidate.path("stage").asText("refined"));
+                region.put("kind", candidate.path("kind").asText("support"));
+                region.put("reviewStatus", "unreviewed");
+                for (var field : java.util.List.of("x", "y", "width", "height", "score")) {
+                    region.put(field, candidate.path(field).asDouble());
+                }
+            }
+        }
+        if (regions.isEmpty()) {
+            var region = regions.addObject();
+            region.put("id", "region-1"); region.put("stage", "refined"); region.put("kind", "analysis");
+            region.put("reviewStatus", "unreviewed"); region.put("x", 0); region.put("y", 0);
+            region.put("width", sourceWidth); region.put("height", sourceHeight); region.put("score", 1.0);
+        }
+        for (var reviewed : reviewedRegions) {
+            var region = regions.addObject();
+            region.put("id", reviewed.id()); region.put("stage", "refined");
+            region.put("kind", "analysis".equals(reviewed.kind())
+                    ? "analysis" : reviewed.kind() + "-compartment");
+            region.put("reviewStatus", reviewed.reviewSource());
+            region.put("x", reviewed.x() * (double) sourceWidth / image.getWidth());
+            region.put("y", reviewed.y() * (double) sourceHeight / image.getHeight());
+            region.put("width", reviewed.width() * (double) sourceWidth / image.getWidth());
+            region.put("height", reviewed.height() * (double) sourceHeight / image.getHeight());
+            region.put("score", 1.0);
+        }
+        var includeCells = pack.capability() != EvidencePackManifest.Capability.HE_EVIDENCE
+                && pack.capability() != EvidencePackManifest.Capability.SPECIAL_STAIN_DESCRIPTIVE;
+        var instances = root.putArray("cellInstances");
+        if (includeCells) {
+            var index = 0;
+            for (var cell : analysis.instances()) {
+                var item = instances.addObject(); item.put("id", "cell-" + (++index));
+                item.put("regionId", "region-1"); item.put("maskEncoding", "rle");
+                item.set("mask", JSON.valueToTree(cell.rle())); item.put("areaPx2", cell.areaPx2());
+                item.put("perimeterPx", cell.perimeterPx()); item.put("eccentricity", cell.eccentricity());
+                item.put("solidity", cell.solidity()); item.put("meanIntensity", cell.meanIntensity());
+                item.put("uncertainty", Math.max(0, 1 - focus)); item.put("category", "unclassified");
+            }
+        }
+        var aggregates = root.putArray("cellAggregates");
+        if (includeCells) {
+            var aggregate = aggregates.addObject(); aggregate.put("regionId", "region-1");
+            aggregate.put("algorithm", "od-watershed"); aggregate.put("count", analysis.cellCount());
+            aggregate.putNull("densityPerMm2");
+            aggregate.set("distributions", JSON.valueToTree(java.util.Map.of(
+                    "meanAreaPx2", analysis.meanNucleusAreaPx2() == null ? 0 : analysis.meanNucleusAreaPx2(),
+                    "meanPerimeterPx", analysis.meanNucleusPerimeterPx() == null ? 0 : analysis.meanNucleusPerimeterPx(),
+                    "meanEccentricity", analysis.meanNucleusEccentricity() == null ? 0 : analysis.meanNucleusEccentricity(),
+                    "meanSolidity", analysis.meanNucleusSolidity() == null ? 0 : analysis.meanNucleusSolidity())));
+            aggregate.put("uncertainty", 1 - Math.min(focus, tissue));
+            aggregate.set("qc", JSON.valueToTree(abstentionReasons));
+        }
+        var ihc = root.putArray("ihcDescriptors");
+        if (ihcResult != null) addStainDescriptor(ihc, "ihc_dab", ihcResult.markerId(),
+                ihcResult.analysisMode(), "od-watershed", compartmentSource,
+                ihcResult.calibrationStatus(), ihcResult.measurements(), ihcResult.qc(),
+                ihcResult.uncertainty(), ihcResult.abstentionReason());
+        var special = root.putArray("specialStainDescriptors");
+        var cytology = root.putArray("cytologyDescriptors");
+        if (specialResult != null) addStainDescriptor(
+                pack.capability() == EvidencePackManifest.Capability.CYTOLOGY_DESCRIPTIVE ? cytology : special,
+                specialResult.stainId(), "none", specialResult.analysisMode(),
+                pack.capability() == EvidencePackManifest.Capability.CYTOLOGY_DESCRIPTIVE ? "od-watershed" : "none",
+                "none", "relative_only", specialResult.measurements(), specialResult.qc(),
+                specialResult.uncertainty(), specialResult.abstentionReason());
+        root.set("citations", JSON.createArrayNode());
+        root.set("qc", JSON.valueToTree(java.util.Map.of(
+                "focus", focus, "tissueFraction", tissue, "uncertainty", 1 - Math.min(focus, tissue),
+                "abstentionReasons", abstentionReasons,
+                "warnings", java.util.List.of())));
+        var provenance = root.putObject("provenance");
+        provenance.put("createdAt", now.toString());
+        provenance.put("codeRevision", "pathlab-forge-evidence-mentor-v2");
+        provenance.put("offlineAnalysis", true);
+        provenance.putNull("campaignId");
+        return root;
+    }
+
+    private static void addStainDescriptor(com.fasterxml.jackson.databind.node.ArrayNode output,
+            String stainId, String markerId, String mode, String maskSource, String compartmentSource,
+            String calibration, java.util.Map<String, Object> measurements, java.util.List<String> qc,
+            double uncertainty, String abstention) {
+        var item = output.addObject(); item.put("regionId", "region-1"); item.put("stainId", stainId);
+        item.put("markerId", markerId); item.put("analysisMode", mode); item.put("cellMaskSource", maskSource);
+        item.put("compartmentSource", compartmentSource); item.put("calibrationStatus", calibration);
+        item.set("measurements", JSON.valueToTree(measurements)); item.set("qc", JSON.valueToTree(qc));
+        item.put("uncertainty", Math.max(0, Math.min(1, uncertainty)));
+        if (abstention == null) item.putNull("abstentionReason"); else item.put("abstentionReason", abstention);
+        item.put("researchEstimate", true);
+    }
+
+    private static int boundedCoordinate(JsonNode node, String name, int maximum) {
+        var value = node.path(name);
+        require(value.isIntegralNumber() && value.canConvertToInt()
+                        && value.intValue() >= 0 && value.intValue() <= maximum,
+                "Reviewed region geometry is invalid");
+        return value.intValue();
     }
 
     private void checkCancellation(String id, String workerId, Instant now) throws IOException {

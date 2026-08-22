@@ -106,11 +106,12 @@ public final class BrightfieldQualificationHarness {
         checks.add(textCheck("deterministic-repeat",
                 separated.equals(repeated) ? "pass" : "fail",
                 "Exact repeated analysis result"));
-        checks.add(textCheck("instance-mask-output", "not_evaluable",
-                "Current v1 emits aggregates but no reviewed-region instance masks"));
+        checks.add(textCheck("instance-mask-output",
+                touching.instances().size() == 2
+                        && touching.instances().stream().allMatch(instance -> !instance.rle().isEmpty())
+                        ? "pass" : "fail",
+                "Deterministic reviewed-region RLE instance masks"));
         var reasons = track.putArray("reasons");
-        reasons.add("TOUCHING_NUCLEI_NOT_SPLIT");
-        reasons.add("INSTANCE_MASK_OUTPUT_UNAVAILABLE");
         reasons.add("CROSS_TISSUE_HELD_OUT_FIXTURES_PENDING");
         return track;
     }

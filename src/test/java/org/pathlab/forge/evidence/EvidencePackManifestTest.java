@@ -119,7 +119,13 @@ final class EvidencePackManifestTest {
         var root = Path.of("src/main/resources/evidence-packs");
         try (var manifests = Files.list(root)) {
             for (var manifest : manifests.filter(path -> path.toString().endsWith(".json")).toList()) {
-                var card = JSON.readTree(manifest.toFile()).path("validation").path("modelCard").asText();
+                var rootNode = JSON.readTree(manifest.toFile());
+                if (EvidencePackManifest.SCHEMA_V2.equals(rootNode.path("schema").asText())) {
+                    assertTrue(rootNode.path("qualificationPolicy").path("protocolSha256")
+                            .asText().matches("[a-f0-9]{64}"));
+                    continue;
+                }
+                var card = rootNode.path("validation").path("modelCard").asText();
                 assertTrue(!card.isBlank() && Files.isRegularFile(Path.of(card)),
                         () -> manifest.getFileName() + " references a missing model card: " + card);
             }

@@ -1,0 +1,1 @@
+{"schema":"pathlab.qualification-protocol/1","id":"ihc-descriptive-v2","gates":{"proportionErrorPointsMaximum":3,"intensityOdErrorMaximum":0.05,"qcFixturesRequired":true,"pdl1ReviewedCompartmentRequired":true,"clinicalScoresForbidden":true},"tracks":["generic","er","pr","ki-67","her2","pd-l1"],"researchOnly":true}

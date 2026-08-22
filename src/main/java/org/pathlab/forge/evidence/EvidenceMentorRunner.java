@@ -30,14 +30,16 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.0.12";
+    private static final String VERSION = "2.1.0";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;
     private final EvidenceJobQueue queue;
+    private final QualificationRunStore qualificationRuns;
     private final HttpServer server;
     private final ScheduledExecutorService gpuWorker;
     private final ScheduledExecutorService cpuWorker;
+    private final ScheduledExecutorService campaignWorker;
     private final java.util.concurrent.ExecutorService http;
     private final DashboardSessions dashboardSessions = new DashboardSessions();
     private final Instant startedAt = Instant.now();
@@ -51,6 +53,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         require(token != null && token.length() >= 32, "Loopback token is too short");
         Files.createDirectories(this.stateRoot);
         queue = new EvidenceJobQueue(this.stateRoot.resolve("jobs.sqlite3"));
+        qualificationRuns = new QualificationRunStore(this.stateRoot.resolve("jobs.sqlite3"), this.stateRoot);
         queue.recoverOrphanedActiveJobs(startedAt);
         dashboardHtml = readResource("/evidence-dashboard/index.html");
         server = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 32);
@@ -62,9 +65,12 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         publishEndpoint();
         gpuWorker = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "pathlab-evidence-gpu", Thread.NORM_PRIORITY));
         cpuWorker = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "pathlab-evidence-cpu-io", Thread.MIN_PRIORITY));
+        campaignWorker = Executors.newSingleThreadScheduledExecutor(
+                r -> daemon(r, "pathlab-qualification-coordinator", Thread.MIN_PRIORITY));
         if (workerEnabled) {
             gpuWorker.scheduleWithFixedDelay(() -> processOne(EvidenceExecutionLane.GPU), 0, 1, TimeUnit.SECONDS);
             cpuWorker.scheduleWithFixedDelay(() -> processOne(EvidenceExecutionLane.CPU_IO), 0, 1, TimeUnit.SECONDS);
+            campaignWorker.scheduleWithFixedDelay(this::advanceQualificationRuns, 0, 1, TimeUnit.SECONDS);
         }
     }
 
@@ -104,6 +110,8 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         if ("/v1/status".equals(path) && "GET".equals(method)) { status(exchange); return; }
         if ("/v1/jobs".equals(path) && "POST".equals(method)) { submit(exchange); return; }
         if ("/v1/jobs".equals(path) && "GET".equals(method)) { listJobs(exchange); return; }
+        if ("/v1/qualification-runs".equals(path) && "POST".equals(method)) { createQualificationRun(exchange); return; }
+        if ("/v1/qualification-runs".equals(path) && "GET".equals(method)) { listQualificationRuns(exchange); return; }
         if ("/v1/dashboard-sessions".equals(path) && "POST".equals(method)) {
             if (!bearerAuthorized(exchange)) { returnJson(exchange, 401, Map.of("error", "bearer_required")); return; }
             returnJson(exchange, 201, Map.of("code", dashboardSessions.create(Instant.now()), "expiresInSeconds", 60)); return;
@@ -111,7 +119,45 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         if ("/v1/control/pause".equals(path) && "POST".equals(method)) { mutate(exchange); queue.setAcceptingJobs(false, Instant.now()); control(exchange); return; }
         if ("/v1/control/resume".equals(path) && "POST".equals(method)) { mutate(exchange); queue.setAcceptingJobs(true, Instant.now()); control(exchange); return; }
         if (path.startsWith("/v1/jobs/")) { jobRoute(exchange, path.substring("/v1/jobs/".length())); return; }
+        if (path.startsWith("/v1/qualification-runs/")) {
+            qualificationRoute(exchange, path.substring("/v1/qualification-runs/".length())); return;
+        }
         returnJson(exchange, 404, Map.of("error", "not_found"));
+    }
+
+    private void qualificationRoute(HttpExchange exchange, String suffix) throws IOException {
+        var parts = suffix.split("/", -1);
+        var id = parts[0];
+        if (!id.matches("[A-Za-z0-9._-]{1,120}")) {
+            returnJson(exchange, 404, Map.of("error", "qualification_run_not_found")); return;
+        }
+        if (parts.length == 1 && "GET".equals(exchange.getRequestMethod())) {
+            var run = qualificationRuns.snapshot(id);
+            if (run.isEmpty()) returnJson(exchange, 404, Map.of("error", "qualification_run_not_found"));
+            else returnJsonCached(exchange, qualificationJson(run.get()));
+            return;
+        }
+        if (parts.length == 1 && "DELETE".equals(exchange.getRequestMethod())) {
+            mutate(exchange);
+            qualificationRuns.requestCancel(id, queue, Instant.now());
+            returnJson(exchange, 202, qualificationJson(qualificationRuns.snapshot(id).orElseThrow()));
+            return;
+        }
+        if (parts.length == 2 && "resume".equals(parts[1]) && "POST".equals(exchange.getRequestMethod())) {
+            mutate(exchange);
+            returnJson(exchange, 202, qualificationJson(qualificationRuns.resume(id, Instant.now())));
+            return;
+        }
+        if (parts.length == 2 && "attestations".equals(parts[1]) && "POST".equals(exchange.getRequestMethod())) {
+            mutate(exchange);
+            var body = jsonBody(exchange, 4096);
+            require(fieldNames(body).equals(Set.of("trackId", "reportPath")), "Attestation fields are invalid");
+            var run = qualificationRuns.attachAttestation(id, text(body, "trackId"),
+                    Path.of(text(body, "reportPath")), Instant.now());
+            returnJson(exchange, 202, qualificationJson(run));
+            return;
+        }
+        returnJson(exchange, 405, Map.of("error", "method_not_allowed"));
     }
 
     private void jobRoute(HttpExchange exchange, String suffix) throws IOException {
@@ -148,6 +194,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
 
     private void status(HttpExchange exchange) throws IOException {
         var jobs = queue.list(null, null, 200);
+        var campaigns = qualificationRuns.list(100);
         long queued = jobs.stream().filter(j -> j.state() == EvidenceJobState.QUEUED).count();
         long active = jobs.stream().filter(j -> !j.state().terminal() && j.state() != EvidenceJobState.QUEUED).count();
         var runtime = Runtime.getRuntime(); var telemetry = new LinkedHashMap<String,Object>();
@@ -172,6 +219,15 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         status.put("queue", Map.of("queued", queued, "active", active,
                 "gpu", jobs.stream().filter(j -> j.lane() == EvidenceExecutionLane.GPU && !j.state().terminal()).count(),
                 "cpuIo", jobs.stream().filter(j -> j.lane() == EvidenceExecutionLane.CPU_IO && !j.state().terminal()).count()));
+        status.put("qualification", Map.of(
+                "active", campaigns.stream().filter(run -> !run.campaignCompleted()).count(),
+                "completed", campaigns.stream().filter(QualificationRunSnapshot::campaignCompleted).count(),
+                "targetMet", campaigns.stream().filter(QualificationRunSnapshot::campaignTargetMet).count()));
+        campaigns.stream().filter(run -> !run.campaignCompleted()).findFirst()
+                .ifPresent(run -> status.put("leadingQualificationRun", Map.of(
+                        "id", run.id(), "state", run.state(),
+                        "terminalTracks", run.tracks().stream().filter(track -> !track.verdict().isBlank()).count(),
+                        "totalTracks", run.tracks().size())));
         jobs.stream().filter(j -> !j.state().terminal()).findFirst().ifPresent(job -> status.put("leadingJob", Map.of(
                 "id", job.id(), "state", job.state().name().toLowerCase(), "stage", job.stage(),
                 "progress", job.progress(), "lane", job.lane().wire())));
@@ -196,9 +252,31 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         var value = jsonBody(exchange, 65_536); require(fieldNames(value).equals(Set.of("id", "requestPath")), "Job submission fields are invalid");
         var id = text(value, "id"); require(id.matches("[A-Za-z0-9._-]{1,120}"), "Job id is invalid");
         var requestPath = Path.of(text(value, "requestPath"));
-        var plan = EvidenceJobProcessor.executionPlan(requestPath, id);
+        var plan = EvidenceJobProcessor.executionPlan(requestPath, id, stateRoot);
         var job = queue.submit(id, requestPath, plan.lane(), plan.packSha256(), Instant.now());
         returnJson(exchange, 202, jobJson(queue.snapshot(job.id()).orElseThrow()));
+    }
+
+    private void createQualificationRun(HttpExchange exchange) throws IOException {
+        mutate(exchange);
+        var body = jsonBody(exchange, 4096);
+        require(fieldNames(body).equals(Set.of("manifestPath")), "Qualification submission fields are invalid");
+        var manifest = QualificationCampaignManifest.load(Path.of(text(body, "manifestPath")));
+        returnJson(exchange, 202, qualificationJson(qualificationRuns.create(manifest, Instant.now())));
+    }
+
+    private void listQualificationRuns(HttpExchange exchange) throws IOException {
+        var query = query(exchange.getRequestURI().getRawQuery());
+        require(query.keySet().stream().allMatch("limit"::equals), "Unknown qualification-run filter");
+        var limit = query.containsKey("limit") ? Integer.parseInt(query.get("limit")) : 20;
+        returnJsonCached(exchange, Map.of(
+                "schema", "pathlab.qualification-run-list/1",
+                "runs", qualificationRuns.list(limit).stream().map(EvidenceMentorRunner::qualificationJson).toList()));
+    }
+
+    private void advanceQualificationRuns() {
+        try { qualificationRuns.tick(queue, Instant.now()); }
+        catch (Exception ignored) { /* durable state is retried on the next coordinator tick */ }
     }
 
     private void control(HttpExchange exchange) throws IOException { returnJson(exchange, 200, Map.of("acceptingJobs", queue.acceptingJobs())); }
@@ -260,6 +338,28 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         result.put("detail",job.detail()); result.put("updatedAt",job.updatedAt().toString()); return result;
     }
 
+    private static Map<String,Object> qualificationJson(QualificationRunSnapshot run) {
+        var result = new LinkedHashMap<String,Object>();
+        result.put("schema", "pathlab.qualification-run/1");
+        result.put("id", run.id());
+        result.put("manifestSha256", run.manifestSha256());
+        result.put("state", run.state());
+        result.put("campaignCompleted", run.campaignCompleted());
+        result.put("campaignTargetMet", run.campaignTargetMet());
+        result.put("cancelRequested", run.cancelRequested());
+        result.put("tracks", run.tracks().stream().map(track -> Map.ofEntries(
+                Map.entry("id", track.id()), Map.entry("candidateId", track.candidateId()),
+                Map.entry("capability", track.capability()), Map.entry("scope", track.scope()),
+                Map.entry("state", track.state()), Map.entry("verdict", track.verdict()),
+                Map.entry("attempt", track.attempt()), Map.entry("jobId", track.jobId()),
+                Map.entry("artifactSha256", track.artifactSha256()),
+                Map.entry("failureCode", track.failureCode()), Map.entry("detail", track.detail()),
+                Map.entry("updatedAt", track.updatedAt().toString()))).toList());
+        result.put("createdAt", run.createdAt().toString());
+        result.put("updatedAt", run.updatedAt().toString());
+        return result;
+    }
+
     private boolean authenticated(HttpExchange exchange) { return bearerAuthorized(exchange) || session(exchange).isPresent(); }
     private boolean bearerAuthorized(HttpExchange exchange) {
         var supplied=exchange.getRequestHeaders().getFirst("Authorization"); if(supplied==null)return false;
@@ -306,7 +406,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
     private static void require(boolean condition,String message){if(!condition)throw new IllegalArgumentException(message);}
     private static void secure(boolean condition,String message){if(!condition)throw new SecurityException(message);}
 
-    @Override public void close()throws IOException{server.stop(0);gpuWorker.shutdownNow();cpuWorker.shutdownNow();http.shutdownNow();try{if(Files.isRegularFile(endpointPath)){var endpoint=JSON.readTree(endpointPath.toFile());if(bootId.equals(endpoint.path("bootId").asText()))Files.deleteIfExists(endpointPath);}}finally{queue.close();}}
+    @Override public void close()throws IOException{server.stop(0);gpuWorker.shutdownNow();cpuWorker.shutdownNow();campaignWorker.shutdownNow();http.shutdownNow();try{if(Files.isRegularFile(endpointPath)){var endpoint=JSON.readTree(endpointPath.toFile());if(bootId.equals(endpoint.path("bootId").asText()))Files.deleteIfExists(endpointPath);}}finally{try{qualificationRuns.close();}finally{queue.close();}}}
 
     public static void main(String[] args)throws Exception{
         var state=defaultStateRoot();var port=0;
