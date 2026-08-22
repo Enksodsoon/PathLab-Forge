@@ -38,7 +38,7 @@ First build a versioned distribution:
 Then run the administrator-approved installer with a Java 17 runtime:
 
 ```powershell
-.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.5' `
+.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.6' `
   -DistributionPath '.\build\install\pathlab-forge' -JavaHome 'C:\Path\To\jdk-17'
 ```
 
@@ -76,6 +76,14 @@ Start with the non-disruptive inspection:
 
 Stage a small, rights-approved GPU-pack request under the protected state root.
 Its public acceptance ID must match `acceptance-<8-64 lowercase hex chars>`.
+The bundled staging command creates a deterministic synthetic H&E tile cache
+and a benchmark-only, not-evaluable DINOv2 Session 0 manifest. It does not
+activate or qualify the H&E model:
+
+```powershell
+.\scripts\stage-dinov2-session0-acceptance.ps1
+```
+
 Then prove service restart recovery while that bounded job is active:
 
 ```powershell

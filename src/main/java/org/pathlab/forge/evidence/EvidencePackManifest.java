@@ -23,6 +23,7 @@ public record EvidencePackManifest(
         String allowedUse,
         boolean redistributable,
         boolean derivativesAllowed,
+        boolean acceptanceOnly,
         RuntimeCompatibility runtimeCompatibility,
         List<LicenseEntry> licenseLedger,
         int maxRamMiB,
@@ -67,6 +68,13 @@ public record EvidencePackManifest(
                 "Analysis packs must be offline");
         var validation = object(root, "validation");
         var status = ValidationStatus.fromWire(text(validation, "status"));
+        var acceptanceOnly = false;
+        if (root.has("usageLimits")) {
+            var usageLimits = object(root, "usageLimits");
+            require(usageLimits.size() == 1 && usageLimits.path("acceptanceOnly").isBoolean(),
+                    "AI pack usage limits are invalid");
+            acceptanceOnly = usageLimits.path("acceptanceOnly").booleanValue();
+        }
         var artifacts = parseArtifacts(root.path("artifacts"));
         var markers = root.has("markers")
                 ? stringSet(root.path("markers"), MARKERS, "marker")
@@ -79,18 +87,25 @@ public record EvidencePackManifest(
         var runtime = root.has("runtimeCompatibility")
                 ? parseRuntime(root.path("runtimeCompatibility"))
                 : new RuntimeCompatibility("java17", "cpu", "none", "none", false);
+        if (acceptanceOnly) {
+            require("benchmark-only".equals(allowedUse)
+                            && status == ValidationStatus.NOT_EVALUABLE
+                            && runtime.requiresExternalWorker(),
+                    "Acceptance-only packs must remain benchmark-only, not-evaluable external workers");
+        }
         var licenseLedger = root.has("licenseLedger")
                 ? parseLicenseLedger(root.path("licenseLedger")) : List.<LicenseEntry>of();
         return new EvidencePackManifest(
                 normalized, packId, version, capability, acceptedStains, preprocessingId, tilePixels, allowedUse,
                 booleanValue(rights, "redistributable"),
                 booleanValue(rights, "derivativesAllowed"),
+                acceptanceOnly,
                 runtime, licenseLedger,
                 maxRam, maxVram, maxSeconds, status, sha256(bytes), artifacts, markers);
     }
 
     public boolean pilotEligible() {
-        return "private-research".equals(allowedUse)
+        return !acceptanceOnly && "private-research".equals(allowedUse)
                 && validationStatus != ValidationStatus.BLOCKED
                 && validationStatus != ValidationStatus.UNSUPPORTED
                 && validationStatus != ValidationStatus.NOT_EVALUABLE;
@@ -98,6 +113,15 @@ public record EvidencePackManifest(
 
     public void requirePilotEligible() {
         require(pilotEligible(), "AI pack is not eligible for the private pilot");
+    }
+
+    public void requireExecutableForJob(String jobId) {
+        if (acceptanceOnly) {
+            require(jobId != null && jobId.matches("acceptance-[a-f0-9]{8,64}"),
+                    "Acceptance-only AI pack requires a non-identifying acceptance job id");
+            return;
+        }
+        requirePilotEligible();
     }
 
     public void requireStain(String stain) {

@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.0.5";
+    private static final String VERSION = "2.0.6";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;
@@ -196,7 +196,7 @@ public final class EvidenceMentorRunner implements AutoCloseable {
         var value = jsonBody(exchange, 65_536); require(fieldNames(value).equals(Set.of("id", "requestPath")), "Job submission fields are invalid");
         var id = text(value, "id"); require(id.matches("[A-Za-z0-9._-]{1,120}"), "Job id is invalid");
         var requestPath = Path.of(text(value, "requestPath"));
-        var plan = EvidenceJobProcessor.executionPlan(requestPath);
+        var plan = EvidenceJobProcessor.executionPlan(requestPath, id);
         var job = queue.submit(id, requestPath, plan.lane(), plan.packSha256(), Instant.now());
         returnJson(exchange, 202, jobJson(queue.snapshot(job.id()).orElseThrow()));
     }

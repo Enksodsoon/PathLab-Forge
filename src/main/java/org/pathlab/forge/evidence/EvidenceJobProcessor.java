@@ -40,6 +40,10 @@ public final class EvidenceJobProcessor {
     }
 
     public static ExecutionPlan executionPlan(Path requestPath) throws IOException {
+        return executionPlan(requestPath, "");
+    }
+
+    public static ExecutionPlan executionPlan(Path requestPath, String jobId) throws IOException {
         final JsonNode request;
         try {
             request = JSON.readTree(requestPath.toAbsolutePath().normalize().toFile());
@@ -49,7 +53,7 @@ public final class EvidenceJobProcessor {
         // Legacy v1 submissions were accepted before lane metadata existed and migrate to CPU/I/O.
         if (request == null || !request.path("packManifest").isTextual()) return new ExecutionPlan(EvidenceExecutionLane.CPU_IO, "");
         var pack = EvidencePackManifest.load(regularPath(request, "packManifest"));
-        pack.requirePilotEligible();
+        pack.requireExecutableForJob(jobId);
         return new ExecutionPlan("cuda".equals(pack.runtimeCompatibility().executionProvider())
                 ? EvidenceExecutionLane.GPU : EvidenceExecutionLane.CPU_IO, pack.sha256());
     }
@@ -76,7 +80,7 @@ public final class EvidenceJobProcessor {
         require(expectedSha.matches("[a-f0-9]{64}") && expectedSha.equals(sha256(source)),
                 "Evidence source checksum does not match");
         var pack = EvidencePackManifest.load(regularPath(request, "packManifest"));
-        pack.requirePilotEligible();
+        pack.requireExecutableForJob(job.id());
         var durable = queue.snapshot(job.id()).orElseThrow();
         require(durable.requestSha256().isBlank() || durable.requestSha256().equals(sha256(job.requestPath())),
                 "Evidence request changed after submission");
@@ -212,6 +216,7 @@ public final class EvidenceJobProcessor {
                 "preprocessing", pack.preprocessingId(),
                 "artifacts", pack.artifacts().stream().map(EvidencePackManifest.Artifact::sha256).toList(),
                 "allowedUse", pack.allowedUse(),
+                "acceptanceOnly", pack.acceptanceOnly(),
                 "validationStatus", pack.validationStatus().wire())));
         root.put("status", abstentionReasons.isEmpty() ? "completed" : "abstained");
         root.put("researchOnly", true);

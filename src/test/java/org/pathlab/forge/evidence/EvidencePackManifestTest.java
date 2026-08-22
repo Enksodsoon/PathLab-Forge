@@ -32,6 +32,35 @@ final class EvidencePackManifestTest {
     }
 
     @Test
+    void acceptanceOnlyGpuPackRunsOnlyForAcceptanceIdsAndNeverBecomesPilotEligible() throws Exception {
+        var value = manifest("benchmark-only", "not-evaluable", "[]", "he-evidence", "[\"he\"]")
+                .replace("\"resourceEnvelope\"", "\"usageLimits\":{\"acceptanceOnly\":true},\"runtimeCompatibility\":{"
+                        + "\"workerProtocol\":\"pathlab.model-worker-result/1\",\"executionProvider\":\"cuda\","
+                        + "\"cuda\":\"12.6\",\"gpuArchitecture\":\"sm_61\",\"requiresExternalWorker\":true},"
+                        + "\"resourceEnvelope\"");
+        var path = temporaryDirectory.resolve("acceptance-only.json");
+        Files.writeString(path, value);
+        var pack = EvidencePackManifest.load(path);
+
+        assertTrue(pack.acceptanceOnly());
+        assertFalse(pack.pilotEligible());
+        pack.requireExecutableForJob("acceptance-0123abcd");
+        assertThrows(IllegalArgumentException.class, () -> pack.requireExecutableForJob("learner-job"));
+    }
+
+    @Test
+    void rejectsAcceptanceOnlyPackThatClaimsExperimentalUse() throws Exception {
+        var value = manifest("private-research", "experimental", "[]", "he-evidence", "[\"he\"]")
+                .replace("\"resourceEnvelope\"", "\"usageLimits\":{\"acceptanceOnly\":true},\"runtimeCompatibility\":{"
+                        + "\"workerProtocol\":\"pathlab.model-worker-result/1\",\"executionProvider\":\"cuda\","
+                        + "\"cuda\":\"12.6\",\"gpuArchitecture\":\"sm_61\",\"requiresExternalWorker\":true},"
+                        + "\"resourceEnvelope\"");
+        var path = temporaryDirectory.resolve("invalid-acceptance-only.json");
+        Files.writeString(path, value);
+        assertThrows(IllegalArgumentException.class, () -> EvidencePackManifest.load(path));
+    }
+
+    @Test
     void rejectsNetworkedOrOversizedPack() throws Exception {
         var value = manifest("private-research", "qualified", "[]", "he-evidence", "[\"he\"]")
                 .replace("\"maxVramMiB\":4096", "\"maxVramMiB\":9000")
@@ -57,6 +86,10 @@ final class EvidencePackManifestTest {
                 dino.artifacts().stream().filter(item -> "worker".equals(item.name()))
                         .findFirst().orElseThrow().sha256());
         assertFalse(EvidencePackManifest.load(root.resolve("he-hibou-b-v1.json")).pilotEligible());
+        var session0 = EvidencePackManifest.load(root.resolve("he-dinov2-small-session0-acceptance-v1.json"));
+        assertTrue(session0.acceptanceOnly());
+        assertFalse(session0.pilotEligible());
+        session0.requireExecutableForJob("acceptance-0123abcd");
         var hoverNet = EvidencePackManifest.load(root.resolve("cell-hovernet-fast-v1.json"));
         assertFalse(hoverNet.pilotEligible());
         assertEquals("cuda", hoverNet.runtimeCompatibility().executionProvider());
