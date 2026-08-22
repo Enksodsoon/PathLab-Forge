@@ -48,7 +48,7 @@ function Ensure-WinSW {
 }
 
 function Grant-PathLabAccess([string] $InstallingUser) {
-    & icacls.exe $ProgramRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)RX" | Out-Null
+    & icacls.exe $ProgramRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)RX" "${InstallingUser}:(OI)(CI)RX" | Out-Null
     & icacls.exe $StateRoot /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' "NT SERVICE\${serviceName}:(OI)(CI)M" "${InstallingUser}:(RX)" | Out-Null
     foreach ($operatorPath in @('inputs','requests','models','artifacts')) {
         $resolved = Join-Path $StateRoot $operatorPath
@@ -191,6 +191,8 @@ if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $V
     Grant-PathLabAccess $installingUser
     $launcher = Join-Path $ProgramRoot 'Open-PathLab-Evidence-Dashboard.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'open-evidence-dashboard.ps1') -Destination $launcher -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'test-evidence-mentor-service.ps1') `
+        -Destination (Join-Path $ProgramRoot 'Test-PathLab-Evidence-Service.ps1') -Force
     $shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\PathLab Evidence Mentor Dashboard.lnk'
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)

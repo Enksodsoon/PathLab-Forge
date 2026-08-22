@@ -27,6 +27,15 @@ appear in monitoring payloads.
 6. Independent expert-pack qualification for H&E, cells, IHC, special stains, and cytology.
 7. Dual-lineage Atlas feasibility only after lawful frozen teachers exist.
 
+## Current status
+
+Gates 1-4 are implemented on the draft feature branch. Gate 5 now has an
+atomic, fail-closed host acceptance harness and operator procedure. It remains
+incomplete until an administrator installs the service and the same installed
+runtime earns a `PASS` aggregate report after live LocalService, Session 0 GPU,
+service-restart, offline, and manual-reboot recovery checks. Gate 6 has not been
+qualified, and Gate 7 has not begun.
+
 Implementation, service installation, model qualification, merge, deployment,
 feature activation, and any future clinical/capacity study are separate gates.
 Feature flags remain default-off and no diagnostic or clinical-scoring claims

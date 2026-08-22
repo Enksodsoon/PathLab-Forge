@@ -54,6 +54,64 @@ Use `-Action Upgrade` with a new immutable version. `-Action Uninstall` removes
 the service, firewall rules, and Start Menu shortcut while preserving queues,
 checkpoints, signing material, evidence, and model packs.
 
+## Host acceptance and the definition of done
+
+Installation is not acceptance. Run the installed acceptance harness from an
+administrator PowerShell window and retain its immutable JSON and Markdown
+reports under `D:\PathLabData\EvidenceMentor\state\acceptance`.
+
+Start with the non-disruptive inspection:
+
+```powershell
+& 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
+  -Mode Inspect
+```
+
+Stage a small, rights-approved GPU-pack request under the protected state root.
+Its public acceptance ID must match `acceptance-<8-64 lowercase hex chars>`.
+Then prove service restart recovery while that bounded job is active:
+
+```powershell
+& 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
+  -Mode ServiceRestart `
+  -JobRequestPath 'D:\PathLabData\EvidenceMentor\state\requests\acceptance-gpu.json' `
+  -JobId 'acceptance-0123abcd' `
+  -TimeoutMinutes 10
+```
+
+Reboot acceptance is deliberately split into two operator-controlled commands.
+The harness never initiates a reboot:
+
+```powershell
+& 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
+  -Mode PrepareReboot `
+  -JobRequestPath 'D:\PathLabData\EvidenceMentor\state\requests\acceptance-reboot.json' `
+  -JobId 'acceptance-89abcdef'
+
+# Reboot Windows manually while the bounded job is active. Do not log in first.
+
+& 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
+  -Mode VerifyReboot `
+  -TimeoutMinutes 10
+```
+
+Finally aggregate the evidence:
+
+```powershell
+& 'C:\ProgramData\PathLab\EvidenceMentor\Test-PathLab-Evidence-Service.ps1' `
+  -Mode Summary
+```
+
+The autonomous-service phase is done only when the newest `Summary` report has
+schema `pathlab.service-acceptance/1`, verdict `PASS`, and no required check is
+`FAIL` or `NOT_EVALUABLE`. This includes LocalService identity, delayed startup
+and recovery policy, pinned WinSW, ACLs, firewall coverage, dynamic authenticated
+IPC, one-time dashboard sessions, P2000 visibility, a completed GPU-lane job,
+service-restart recovery, and reboot continuation of an active bounded job.
+Mode-specific `PASS` reports are evidence fragments and are not a completion
+claim. `-AllowIncomplete` is intended only for safe diagnostics and cannot turn
+an incomplete report into passing evidence.
+
 ## Model boundary
 
 The deterministic cell/IHC baseline is runnable. DINOv2-small remains an
