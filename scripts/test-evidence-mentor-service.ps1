@@ -403,8 +403,8 @@ function Wait-JobActive([string] $ResolvedJobId, [int] $Seconds = 60) {
             if ($response.StatusCode -ne 200) { Start-Sleep -Seconds 1; continue }
             $job = $response.Content | ConvertFrom-Json
             if ($job.state -in @('validating','running','refining','packaging')) {
-                Add-Check 'reboot-job-active' 'PASS' 'The bounded job is active and checkpoint-capable before manual reboot.' @{
-                    jobId = $ResolvedJobId; state = $job.state; lane = $job.lane
+                Add-Check 'reboot-job-active' 'PASS' 'The bounded job is durably active before manual reboot.' @{
+                    jobId = $ResolvedJobId; state = $job.state; lane = $job.lane; updatedAt = $job.updatedAt
                 }
                 return $true
             }
@@ -425,12 +425,21 @@ function Prepare-RebootChallenge([string] $ResolvedJobId) {
     $endpoint = Read-Endpoint
     if ($null -eq $endpoint) { Add-Check 'reboot-challenge' 'FAIL' 'Runner endpoint is required before preparing reboot verification.'; return }
     $os = Get-CimInstance Win32_OperatingSystem
+    $jobAtChallenge = $null
+    if ($ResolvedJobId) {
+        try {
+            $jobResponse = Invoke-Runner 'GET' "/v1/jobs/$ResolvedJobId"
+            if ($jobResponse.StatusCode -eq 200) { $jobAtChallenge = $jobResponse.Content | ConvertFrom-Json }
+        } catch { }
+    }
     $challenge = [ordered]@{
         schema = 'pathlab.service-reboot-challenge/1'
         createdAt = [DateTimeOffset]::UtcNow.ToString('O')
         osBootTime = ([DateTimeOffset]$os.LastBootUpTime).ToUniversalTime().ToString('O')
         runnerBootId = [string]$endpoint.bootId
         jobId = if ($ResolvedJobId) { $ResolvedJobId } else { '' }
+        jobState = if ($null -ne $jobAtChallenge) { [string]$jobAtChallenge.state } else { '' }
+        jobUpdatedAt = if ($null -ne $jobAtChallenge) { [string]$jobAtChallenge.updatedAt } else { '' }
     }
     New-Item -ItemType Directory -Path $ReportRoot -Force | Out-Null
     Write-Atomic (Join-Path $ReportRoot 'reboot-challenge.json') ($challenge | ConvertTo-Json -Depth 5)
@@ -452,8 +461,19 @@ function Verify-RebootChallenge {
     }
     if ($passed -and $challenge.jobId) {
         $continued = Wait-Job ([string]$challenge.jobId) $false
-        Add-Check 'reboot-job-continuation' $(if ($continued) {'PASS'} else {'FAIL'}) 'The pre-reboot bounded job recovered from its verified checkpoint and completed.' @{
-            jobId = [string]$challenge.jobId
+        $completedAfterBoot = $false
+        $jobUpdatedAt = ''
+        try {
+            $jobResponse = Invoke-Runner 'GET' "/v1/jobs/$([string]$challenge.jobId)"
+            if ($jobResponse.StatusCode -eq 200) {
+                $job = $jobResponse.Content | ConvertFrom-Json
+                $jobUpdatedAt = [string]$job.updatedAt
+                $completedAfterBoot = [DateTimeOffset]::Parse($jobUpdatedAt) -gt $currentBoot
+            }
+        } catch { }
+        $continued = $continued -and $completedAfterBoot
+        Add-Check 'reboot-job-continuation' $(if ($continued) {'PASS'} else {'FAIL'}) 'The pre-reboot bounded job must complete after the new OS boot, not before it.' @{
+            jobId = [string]$challenge.jobId; jobUpdatedAt = $jobUpdatedAt; currentBoot = $currentBoot.ToString('O'); completedAfterBoot = $completedAfterBoot
         }
     } elseif (-not $challenge.jobId) {
         Add-Check 'reboot-job-continuation' 'NOT_EVALUABLE' 'The reboot challenge did not include a bounded job.'

@@ -29,7 +29,7 @@ appear in monitoring payloads.
 
 ## Current status
 
-Gates 1-4 are implemented on the draft feature branch. The installed 2.0.11
+Gates 1-4 are implemented on the draft feature branch. The installed 2.0.12
 runtime has separate passing `Inspect` and `ServiceRestart` reports proving
 live `LocalService`, outbound-deny coverage, P2000 CUDA 12.6 `sm_61` inference,
 resource bounds, signed evidence packaging, and restart recovery. Its latest

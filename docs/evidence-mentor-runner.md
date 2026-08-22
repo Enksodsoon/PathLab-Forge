@@ -38,7 +38,7 @@ First build a versioned distribution:
 Then run the administrator-approved installer with a Java 17 runtime:
 
 ```powershell
-.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.11' `
+.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.12' `
   -DistributionPath '.\build\install\pathlab-forge' -JavaHome 'C:\Path\To\jdk-17'
 ```
 
@@ -130,6 +130,9 @@ schema `pathlab.service-acceptance/1`, verdict `PASS`, and no required check is
 and recovery policy, pinned WinSW, ACLs, firewall coverage, dynamic authenticated
 IPC, one-time dashboard sessions, P2000 visibility, a completed GPU-lane job,
 service-restart recovery, and reboot continuation of an active bounded job.
+The reboot continuation check additionally requires the job's terminal update
+to occur after the new OS boot time; a job that finished before reboot cannot
+satisfy the gate.
 Mode-specific `PASS` reports are evidence fragments and are not a completion
 claim. `-AllowIncomplete` is intended only for safe diagnostics and cannot turn
 an incomplete report into passing evidence.
