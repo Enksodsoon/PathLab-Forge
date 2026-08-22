@@ -73,6 +73,23 @@ final class EvidenceJobQueueTest {
     }
 
     @Test
+    void runnerRestartFinalizesCheckpointSafeActiveCancellation() throws Exception {
+        var database = temporaryDirectory.resolve("cancel-active.sqlite");
+        var request = temporaryDirectory.resolve("cancel-active.json");
+        Files.writeString(request, "{}");
+        var now = Instant.parse("2026-08-22T00:00:00Z");
+        try (var queue = new EvidenceJobQueue(database)) {
+            queue.submit("cancel-active", request, now);
+            queue.claimNext("old-worker", now, Duration.ofMinutes(2)).orElseThrow();
+            queue.requestCancel("cancel-active", now.plusSeconds(1));
+        }
+        try (var queue = new EvidenceJobQueue(database)) {
+            assertEquals(1, queue.recoverOrphanedActiveJobs(now.plusSeconds(2)));
+            assertEquals(EvidenceJobState.CANCELLED, queue.find("cancel-active").orElseThrow().state());
+        }
+    }
+
+    @Test
     void separatesExecutionLanesAndRenewsLiveLease() throws Exception {
         var database = temporaryDirectory.resolve("jobs.sqlite");
         var gpuRequest = temporaryDirectory.resolve("gpu.json");

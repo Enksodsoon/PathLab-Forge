@@ -110,8 +110,11 @@ public final class EvidenceJobProcessor {
                     "Only H&E evidence jobs may provide a tile cache");
         }
         checkCancellation(job.id(), workerId, now);
-        var running = queue.checkpoint(job.id(), workerId, EvidenceJobState.RUNNING,
-                "running", 0.25, "Running offline bounded brightfield analysis", now, LEASE);
+        var active = job;
+        if (active.state() == EvidenceJobState.VALIDATING || active.state() == EvidenceJobState.RUNNING) {
+            active = queue.checkpoint(job.id(), workerId, EvidenceJobState.RUNNING,
+                    "running", 0.25, "Running offline bounded brightfield analysis", now, LEASE);
+        }
 
         final BufferedImage image;
         try {
@@ -155,8 +158,11 @@ public final class EvidenceJobProcessor {
         var abstained = !abstentionReasons.isEmpty();
         var refiningAt = now.plusSeconds(1);
         checkCancellation(job.id(), workerId, refiningAt);
-        var refining = queue.checkpoint(running.id(), workerId, EvidenceJobState.REFINING,
-                "refining", 0.65, "Refining deterministic region descriptors", refiningAt, LEASE);
+        var refining = active;
+        if (active.state() != EvidenceJobState.PACKAGING) {
+            refining = queue.checkpoint(active.id(), workerId, EvidenceJobState.REFINING,
+                    "refining", 0.65, "Refining deterministic region descriptors", refiningAt, LEASE);
+        }
         var packagingAt = now.plusSeconds(2);
         var packaging = queue.checkpoint(refining.id(), workerId, EvidenceJobState.PACKAGING,
                 "packaging", 0.9, "Signing immutable evidence bundle", packagingAt, LEASE);

@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.0.4";
+    private static final String VERSION = "2.0.5";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;
@@ -238,6 +238,10 @@ public final class EvidenceMentorRunner implements AutoCloseable {
             } catch (IOException transientFailure) {
                 var current = queue.find(claimed.get().id()).orElseThrow();
                 if (!current.state().terminal()) queue.fail(current.id(), workerId, "transient_io", "IO_TRANSIENT", transientFailure.getMessage(), true, Instant.now());
+            } catch (Exception unexpected) {
+                var current = queue.find(claimed.get().id()).orElseThrow();
+                if (!current.state().terminal()) queue.fail(current.id(), workerId, "internal", "RUNNER_INTERNAL",
+                        "Evidence worker stopped at a durable checkpoint", false, Instant.now());
             }
         } catch (Exception ignored) { /* lease expiry is the durable recovery path */ }
     }

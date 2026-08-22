@@ -127,15 +127,29 @@ public final class EvidenceJobQueue implements AutoCloseable {
 
     /** Makes leases from the previous runner boot immediately reclaimable without changing checkpoints. */
     public synchronized int recoverOrphanedActiveJobs(Instant now) throws IOException {
+        var cancelled = 0;
+        try (var statement = connection.prepareStatement("""
+                UPDATE evidence_jobs SET state='CANCELLED',stage='cancelled',lease_owner='',lease_expires_at=?,
+                  detail=?,updated_at=? WHERE cancel_requested=1
+                  AND state IN ('VALIDATING','RUNNING','REFINING','PACKAGING')
+                """)) {
+            statement.setString(1, Instant.EPOCH.toString());
+            statement.setString(2, "Cancelled during runner restart at the last durable checkpoint");
+            statement.setString(3, now.toString());
+            cancelled = statement.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to recover cancelled Evidence Mentor jobs", error);
+        }
         try (var statement = connection.prepareStatement("""
                 UPDATE evidence_jobs SET lease_owner='',lease_expires_at=?,last_heartbeat=?,
-                  detail=?,updated_at=? WHERE state IN ('VALIDATING','RUNNING','REFINING','PACKAGING')
+                  detail=?,updated_at=? WHERE cancel_requested=0
+                  AND state IN ('VALIDATING','RUNNING','REFINING','PACKAGING')
                 """)) {
             statement.setString(1, Instant.EPOCH.toString());
             statement.setString(2, now.toString());
             statement.setString(3, "Recovered after runner restart; verified checkpoint will be revalidated");
             statement.setString(4, now.toString());
-            return statement.executeUpdate();
+            return cancelled + statement.executeUpdate();
         } catch (SQLException error) {
             throw new IOException("Unable to recover orphaned Evidence Mentor leases", error);
         }

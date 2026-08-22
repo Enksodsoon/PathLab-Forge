@@ -174,6 +174,43 @@ final class EvidenceJobProcessorTest {
         }
     }
 
+    @Test
+    void resumesSignedIhcPackagingFromRefiningCheckpointAfterRunnerRestart() throws Exception {
+        var source = temporaryDirectory.resolve("resume-source.bin");
+        Files.writeString(source, "immutable resume source bytes");
+        var preview = temporaryDirectory.resolve("resume-preview.png");
+        var image = new BufferedImage(16, 12, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(new Color(70, 40, 120));
+        graphics.fillRect(2, 2, 8, 7);
+        graphics.dispose();
+        ImageIO.write(image, "png", preview.toFile());
+        var pack = temporaryDirectory.resolve("resume-pack.json");
+        Files.writeString(pack, packJson());
+        var request = request(source, preview, pack, "revision-resume");
+        var database = temporaryDirectory.resolve("resume-state/jobs.sqlite3");
+        var now = Instant.parse("2026-08-22T00:00:00Z");
+
+        try (var queue = new EvidenceJobQueue(database)) {
+            queue.submit("job-resume", request, now);
+            var claimed = queue.claimNext("old-worker", now, Duration.ofMinutes(2)).orElseThrow();
+            var running = queue.checkpoint(claimed.id(), "old-worker", EvidenceJobState.RUNNING,
+                    "running", 0.25, "running", now.plusSeconds(1), Duration.ofMinutes(2));
+            queue.checkpoint(running.id(), "old-worker", EvidenceJobState.REFINING,
+                    "refining", 0.65, "refining", now.plusSeconds(2), Duration.ofMinutes(2));
+        }
+
+        try (var queue = new EvidenceJobQueue(database)) {
+            queue.recoverOrphanedActiveJobs(now.plusSeconds(3));
+            var recovered = queue.claimNext("new-worker", now.plusSeconds(3), Duration.ofMinutes(2)).orElseThrow();
+            var completed = new EvidenceJobProcessor(queue, temporaryDirectory.resolve("resume-state"))
+                    .process(recovered, "new-worker", now.plusSeconds(4));
+            assertEquals(EvidenceJobState.ABSTAINED, completed.state());
+            assertTrue(Files.isRegularFile(temporaryDirectory
+                    .resolve("resume-state/artifacts/job-resume/evidence.json")));
+        }
+    }
+
     private static String packJson() {
         return "{\"schema\":\"pathlab.ai-pack/1\",\"packId\":\"ihc-descriptive-v1\",\"version\":\"1\"," +
                 "\"capability\":\"ihc-descriptive\",\"acceptedStains\":[\"ihc_dab\"]," +

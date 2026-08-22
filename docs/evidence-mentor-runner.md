@@ -38,7 +38,7 @@ First build a versioned distribution:
 Then run the administrator-approved installer with a Java 17 runtime:
 
 ```powershell
-.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.4' `
+.\scripts\evidence-mentor-service.ps1 -Action Install -Version '2.0.5' `
   -DistributionPath '.\build\install\pathlab-forge' -JavaHome 'C:\Path\To\jdk-17'
 ```
 
