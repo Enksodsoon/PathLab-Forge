@@ -22,6 +22,18 @@
     "name": "preprocessor",
     "sha256": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828",
     "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/preprocessor_config.json"
+  }, {
+    "name": "worker",
+    "sha256": "daa33e61d2607e23ecae29e82f274ca05c64f896f9c37061c6ca77ca81aa774b",
+    "source": "pathlab-local-build:dinov2-worker-v1/windows-x64"
+  }, {
+    "name": "workerSource",
+    "sha256": "4884827fea5f6b04ecd2ec4b5fd31800e2a6d68547f7142aea506a70dd42fd8f",
+    "source": "pathlab-local-build:dinov2-worker-v1/worker.py"
+  }, {
+    "name": "runtime-manifest",
+    "sha256": "1969c91db66d8acc70b6c8648a57d3bfc923880e03f1f7f1e30c593133c01635",
+    "source": "pathlab-local-build:torch-2.7.1-cu126-python-3.12/windows-x64"
   }],
   "runtimeCompatibility": {
     "workerProtocol": "pathlab.model-worker-result/1",
@@ -54,7 +66,7 @@
   "validation": {
     "status": "not-evaluable",
     "modelCard": "docs/model-cards/he-dinov2-small-v1.md",
-    "heldOutEvaluation": "not-evaluable-worker-not-installed"
+    "heldOutEvaluation": "not-evaluable-held-out-retrieval-pending"
   },
   "outputSchema": "pathlab.ai-evidence/1"
 }

@@ -78,7 +78,7 @@ if ($requiredBytes -eq 0 -and (Test-Path -LiteralPath $existingReceiptPath -Path
         throw 'Existing DINOv2 acquisition receipt is invalid.'
     }
     Write-Output "Already acquired $repoId@$revision under $installRoot"
-    Write-Output 'Status remains not-evaluable until a checksum-pinned offline worker passes P2000 qualification.'
+    Write-Output 'Acquisition never activates the pack; inspect its separate runtime and held-out qualification records.'
     return
 }
 
@@ -148,4 +148,4 @@ try {
 }
 
 Write-Output "Acquired $repoId@$revision under $installRoot"
-Write-Output 'Status remains not-evaluable until a checksum-pinned offline worker passes P2000 qualification.'
+Write-Output 'Acquisition never activates the pack; inspect its separate runtime and held-out qualification records.'

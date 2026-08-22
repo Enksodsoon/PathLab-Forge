@@ -50,9 +50,12 @@ final class EvidencePackManifestTest {
         assertFalse(dino.pilotEligible());
         assertEquals("ed25f3a31f01632728cabb09d1542f84ab7b0056",
                 dino.licenseLedger().get(0).revision());
-        assertEquals(3, dino.artifacts().size());
+        assertEquals(6, dino.artifacts().size());
         assertEquals("ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1",
                 dino.artifacts().get(0).sha256());
+        assertEquals("daa33e61d2607e23ecae29e82f274ca05c64f896f9c37061c6ca77ca81aa774b",
+                dino.artifacts().stream().filter(item -> "worker".equals(item.name()))
+                        .findFirst().orElseThrow().sha256());
         assertFalse(EvidencePackManifest.load(root.resolve("he-hibou-b-v1.json")).pilotEligible());
         var hoverNet = EvidencePackManifest.load(root.resolve("cell-hovernet-fast-v1.json"));
         assertFalse(hoverNet.pilotEligible());
