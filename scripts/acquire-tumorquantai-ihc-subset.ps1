@@ -45,13 +45,22 @@ function Write-Status([string] $StateValue, [long] $Completed, [string] $Detail)
 function Directory-Bytes([string] $Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return 0L }
     $sum = Get-ChildItem -LiteralPath $Path -File -Recurse | Measure-Object Length -Sum
-    if ($null -eq $sum.Sum) { return 0L }; return [long]$sum.Sum
+    if ($null -eq $sum -or $null -eq $sum.Sum) { return 0L }; return [long]$sum.Sum
 }
 function Get-DownloadedBytes {
     $total=0L
     foreach($item in $expected) {
+        $found = $false
         foreach($path in @((Join-Path $downloadRoot $item.name),(Join-Path $downloadRoot "$($item.name).partial"))) {
-            if(Test-Path -LiteralPath $path -PathType Leaf) {$total += [Math]::Min([long](Get-Item $path).Length,[long]$item.bytes);break}
+            if(Test-Path -LiteralPath $path -PathType Leaf) {
+                $total += [Math]::Min([long](Get-Item $path).Length,[long]$item.bytes)
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) {
+            $chunkRoot = Join-Path $downloadRoot ".chunks\$($item.name)"
+            $total += [Math]::Min((Directory-Bytes $chunkRoot), [long]$item.bytes)
         }
     }
     return $total
@@ -92,7 +101,7 @@ if ($Action -eq 'Start') {
     Write-JsonAtomic $recordPath $record
     $durable=Join-Path $root 'acquire-tumorquantai-ihc-subset.ps1';Copy-Item $PSCommandPath $durable -Force
     $taskAction=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$durable`" -Action Run -StateRoot `"$state`""
-    $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 7)
+    $trigger=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
     $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
     $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Days 7)
     Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $principal -Settings $settings -Description 'Acquire bounded TumorQuantAI descriptive IHC fixtures.' -Force|Out-Null
@@ -100,21 +109,44 @@ if ($Action -eq 'Start') {
 }
 
 $curl=(Get-Command curl.exe -ErrorAction Stop).Source
-foreach($item in $expected){
-    $target=Join-Path $downloadRoot $item.name
-    if(Test-Path $target){if((Get-Item $target).Length-eq$item.bytes-and(Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()-eq$item.sha256){continue};throw "Existing file mismatch: $($item.name)"}
-    $partial="$target.partial";Remove-Item $partial -Force -ErrorAction SilentlyContinue;$exitCode=-1
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
-        Write-Status 'transferring' (Get-DownloadedBytes) "Downloading $($item.name) (attempt $attempt of 3)."
+$chunkBytes = 8MB
+try {
+    foreach($item in $expected){
+        $target=Join-Path $downloadRoot $item.name
+        if(Test-Path $target){if((Get-Item $target).Length-eq$item.bytes-and(Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()-eq$item.sha256){continue};throw "Existing file mismatch: $($item.name)"}
+        $partial="$target.partial";Remove-Item $partial -Force -ErrorAction SilentlyContinue
+        $chunkRoot=Join-Path $downloadRoot ".chunks\$($item.name)"
+        New-Item -ItemType Directory -Path $chunkRoot -Force|Out-Null
         $url="https://zenodo.org/api/records/$recordId/files/$([Uri]::EscapeDataString($item.name))/content"
-        $process=Start-Process $curl -ArgumentList @('--fail','--location','--silent','--show-error','--remove-on-error','--output',('"'+$partial+'"'),$url) -PassThru -NoNewWindow
-        while(-not $process.HasExited){Write-Status 'transferring' (Get-DownloadedBytes) "Downloading $($item.name) (attempt $attempt of 3).";Start-Sleep 15;$process.Refresh()}
-        $process.WaitForExit();$exitCode=$process.ExitCode
-        if($exitCode-eq 0){break};Remove-Item $partial -Force -ErrorAction SilentlyContinue;if($attempt-lt 3){Start-Sleep -Seconds $(if($attempt-eq 1){5}else{30})}
+        $chunkIndex=0
+        for($offset=0L;$offset-lt[long]$item.bytes;$offset+=$chunkBytes){
+            $end=[Math]::Min([long]$item.bytes-1,$offset+$chunkBytes-1)
+            $expectedChunkBytes=$end-$offset+1
+            $chunk=Join-Path $chunkRoot ('{0:D5}.part' -f $chunkIndex)
+            if(Test-Path $chunk){if((Get-Item $chunk).Length-eq$expectedChunkBytes){$chunkIndex++;continue};Remove-Item $chunk -Force}
+            $exitCode=-1
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                Write-Status 'transferring' (Get-DownloadedBytes) "Downloading $($item.name) chunk $($chunkIndex+1) (attempt $attempt of 3)."
+                $process=Start-Process $curl -ArgumentList @('--fail','--location','--silent','--show-error','--remove-on-error','--range',"$offset-$end",'--output',('"'+$chunk+'.partial"'),$url) -PassThru -NoNewWindow
+                while(-not $process.HasExited){Write-Status 'transferring' (Get-DownloadedBytes) "Downloading $($item.name) chunk $($chunkIndex+1) (attempt $attempt of 3).";Start-Sleep 15;$process.Refresh()}
+                $process.WaitForExit();$exitCode=$process.ExitCode
+                if((Test-Path "$chunk.partial")-and(Get-Item "$chunk.partial").Length-eq$expectedChunkBytes){Move-Item "$chunk.partial" $chunk;break}
+                Remove-Item "$chunk.partial" -Force -ErrorAction SilentlyContinue
+                if($attempt-lt 3){Start-Sleep -Seconds $(if($attempt-eq 1){5}else{30})}
+            }
+            if(-not(Test-Path $chunk)-or(Get-Item $chunk).Length-ne$expectedChunkBytes){throw "TumorQuantAI chunk transfer failed: $($item.name) bytes $offset-$end"}
+            $chunkIndex++
+        }
+        $output=[IO.File]::Open($partial,[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        try {Get-ChildItem $chunkRoot -Filter '*.part' -File|Sort-Object Name|ForEach-Object{$input=[IO.File]::OpenRead($_.FullName);try{$input.CopyTo($output)}finally{$input.Dispose()}}} finally {$output.Dispose()}
+        if((Get-Item $partial).Length-ne$item.bytes-or(Get-FileHash $partial -Algorithm SHA256).Hash.ToLowerInvariant()-ne$item.sha256){throw "TumorQuantAI assembled checksum mismatch: $($item.name)"}
+        Move-Item $partial $target
+        Remove-Item $chunkRoot -Recurse -Force
     }
-    if($exitCode-ne 0){Write-Status 'failed' (Get-DownloadedBytes) "curl exit $exitCode";throw "TumorQuantAI transfer failed: $($item.name)"}
-    if((Get-Item $partial).Length-ne$item.bytes-or(Get-FileHash $partial -Algorithm SHA256).Hash.ToLowerInvariant()-ne$item.sha256){Write-Status 'failed' (Get-DownloadedBytes) "Checksum mismatch: $($item.name)";throw 'TumorQuantAI checksum mismatch.'}
-    Move-Item $partial $target
+} catch {
+    Write-Status 'failed' (Get-DownloadedBytes) $_.Exception.Message
+    Finish-Task
+    throw
 }
 
 Write-Status 'validating' $requiredBytes 'Publishing checksum and case-disjoint source ledger.'

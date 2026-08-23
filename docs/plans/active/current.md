@@ -256,6 +256,16 @@ but it supplies research measurement proxies rather than independent clinical
 ground truth. Completion can support descriptive ER/PR/Ki-67/HER2 integration
 fixtures only; it cannot qualify clinical scoring, PD-L1, serial-section cell
 matching, or either Atlas teacher lineage without a separate derivative review.
+The initial full-stream transfer repeatedly lost partial progress when Zenodo
+closed long responses. The repaired worker checkpoints exact 8 MiB HTTP range
+chunks, retries each chunk at most three times, accepts only exact byte ranges,
+and validates the assembled archive against the publisher's frozen SHA-256.
+Task Scheduler no longer restarts an exhausted three-attempt transfer. A second
+autonomous task, `PathLabTumorQuantIhcFixtureCampaign`, waits for acquisition,
+then builds bounded case-disjoint 512 px ER/PR/Ki-67/HER2 fixtures and submits
+the four-track research-only campaign. Both stages expose operational progress
+on the dashboard and neither depends on Forge, the browser, or Codex remaining
+open.
 
 CAMELYON lymph-node acquisition remains `NOT_EVALUABLE` and has not started.
 The two official CAMELYON17 pages currently expose conflicting reuse language,

@@ -180,6 +180,32 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("for ($attempt = 1; $attempt -le 3; $attempt++)"));
         assertTrue(script.contains("$requiredBytes += [long]$item.bytes"));
         assertTrue(script.contains("service-managed source quota reservation root"));
+        assertTrue(script.contains("$chunkBytes = 8MB"));
+        assertTrue(script.contains("'--range'"));
+        assertTrue(script.contains("TumorQuantAI assembled checksum mismatch"));
+        assertTrue(script.contains("$null -eq $sum -or $null -eq $sum.Sum"));
+        assertTrue(script.contains(".Length-eq$expectedChunkBytes){Move-Item"));
+        assertFalse(script.contains("$exitCode-ne 0-or-not(Test-Path $chunk)"));
+        assertFalse(script.contains("RepetitionInterval"), "A failed three-attempt transfer must not restart forever");
         assertFalse(script.contains("--continue-at"));
+    }
+
+    @Test
+    void tumorQuantIhcFixtureCampaignWaitsBuildsAndSubmitsAutonomously() throws Exception {
+        var script = Files.readString(Path.of("scripts/stage-tumorquantai-ihc-fixture-campaign.ps1"));
+
+        assertTrue(script.contains("PathLabTumorQuantIhcFixtureCampaign"));
+        assertTrue(script.contains("tumorquantai-ihc-descriptive-execution-20260823-v1"));
+        assertTrue(script.contains("if($acquisition.state-ne'completed')"));
+        assertTrue(script.contains("RepetitionInterval (New-TimeSpan -Minutes 5)"));
+        assertTrue(script.contains("@('ER','PR','Ki-67','HER2')"));
+        assertTrue(script.contains("markerIdentitySource='import-metadata'"));
+        assertTrue(script.contains("controlsValidated=$false"));
+        assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
+        assertTrue(script.contains("/v1/qualification-runs"));
+        assertTrue(script.contains("private-research-descriptive-only"));
+        assertTrue(script.contains("crossSectionCellCorrespondence=$false"));
+        assertTrue(script.contains("-RepositoryRoot `\"$repository`\""));
+        assertTrue(script.contains("$taskAction=New-ScheduledTaskAction"));
     }
 }
