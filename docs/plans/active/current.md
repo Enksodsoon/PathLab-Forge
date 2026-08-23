@@ -182,3 +182,32 @@ does not expose the worker's aggregate cohort metrics; the branch now contains
 the strict signed-report adapter for the next service package. Full H&E remains
 `NOT_EVALUABLE` because patient mapping, breast, lung, lymph-node,
 benign/reactive-source, and OOD coverage are still missing.
+
+Service package 2.1.3 is now built and staged with the strict signed aggregate
+report adapter. Its generated elevated launcher is
+`build/Upgrade-PathLab-EvidenceMentor-2.1.3.ps1`. Activation remains deferred
+because the current Windows firewall provider cannot create the required
+outbound-deny rules until the previously identified restart prerequisite is
+satisfied; the installer does not bypass this fail-closed gate.
+
+The bounded `tcga-luad-lusc-he-20x2-v1` acquisition is now running
+autonomously in the interactive acquisition context. Its immutable GDC manifest
+contains 40 patient-distinct open-access SVS files: ten normal and ten tumor
+slides from TCGA-LUAD for the reference split, and the same counts from
+TCGA-LUSC for the query split. The total frozen transfer is 720,405,670 bytes.
+Every completed source is checked against the GDC MD5 and then independently
+SHA-256 ledgered; the offline service receives no credentials or network
+access. After completion, `build-tcga-lung-dinov2-cohort.ps1` selects a
+tissue-bearing coordinate from a local overview, extracts an immutable 512 px
+tile, and freezes the lung cohort. The 2.1.3-only
+`stage-tcga-lung-dinov2-retrieval.ps1` then submits its two-pass qualification
+campaign with an explicit cohort path and checksum.
+Scheduled task `PathLabTcgaLungCohortBuild` is installed and waiting; it polls
+the acquisition status every five minutes and runs that offline build without
+Forge, Codex, or the dashboard being open.
+
+CAMELYON lymph-node acquisition remains `NOT_EVALUABLE` and has not started.
+The two official CAMELYON17 pages currently expose conflicting reuse language,
+so `docs/evidence/lymph-node-source-rights-review-20260823.md` freezes the exact
+blocker and required remediation. No gate is lowered and no ambiguous data may
+enter evidence, Study Packs, OCI, or either Atlas lineage.
