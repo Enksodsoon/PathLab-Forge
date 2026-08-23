@@ -90,3 +90,21 @@ the signed qualification report. The scores therefore remain service-private
 execution output until the tested runner update can be installed. Regardless of
 those GI scores, the full H&E verdict cannot become qualified while patient
 mapping, cross-tissue groups, and OOD fixtures remain absent.
+
+## TCGA lung retrieval execution
+
+Campaign `dinov2-tcga-lung-retrieval-20260823-v1` used 40 patient-distinct,
+checksum-bound open GDC slides: TCGA-LUAD supplied ten normal and ten tumor
+reference samples, and TCGA-LUSC supplied the corresponding query samples. The
+offline P2000 worker completed 80/80 work units with zero retries. Signed
+evidence SHA-256 is
+`d0d14efa935870d3089e216b476c81f82c0f019c4c10abb6f55967201ad947e0`;
+signed qualification report SHA-256 is
+`a681fee3f13d14ae8a7fab46c5d1601f5e9d21b194bb26979eef26088ccab3e4`.
+
+DINOv2 improved macro Recall@5 over the identical-tile color-histogram
+baseline by 0.25, but macro NDCG@10 improvement was 0.029096055, below the
+pre-registered 0.03 threshold. Exact ranking repeatability, rights/integrity,
+offline execution, and resource-envelope checks passed. OOD and full
+cross-tissue gates remain not evaluable. The signed verdict is therefore
+`experimental`; no threshold was rounded down or relaxed.

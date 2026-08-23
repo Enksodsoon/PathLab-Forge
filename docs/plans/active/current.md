@@ -210,6 +210,18 @@ build ACE, restores the exact prior SDDL in `finally`, and resumes claims. The
 resulting 40-sample lung cohort is immutable at SHA-256
 `7bf027c6740360ec00172088d965b230442641cd041aedc1eccb7b75dc195566`.
 
+Runner 2.1.4 subsequently installed with matching endpoint identity and active
+outbound-deny rules. Campaign `dinov2-tcga-lung-retrieval-20260823-v1`
+completed 80/80 GPU work units with zero retries. Signed evidence SHA-256 is
+`d0d14efa935870d3089e216b476c81f82c0f019c4c10abb6f55967201ad947e0`
+and signed report SHA-256 is
+`a681fee3f13d14ae8a7fab46c5d1601f5e9d21b194bb26979eef26088ccab3e4`.
+Recall@5 improvement passed at 0.25; NDCG@10 improvement was 0.029096055 and
+missed the frozen 0.03 threshold. Repeatability, rights/integrity, offline, and
+resource checks passed; OOD and full cross-tissue coverage remain unavailable.
+The honest terminal verdict is `experimental`, with
+`campaignCompleted=true` and `campaignTargetMet=false`.
+
 CAMELYON lymph-node acquisition remains `NOT_EVALUABLE` and has not started.
 The two official CAMELYON17 pages currently expose conflicting reuse language,
 so `docs/evidence/lymph-node-source-rights-review-20260823.md` freezes the exact
