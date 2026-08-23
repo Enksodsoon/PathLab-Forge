@@ -15,4 +15,17 @@ $origin = "http://127.0.0.1:$($endpoint.port)"
 $headers = @{ Authorization = 'Bearer ' + (Get-Content -LiteralPath $tokenPath -Raw).Trim() }
 $session = Invoke-RestMethod -Method Post -Uri "$origin/v1/dashboard-sessions" -Headers $headers -TimeoutSec 2
 if ($session.code -notmatch '^[A-Za-z0-9_-]{40,80}$') { throw 'PathLab Evidence Mentor refused the dashboard session.' }
-Start-Process "$origin/dashboard/#$($session.code)"
+$url = "$origin/dashboard/#$($session.code)"
+$browserCandidates = @(
+    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    'C:\Program Files\Google\Chrome\Application\chrome.exe',
+    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
+)
+$browser = $browserCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if ($browser) {
+    Start-Process -FilePath $browser -ArgumentList @('--new-tab', ('"' + $url + '"'))
+} else {
+    Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $url + '"')
+}

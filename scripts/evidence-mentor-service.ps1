@@ -253,6 +253,10 @@ if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $V
     New-Item -ItemType Directory -Path $stateDirectories -Force | Out-Null
     $previousVersion = if (Test-Path -LiteralPath $activeVersionPath) { (Get-Content -LiteralPath $activeVersionPath -Raw).Trim() } else { '' }
     $previousConfig = if (Test-Path -LiteralPath $configPath) { Get-Content -LiteralPath $configPath -Raw } else { '' }
+    $previousRuntimeVersion = $previousVersion
+    if ($previousConfig -and $previousConfig -match '(?i)\\runtime\\([^\\<"]+)\\') {
+        $previousRuntimeVersion = $Matches[1]
+    }
     $runtimePath = Stage-Runtime
     Ensure-WinSW
     try {
@@ -284,10 +288,13 @@ if ($PSCmdlet.ShouldProcess($serviceName, "$Action autonomous service version $V
         & $wrapperPath stop 2>$null
         if ($previousConfig) {
             Write-AtomicText $configPath $previousConfig
-            try { Install-FirewallRules (Join-Path $runtimeRoot $previousVersion) } catch {
+            try { Install-FirewallRules (Join-Path $runtimeRoot $previousRuntimeVersion) } catch {
                 Write-Warning "Previous firewall rules could not be restored: $($_.Exception.Message)"
             }
             & $wrapperPath start
+            if (Wait-RunnerHealth) {
+                Write-AtomicText $activeVersionPath $previousRuntimeVersion
+            }
         }
         throw "Service $Action failed and the previous runtime configuration was restored: $($upgradeError.Exception.Message)"
     }

@@ -78,6 +78,22 @@ It must not replace the installed runtime until the same transactional firewall
 and health checks can succeed; source download completion does not depend on
 that service upgrade.
 
+The clean NCT-CRC transfer was restarted after the Zenodo endpoint ignored HTTP
+resume and produced an oversized checksum-invalid partial. The invalid file is
+preserved under acquisition quarantine and cannot enter the source ledger. The
+worker now performs at most three clean attempts, captures the real curl exit
+code, rejects size/checksum mismatches, and never requests byte-range resume.
+
+An installed-state audit on 2026-08-23 found and repaired two operational
+bookkeeping defects without restarting the service: the dashboard launcher now
+passes one-time fragments through an explicit Edge/Chrome process, and the
+active-version marker now agrees with the running 2.1.1 XML, endpoint, and Java
+child. The hidden SYSTEM post-reboot task was restored and verified `Ready` by
+an elevated repair receipt. Future failed upgrades derive rollback identity from
+the actual prior XML rather than a possibly stale marker. Runtime 2.1.2 is built
+and locally tested but remains uninstalled until outbound firewall creation can
+pass after the deferred reboot.
+
 The branch now implements `pathlab.qualification-campaign/1` as a durable
 parent coordinator above the existing GPU and CPU/I/O lanes. It records frozen
 dependencies, attempts, signed attestations, completion versus target success,
