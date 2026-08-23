@@ -102,7 +102,7 @@ final class AcquisitionScriptContractTest {
     void tcgaLungCampaignRequiresNewReportAdapterAndExactCohortBinding() throws Exception {
         var script = Files.readString(Path.of("scripts/stage-tcga-lung-dinov2-retrieval.ps1"));
 
-        assertTrue(script.contains("2.1.3"));
+        assertTrue(script.contains("2.1.4"));
         assertTrue(script.contains("qualificationCohortManifest = $cohortPath"));
         assertTrue(script.contains("qualificationCohortManifestSha256 = $cohortSha"));
         assertTrue(script.contains("@($cohort.samples).Count -ne 40"));

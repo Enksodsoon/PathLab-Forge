@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 /** Standalone authenticated loopback process for unattended Evidence Mentor jobs. */
 public final class EvidenceMentorRunner implements AutoCloseable {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final String VERSION = "2.1.2";
+    private static final String VERSION = "2.1.4";
     private static final Duration LEASE = Duration.ofSeconds(45);
     private final Path stateRoot;
     private final String token;

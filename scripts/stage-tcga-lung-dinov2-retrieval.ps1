@@ -64,8 +64,8 @@ try {
 }
 
 $endpoint = Get-Content -LiteralPath (Join-Path $state 'endpoint.json') -Raw | ConvertFrom-Json
-if ([version]$endpoint.serviceVersion -lt [version]'2.1.3') {
-    throw 'Service 2.1.3 is required for strict signed aggregate qualification reports.'
+if ([version]$endpoint.serviceVersion -lt [version]'2.1.4') {
+    throw 'Service 2.1.4 is required for strict signed aggregate qualification reports.'
 }
 $token = [IO.File]::ReadAllText((Join-Path $state 'ipc-token')).Trim()
 $headers = @{Authorization="Bearer $token"}

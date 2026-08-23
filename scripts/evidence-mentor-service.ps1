@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)] [ValidateSet('Install','Upgrade','Uninstall','Status')] [string] $Action,
-    [string] $Version = '2.1.3',
+    [string] $Version = '2.1.4',
     [string] $DistributionPath,
     [string] $JavaHome,
     [string] $ProgramRoot = 'C:\ProgramData\PathLab\EvidenceMentor',
