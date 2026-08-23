@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
-    [string] $FrozenAt = '2026-08-23T05:00:00Z'
+    [string] $FrozenAt = '2026-08-23T05:00:00Z',
+    [long] $DerivedUsedBytes = -1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +13,7 @@ $state = [IO.Path]::GetFullPath($StateRoot)
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $state "sources\$datasetId"))
 $acquisitionRoot = Join-Path $state "acquisition\$datasetId"
 $derivedRoot = [IO.Path]::GetFullPath((Join-Path $state 'derived'))
-$outputRoot = [IO.Path]::GetFullPath((Join-Path $derivedRoot "he-dinov2-small-v1\$cohortId"))
+$outputRoot = [IO.Path]::GetFullPath((Join-Path $derivedRoot "qualification-prepared\$cohortId"))
 $partialRoot = "$outputRoot.partial"
 $reservationRoot = Join-Path $state 'quota\reservations\derived'
 $reservationPath = Join-Path $reservationRoot "build-$cohortId.reservation"
@@ -107,9 +108,12 @@ if (Test-Path -LiteralPath $outputRoot -PathType Container) {
 }
 if (Test-Path -LiteralPath $partialRoot) { throw 'A partial TCGA cohort requires review before retrying.' }
 
-$used = Get-TreeBytes $derivedRoot
+$used = if ($DerivedUsedBytes -ge 0) { $DerivedUsedBytes } else { Get-TreeBytes $derivedRoot }
 $reserved = 0L
-if (Test-Path -LiteralPath $reservationRoot -PathType Container) {
+if ($DerivedUsedBytes -ge 0) {
+    # The caller must pause new service claims while using this trusted status snapshot.
+    $reservationPath = "$outputRoot.reservation"
+} elseif (Test-Path -LiteralPath $reservationRoot -PathType Container) {
     Get-ChildItem -LiteralPath $reservationRoot -Filter '*.reservation' -File -ErrorAction SilentlyContinue |
         Where-Object FullName -ne $reservationPath | ForEach-Object {
             $reserved += [long]([IO.File]::ReadAllText($_.FullName).Trim())
@@ -118,7 +122,7 @@ if (Test-Path -LiteralPath $reservationRoot -PathType Container) {
 if ($estimatedBytes -gt $derivedQuotaBytes - $used - $reserved) {
     throw 'The 25 GB derived-data quota cannot reserve the TCGA lung cohort.'
 }
-New-Item -ItemType Directory -Path $reservationRoot -Force | Out-Null
+New-Item -ItemType Directory -Path (Split-Path -Parent $reservationPath) -Force | Out-Null
 [IO.File]::WriteAllText("$reservationPath.partial", [string]$estimatedBytes, [Text.UTF8Encoding]::new($false))
 Move-Item -LiteralPath "$reservationPath.partial" -Destination $reservationPath
 

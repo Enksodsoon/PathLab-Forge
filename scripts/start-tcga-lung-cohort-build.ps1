@@ -11,7 +11,7 @@ $state = [IO.Path]::GetFullPath($StateRoot)
 $root = Join-Path $state 'acquisition\tcga-luad-lusc-he-20x2-v1\cohort-build'
 $statusPath = Join-Path $root 'status.json'
 $acquisitionStatusPath = Join-Path $state 'acquisition\tcga-luad-lusc-he-20x2-v1\status.json'
-$cohortPath = Join-Path $state 'derived\he-dinov2-small-v1\tcga-luad-lusc-lung-20x2-v1\cohort.json'
+$cohortPath = Join-Path $state 'derived\qualification-prepared\tcga-luad-lusc-lung-20x2-v1\cohort.json'
 
 function Write-Status([string] $StateValue, [string] $Detail) {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
@@ -74,7 +74,37 @@ if (Test-Path -LiteralPath $cohortPath -PathType Leaf) {
 }
 Write-Status 'building' 'Extracting offline tissue-aware coordinate-bound tiles.'
 try {
-    & (Join-Path $root 'build-tcga-lung-dinov2-cohort.ps1') -StateRoot $state
+    $endpoint = Get-Content -LiteralPath (Join-Path $state 'endpoint.json') -Raw | ConvertFrom-Json
+    $token = [IO.File]::ReadAllText((Join-Path $state 'ipc-token')).Trim()
+    $headers = @{Authorization="Bearer $token"}
+    $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($endpoint.port)/v1/control/pause" `
+        -Headers $headers
+    try {
+        $runner = Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:$($endpoint.port)/v1/status" `
+            -Headers $headers
+        if ([int]$runner.queue.active -ne 0) { throw 'The runner still has active jobs.' }
+        $derivedUsed = [long]$runner.quota.derived.usedBytes
+        $derivedRoot = Join-Path $state 'derived'
+        $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $derivedAcl = Get-Acl -LiteralPath $derivedRoot
+        $derivedSddl = $derivedAcl.Sddl
+        try {
+            $temporaryRule = New-Object Security.AccessControl.FileSystemAccessRule(
+                $currentIdentity, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $derivedAcl.AddAccessRule($temporaryRule) | Out-Null
+            Set-Acl -LiteralPath $derivedRoot -AclObject $derivedAcl
+            & (Join-Path $root 'build-tcga-lung-dinov2-cohort.ps1') -StateRoot $state `
+                -DerivedUsedBytes $derivedUsed
+        } finally {
+            $restoredAcl = New-Object Security.AccessControl.DirectorySecurity
+            $restoredAcl.SetSecurityDescriptorSddlForm($derivedSddl)
+            Set-Acl -LiteralPath $derivedRoot -AclObject $restoredAcl
+        }
+    } finally {
+        $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($endpoint.port)/v1/control/resume" `
+            -Headers $headers
+        Remove-Variable token,headers -ErrorAction SilentlyContinue
+    }
     if (-not (Test-Path -LiteralPath $cohortPath -PathType Leaf)) { throw 'Cohort builder returned without a manifest.' }
     $sha = (Get-FileHash -LiteralPath $cohortPath -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Status 'completed' "Immutable cohort SHA256: $sha"

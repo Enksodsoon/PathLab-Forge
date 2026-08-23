@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repository = Split-Path -Parent $PSScriptRoot
 $state = [IO.Path]::GetFullPath($StateRoot)
-$cohortRoot = Join-Path $state 'derived\he-dinov2-small-v1\tcga-luad-lusc-lung-20x2-v1'
+$cohortRoot = Join-Path $state 'derived\qualification-prepared\tcga-luad-lusc-lung-20x2-v1'
 $cohortPath = Join-Path $cohortRoot 'cohort.json'
 $modelRoot = Join-Path $state 'models\he-dinov2-small-v1\1'
 $packSource = Join-Path $repository 'src\main\resources\evidence-packs\he-dinov2-small-v1.json'
@@ -27,25 +27,40 @@ function Write-JsonAtomic([string] $Path, [object] $Value) {
     Move-Item -LiteralPath $partial -Destination $Path -Force
 }
 
-foreach ($required in @($cohortPath,$packSource,$workerSource,$workerTarget,
+foreach ($required in @($packSource,$workerSource,$workerTarget,
         (Join-Path $modelRoot 'worker.exe'),(Join-Path $modelRoot 'model.safetensors'),
         (Join-Path $modelRoot 'runtime-manifest.json'))) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required input is unavailable: $required" }
 }
-$cohortSha = Sha256 $cohortPath
-$cohort = Get-Content -LiteralPath $cohortPath -Raw | ConvertFrom-Json
-if ($cohort.schema -ne 'pathlab.qualification-cohort/1' -or @($cohort.samples).Count -ne 40 -or
-        @($cohort.samples | Where-Object split -eq 'reference').Count -ne 20 -or
-        @($cohort.samples | Where-Object split -eq 'query').Count -ne 20) {
-    throw 'The frozen TCGA lung cohort contract is invalid.'
-}
-$first = $cohort.samples[0]
-$tileManifestPath = Join-Path $cohortRoot ([string]$first.tileCacheManifest)
-$tileManifest = Get-Content -LiteralPath $tileManifestPath -Raw | ConvertFrom-Json
-$sourcePath = Join-Path (Split-Path -Parent $tileManifestPath) ([string]$tileManifest.tiles[0].path)
-if ((Sha256 $tileManifestPath) -ne [string]$first.tileCacheManifestSha256 -or
-        (Sha256 $sourcePath) -ne [string]$tileManifest.tiles[0].sha256) {
-    throw 'The TCGA cohort seed tile changed.'
+$derivedRoot = Join-Path $state 'derived'
+$derivedAcl = Get-Acl -LiteralPath $derivedRoot
+$derivedSddl = $derivedAcl.Sddl
+try {
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $temporaryRead = New-Object Security.AccessControl.FileSystemAccessRule(
+        $currentIdentity, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $derivedAcl.AddAccessRule($temporaryRead) | Out-Null
+    Set-Acl -LiteralPath $derivedRoot -AclObject $derivedAcl
+    if (-not (Test-Path -LiteralPath $cohortPath -PathType Leaf)) { throw 'The TCGA cohort is unavailable.' }
+    $cohortSha = Sha256 $cohortPath
+    $cohort = Get-Content -LiteralPath $cohortPath -Raw | ConvertFrom-Json
+    if ($cohort.schema -ne 'pathlab.qualification-cohort/1' -or @($cohort.samples).Count -ne 40 -or
+            @($cohort.samples | Where-Object split -eq 'reference').Count -ne 20 -or
+            @($cohort.samples | Where-Object split -eq 'query').Count -ne 20) {
+        throw 'The frozen TCGA lung cohort contract is invalid.'
+    }
+    $first = $cohort.samples[0]
+    $tileManifestPath = Join-Path $cohortRoot ([string]$first.tileCacheManifest)
+    $tileManifest = Get-Content -LiteralPath $tileManifestPath -Raw | ConvertFrom-Json
+    $sourcePath = Join-Path (Split-Path -Parent $tileManifestPath) ([string]$tileManifest.tiles[0].path)
+    if ((Sha256 $tileManifestPath) -ne [string]$first.tileCacheManifestSha256 -or
+            (Sha256 $sourcePath) -ne [string]$tileManifest.tiles[0].sha256) {
+        throw 'The TCGA cohort seed tile changed.'
+    }
+} finally {
+    $restoredAcl = New-Object Security.AccessControl.DirectorySecurity
+    $restoredAcl.SetSecurityDescriptorSddlForm($derivedSddl)
+    Set-Acl -LiteralPath $derivedRoot -AclObject $restoredAcl
 }
 
 $endpoint = Get-Content -LiteralPath (Join-Path $state 'endpoint.json') -Raw | ConvertFrom-Json

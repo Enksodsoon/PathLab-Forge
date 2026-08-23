@@ -206,6 +206,14 @@ Scheduled task `PathLabTcgaLungCohortBuild` is installed and waiting; it polls
 the acquisition status every five minutes and runs that offline build without
 Forge, Codex, or the dashboard being open.
 
+The acquisition completed all 720,405,670 bytes and ledgered 40 checksum-bound,
+patient-distinct slides. The initial interactive cohort build correctly failed
+against the service-only derived-data ACL. The repaired launcher now pauses new
+service claims, obtains the runner's quota snapshot, grants a temporary bounded
+build ACE, restores the exact prior SDDL in `finally`, and resumes claims. The
+resulting 40-sample lung cohort is immutable at SHA-256
+`7bf027c6740360ec00172088d965b230442641cd041aedc1eccb7b75dc195566`.
+
 CAMELYON lymph-node acquisition remains `NOT_EVALUABLE` and has not started.
 The two official CAMELYON17 pages currently expose conflicting reuse language,
 so `docs/evidence/lymph-node-source-rights-review-20260823.md` freezes the exact

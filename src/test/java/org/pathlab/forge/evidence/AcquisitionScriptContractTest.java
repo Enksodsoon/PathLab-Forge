@@ -83,6 +83,9 @@ final class AcquisitionScriptContractTest {
 
         assertTrue(script.contains("tcga-luad-lusc-he-20x2-v1"));
         assertTrue(script.contains("$derivedQuotaBytes = 25GB"));
+        assertTrue(script.contains("qualification-prepared"));
+        assertTrue(script.contains("$DerivedUsedBytes"));
+        assertTrue(script.contains("$reservationPath = \"$outputRoot.reservation\""));
         assertTrue(script.contains("NIH-GDS/NCI-GDC-open-access-policy"));
         assertTrue(script.contains("Get-TissueCoordinate"));
         assertTrue(script.contains("vipsheader.exe"));
@@ -105,6 +108,8 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("@($cohort.samples).Count -ne 40"));
         assertTrue(script.contains("/v1/qualification-runs"));
         assertTrue(script.contains("campaignTargetMet"));
+        assertTrue(script.contains("ReadAndExecute"));
+        assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
     }
 
     @Test
@@ -116,5 +121,6 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("RepetitionInterval (New-TimeSpan -Minutes 5)"));
         assertTrue(script.contains("if ($acquisition.state -ne 'completed')"));
         assertTrue(script.contains("Write-Status 'completed'"));
+        assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
     }
 }
