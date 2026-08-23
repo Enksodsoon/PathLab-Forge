@@ -70,6 +70,29 @@ function Get-DownloadedBytes {
     return $completed
 }
 
+function Move-ToQuarantine([string] $Path, [string] $Reason) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $resolvedDownloadRoot = [IO.Path]::GetFullPath($downloadRoot)
+    if (-not $resolved.StartsWith($resolvedDownloadRoot + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to quarantine a file outside the acquisition download root.'
+    }
+    $quarantineRoot = Join-Path $downloadRoot 'quarantine'
+    New-Item -ItemType Directory -Path $quarantineRoot -Force | Out-Null
+    $stamp = [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
+    $target = Join-Path $quarantineRoot "$([IO.Path]::GetFileName($Path)).corrupt-$stamp"
+    Move-Item -LiteralPath $resolved -Destination $target
+    Write-JsonAtomic "$target.json" ([ordered]@{
+        schema = 'pathlab.acquisition-quarantine/1'
+        datasetId = $datasetId
+        fileName = [IO.Path]::GetFileName($Path)
+        bytes = [long](Get-Item -LiteralPath $target).Length
+        reason = $Reason
+        quarantinedAt = [DateTimeOffset]::UtcNow.ToString('o')
+    })
+}
+
 if ($Action -eq 'Status') {
     if (Test-Path -LiteralPath $statusPath -PathType Leaf) { Get-Content -LiteralPath $statusPath -Raw }
     else { '{"schema":"pathlab.acquisition-status/1","state":"not_started"}' }
@@ -126,8 +149,8 @@ if ($Action -eq 'Start') {
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
         -ExecutionTimeLimit (New-TimeSpan -Days 7)
     Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $trigger -Principal $principal `
-        -Settings $settings -Description 'Finalize checksum-bound NCT-CRC acquisition for PathLab.' -Force | Out-Null
-    Write-Status 'transferring' (Get-DownloadedBytes) $requiredBytes 'Resumable acquisition worker scheduled.'
+        -Settings $settings -Description 'Run checksum-bound NCT-CRC acquisition for PathLab.' -Force | Out-Null
+    Write-Status 'transferring' 0 $requiredBytes 'Clean non-resumable acquisition worker scheduled.'
     Get-Content -LiteralPath $statusPath -Raw
     return
 }
@@ -135,6 +158,7 @@ if ($Action -eq 'Start') {
 if (Test-Path -LiteralPath $statusPath) {
     $prior = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
     if ($prior.state -eq 'completed') { Remove-Finalizer; return }
+    if ($prior.state -eq 'failed') { Remove-Finalizer; return }
 }
 
 $curl = (Get-Command curl.exe -ErrorAction Stop).Source
@@ -145,19 +169,48 @@ foreach ($name in $expected.Keys) {
         throw "Existing acquisition file has the wrong size: $name"
     }
     $partial = "$download.partial"
-    $url = "https://zenodo.org/api/records/$recordId/files/$([Uri]::EscapeDataString($name))/content"
-    Write-Status 'transferring' (Get-DownloadedBytes) $requiredBytes "Downloading $name"
-    $arguments = @('--fail','--location','--continue-at','-','--retry','3','--retry-delay','5',
-        '--output',('"' + $partial + '"'),$url)
-    $process = Start-Process -FilePath $curl -ArgumentList $arguments -PassThru -NoNewWindow
-    while (-not $process.HasExited) {
-        Write-Status 'transferring' (Get-DownloadedBytes) $requiredBytes "Downloading $name"
-        Start-Sleep -Seconds 15
-        $process.Refresh()
+    if (Test-Path -LiteralPath $partial -PathType Leaf) {
+        $partialLength = [long](Get-Item -LiteralPath $partial).Length
+        if ($partialLength -eq [long]$expected[$name].bytes -and
+                (Get-FileHash -LiteralPath $partial -Algorithm MD5).Hash.ToLowerInvariant() -eq
+                    $expected[$name].md5) {
+            Move-Item -LiteralPath $partial -Destination $download
+            continue
+        }
+        Move-ToQuarantine $partial 'Interrupted, oversized, or checksum-invalid non-resumable transfer.'
     }
-    if ($process.ExitCode -ne 0) {
-        Write-Status 'transient_error' (Get-DownloadedBytes) $requiredBytes "curl exited $($process.ExitCode); scheduled retry retained."
-        throw "NCT-CRC download failed with curl exit code $($process.ExitCode)."
+    $url = "https://zenodo.org/api/records/$recordId/files/$([Uri]::EscapeDataString($name))/content"
+    $exitCode = -1
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if (Test-Path -LiteralPath $partial -PathType Leaf) {
+            Remove-Item -LiteralPath $partial -Force
+        }
+        Write-Status 'transferring' (Get-DownloadedBytes) $requiredBytes "Downloading $name (attempt $attempt of 3)"
+        $arguments = @('--fail','--location','--silent','--show-error','--remove-on-error',
+            '--output',('"' + $partial + '"'),$url)
+        $process = Start-Process -FilePath $curl -ArgumentList $arguments -PassThru -NoNewWindow
+        while (-not $process.HasExited) {
+            Write-Status 'transferring' (Get-DownloadedBytes) $requiredBytes "Downloading $name (attempt $attempt of 3)"
+            Start-Sleep -Seconds 15
+            $process.Refresh()
+        }
+        $process.WaitForExit()
+        $exitCode = [int]$process.ExitCode
+        if ($exitCode -eq 0) { break }
+        if (Test-Path -LiteralPath $partial -PathType Leaf) {
+            Remove-Item -LiteralPath $partial -Force
+        }
+        if ($attempt -lt 3) {
+            $delay = if ($attempt -eq 1) { 5 } else { 30 }
+            Write-Status 'transient_error' (Get-DownloadedBytes) $requiredBytes `
+                "Download attempt $attempt failed with curl exit $exitCode; retrying in $delay seconds."
+            Start-Sleep -Seconds $delay
+        }
+    }
+    if ($exitCode -ne 0) {
+        Write-Status 'failed' (Get-DownloadedBytes) $requiredBytes `
+            "Download stopped after 3 attempts; curl exit $exitCode."
+        throw "NCT-CRC download failed after three attempts with curl exit code $exitCode."
     }
     if ((Get-Item -LiteralPath $partial).Length -ne [long]$expected[$name].bytes) {
         Write-Status 'failed' (Get-DownloadedBytes) $requiredBytes "Downloaded size mismatch: $name"
