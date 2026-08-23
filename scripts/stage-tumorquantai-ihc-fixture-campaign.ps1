@@ -8,7 +8,8 @@ param(
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $datasetId='tumorquantai-breast-ihc-4case-v1'
-$campaignId='tumorquantai-ihc-descriptive-execution-20260823-v1'
+$fixtureDatasetId='tumorquantai-breast-ihc-4case-fixtures-v2'
+$campaignId='tumorquantai-ihc-descriptive-execution-20260823-v2'
 $taskName='PathLabTumorQuantIhcFixtureCampaign'
 $state=[IO.Path]::GetFullPath($StateRoot)
 $repository=if([string]::IsNullOrWhiteSpace($RepositoryRoot)){Split-Path -Parent $PSScriptRoot}else{[IO.Path]::GetFullPath($RepositoryRoot)}
@@ -16,7 +17,7 @@ $root=Join-Path $state "acquisition\$campaignId"
 $statusPath=Join-Path $root 'status.json'
 $acquisitionStatusPath=Join-Path $state "acquisition\$datasetId\status.json"
 $sourceRoot=Join-Path $state "sources\$datasetId"
-$outputRoot=Join-Path $state "derived\qualification-prepared\$datasetId"
+$outputRoot=Join-Path $state "derived\qualification-prepared\$fixtureDatasetId"
 $campaignRoot=Join-Path $state "acceptance\campaigns\$campaignId"
 
 function Sha256([string]$Path){(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -71,13 +72,14 @@ try{
                         $tiff=Join-Path $sampleRoot 'source.tif';[IO.Compression.ZipFileExtensions]::ExtractToFile($entry[0],$tiff,$true)
                         if((Sha256 $tiff)-ne$patch[0].sha256){throw "IHC patch checksum changed: $($patch[0].patch_alias)"}
                         $bitmap=[Drawing.Bitmap]::new($tiff);try{$side=[Math]::Min($bitmap.Width,$bitmap.Height);$x=[int](($bitmap.Width-$side)/2);$y=[int](($bitmap.Height-$side)/2);$preview=[Drawing.Bitmap]::new(512,512);try{$graphics=[Drawing.Graphics]::FromImage($preview);try{$graphics.InterpolationMode=[Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic;$graphics.DrawImage($bitmap,[Drawing.Rectangle]::new(0,0,512,512),[Drawing.Rectangle]::new($x,$y,$side,$side),[Drawing.GraphicsUnit]::Pixel)}finally{$graphics.Dispose()};$png=Join-Path $sampleRoot 'preview.png';$preview.Save("$png.partial",[Drawing.Imaging.ImageFormat]::Png);Move-Item "$png.partial" $png}finally{$preview.Dispose()}}finally{$bitmap.Dispose();Remove-Item $tiff -Force}
-                        $samples.Add([ordered]@{id=$sampleId;caseId=[string]$sourceRecord.sampleId;marker=$marker.ToLowerInvariant();split=if($caseIndex-le 2){'reference'}else{'query'};path=$png;sha256=Sha256 $png;sourceArchiveSha256=[string]$sourceRecord.sha256;sourcePatchSha256=[string]$patch[0].sha256;license='CC-BY-4.0';permittedUse='private-research-descriptive-only';crossSectionCellCorrespondence=$false})
+                        $samples.Add([ordered]@{id=$sampleId;caseId=[string]$sourceRecord.sampleId;marker=$marker.ToLowerInvariant();split=if($caseIndex-le 2){'reference'}else{'query'};relativePath="$sampleId/preview.png";sha256=Sha256 $png;sourceArchiveSha256=[string]$sourceRecord.sha256;sourcePatchSha256=[string]$patch[0].sha256;license='CC-BY-4.0';permittedUse='private-research-descriptive-only';crossSectionCellCorrespondence=$false})
                     }}finally{$archive.Dispose()}
                 }
-                Write-JsonAtomic (Join-Path $partial 'fixture-manifest.json') ([ordered]@{schema='pathlab.ihc-fixture-set/1';datasetId=$datasetId;researchOnly=$true;notDiagnostic=$true;samples=$samples.ToArray()})
+                Write-JsonAtomic (Join-Path $partial 'fixture-manifest.json') ([ordered]@{schema='pathlab.ihc-fixture-set/1';datasetId=$fixtureDatasetId;researchOnly=$true;notDiagnostic=$true;samples=$samples.ToArray()})
                 Move-Item $partial $outputRoot
             }else{$fixture=Get-Content (Join-Path $outputRoot 'fixture-manifest.json') -Raw|ConvertFrom-Json;$fixture.samples|ForEach-Object{$samples.Add($_)}}
             $fixtureSha=Sha256 (Join-Path $outputRoot 'fixture-manifest.json')
+            foreach($sample in $samples){$finalPath=[IO.Path]::GetFullPath((Join-Path $outputRoot $sample.relativePath));if(-not$finalPath.StartsWith($outputRoot+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)-or-not(Test-Path $finalPath)-or(Sha256 $finalPath)-ne$sample.sha256){throw "Final IHC fixture is unavailable: $($sample.marker)"}}
         }finally{$restored=New-Object Security.AccessControl.DirectorySecurity;$restored.SetSecurityDescriptorSddlForm($sddl);Set-Acl $derivedRoot $restored}
     }finally{Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($endpoint.port)/v1/control/resume" -Headers $headers|Out-Null}
 
@@ -87,7 +89,7 @@ try{
     if($protocolSha-ne'9b2d3299eed5504fe7d89839cacae6ea5232762d6405bdfab261ad78e30b991f'){throw 'Frozen IHC protocol checksum changed.'}
     $campaignPath=Join-Path $campaignRoot 'campaign.json';$tracks=[Collections.Generic.List[object]]::new();$ledgerLines=[Collections.Generic.List[string]]::new()
     foreach($sample in $samples){$ledgerLines.Add(([ordered]@{sampleId=$sample.id;source="Zenodo-21797920/$($sample.caseId)";patientGroup=$sample.caseId;slideGroup=$sample.id;sha256=$sample.sha256;license='CC-BY-4.0';permittedUse='private-research-descriptive-only';task='ihc-descriptive-integration';split=$sample.split}|ConvertTo-Json -Compress))}
-    foreach($marker in @('er','pr','ki-67','her2')){$sample=@($samples|Where-Object{$_.marker-eq$marker-and$_.split-eq'query'}|Select-Object -First 1)[0];$requestName="request-$($marker.Replace('-','')).json";Write-JsonAtomic (Join-Path $campaignRoot $requestName) ([ordered]@{schema='pathlab.evidence-job/2';sourcePath=$sample.path;sourceSha256=$sample.sha256;slideRevision="tumorquantai:$($sample.caseId):$($sample.sourcePatchSha256)";previewPath=$sample.path;sourceWidth=512;sourceHeight=512;packManifest=$packTarget;stain='ihc_dab';marker=$marker;markerIdentitySource='import-metadata';controlsValidated=$false;qualificationCampaignManifest=$campaignPath});$tracks.Add([ordered]@{id="ihc-$($marker.Replace('-',''))-execution-v1";candidateId='ihc-descriptive-v2';capability='ihc-descriptive';scope='deployment';requestPath=$requestName;remediationRequestPath=$null;expectedAttestationPath="attestation-$($marker.Replace('-','')).json";protocolSha256=$protocolSha;dependsOn=@();required=$true})}
+    foreach($marker in @('er','pr','ki-67','her2')){$sample=@($samples|Where-Object{$_.marker-eq$marker-and$_.split-eq'query'}|Select-Object -First 1)[0];$sourcePath=[IO.Path]::GetFullPath((Join-Path $outputRoot $sample.relativePath));$requestName="request-$($marker.Replace('-','')).json";Write-JsonAtomic (Join-Path $campaignRoot $requestName) ([ordered]@{schema='pathlab.evidence-job/2';sourcePath=$sourcePath;sourceSha256=$sample.sha256;slideRevision="tumorquantai:$($sample.caseId):$($sample.sourcePatchSha256)";previewPath=$sourcePath;sourceWidth=512;sourceHeight=512;packManifest=$packTarget;stain='ihc_dab';marker=$marker;markerIdentitySource='import-metadata';controlsValidated=$false;qualificationCampaignManifest=$campaignPath});$tracks.Add([ordered]@{id="ihc-$($marker.Replace('-',''))-execution-v2";candidateId='ihc-descriptive-v2';capability='ihc-descriptive';scope='deployment';requestPath=$requestName;remediationRequestPath=$null;expectedAttestationPath="attestation-$($marker.Replace('-','')).json";protocolSha256=$protocolSha;dependsOn=@();required=$true})}
     Write-JsonAtomic $campaignPath ([ordered]@{schema='pathlab.qualification-campaign/1';campaignId=$campaignId;createdAt=[DateTimeOffset]::UtcNow.ToString('o');researchOnly=$true;notDiagnostic=$true;maxRemediationAttempts=1;quota=[ordered]@{sourceBytes=45GB;derivedBytes=25GB;modelBytes=10GB;evidenceBytes=10GB;reserveBytes=10GB};tracks=$tracks.ToArray()})
     [IO.File]::WriteAllLines((Join-Path $campaignRoot 'sample-ledger.jsonl'),$ledgerLines,[Text.UTF8Encoding]::new($false));Write-JsonAtomic (Join-Path $campaignRoot 'preparation.json') ([ordered]@{schema='pathlab.campaign-preparation/1';campaignManifest='campaign.json';sampleLedger='sample-ledger.jsonl';artifacts=@()})
     & (Join-Path $repository 'scripts\prepare-all-rounder-campaign.ps1') -PreparationManifest (Join-Path $campaignRoot 'preparation.json') -StateRoot $state

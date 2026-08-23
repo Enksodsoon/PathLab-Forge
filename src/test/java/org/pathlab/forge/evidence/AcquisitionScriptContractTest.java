@@ -196,7 +196,7 @@ final class AcquisitionScriptContractTest {
         var script = Files.readString(Path.of("scripts/stage-tumorquantai-ihc-fixture-campaign.ps1"));
 
         assertTrue(script.contains("PathLabTumorQuantIhcFixtureCampaign"));
-        assertTrue(script.contains("tumorquantai-ihc-descriptive-execution-20260823-v1"));
+        assertTrue(script.contains("tumorquantai-ihc-descriptive-execution-20260823-v2"));
         assertTrue(script.contains("if($acquisition.state-ne'completed')"));
         assertTrue(script.contains("RepetitionInterval (New-TimeSpan -Minutes 5)"));
         assertTrue(script.contains("@('ER','PR','Ki-67','HER2')"));
@@ -208,5 +208,8 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("crossSectionCellCorrespondence=$false"));
         assertTrue(script.contains("-RepositoryRoot `\"$repository`\""));
         assertTrue(script.contains("$taskAction=New-ScheduledTaskAction"));
+        assertTrue(script.contains("relativePath=\"$sampleId/preview.png\""));
+        assertTrue(script.contains("Join-Path $outputRoot $sample.relativePath"));
+        assertTrue(script.contains("Final IHC fixture is unavailable"));
     }
 }

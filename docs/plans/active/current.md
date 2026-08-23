@@ -267,6 +267,24 @@ the four-track research-only campaign. Both stages expose operational progress
 on the dashboard and neither depends on Forge, the browser, or Codex remaining
 open.
 
+The bounded TumorQuantAI source acquisition subsequently completed all
+421,890,082 bytes and published four checksum-verified, case-disjoint archives.
+The first fixture campaign preserved a useful fail-closed engineering result:
+all four requests rejected stale `.partial` paths after the atomic fixture-root
+rename, so no model analysis ran. Immutable fixture set v2 resolves only bounded
+relative paths after rename and validates every final file checksum while the
+temporary derived-data ACE is active. Campaign
+`tumorquantai-ihc-descriptive-execution-20260823-v2` then completed four offline
+CPU/I/O tracks for ER, PR, Ki-67, and HER2 with signed `experimental`
+attestations and no retry. Its fixture manifest SHA-256 is
+`a46be25af796580897679d417ce2e3379c349d9b5a2d2b5d4b9337a01e828145`
+and campaign manifest SHA-256 is
+`d50676d11a55ce6b045511cf6aadc81bd783949bf8a4905e1a06879f4afdf77f`.
+`campaignCompleted=true` and `campaignTargetMet=false`: executable marker-aware
+descriptive behavior is proven on real source material, but the independent
+held-out quantitative reference gates remain `not_evaluable`. No clinical
+scoring or activation follows from this execution result.
+
 CAMELYON lymph-node acquisition remains `NOT_EVALUABLE` and has not started.
 The two official CAMELYON17 pages currently expose conflicting reuse language,
 so `docs/evidence/lymph-node-source-rights-review-20260823.md` freezes the exact
