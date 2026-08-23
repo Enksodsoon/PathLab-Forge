@@ -114,7 +114,8 @@ $freeze = [ordered]@{
     credentialsPersisted = $false
 }
 $freezePath = Join-Path $base 'campaign-freeze.json'
-$freeze | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$freezePath.partial" -Encoding utf8NoBOM
+[IO.File]::WriteAllText("$freezePath.partial", (($freeze | ConvertTo-Json -Depth 8) + "`n"),
+    [Text.UTF8Encoding]::new($false))
 Move-Item -LiteralPath "$freezePath.partial" -Destination $freezePath -Force
 Write-Host "Campaign frozen: $freezePath"
 Write-Host 'Credentials were used only by this interactive acquisition process and were not persisted.'

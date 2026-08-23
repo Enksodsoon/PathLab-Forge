@@ -1,6 +1,6 @@
 # DINOv2-small H&E baseline
 
-Status: `not-evaluable-cross-tissue-cohort-incomplete`.
+Status: `experimental-executable-baseline`; full qualification remains `not_evaluable`.
 
 The public `facebook/dinov2-small` repository is pinned at
 `ed25f3a31f01632728cabb09d1542f84ab7b0056`. Acquisition accepts only the
@@ -28,8 +28,10 @@ enabled analysis-network state all failed with no result artifact.
 These are runtime and protocol measurements on synthetic tissue-like pixels,
 not pathology retrieval evidence. Patient/source-held-out breast, GI, lung,
 lymph-node, benign/reactive, OOD, restart, and five-minute refinement gates have
-not run. The model pack therefore remains `not-evaluable`, default-off, and
-ineligible for Viewer evidence or staff/demo activation. Embeddings remain local
+not run. The model pack therefore remains default-off and ineligible for Viewer
+evidence or staff/demo activation. Its executable candidate status is
+`experimental`, while the frozen cross-tissue qualification verdict remains
+`not_evaluable`. Embeddings remain local
 and only bounded evidence regions may leave Forge after model qualification.
 
 ## Real BRACS tile-cache smoke
@@ -53,3 +55,19 @@ breast-only, the bounded cache is not a whole-slide cohort, and reference, GI,
 lung, lymph-node, independent benign/reactive-source, and OOD coverage are
 absent. The pre-registered protocol therefore returns `NOT_EVALUABLE` without
 computing or relaxing model-performance thresholds.
+
+## NCT-CRC GI execution cohort
+
+The checksum-verified Zenodo 1214456 archives now provide a deterministic,
+bounded GI execution cohort with 20 reference and 20 query patches from each
+of the nine published tissue classes. Each selected 224-pixel patch is decoded
+from the immutable archive and deterministically materialized as one
+coordinate-bound 512-pixel RGB tile. Archive, entry, derived source, sample,
+and tile-cache checksums are retained.
+
+This permits real GI execution and later retrieval-metric implementation, but
+does not satisfy the pre-registered qualification protocol. The public patch
+release does not expose a per-patch patient/slide map suitable for independently
+checking patient overlap, and breast, lung, lymph-node, independent
+benign/reactive-source, and OOD groups remain absent. These gaps are recorded as
+`NOT_EVALUABLE`; no gate is lowered and no deployment eligibility is implied.

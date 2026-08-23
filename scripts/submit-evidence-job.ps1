@@ -55,7 +55,8 @@ $request = [ordered]@{
     marker = $Marker.ToLowerInvariant()
 }
 $partial = "$requestPath.partial"
-$request | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $partial -Encoding utf8NoBOM
+[IO.File]::WriteAllText($partial, (($request | ConvertTo-Json -Depth 4) + "`n"),
+    [Text.UTF8Encoding]::new($false))
 Move-Item -LiteralPath $partial -Destination $requestPath
 $token = [IO.File]::ReadAllText($tokenPath).Trim()
 $headers = @{ Authorization = "Bearer $token" }

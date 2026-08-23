@@ -55,7 +55,7 @@
     "derivativesAllowed": false
   }],
   "rights": {
-    "license": "Apache-2.0 upstream; exact artifact ledger pending",
+    "license": "Apache-2.0 upstream; exact pinned artifact ledger acquired for private research",
     "allowedUse": "private-research",
     "redistributable": false,
     "derivativesAllowed": false,
@@ -68,9 +68,9 @@
     "network": false
   },
   "validation": {
-    "status": "not-evaluable",
+    "status": "experimental",
     "modelCard": "docs/model-cards/he-dinov2-small-v1.md",
-    "heldOutEvaluation": "not-evaluable-cross-tissue-cohort-incomplete"
+    "heldOutEvaluation": "partial-gi-execution-cohort-ready-cross-tissue-and-patient-mapping-incomplete"
   },
   "outputSchema": "pathlab.ai-evidence/1"
 }

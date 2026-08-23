@@ -19,4 +19,28 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("Downloaded size mismatch"));
         assertTrue(script.contains("Checksum validation failed"));
     }
+
+    @Test
+    void nctCrcCohortIsBoundedChecksumPinnedAndFailClosed() throws Exception {
+        var script = Files.readString(Path.of("scripts/build-nct-crc-dinov2-cohort.ps1"));
+        assertTrue(script.contains("[int] $SamplesPerClass = 20"));
+        assertTrue(script.contains("$derivedQuotaBytes = 25GB"));
+        assertTrue(script.contains("Get-StreamSha256"));
+        assertTrue(script.contains("PATIENT_LEVEL_PATCH_MAPPING_UNAVAILABLE"));
+        assertTrue(script.contains("qualificationStatus = 'not_evaluable'"));
+        assertFalse(script.contains("Expand-Archive"));
+    }
+
+    @Test
+    void serviceScriptsUseWindowsPowerShellCompatibleUtf8Writes() throws Exception {
+        for (var path : new String[] {
+                "scripts/acquire-dinov2-small.ps1",
+                "scripts/build-bracs-dinov2-tile-cache.ps1",
+                "scripts/prepare-all-rounder-campaign.ps1",
+                "scripts/submit-evidence-job.ps1"}) {
+            var script = Files.readString(Path.of(path));
+            assertFalse(script.contains("utf8NoBOM"), path);
+            assertTrue(script.contains("UTF8Encoding"), path);
+        }
+    }
 }

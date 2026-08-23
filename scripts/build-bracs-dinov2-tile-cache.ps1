@@ -132,7 +132,8 @@ try {
             grandfatheredReadOnly = $true
         }
         $samplePath = Join-Path $sampleRoot 'sample.json'
-        $sampleManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath "$samplePath.partial" -Encoding utf8NoBOM
+        [IO.File]::WriteAllText("$samplePath.partial", (($sampleManifest | ConvertTo-Json -Depth 6) + "`n"),
+            [Text.UTF8Encoding]::new($false))
         Move-Item -LiteralPath "$samplePath.partial" -Destination $samplePath
 
         $image = New-Object Drawing.Bitmap $source
@@ -191,7 +192,8 @@ try {
             tiles = $tiles.ToArray()
         }
         $tileManifestPath = Join-Path $sampleRoot 'tile-cache.json'
-        $tileManifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath "$tileManifestPath.partial" -Encoding utf8NoBOM
+        [IO.File]::WriteAllText("$tileManifestPath.partial", (($tileManifest | ConvertTo-Json -Depth 10) + "`n"),
+            [Text.UTF8Encoding]::new($false))
         Move-Item -LiteralPath "$tileManifestPath.partial" -Destination $tileManifestPath
         $evaluationGroup = if ($row.label -in @('N', 'PB', 'UDH')) { 'benign-reactive' } else { 'breast' }
         $cohortSamples.Add([ordered]@{
@@ -225,7 +227,8 @@ try {
         samples = $cohortSamples.ToArray()
     }
     $cohortPath = Join-Path $partialRoot 'cohort.json'
-    $cohort | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath "$cohortPath.partial" -Encoding utf8NoBOM
+    [IO.File]::WriteAllText("$cohortPath.partial", (($cohort | ConvertTo-Json -Depth 12) + "`n"),
+        [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath "$cohortPath.partial" -Destination $cohortPath
     New-Item -ItemType Directory -Path (Split-Path $outputRoot) -Force | Out-Null
     Move-Item -LiteralPath $partialRoot -Destination $outputRoot

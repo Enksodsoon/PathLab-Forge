@@ -94,6 +94,7 @@ final class EvidencePackManifestTest {
         ihc.requireExecutableForJob("qualification-0123abcd");
         var dino = EvidencePackManifest.load(root.resolve("he-dinov2-small-v1.json"));
         assertFalse(dino.pilotEligible());
+        assertEquals(EvidencePackManifest.ValidationStatus.EXPERIMENTAL, dino.validationStatus());
         assertEquals("ed25f3a31f01632728cabb09d1542f84ab7b0056",
                 dino.licenseLedger().get(0).revision());
         assertEquals(7, dino.artifacts().size());

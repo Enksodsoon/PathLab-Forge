@@ -139,7 +139,8 @@ try {
     }
     $receiptPath = Join-Path $installRoot 'acquisition.json'
     $receiptPartial = "$receiptPath.partial"
-    $receipt | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $receiptPartial -Encoding utf8NoBOM
+    [IO.File]::WriteAllText($receiptPartial, (($receipt | ConvertTo-Json -Depth 5) + "`n"),
+        [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $receiptPartial -Destination $receiptPath -Force
 } finally {
     if (Test-Path -LiteralPath $reservation -PathType Leaf) {

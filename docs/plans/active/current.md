@@ -143,3 +143,28 @@ Implementation, service installation, model qualification, merge, deployment,
 feature activation, and any future clinical/capacity study are separate gates.
 Feature flags remain default-off and no diagnostic or clinical-scoring claims
 are permitted.
+
+On 2026-08-23 the NCT-CRC acquisition reached `completed`: both Zenodo 1214456
+archives passed their official MD5 values, independent local SHA-256 hashing,
+and source-ledger publication. The bounded
+`nct-crc-gi-20-per-class-v1` cohort then materialized 360 deterministic
+coordinate-bound samples (20 reference and 20 query patches for each of nine
+published tissue classes) without expanding the full archives. Its cohort
+manifest SHA-256 is
+`e3fb44a4e977aeb99a1a5d0a6a97fcd8495fc14b24e66ac126e8205594bdbb38`.
+The public release does not provide a per-patch patient map suitable for an
+independent overlap audit, and the other frozen tissue/OOD groups remain
+absent, so the full H&E gate remains `NOT_EVALUABLE`.
+
+The autonomous `dinov2-nct-crc-gi-execution-20260823-v1` campaign executed the
+pinned DINOv2-small worker against one real checksum-bound GI query patch on
+the GPU lane with offline analysis enforced and zero retries. It produced
+signed evidence SHA-256
+`2ea00e772d27da090e5799fdd11bafe69924ca238dea9190c9e816ad0f4ce2a6`
+and a signed terminal `experimental` attestation manifest SHA-256
+`f69abdcafc68bdafcf707177a6a2a83a5b61f8c7f100e69d4bcd40b77473c6e3`.
+`campaignCompleted=true` and `campaignTargetMet=false`: this is real-data
+execution evidence, not cohort retrieval performance or deployment
+qualification. The next engineering gate is a cohort worker that loads the
+model once and computes the frozen color-histogram comparison, retrieval,
+repeatability, and OOD metrics without exporting embeddings.
