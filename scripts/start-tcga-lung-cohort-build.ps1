@@ -1,17 +1,25 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Start','Run','Status')] [string] $Action = 'Start',
-    [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state'
+    [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
+    [ValidateSet('v1','qc-remediation-v1')] [string] $SelectionProtocol = 'v1',
+    [string] $FrozenAt = '2026-08-23T06:50:00Z'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$taskName = 'PathLabTcgaLungCohortBuild'
+$taskName = if ($SelectionProtocol -eq 'qc-remediation-v1') {
+    'PathLabTcgaLungCohortRemediation'
+} else { 'PathLabTcgaLungCohortBuild' }
 $state = [IO.Path]::GetFullPath($StateRoot)
-$root = Join-Path $state 'acquisition\tcga-luad-lusc-he-20x2-v1\cohort-build'
+$cohortId = if ($SelectionProtocol -eq 'qc-remediation-v1') {
+    'tcga-luad-lusc-lung-20x2-qc-remediation-v1'
+} else { 'tcga-luad-lusc-lung-20x2-v1' }
+$buildFolder = if ($SelectionProtocol -eq 'v1') { 'cohort-build' } else { 'cohort-build-qc-remediation-v1' }
+$root = Join-Path $state "acquisition\tcga-luad-lusc-he-20x2-v1\$buildFolder"
 $statusPath = Join-Path $root 'status.json'
 $acquisitionStatusPath = Join-Path $state 'acquisition\tcga-luad-lusc-he-20x2-v1\status.json'
-$cohortPath = Join-Path $state 'derived\qualification-prepared\tcga-luad-lusc-lung-20x2-v1\cohort.json'
+$cohortPath = Join-Path $state "derived\qualification-prepared\$cohortId\cohort.json"
 
 function Write-Status([string] $StateValue, [string] $Detail) {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
@@ -43,7 +51,7 @@ if ($Action -eq 'Start') {
     Copy-Item -LiteralPath $PSCommandPath -Destination $durableLauncher -Force
     Copy-Item -LiteralPath $builderSource -Destination $durableBuilder -Force
     $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument `
-        "-NoProfile -ExecutionPolicy Bypass -File `"$durableLauncher`" -Action Run -StateRoot `"$state`""
+        "-NoProfile -ExecutionPolicy Bypass -File `"$durableLauncher`" -Action Run -StateRoot `"$state`" -SelectionProtocol `"$SelectionProtocol`" -FrozenAt `"$FrozenAt`""
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
         -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 7)
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
@@ -67,11 +75,6 @@ if ($acquisition.state -ne 'completed') {
     Write-Status 'waiting' "TCGA acquisition is $($acquisition.state)."
     return
 }
-if (Test-Path -LiteralPath $cohortPath -PathType Leaf) {
-    Write-Status 'completed' "Existing immutable cohort: $cohortPath"
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    return
-}
 Write-Status 'building' 'Extracting offline tissue-aware coordinate-bound tiles.'
 try {
     $endpoint = Get-Content -LiteralPath (Join-Path $state 'endpoint.json') -Raw | ConvertFrom-Json
@@ -93,8 +96,14 @@ try {
                 $currentIdentity, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
             $derivedAcl.AddAccessRule($temporaryRule) | Out-Null
             Set-Acl -LiteralPath $derivedRoot -AclObject $derivedAcl
-            & (Join-Path $root 'build-tcga-lung-dinov2-cohort.ps1') -StateRoot $state `
-                -DerivedUsedBytes $derivedUsed
+            if (-not (Test-Path -LiteralPath $cohortPath -PathType Leaf)) {
+                & (Join-Path $root 'build-tcga-lung-dinov2-cohort.ps1') -StateRoot $state `
+                    -DerivedUsedBytes $derivedUsed -SelectionProtocol $SelectionProtocol -FrozenAt $FrozenAt
+            }
+            if (-not (Test-Path -LiteralPath $cohortPath -PathType Leaf)) {
+                throw 'Cohort builder returned without a manifest.'
+            }
+            $cohortSha = (Get-FileHash -LiteralPath $cohortPath -Algorithm SHA256).Hash.ToLowerInvariant()
         } finally {
             $restoredAcl = New-Object Security.AccessControl.DirectorySecurity
             $restoredAcl.SetSecurityDescriptorSddlForm($derivedSddl)
@@ -105,9 +114,7 @@ try {
             -Headers $headers
         Remove-Variable token,headers -ErrorAction SilentlyContinue
     }
-    if (-not (Test-Path -LiteralPath $cohortPath -PathType Leaf)) { throw 'Cohort builder returned without a manifest.' }
-    $sha = (Get-FileHash -LiteralPath $cohortPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    Write-Status 'completed' "Immutable cohort SHA256: $sha"
+    Write-Status 'completed' "Immutable cohort SHA256: $cohortSha"
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 } catch {
     Write-Status 'failed' $_.Exception.Message

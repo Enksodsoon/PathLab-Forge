@@ -2,13 +2,16 @@
 param(
     [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
     [string] $FrozenAt = '2026-08-23T05:00:00Z',
-    [long] $DerivedUsedBytes = -1
+    [long] $DerivedUsedBytes = -1,
+    [ValidateSet('v1','qc-remediation-v1')] [string] $SelectionProtocol = 'v1'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $datasetId = 'tcga-luad-lusc-he-20x2-v1'
-$cohortId = 'tcga-luad-lusc-lung-20x2-v1'
+$cohortId = if ($SelectionProtocol -eq 'qc-remediation-v1') {
+    'tcga-luad-lusc-lung-20x2-qc-remediation-v1'
+} else { 'tcga-luad-lusc-lung-20x2-v1' }
 $state = [IO.Path]::GetFullPath($StateRoot)
 $sourceRoot = [IO.Path]::GetFullPath((Join-Path $state "sources\$datasetId"))
 $acquisitionRoot = Join-Path $state "acquisition\$datasetId"
@@ -70,6 +73,70 @@ function Get-TissueCoordinate([string] $OverviewPath, [int] $SourceWidth, [int] 
             X = [int][Math]::Max(0, [Math]::Min($SourceWidth - 512, $centerX - 256))
             Y = [int][Math]::Max(0, [Math]::Min($SourceHeight - 512, $centerY - 256))
         }
+    } finally { $bitmap.Dispose() }
+}
+function Get-TissueCandidates([string] $OverviewPath, [int] $SourceWidth, [int] $SourceHeight) {
+    $bitmap = [Drawing.Bitmap]::new($OverviewPath)
+    try {
+        $candidates = [Collections.Generic.List[object]]::new()
+        for ($gridY = 0; $gridY -lt 8; $gridY++) {
+            for ($gridX = 0; $gridX -lt 8; $gridX++) {
+                $x0 = [int][Math]::Floor($gridX * $bitmap.Width / 8.0)
+                $x1 = [int][Math]::Floor(($gridX + 1) * $bitmap.Width / 8.0)
+                $y0 = [int][Math]::Floor($gridY * $bitmap.Height / 8.0)
+                $y1 = [int][Math]::Floor(($gridY + 1) * $bitmap.Height / 8.0)
+                $best = -1.0; $bestX = -1; $bestY = -1
+                for ($y = $y0 + 2; $y -lt $y1 - 2; $y += 4) {
+                    for ($x = $x0 + 2; $x -lt $x1 - 2; $x += 4) {
+                        $pixel = $bitmap.GetPixel($x, $y)
+                        $maximum = [Math]::Max($pixel.R, [Math]::Max($pixel.G, $pixel.B))
+                        $minimum = [Math]::Min($pixel.R, [Math]::Min($pixel.G, $pixel.B))
+                        $luminance = 0.2126 * $pixel.R + 0.7152 * $pixel.G + 0.0722 * $pixel.B
+                        if ($luminance -lt 35 -or $luminance -gt 245) { continue }
+                        $score = ($maximum - $minimum) + 0.20 * (245 - $luminance)
+                        if ($score -gt $best) { $best=$score; $bestX=$x; $bestY=$y }
+                    }
+                }
+                if ($bestX -ge 0) {
+                    $centerX = [long][Math]::Round(($bestX + 0.5) * $SourceWidth / $bitmap.Width)
+                    $centerY = [long][Math]::Round(($bestY + 0.5) * $SourceHeight / $bitmap.Height)
+                    $candidates.Add([pscustomobject]@{
+                        X=[int][Math]::Max(0,[Math]::Min($SourceWidth-512,$centerX-256))
+                        Y=[int][Math]::Max(0,[Math]::Min($SourceHeight-512,$centerY-256))
+                        Score=$best
+                    })
+                }
+            }
+        }
+        $selected = @($candidates | Sort-Object @{Expression='Score';Descending=$true},Y,X)
+        return @($selected | Select-Object -First 9)
+    } finally { $bitmap.Dispose() }
+}
+function Get-TileQcScore([string] $TilePath) {
+    $bitmap = [Drawing.Bitmap]::new($TilePath)
+    try {
+        $tissue=0; $total=0; $saturation=0.0; $gradient=0.0; $minLum=255.0; $maxLum=0.0
+        for ($y=0; $y -lt $bitmap.Height; $y+=2) {
+            for ($x=0; $x -lt $bitmap.Width; $x+=2) {
+                $pixel=$bitmap.GetPixel($x,$y); $total++
+                $maximum=[Math]::Max($pixel.R,[Math]::Max($pixel.G,$pixel.B))
+                $minimum=[Math]::Min($pixel.R,[Math]::Min($pixel.G,$pixel.B))
+                $lum=0.2126*$pixel.R+0.7152*$pixel.G+0.0722*$pixel.B
+                if ($lum -ge 30 -and $lum -le 240 -and ($maximum-$minimum) -ge 10) {
+                    $tissue++; $saturation += $maximum-$minimum
+                    $minLum=[Math]::Min($minLum,$lum); $maxLum=[Math]::Max($maxLum,$lum)
+                }
+                if ($x -ge 2) {
+                    $prior=$bitmap.GetPixel($x-2,$y)
+                    $gradient += [Math]::Abs($pixel.R-$prior.R)+[Math]::Abs($pixel.G-$prior.G)+[Math]::Abs($pixel.B-$prior.B)
+                }
+            }
+        }
+        $fraction=$tissue/[Math]::Max(1.0,$total)
+        if ($fraction -lt 0.10) { return -1000.0+$fraction }
+        $meanSaturation=$saturation/[Math]::Max(1.0,$tissue)
+        $meanGradient=$gradient/[Math]::Max(1.0,$total)
+        return 100*$fraction+0.5*$meanSaturation+0.1*($maxLum-$minLum)+0.25*$meanGradient
     } finally { $bitmap.Dispose() }
 }
 
@@ -150,16 +217,32 @@ try {
         New-Item -ItemType Directory -Path $sampleRoot -Force | Out-Null
         $overview = Join-Path $sampleRoot 'overview.png'
         Invoke-Vips $vips @('thumbnail', $source, $overview, '2048', '--size', 'both')
-        $coordinate = Get-TissueCoordinate $overview $width $height
+        $coordinates = if ($SelectionProtocol -eq 'qc-remediation-v1') {
+            @(Get-TissueCandidates $overview $width $height)
+        } else { @(Get-TissueCoordinate $overview $width $height) }
         Remove-Item -LiteralPath $overview -Force
         $tilePath = Join-Path $sampleRoot 'source.png'
-        Invoke-Vips $vips @('crop', $source, "$tilePath.partial.png", [string]$coordinate.X,
-            [string]$coordinate.Y, '512', '512')
-        Move-Item -LiteralPath "$tilePath.partial.png" -Destination $tilePath
+        $evaluated = [Collections.Generic.List[object]]::new()
+        $candidateIndex=0
+        foreach ($candidate in $coordinates) {
+            $candidateIndex++
+            $candidatePath = Join-Path $sampleRoot ('candidate-{0:D2}.png' -f $candidateIndex)
+            Invoke-Vips $vips @('crop',$source,"$candidatePath.partial.png",[string]$candidate.X,
+                [string]$candidate.Y,'512','512')
+            Move-Item -LiteralPath "$candidatePath.partial.png" -Destination $candidatePath
+            $qcScore = if ($SelectionProtocol -eq 'qc-remediation-v1') { Get-TileQcScore $candidatePath } else { 0.0 }
+            $evaluated.Add([pscustomobject]@{Path=$candidatePath;X=$candidate.X;Y=$candidate.Y;Score=$qcScore})
+        }
+        $chosen = @($evaluated | Sort-Object @{Expression='Score';Descending=$true},Y,X)[0]
+        Move-Item -LiteralPath $chosen.Path -Destination $tilePath
+        @($evaluated | Where-Object Path -ne $chosen.Path) | ForEach-Object {
+            Remove-Item -LiteralPath $_.Path -Force
+        }
+        $coordinate = [pscustomobject]@{X=$chosen.X;Y=$chosen.Y}
         $tileSha = Get-Sha256 $tilePath
         $sampleManifestPath = Join-Path $sampleRoot 'sample.json'
         Write-JsonAtomic $sampleManifestPath ([ordered]@{
-            schema='pathlab.evidence-sample/1'; source="$($row.source)#wsi-sha256=$($row.sha256)"
+            schema='pathlab.evidence-sample/1'; source="$($row.source)#wsi-sha256=$($row.sha256);selector=$SelectionProtocol"
             patientGroup=[string]$row.patientGroup; slideId=[string]$row.slideGroup
             sha256=$tileSha; license='NIH-GDS/NCI-GDC-open-access-policy'
             taskLabel=[string]$row.taskLabel; permittedUse='private-research'
@@ -169,7 +252,7 @@ try {
         Write-JsonAtomic $tileManifestPath ([ordered]@{
             schema='pathlab.tile-cache/1'
             source=[ordered]@{
-                sha256=$tileSha; slideRevision="gdc:$($row.sampleId):$($row.sha256)"
+                sha256=$tileSha; slideRevision="gdc:$($row.sampleId):$($row.sha256):$SelectionProtocol"
                 width=$width; height=$height; sampleManifest='sample.json'
                 sampleManifestSha256=Get-Sha256 $sampleManifestPath
             }

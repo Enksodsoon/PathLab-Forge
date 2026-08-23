@@ -99,6 +99,23 @@ final class AcquisitionScriptContractTest {
     }
 
     @Test
+    void tcgaLungRemediationIsLabelBlindQcBoundedAndKeepsFrozenGates() throws Exception {
+        var script = Files.readString(Path.of("scripts/build-tcga-lung-dinov2-cohort.ps1"));
+        var protocol = Files.readString(Path.of(
+                "docs/evidence/tcga-lung-tile-remediation-protocol-v1.md"));
+
+        assertTrue(script.contains("tcga-luad-lusc-lung-20x2-qc-remediation-v1"));
+        assertTrue(script.contains("Get-TissueCandidates"));
+        assertTrue(script.contains("Get-TileQcScore"));
+        assertTrue(script.contains("Select-Object -First 9"));
+        assertTrue(script.contains("minimumMacroNdcgAt10Improvement=0.03"));
+        assertFalse(protocol.toLowerCase().contains("lower the"));
+        assertTrue(protocol.contains("0.03"));
+        assertTrue(protocol.contains("label-blind"));
+        assertTrue(protocol.contains("one allowed remediation"));
+    }
+
+    @Test
     void tcgaLungCampaignRequiresNewReportAdapterAndExactCohortBinding() throws Exception {
         var script = Files.readString(Path.of("scripts/stage-tcga-lung-dinov2-retrieval.ps1"));
 
@@ -110,6 +127,8 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("campaignTargetMet"));
         assertTrue(script.contains("ReadAndExecute"));
         assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
+        assertTrue(script.contains("$CohortId"));
+        assertTrue(script.contains("$ProtocolPath"));
     }
 
     @Test
@@ -117,10 +136,50 @@ final class AcquisitionScriptContractTest {
         var script = Files.readString(Path.of("scripts/start-tcga-lung-cohort-build.ps1"));
 
         assertTrue(script.contains("PathLabTcgaLungCohortBuild"));
+        assertTrue(script.contains("PathLabTcgaLungCohortRemediation"));
         assertTrue(script.contains("build-tcga-lung-dinov2-cohort.ps1"));
         assertTrue(script.contains("RepetitionInterval (New-TimeSpan -Minutes 5)"));
         assertTrue(script.contains("if ($acquisition.state -ne 'completed')"));
         assertTrue(script.contains("Write-Status 'completed'"));
         assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
+        assertTrue(script.indexOf("Set-Acl -LiteralPath $derivedRoot -AclObject $derivedAcl")
+                < script.indexOf("Test-Path -LiteralPath $cohortPath -PathType Leaf"),
+                "The protected cohort must not be probed before the temporary read/write handoff");
+    }
+
+    @Test
+    void tumorQuantIhcPreparationIsPinnedBoundedAndNonQualifying() throws Exception {
+        var script = Files.readString(Path.of("scripts/prepare-tumorquantai-ihc-source.ps1"));
+
+        assertTrue(script.contains("21797920"));
+        assertTrue(script.contains("10.5281/zenodo.21797920"));
+        assertTrue(script.contains("cc-by-4.0"));
+        assertTrue(script.contains("TQA_BreastIHC_manifest_bundle.zip"));
+        assertTrue(script.contains("e85d64ab3d37f94469a6c507ef3fea88"));
+        assertTrue(script.contains("2MB"), "Manifest preparation must stay bounded");
+        assertTrue(script.contains("manifest_review_required"));
+        assertTrue(script.contains("private-research-descriptive-only"));
+        assertTrue(script.contains("ZipFile]::OpenRead"));
+        assertTrue(script.contains("StartsWith($extractRoot"), "Archive extraction must reject traversal");
+    }
+
+    @Test
+    void tumorQuantIhcSubsetIsAutonomousCaseDisjointAndChecksumBounded() throws Exception {
+        var script = Files.readString(Path.of("scripts/acquire-tumorquantai-ihc-subset.ps1"));
+
+        assertTrue(script.contains("tumorquantai-breast-ihc-4case-v1"));
+        assertTrue(script.contains("PathLabTumorQuantIhcAcquisition"));
+        assertTrue(script.contains("$sourceLimit = 45GB"));
+        assertTrue(script.contains("TQA_BC_ZPVYVY4T27UKEAYPKAOX.zip"));
+        assertTrue(script.contains("TQA_BC_KHLKIB6TVKGYE7SUWAOX.zip"));
+        assertTrue(script.contains("TQA_BC_2R5PE76UT27ESW6WXFR7.zip"));
+        assertTrue(script.contains("TQA_BC_5QIEJCI66QT6FMUHJ67O.zip"));
+        assertTrue(script.contains("upstreamSha256"));
+        assertTrue(script.contains("patientGroup = $item.case"));
+        assertTrue(script.contains("private-research-descriptive-only"));
+        assertTrue(script.contains("for ($attempt = 1; $attempt -le 3; $attempt++)"));
+        assertTrue(script.contains("$requiredBytes += [long]$item.bytes"));
+        assertTrue(script.contains("service-managed source quota reservation root"));
+        assertFalse(script.contains("--continue-at"));
     }
 }

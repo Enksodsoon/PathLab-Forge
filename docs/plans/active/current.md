@@ -222,6 +222,41 @@ resource checks passed; OOD and full cross-tissue coverage remain unavailable.
 The honest terminal verdict is `experimental`, with
 `campaignCompleted=true` and `campaignTargetMet=false`.
 
+The single pre-registered, label-blind lung tile-selection remediation then
+completed as campaign `dinov2-tcga-lung-qc-remediation-20260823-v1`. It used a
+frozen 40-sample cohort at SHA-256
+`daaf335ba67d3cf189355b73d7d4a4081566d6518685ec4d7cb912fa013779de`,
+finished 80/80 GPU work units with zero retries, and produced signed evidence
+SHA-256
+`ff084d41f1da82868cd550d7a8aa555032d5a5b9d040d2d8358c07d57c797b3d`
+and signed attestation SHA-256
+`142710f8ef70137e98cdebfa99c9f987a54e63818dc481d5632cd0837a1628e4`.
+The unchanged retrieval gates passed: Recall@5 improvement was `0.15` and
+NDCG@10 improvement was `0.149220098`, with exact ranking repeatability.
+The track remains `experimental`, `campaignCompleted=true`, and
+`campaignTargetMet=false` because frozen OOD fixtures and complete cross-tissue
+patient/source-held-out coverage remain unavailable. The one remediation is
+consumed; no additional lung tuning is permitted under this protocol.
+
+The executable brightfield harness now confirms that the optical-density,
+distance-transform watershed passes its bounded synthetic separated/touching
+nuclei, deterministic-repeat, and reviewed-region RLE-mask checks. Generic DAB,
+relative-only calibration, and weak-separation refusal checks also pass.
+Cell qualification remains `experimental` pending rights-cleared cross-tissue
+held-out annotations. Marker-specific IHC and PD-L1 compartment tracks remain
+`not_evaluable` pending independent fixtures and reviewed compartment geometry;
+synthetic behavior is not promoted into scientific qualification.
+
+For the next IHC execution gate, the pinned 1,311,155-byte metadata bundle from
+TumorQuantAI Zenodo record `21797920` passed its official MD5 and local SHA-256
+checks. A four-case-disjoint subset of the smallest complete archives is frozen
+at 421,890,082 bytes and is downloading through the autonomous interactive-user
+acquisition task `PathLabTumorQuantIhcAcquisition`. The dataset is CC BY 4.0,
+but it supplies research measurement proxies rather than independent clinical
+ground truth. Completion can support descriptive ER/PR/Ki-67/HER2 integration
+fixtures only; it cannot qualify clinical scoring, PD-L1, serial-section cell
+matching, or either Atlas teacher lineage without a separate derivative review.
+
 CAMELYON lymph-node acquisition remains `NOT_EVALUABLE` and has not started.
 The two official CAMELYON17 pages currently expose conflicting reuse language,
 so `docs/evidence/lymph-node-source-rights-review-20260823.md` freezes the exact

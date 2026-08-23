@@ -1,14 +1,17 @@
 [CmdletBinding()]
 param(
     [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
-    [string] $CampaignId = 'dinov2-tcga-lung-retrieval-20260823-v1'
+    [string] $CampaignId = 'dinov2-tcga-lung-retrieval-20260823-v1',
+    [string] $CohortId = 'tcga-luad-lusc-lung-20x2-v1',
+    [string] $TrackId = 'he-dinov2-small-tcga-lung-v1',
+    [string] $ProtocolPath = 'docs\evidence\he-retrieval-qualification-protocol-v1.md'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repository = Split-Path -Parent $PSScriptRoot
 $state = [IO.Path]::GetFullPath($StateRoot)
-$cohortRoot = Join-Path $state 'derived\qualification-prepared\tcga-luad-lusc-lung-20x2-v1'
+$cohortRoot = Join-Path $state "derived\qualification-prepared\$CohortId"
 $cohortPath = Join-Path $cohortRoot 'cohort.json'
 $modelRoot = Join-Path $state 'models\he-dinov2-small-v1\1'
 $packSource = Join-Path $repository 'src\main\resources\evidence-packs\he-dinov2-small-v1.json'
@@ -98,7 +101,8 @@ New-Item -ItemType Directory -Path $campaignRoot -Force | Out-Null
 $campaignPath = Join-Path $campaignRoot 'campaign.json'
 $requestPath = Join-Path $campaignRoot 'request-he-dinov2-small-v1.json'
 $attestationPath = Join-Path $campaignRoot 'attestation-he-dinov2-small-v1.json'
-$protocolPath = Join-Path $repository 'docs\evidence\he-retrieval-qualification-protocol-v1.md'
+$protocolPath = if ([IO.Path]::IsPathRooted($ProtocolPath)) { $ProtocolPath } else { Join-Path $repository $ProtocolPath }
+if (-not (Test-Path -LiteralPath $protocolPath -PathType Leaf)) { throw 'Qualification protocol is unavailable.' }
 $protocolSha = Sha256 $protocolPath
 Write-JsonAtomic $requestPath ([ordered]@{
     schema='pathlab.evidence-job/2'; sourcePath=$sourcePath
@@ -117,14 +121,14 @@ Write-JsonAtomic $campaignPath ([ordered]@{
     maxRemediationAttempts=1
     quota=[ordered]@{sourceBytes=45GB;derivedBytes=25GB;modelBytes=10GB;evidenceBytes=10GB;reserveBytes=10GB}
     tracks=@([ordered]@{
-        id='he-dinov2-small-tcga-lung-v1';candidateId='he-dinov2-small-v1'
+        id=$TrackId;candidateId='he-dinov2-small-v1'
         capability='he-evidence';scope='deployment';requestPath=[IO.Path]::GetFileName($requestPath)
         remediationRequestPath=$null;expectedAttestationPath=[IO.Path]::GetFileName($attestationPath)
         protocolSha256=$protocolSha;dependsOn=@();required=$true
     })
 })
 [IO.File]::WriteAllLines((Join-Path $campaignRoot 'sample-ledger.jsonl'), @(([ordered]@{
-    sampleId='tcga-luad-lusc-lung-20x2-v1';source='NCI GDC frozen open-access lung cohort'
+    sampleId=$CohortId;source='NCI GDC frozen open-access lung cohort'
     patientGroup='forty-patient-disjoint';slideGroup='forty-checksum-bound-slides';sha256=$cohortSha
     license='NIH-GDS/NCI-GDC-open-access-policy';permittedUse='private-research'
     task='he-retrieval-qualification';split='reference-and-query'

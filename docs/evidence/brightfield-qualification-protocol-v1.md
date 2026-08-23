@@ -15,9 +15,11 @@ all pre-registered performance gates pass.
 - Exact repeated analysis must be identical.
 - Reviewed-region instance-mask output must exist before qualification.
 
-The current connected-component implementation predictably fails touching-object
-separation and has no instance-mask output. The harness records these outcomes;
-it does not lower the gates or call the implementation watershed.
+The current deterministic optical-density, distance-transform watershed passes
+the bounded separated-object, touching-object, repeatability, and reviewed-region
+RLE mask checks. These are synthetic algorithm checks only. Tissue-diverse,
+patient/source-held-out instance accuracy, morphometry bias, and failed-region
+gates remain pending, so the pack remains `experimental`.
 
 ## IHC checks
 
@@ -25,8 +27,8 @@ it does not lower the gates or call the implementation watershed.
   of 0.2 within `1e-12`.
 - Mixed H/DAB-like input without validated controls must remain `relative_only`.
 - Weak stain separation must produce `not_evaluable`.
-- Marker-specific nuclear/membrane measurement remains `not_evaluable` until
-  independent fixtures exist.
+- Marker-aware nuclear and membrane algorithms are present, but their
+  qualification result remains `not_evaluable` until independent fixtures exist.
 - PD-L1 compartment measurement remains `not_evaluable` until the request carries
   reviewed compartment geometry.
 
