@@ -28,7 +28,7 @@
     "source": "pathlab-local-build:dinov2-worker-v1/windows-x64"
   }, {
     "name": "workerSource",
-    "sha256": "b80811cc8026152c45248cdcf8123413f9b3f8d64e297bad93dfe198b5aba5c2",
+    "sha256": "9ce24564230eca50eb2008490491af006f7e5f1cfa43a5fa86ec36e0a893ce18",
     "source": "pathlab-local-build:dinov2-worker-v1/worker.py"
   }, {
     "name": "runtime-manifest",
@@ -40,7 +40,7 @@
     "source": "repo:docs/evidence/he-retrieval-qualification-protocol-v1.md"
   }],
   "runtimeCompatibility": {
-    "workerProtocol": "pathlab.model-worker-result/1",
+    "workerProtocol": "pathlab.model-worker/2",
     "executionProvider": "cuda",
     "cuda": "12.6",
     "gpuArchitecture": "sm_61",
@@ -64,13 +64,13 @@
   "resourceEnvelope": {
     "maxRamMiB": 16384,
     "maxVramMiB": 4608,
-    "maxSeconds": 300,
+    "maxSeconds": 1200,
     "network": false
   },
   "validation": {
     "status": "experimental",
     "modelCard": "docs/model-cards/he-dinov2-small-v1.md",
-    "heldOutEvaluation": "partial-gi-execution-cohort-ready-cross-tissue-and-patient-mapping-incomplete"
+    "heldOutEvaluation": "partial-gi-retrieval-cohort-ready-cross-tissue-patient-mapping-and-ood-incomplete"
   },
   "outputSchema": "pathlab.ai-evidence/1"
 }

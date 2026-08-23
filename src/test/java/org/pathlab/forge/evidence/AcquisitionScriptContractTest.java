@@ -43,4 +43,21 @@ final class AcquisitionScriptContractTest {
             assertTrue(script.contains("UTF8Encoding"), path);
         }
     }
+
+    @Test
+    void dinov2CohortWorkerIsChecksumBoundedRepeatableAndEmbeddingFree() throws Exception {
+        var worker = Files.readString(Path.of(
+                "src/main/resources/model-workers/dinov2-worker.py"));
+        var stage = Files.readString(Path.of("scripts/stage-nct-crc-dinov2-retrieval.ps1"));
+
+        assertTrue(worker.contains("pathlab.he-retrieval-metrics/1"));
+        assertTrue(worker.contains("exactRankingRepeatability"));
+        assertTrue(worker.contains("embeddingsExported\": False"));
+        assertTrue(worker.contains("checkpoint(output_path"));
+        assertTrue(worker.contains("model_features(model, processor, samples, output_path, pack_hash, cohort_hash, 1)"));
+        assertFalse(worker.contains("result[\"embeddings\"]"));
+        assertTrue(stage.contains("@($cohort.samples).Count -ne 360"));
+        assertTrue(stage.contains("marker = \"cohort-$cohortSha\""));
+        assertTrue(stage.contains("/v1/qualification-runs"));
+    }
 }

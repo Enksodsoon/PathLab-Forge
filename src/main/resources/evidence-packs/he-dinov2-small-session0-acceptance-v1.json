@@ -28,7 +28,7 @@
     "source": "pathlab-local-build:dinov2-worker-v1/windows-x64"
   }, {
     "name": "workerSource",
-    "sha256": "b80811cc8026152c45248cdcf8123413f9b3f8d64e297bad93dfe198b5aba5c2",
+    "sha256": "9ce24564230eca50eb2008490491af006f7e5f1cfa43a5fa86ec36e0a893ce18",
     "source": "pathlab-local-build:dinov2-worker-v1/worker.py"
   }, {
     "name": "runtime-manifest",

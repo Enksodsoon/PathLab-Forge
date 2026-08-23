@@ -71,3 +71,22 @@ release does not expose a per-patch patient/slide map suitable for independently
 checking patient overlap, and breast, lung, lymph-node, independent
 benign/reactive-source, and OOD groups remain absent. These gaps are recorded as
 `NOT_EVALUABLE`; no gate is lowered and no deployment eligibility is implied.
+
+## NCT-CRC GI retrieval execution
+
+The checksum-bound cohort worker now loads DINOv2 once, evaluates all 180
+reference and 180 query patches, compares exact rankings with the frozen
+`color-histogram-v1` baseline, and repeats model inference to test exact ranking
+agreement. It checkpoints with immutable per-batch records, reports 720 total
+work units, validates every tile and provenance record under `LocalService`, and
+emits aggregate metrics without raw pixels or embeddings.
+
+Campaign `dinov2-nct-crc-gi-retrieval-20260823-v3` completed all 720 units on
+the P2000 with no retry and produced signed evidence SHA-256
+`824621fbe90f23af0cedc7d6038b7c3429177bbdffb448fc33c2c6efc530271c`.
+The installed 2.1.1 service signed the conservative terminal verdict
+`experimental`; it predates the report adapter that carries cohort metrics into
+the signed qualification report. The scores therefore remain service-private
+execution output until the tested runner update can be installed. Regardless of
+those GI scores, the full H&E verdict cannot become qualified while patient
+mapping, cross-tissue groups, and OOD fixtures remain absent.

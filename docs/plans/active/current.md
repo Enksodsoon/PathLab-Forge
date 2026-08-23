@@ -168,3 +168,17 @@ execution evidence, not cohort retrieval performance or deployment
 qualification. The next engineering gate is a cohort worker that loads the
 model once and computes the frozen color-histogram comparison, retrieval,
 repeatability, and OOD metrics without exporting embeddings.
+
+That cohort worker is now implemented and exercised. Immutable checkpoint names
+closed a progress/checkpoint race found by the runner during acceptance, and
+campaign `dinov2-nct-crc-gi-retrieval-20260823-v3` subsequently completed all
+720 work units (two deterministic passes over 360 samples) on the GPU lane with
+zero retry. Signed evidence SHA-256 is
+`824621fbe90f23af0cedc7d6038b7c3429177bbdffb448fc33c2c6efc530271c` and the
+signed attestation SHA-256 is
+`3f63f446f3fde3647681918d699fa141852f0526133290644f1028669d8d40dc`.
+The installed 2.1.1 report adapter conservatively records `experimental` and
+does not expose the worker's aggregate cohort metrics; the branch now contains
+the strict signed-report adapter for the next service package. Full H&E remains
+`NOT_EVALUABLE` because patient mapping, breast, lung, lymph-node,
+benign/reactive-source, and OOD coverage are still missing.

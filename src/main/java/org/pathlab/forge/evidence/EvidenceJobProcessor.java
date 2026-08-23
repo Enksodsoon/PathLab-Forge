@@ -26,7 +26,8 @@ public final class EvidenceJobProcessor {
     private static final Set<String> OPTIONAL_REQUEST_FIELDS = Set.of(
             "compartmentSource", "controlsValidated", "markerIdentitySource",
             "tileCacheManifest", "tileCacheManifestSha256", "qualificationAttestationSha256",
-            "qualificationCampaignManifest", "reviewedRegions");
+            "qualificationCampaignManifest", "qualificationCohortManifest",
+            "qualificationCohortManifestSha256", "reviewedRegions");
     private final EvidenceJobQueue queue;
     private final Path stateRoot;
 
@@ -121,6 +122,17 @@ public final class EvidenceJobProcessor {
             require(tileCache.sample().bytes() == Files.size(source)
                             && "private-research".equals(tileCache.sample().permittedUse()),
                     "H&E source provenance or permitted use is invalid");
+            require(request.has("qualificationCohortManifest")
+                            == request.has("qualificationCohortManifestSha256"),
+                    "Qualification cohort path and checksum must be supplied together");
+            if (request.has("qualificationCohortManifest")) {
+                require(request.has("qualificationCampaignManifest"),
+                        "Only campaign jobs may attach a qualification cohort");
+                var cohortPath = regularPath(request, "qualificationCohortManifest");
+                var cohortSha = text(request, "qualificationCohortManifestSha256");
+                require(cohortSha.matches("[a-f0-9]{64}") && cohortSha.equals(sha256(cohortPath)),
+                        "Qualification cohort checksum does not match");
+            }
         } else {
             require(!request.has("tileCacheManifest") && !request.has("tileCacheManifestSha256"),
                     "Only H&E evidence jobs may provide a tile cache");
@@ -219,7 +231,7 @@ public final class EvidenceJobProcessor {
         else new EvidenceBundleWriter(stateRoot.resolve("signing")).write(finalArtifact, unsigned);
         if (job.id().matches("qualification-[a-f0-9]{8,64}")
                 && request.path("qualificationCampaignManifest").isTextual()) {
-            writeQualificationReport(job, request, pack, abstained, now.plusMillis(2400));
+            writeQualificationReport(job, request, pack, modelResult, abstained, now.plusMillis(2400));
         }
         queue.recordFinalArtifact(job.id(), workerId, sha256(finalArtifact), now.plusMillis(2500));
         var terminal = abstained ? EvidenceJobState.ABSTAINED : EvidenceJobState.COMPLETED;
@@ -232,7 +244,7 @@ public final class EvidenceJobProcessor {
     }
 
     private void writeQualificationReport(EvidenceJob job, JsonNode request, EvidencePackManifest pack,
-            boolean abstained, Instant now) throws IOException {
+            JsonNode modelResult, boolean abstained, Instant now) throws IOException {
         var campaign = QualificationCampaignManifest.load(
                 regularPath(request, "qualificationCampaignManifest"));
         var normalizedRequest = job.requestPath().toAbsolutePath().normalize();
@@ -263,16 +275,64 @@ public final class EvidenceJobProcessor {
             case CELL_MORPHOLOGY, IHC_DESCRIPTIVE, SPECIAL_STAIN_DESCRIPTIVE,
                     CYTOLOGY_DESCRIPTIVE, HE_EVIDENCE, GROUNDED_TUTOR, ATLAS_DISTILLATION -> true;
         };
-        report.put("status", abstained ? "not_evaluable" : heldOutRequired ? "experimental" : "experimental");
+        var retrieval = modelResult == null ? null : modelResult.path("qualificationMetrics");
+        var hasRetrieval = retrieval != null && retrieval.isObject()
+                && "pathlab.he-retrieval-metrics/1".equals(retrieval.path("schema").asText());
+        var repeatable = hasRetrieval && retrieval.path("exactRankingRepeatability").asBoolean(false);
+        var recallPass = hasRetrieval && finiteAtLeast(retrieval, "macroRecallAt5Improvement",
+                retrieval.path("minimumMacroRecallAt5Improvement").asDouble(Double.POSITIVE_INFINITY));
+        var ndcgPass = hasRetrieval && finiteAtLeast(retrieval, "macroNdcgAt10Improvement",
+                retrieval.path("minimumMacroNdcgAt10Improvement").asDouble(Double.POSITIVE_INFINITY));
+        var oodPass = hasRetrieval && finiteAtLeast(retrieval, "oodAuRoc",
+                retrieval.path("minimumOodAuRoc").asDouble(Double.POSITIVE_INFINITY));
+        var fullCohort = hasRetrieval && "ready".equals(retrieval.path("cohortStatus").asText());
+        var qualified = !abstained && fullCohort && repeatable && recallPass && ndcgPass && oodPass;
+        report.put("status", abstained ? "not_evaluable" : qualified ? "qualified" : "experimental");
         var checks = report.putArray("checks");
         checks.addObject().put("id", "offline-bounded-execution").put("outcome",
                 abstained ? "not_evaluable" : "pass")
                 .put("detail", "Candidate executed without network access inside its declared resource envelope");
-        checks.addObject().put("id", "preregistered-held-out-gates").put("outcome", "not_evaluable")
-                .put("detail", "Required rights-cleared patient/source-held-out fixtures are not attached to this request");
+        if (hasRetrieval) {
+            checks.addObject().put("id", "cohort-integrity-and-rights").put("outcome", "pass")
+                    .put("detail", "Every cohort tile and provenance record passed checksum and permitted-use validation")
+                    .put("cohortManifestSha256", retrieval.path("cohortManifestSha256").asText())
+                    .put("sampleCount", retrieval.path("sampleCount").asInt());
+            checks.addObject().put("id", "retrieval-baseline-comparison")
+                    .put("outcome", recallPass && ndcgPass ? "pass" : "fail")
+                    .put("detail", "DINOv2 and color-histogram metrics used identical frozen tiles")
+                    .put("macroRecallAt5Improvement", retrieval.path("macroRecallAt5Improvement").asDouble())
+                    .put("macroNdcgAt10Improvement", retrieval.path("macroNdcgAt10Improvement").asDouble());
+            checks.addObject().put("id", "exact-ranking-repeatability")
+                    .put("outcome", repeatable ? "pass" : "fail")
+                    .put("detail", "Two independent deterministic inference passes produced exact query rankings");
+            checks.addObject().put("id", "ood-auroc")
+                    .put("outcome", oodPass ? "pass" : "not_evaluable")
+                    .put("detail", oodPass ? "Frozen OOD threshold passed" : "Frozen OOD fixtures are unavailable");
+            checks.addObject().put("id", "preregistered-held-out-gates")
+                    .put("outcome", qualified ? "pass" : "not_evaluable")
+                    .put("detail", qualified ? "Every frozen H&E gate passed"
+                            : "Cross-tissue patient/source-held-out coverage remains incomplete");
+        } else {
+            checks.addObject().put("id", "preregistered-held-out-gates").put("outcome", "not_evaluable")
+                    .put("detail", "Required rights-cleared patient/source-held-out fixtures are not attached to this request");
+        }
         var reasons = report.putArray("reasons");
-        reasons.add(abstained ? "INPUT_QC_FAILED" : "HELD_OUT_QUALIFICATION_PENDING");
+        if (abstained) reasons.add("INPUT_QC_FAILED");
+        else if (qualified) {
+            // A qualified report has no unresolved reason codes.
+        } else if (hasRetrieval) {
+            retrieval.path("notEvaluableReasons").forEach(reason -> reasons.add(reason.asText()));
+            if (!recallPass || !ndcgPass) reasons.add("RETRIEVAL_BASELINE_GATE_FAILED");
+            if (!repeatable) reasons.add("RANKING_REPEATABILITY_FAILED");
+            if (!oodPass) reasons.add("OOD_QUALIFICATION_PENDING");
+        } else reasons.add("HELD_OUT_QUALIFICATION_PENDING");
         new QualificationReportWriter(stateRoot).write(track.expectedAttestationPath(), report);
+    }
+
+    private static boolean finiteAtLeast(JsonNode node, String field, double minimum) {
+        var value = node.path(field);
+        return value.isNumber() && Double.isFinite(value.doubleValue())
+                && Double.isFinite(minimum) && value.doubleValue() >= minimum;
     }
 
     private static ObjectNode evidence(

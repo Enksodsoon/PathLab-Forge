@@ -307,9 +307,36 @@ public final class ExternalModelWorker {
                             && finiteUnit(region, "score"),
                     "Model worker region is invalid");
         }
+        if (result.has("qualificationMetrics")) validateQualificationMetrics(result.path("qualificationMetrics"));
         var serialized = result.toString();
         require(!serialized.matches("(?is).*\"(embedding|embeddings|rawPixels|diagnosis|clinicalScore|tps|cps|treatment)\".*"),
                 "Model worker emitted prohibited reusable or clinical output");
+    }
+
+    private static void validateQualificationMetrics(JsonNode metrics) {
+        require(metrics.isObject()
+                        && "pathlab.he-retrieval-metrics/1".equals(metrics.path("schema").asText())
+                        && metrics.path("cohortManifestSha256").asText().matches("[a-f0-9]{64}")
+                        && metrics.path("sampleCount").asInt(-1) >= 40
+                        && metrics.path("referenceCount").asInt(-1) >= 20
+                        && metrics.path("queryCount").asInt(-1) >= 20
+                        && metrics.path("oodCount").asInt(-1) >= 0
+                        && metrics.path("evaluationGroups").isArray()
+                        && metrics.path("exactRankingRepeatability").isBoolean()
+                        && metrics.path("embeddingsExported").isBoolean()
+                        && !metrics.path("embeddingsExported").asBoolean(true)
+                        && finite(metrics, "baselineMacroRecallAt5")
+                        && finite(metrics, "modelMacroRecallAt5")
+                        && finite(metrics, "macroRecallAt5Improvement")
+                        && finite(metrics, "baselineMacroNdcgAt10")
+                        && finite(metrics, "modelMacroNdcgAt10")
+                        && finite(metrics, "macroNdcgAt10Improvement")
+                        && metrics.path("notEvaluableReasons").isArray(),
+                "Model worker qualification metrics are invalid");
+    }
+
+    private static boolean finite(JsonNode node, String field) {
+        return node.path(field).isNumber() && Double.isFinite(node.path(field).doubleValue());
     }
 
     private static String sha256(Path path) throws IOException {

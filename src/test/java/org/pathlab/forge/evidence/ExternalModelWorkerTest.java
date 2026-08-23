@@ -27,6 +27,27 @@ final class ExternalModelWorkerTest {
                         + "\"kind\":\"support\",\"x\":0,\"y\":0,\"width\":0,\"height\":1,\"score\":0.5}]}"), pack));
     }
 
+    @Test void acceptsBoundedQualificationMetricsButRejectsExportedEmbeddings() throws Exception {
+        var pack = EvidencePackManifest.load(Path.of(
+                "src/main/resources/evidence-packs/he-dinov2-small-v1.json"));
+        var prefix = "{\"schema\":\"pathlab.model-worker-result/1\","
+                + "\"status\":\"completed\",\"packManifestSha256\":\"" + pack.sha256() + "\","
+                + "\"regions\":[],\"qualificationMetrics\":{"
+                + "\"schema\":\"pathlab.he-retrieval-metrics/1\",\"cohortManifestSha256\":\""
+                + "a".repeat(64) + "\",\"sampleCount\":360,\"referenceCount\":180,"
+                + "\"queryCount\":180,\"oodCount\":0,\"evaluationGroups\":[\"gi\"],"
+                + "\"baselineMacroRecallAt5\":0.5,\"modelMacroRecallAt5\":0.7,"
+                + "\"macroRecallAt5Improvement\":0.2,\"baselineMacroNdcgAt10\":0.4,"
+                + "\"modelMacroNdcgAt10\":0.6,\"macroNdcgAt10Improvement\":0.2,"
+                + "\"exactRankingRepeatability\":true,\"notEvaluableReasons\":[\"INSUFFICIENT_OOD\"],"
+                + "\"embeddingsExported\":";
+
+        assertDoesNotThrow(() -> ExternalModelWorker.validateResult(
+                JSON.readTree(prefix + "false}}"), pack));
+        assertThrows(IllegalArgumentException.class, () -> ExternalModelWorker.validateResult(
+                JSON.readTree(prefix + "true}}"), pack));
+    }
+
     @Test void exposesOnlyTheControlledWorkerFailureLine() {
         var output = "boot noise C:\\private\\slide.svs\r\n"
                 + "PathLab DINOv2 worker failed closed: CUDA sm_61 host is unavailable\r\n"
