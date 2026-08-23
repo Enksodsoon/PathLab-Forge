@@ -212,4 +212,34 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("Join-Path $outputRoot $sample.relativePath"));
         assertTrue(script.contains("Final IHC fixture is unavailable"));
     }
+
+    @Test
+    void monusacAcquisitionIsOfficialRestrictedResumableAndNonQualifying() throws Exception {
+        var script = Files.readString(Path.of("scripts/acquire-monusac2020.ps1"));
+
+        assertTrue(script.contains("monusac2020-official-v1"));
+        assertTrue(script.contains("PathLabMonusacAcquisition"));
+        assertTrue(script.contains("$sourceLimit = 45GB"));
+        assertTrue(script.contains("1lxMZaAPSpEHLSxGA9KKMt_r-4S8dwLhq"));
+        assertTrue(script.contains("545564883L"));
+        assertTrue(script.contains("1G54vsOdxWY1hG7dzmkeK3r0xz9s-heyQ"));
+        assertTrue(script.contains("202746703L"));
+        assertTrue(script.contains("1kdOl3s6uQBRv0nToSIf1dPuceZunzL4N"));
+        assertTrue(script.contains("19590377L"));
+        assertTrue(script.contains("CC-BY-NC-SA-4.0"));
+        assertTrue(script.contains("private-research-restricted"));
+        assertTrue(script.contains("upstreamChecksumAvailable=$false"));
+        assertTrue(script.contains("atlasCleanEligible=$false"));
+        assertTrue(script.contains("Get-FileHash $partial -Algorithm SHA256"));
+        assertTrue(script.contains("for ($attempt = 1; $attempt -le 3; $attempt++)"));
+        assertTrue(script.contains("$chunkBytes = 8MB"));
+        assertTrue(script.contains("'--range'"));
+        assertTrue(script.contains("Content-Range"));
+        assertTrue(script.contains("bytes $offset-$end/$($item.bytes)"));
+        assertTrue(script.contains("source-integrity-frozen-after-first-acquisition"));
+        assertTrue(script.contains("https://monusac-2020.grand-challenge.org/Data/"));
+        assertTrue(script.contains("https://drive.usercontent.google.com/download"));
+        assertFalse(script.contains("RepetitionInterval"));
+        assertFalse(script.contains("--continue-at"));
+    }
 }

@@ -290,3 +290,13 @@ The two official CAMELYON17 pages currently expose conflicting reuse language,
 so `docs/evidence/lymph-node-source-rights-review-20260823.md` freezes the exact
 blocker and required remediation. No gate is lowered and no ambiguous data may
 enter evidence, Study Packs, OCI, or either Atlas lineage.
+
+The next cell-instance gate uses the official MoNuSAC 2020 training, testing,
+and supplementary artifacts (767,901,963 bytes total). Exact organizer Drive
+IDs, filenames, response sizes, and CC BY-NC-SA 4.0 lineage are frozen in
+`acquire-monusac2020.ps1`. The autonomous interactive-user task
+`PathLabMonusacAcquisition` downloads exact 8 MiB ranges with bounded retry and
+publishes local SHA-256 values. Because the organizer provides no upstream
+cryptographic checksums, acquisition completion is preparation only: it remains
+restricted, Atlas-Clean-ineligible, and `not_evaluable` until archive metadata,
+patient/slide grouping, masks, and integrity corroboration are frozen.

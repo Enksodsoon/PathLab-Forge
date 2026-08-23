@@ -7,9 +7,18 @@ Status: bounded preparation approved; scientific qualification not started.
 The official challenge data page declares CC BY-NC-SA 4.0 and describes expert
 nuclear-boundary annotations across lung, prostate, kidney, and breast. This is
 eligible only for the restricted private-research lineage. It is not eligible
-for Atlas-Clean, commercial deployment, or any clinical claim. Acquisition is
-still `not_evaluable` until the exact official training/test artifacts, sizes,
-and checksums can be pinned; no mirror or inferred weight license is accepted.
+for Atlas-Clean, commercial deployment, or any clinical claim. The exact
+official Google Drive IDs and response sizes are now pinned for the training
+archive (545,564,883 bytes), test archive (202,746,703 bytes), and supplementary
+organ metadata (19,590,377 bytes). The organizer does not publish cryptographic
+checksums for these files. The acquisition therefore freezes local SHA-256
+values after exact-size transfer and remains `not_evaluable` until archive
+metadata is extracted and upstream integrity is independently corroborated; no
+mirror or inferred weight license is accepted.
+
+`acquire-monusac2020.ps1` performs that bounded acquisition in the interactive
+user context using 8 MiB range checkpoints and publishes only restricted-use
+source-ledger records. It does not submit a model or qualification campaign.
 
 Source: https://monusac-2020.grand-challenge.org/Data/
 
