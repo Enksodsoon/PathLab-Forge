@@ -185,6 +185,7 @@ final class AcquisitionScriptContractTest {
         assertTrue(script.contains("TumorQuantAI assembled checksum mismatch"));
         assertTrue(script.contains("$null -eq $sum -or $null -eq $sum.Sum"));
         assertTrue(script.contains(".Length-eq$expectedChunkBytes){Move-Item"));
+        assertTrue(script.contains("-Destination $chunk -Force"));
         assertFalse(script.contains("$exitCode-ne 0-or-not(Test-Path $chunk)"));
         assertFalse(script.contains("RepetitionInterval"), "A failed three-attempt transfer must not restart forever");
         assertFalse(script.contains("--continue-at"));

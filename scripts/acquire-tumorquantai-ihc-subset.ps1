@@ -124,13 +124,14 @@ try {
             $expectedChunkBytes=$end-$offset+1
             $chunk=Join-Path $chunkRoot ('{0:D5}.part' -f $chunkIndex)
             if(Test-Path $chunk){if((Get-Item $chunk).Length-eq$expectedChunkBytes){$chunkIndex++;continue};Remove-Item $chunk -Force}
+            if((Test-Path "$chunk.partial")-and(Get-Item "$chunk.partial").Length-eq$expectedChunkBytes){Move-Item -LiteralPath "$chunk.partial" -Destination $chunk -Force;$chunkIndex++;continue}
             $exitCode=-1
             for ($attempt = 1; $attempt -le 3; $attempt++) {
                 Write-Status 'transferring' (Get-DownloadedBytes) "Downloading $($item.name) chunk $($chunkIndex+1) (attempt $attempt of 3)."
                 $process=Start-Process $curl -ArgumentList @('--fail','--location','--silent','--show-error','--remove-on-error','--range',"$offset-$end",'--output',('"'+$chunk+'.partial"'),$url) -PassThru -NoNewWindow
                 while(-not $process.HasExited){Write-Status 'transferring' (Get-DownloadedBytes) "Downloading $($item.name) chunk $($chunkIndex+1) (attempt $attempt of 3).";Start-Sleep 15;$process.Refresh()}
                 $process.WaitForExit();$exitCode=$process.ExitCode
-                if((Test-Path "$chunk.partial")-and(Get-Item "$chunk.partial").Length-eq$expectedChunkBytes){Move-Item "$chunk.partial" $chunk;break}
+                if((Test-Path "$chunk.partial")-and(Get-Item "$chunk.partial").Length-eq$expectedChunkBytes){Move-Item -LiteralPath "$chunk.partial" -Destination $chunk -Force;break}
                 Remove-Item "$chunk.partial" -Force -ErrorAction SilentlyContinue
                 if($attempt-lt 3){Start-Sleep -Seconds $(if($attempt-eq 1){5}else{30})}
             }
