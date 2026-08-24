@@ -1,0 +1,15 @@
+{
+  "schema": "pathlab.ai-pack/1",
+  "packId": "cell-pathosam-benchmark-v1",
+  "version": "1",
+  "capability": "cell-morphology",
+  "acceptedStains": ["he", "ihc_dab"],
+  "preprocessing": {"id": "pathosam-uninstalled-v1", "tilePixels": 512},
+  "artifacts": [],
+  "runtimeCompatibility": {"workerProtocol": "pathlab.model-worker-result/1", "executionProvider": "cuda", "cuda": "12.6", "gpuArchitecture": "sm_61", "requiresExternalWorker": true},
+  "licenseLedger": [{"component": "PathoSAM code", "license": "MIT", "revision": "PIN_REQUIRED", "permittedUse": "benchmark-only", "redistributable": false, "derivativesAllowed": true}, {"component": "PathoSAM weights", "license": "WEIGHT_LINEAGE_REVIEW_REQUIRED", "revision": "PIN_REQUIRED", "permittedUse": "benchmark-only", "redistributable": false, "derivativesAllowed": false}],
+  "rights": {"license": "Code and weight rights must pass independently", "allowedUse": "benchmark-only", "redistributable": false, "derivativesAllowed": false, "reviewedAt": "2026-08-22T00:00:00Z"},
+  "resourceEnvelope": {"maxRamMiB": 16384, "maxVramMiB": 4608, "maxSeconds": 300, "network": false},
+  "validation": {"status": "not-evaluable", "modelCard": "docs/model-cards/cell-pathosam-benchmark-v1.md", "heldOutEvaluation": "not-evaluable-no-installed-rights-cleared-weights"},
+  "outputSchema": "pathlab.ai-evidence/1"
+}

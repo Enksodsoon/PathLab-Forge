@@ -1,0 +1,15 @@
+{
+  "schema": "pathlab.ai-pack/1",
+  "packId": "tutor-qwen3-0.6b-int4-v1",
+  "version": "1",
+  "capability": "grounded-tutor",
+  "acceptedStains": ["he"],
+  "preprocessing": {"id": "claim-id-only-v1", "tilePixels": 512},
+  "artifacts": [],
+  "runtimeCompatibility": {"workerProtocol": "pathlab.model-worker-result/1", "executionProvider": "cpu", "cuda": "none", "gpuArchitecture": "none", "requiresExternalWorker": true},
+  "licenseLedger": [{"component": "Qwen3-0.6B upstream weights", "license": "Apache-2.0", "revision": "PIN_REQUIRED", "permittedUse": "private-research", "redistributable": false, "derivativesAllowed": true}, {"component": "WebGPU INT4 ONNX browser package", "license": "ARTIFACT_REVIEW_REQUIRED", "revision": "PIN_REQUIRED", "permittedUse": "private-research", "redistributable": false, "derivativesAllowed": false}],
+  "rights": {"license": "Upstream Apache-2.0; converted artifact ledger pending", "allowedUse": "private-research", "redistributable": false, "derivativesAllowed": false, "reviewedAt": "2026-08-22T00:00:00Z"},
+  "resourceEnvelope": {"maxRamMiB": 4096, "maxVramMiB": 0, "maxSeconds": 300, "network": false},
+  "validation": {"status": "not-evaluable", "modelCard": "docs/model-cards/tutor-qwen3-0.6b-int4-v1.md", "heldOutEvaluation": "not-evaluable-complete-browser-asset-exceeds-500-mib-cap"},
+  "outputSchema": "pathlab.ai-evidence/1"
+}

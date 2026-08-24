@@ -1,0 +1,1 @@
+{"schema":"pathlab.qualification-protocol/1","id":"special-stain-descriptive-v2","gates":{"proportionErrorPointsMaximum":3,"intensityOdErrorMaximum":0.05,"qcFixturesRequired":true,"genericFallbackRequired":true},"tracks":["pas","pas_d","trichrome","gms","afb"],"researchOnly":true}

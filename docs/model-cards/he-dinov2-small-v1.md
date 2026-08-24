@@ -1,0 +1,122 @@
+# DINOv2-small H&E baseline
+
+Status: `experimental-executable-baseline`; full qualification remains `not_evaluable`.
+
+The public `facebook/dinov2-small` repository is pinned at
+`ed25f3a31f01632728cabb09d1542f84ab7b0056`. Acquisition accepts only the
+88,249,960-byte `model.safetensors` artifact with SHA-256
+`ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1`; the
+pickle artifact is excluded. Configuration and preprocessing artifacts are
+also checksum-pinned in the pack manifest.
+
+The external feature-pack runtime uses Python 3.12, PyTorch 2.7.1+cu126, and a
+compiled Windows launcher. Forge still embeds none of Python, PyTorch, CUDA, or
+the weights. A runtime manifest pins the interpreter and critical CUDA/model
+files, and the worker rechecks that ledger before loading the model. Network
+library entry points and Hugging Face/Transformers online behavior are disabled
+during analysis.
+
+On the local Quadro P2000 qualification host (compute capability 6.1, 5,120 MiB
+VRAM), the CUDA build exposed `sm_61` and completed a real device operation. A
+three-run synthetic protocol smoke produced byte-identical evidence-region
+content (`9b018aa1483d3dba15cf5070e64dc4112e6ff4c6751f69cc463e2d0778889c25`).
+Cold process wall time was 5.89-6.06 seconds; the bounded 16-tile inference stage
+was 0.32-0.36 seconds, peak reserved VRAM was 122 MiB, and peak process RAM was
+759.37-760.41 MiB. Tampered artifact metadata, a missing offline flag, and an
+enabled analysis-network state all failed with no result artifact.
+
+These are runtime and protocol measurements on synthetic tissue-like pixels,
+not pathology retrieval evidence. Patient/source-held-out breast, GI, lung,
+lymph-node, benign/reactive, OOD, restart, and five-minute refinement gates have
+not run. The model pack therefore remains default-off and ineligible for Viewer
+evidence or staff/demo activation. Its executable candidate status is
+`experimental`, while the frozen cross-tissue qualification verdict remains
+`not_evaluable`. Embeddings remain local
+and only bounded evidence regions may leave Forge after model qualification.
+
+## Real BRACS tile-cache smoke
+
+The frozen `bracs-roi-smoke-v1` cache contains seven patient-distinct validation
+ROI samples and 28 deterministic 512 x 512 RGB PNG tiles. Its cohort manifest is
+19,860,731 bytes including tiles and has SHA-256
+`4653fa49c1b488a7ab90f40a7722e802082a02dbeb967303b09078c4b2bbb2bb`.
+Every source, sample manifest, tile manifest, tile pixel file, coordinate, and
+revision is independently checksum-bound before inference.
+
+One real BRACS ROI worker smoke was repeated three times. Evidence-region content
+was identical (`2e4f597caf50837bbf67de8179742a6c233a6160a723f7933adb8e5709860457`).
+Cold wall time was 6.88-7.23 seconds, bounded four-tile model time was 0.19-0.23
+seconds, peak reserved VRAM was 122 MiB, and peak process RAM was 761.30-762.21
+MiB. A stale slide revision and an incorrect tile-manifest checksum both failed
+without a result artifact.
+
+This remains a protocol smoke, not held-out retrieval qualification: BRACS ROI is
+breast-only, the bounded cache is not a whole-slide cohort, and reference, GI,
+lung, lymph-node, independent benign/reactive-source, and OOD coverage are
+absent. The pre-registered protocol therefore returns `NOT_EVALUABLE` without
+computing or relaxing model-performance thresholds.
+
+## NCT-CRC GI execution cohort
+
+The checksum-verified Zenodo 1214456 archives now provide a deterministic,
+bounded GI execution cohort with 20 reference and 20 query patches from each
+of the nine published tissue classes. Each selected 224-pixel patch is decoded
+from the immutable archive and deterministically materialized as one
+coordinate-bound 512-pixel RGB tile. Archive, entry, derived source, sample,
+and tile-cache checksums are retained.
+
+This permits real GI execution and later retrieval-metric implementation, but
+does not satisfy the pre-registered qualification protocol. The public patch
+release does not expose a per-patch patient/slide map suitable for independently
+checking patient overlap, and breast, lung, lymph-node, independent
+benign/reactive-source, and OOD groups remain absent. These gaps are recorded as
+`NOT_EVALUABLE`; no gate is lowered and no deployment eligibility is implied.
+
+## NCT-CRC GI retrieval execution
+
+The checksum-bound cohort worker now loads DINOv2 once, evaluates all 180
+reference and 180 query patches, compares exact rankings with the frozen
+`color-histogram-v1` baseline, and repeats model inference to test exact ranking
+agreement. It checkpoints with immutable per-batch records, reports 720 total
+work units, validates every tile and provenance record under `LocalService`, and
+emits aggregate metrics without raw pixels or embeddings.
+
+Campaign `dinov2-nct-crc-gi-retrieval-20260823-v3` completed all 720 units on
+the P2000 with no retry and produced signed evidence SHA-256
+`824621fbe90f23af0cedc7d6038b7c3429177bbdffb448fc33c2c6efc530271c`.
+The installed 2.1.1 service signed the conservative terminal verdict
+`experimental`; it predates the report adapter that carries cohort metrics into
+the signed qualification report. The scores therefore remain service-private
+execution output until the tested runner update can be installed. Regardless of
+those GI scores, the full H&E verdict cannot become qualified while patient
+mapping, cross-tissue groups, and OOD fixtures remain absent.
+
+## TCGA lung retrieval execution
+
+Campaign `dinov2-tcga-lung-retrieval-20260823-v1` used 40 patient-distinct,
+checksum-bound open GDC slides: TCGA-LUAD supplied ten normal and ten tumor
+reference samples, and TCGA-LUSC supplied the corresponding query samples. The
+offline P2000 worker completed 80/80 work units with zero retries. Signed
+evidence SHA-256 is
+`d0d14efa935870d3089e216b476c81f82c0f019c4c10abb6f55967201ad947e0`;
+signed qualification report SHA-256 is
+`a681fee3f13d14ae8a7fab46c5d1601f5e9d21b194bb26979eef26088ccab3e4`.
+
+DINOv2 improved macro Recall@5 over the identical-tile color-histogram
+baseline by 0.25, but macro NDCG@10 improvement was 0.029096055, below the
+pre-registered 0.03 threshold. Exact ranking repeatability, rights/integrity,
+offline execution, and resource-envelope checks passed. OOD and full
+cross-tissue gates remain not evaluable. The signed verdict is therefore
+`experimental`; no threshold was rounded down or relaxed.
+
+## BRACS breast and benign/reactive retrieval
+
+Campaign `dinov2-bracs-breast-retrieval-20260824-v2-engineering-repair`
+completed 160/160 offline P2000 work units over a checksum-bound 40-reference,
+40-query patient-disjoint BRACS cohort. Exact rankings repeated, but DINOv2
+underperformed the identical-tile color-histogram baseline for Recall@5 by
+`0.153741497` and improved NDCG@10 by only `0.005640305`, below the frozen
+`0.03` requirement. BRACS is also a single source release and supplies no OOD
+group. The signed verdict is `experimental`, and the candidate remains inactive.
+Exact hashes and boundaries are recorded in
+`docs/evidence/bracs-breast-dinov2-retrieval-result-20260824.md`.

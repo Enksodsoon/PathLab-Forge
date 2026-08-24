@@ -1,0 +1,34 @@
+{
+  "schema": "pathlab.ai-pack/1",
+  "packId": "cell-od-watershed-v1",
+  "version": "1",
+  "capability": "cell-morphology",
+  "acceptedStains": [
+    "he",
+    "ihc_dab"
+  ],
+  "preprocessing": {
+    "id": "od-v1",
+    "tilePixels": 512
+  },
+  "artifacts": [],
+  "rights": {
+    "license": "PathLab deterministic implementation",
+    "allowedUse": "private-research",
+    "redistributable": false,
+    "derivativesAllowed": false,
+    "reviewedAt": "2026-08-22T00:00:00Z"
+  },
+  "resourceEnvelope": {
+    "maxRamMiB": 1024,
+    "maxVramMiB": 0,
+    "maxSeconds": 120,
+    "network": false
+  },
+  "validation": {
+    "status": "experimental",
+    "modelCard": "docs/model-cards/cell-od-watershed-v1.md",
+    "heldOutEvaluation": "pending-independent-qualification"
+  },
+  "outputSchema": "pathlab.ai-evidence/1"
+}

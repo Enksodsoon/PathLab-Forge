@@ -1,0 +1,75 @@
+{
+  "schema": "pathlab.ai-pack/1",
+  "packId": "he-dinov2-small-v1",
+  "version": "1",
+  "capability": "he-evidence",
+  "acceptedStains": [
+    "he"
+  ],
+  "preprocessing": {
+    "id": "dinov2-v1",
+    "tilePixels": 512
+  },
+  "artifacts": [{
+    "name": "model",
+    "sha256": "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1",
+    "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/model.safetensors"
+  }, {
+    "name": "config",
+    "sha256": "1809f83e3bdb1609a501a610ad4a742f4fd8ae44d72ca4aa0df52d1f2ac8628d",
+    "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/config.json"
+  }, {
+    "name": "preprocessor",
+    "sha256": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828",
+    "source": "https://huggingface.co/facebook/dinov2-small/resolve/ed25f3a31f01632728cabb09d1542f84ab7b0056/preprocessor_config.json"
+  }, {
+    "name": "worker",
+    "sha256": "daa33e61d2607e23ecae29e82f274ca05c64f896f9c37061c6ca77ca81aa774b",
+    "source": "pathlab-local-build:dinov2-worker-v1/windows-x64"
+  }, {
+    "name": "workerSource",
+    "sha256": "9ce24564230eca50eb2008490491af006f7e5f1cfa43a5fa86ec36e0a893ce18",
+    "source": "pathlab-local-build:dinov2-worker-v1/worker.py"
+  }, {
+    "name": "runtime-manifest",
+    "sha256": "b52c4d80f914c7e6e56d05e594d9478333d763861b5133e3c82af2a6a17fd942",
+    "source": "pathlab-local-build:torch-2.7.1-cu126-python-3.12/windows-x64"
+  }],
+  "runtimeCompatibility": {
+    "workerProtocol": "pathlab.model-worker-result/1",
+    "executionProvider": "cuda",
+    "cuda": "12.6",
+    "gpuArchitecture": "sm_61",
+    "requiresExternalWorker": true
+  },
+  "licenseLedger": [{
+    "component": "facebook/dinov2-small",
+    "license": "Apache-2.0",
+    "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+    "permittedUse": "benchmark-only",
+    "redistributable": false,
+    "derivativesAllowed": false
+  }],
+  "rights": {
+    "license": "Apache-2.0 upstream; acceptance-only local execution",
+    "allowedUse": "benchmark-only",
+    "redistributable": false,
+    "derivativesAllowed": false,
+    "reviewedAt": "2026-08-22T00:00:00Z"
+  },
+  "usageLimits": {
+    "acceptanceOnly": true
+  },
+  "resourceEnvelope": {
+    "maxRamMiB": 16384,
+    "maxVramMiB": 4608,
+    "maxSeconds": 300,
+    "network": false
+  },
+  "validation": {
+    "status": "not-evaluable",
+    "modelCard": "docs/model-cards/he-dinov2-small-session0-acceptance-v1.md",
+    "heldOutEvaluation": "hardware-acceptance-only-no-quality-claim"
+  },
+  "outputSchema": "pathlab.ai-evidence/1"
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pathlab.local/schemas/pathlab-knowledge-pack-v1.schema.json",
+  "title": "PathLab Knowledge Pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "packId", "version", "language", "claims", "checksum"],
+  "properties": {
+    "schema": {"const": "pathlab.knowledge-pack/1"},
+    "packId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,119}$"},
+    "version": {"type": "string", "maxLength": 64},
+    "language": {"const": "en"},
+    "claims": {"type": "array", "minItems": 1, "maxItems": 10000, "items": {"type": "object", "additionalProperties": false, "required": ["id", "text", "retrievalText", "source", "license", "allowedUse", "reviewedAt"], "properties": {"id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,160}$"}, "text": {"type": "string", "minLength": 1, "maxLength": 1000}, "retrievalText": {"type": "string", "minLength": 1, "maxLength": 4000}, "source": {"type": "object", "additionalProperties": false, "required": ["title", "url", "revision"], "properties": {"title": {"type": "string", "maxLength": 500}, "url": {"type": "string", "format": "uri", "maxLength": 1000}, "revision": {"type": "string", "maxLength": 160}}}, "license": {"type": "string", "maxLength": 200}, "allowedUse": {"const": "private-research-education"}, "reviewedAt": {"type": "string", "format": "date-time"}, "tags": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "maxLength": 80}}}}},
+    "checksum": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

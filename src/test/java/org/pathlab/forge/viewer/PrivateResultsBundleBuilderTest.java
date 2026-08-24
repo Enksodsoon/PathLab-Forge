@@ -42,6 +42,20 @@ final class PrivateResultsBundleBuilderTest {
         assertFalse(entries.keySet().stream().anyMatch(name -> name.contains(":\\") || name.startsWith("/")));
     }
 
+    @Test
+    void includesSignedEvidenceWithoutChangingDeliverySchema() throws Exception {
+        var evidence = temporaryDirectory.resolve("evidence.json");
+        Files.writeString(evidence, "{\"schema\":\"pathlab.ai-evidence/1\"}");
+        var output = temporaryDirectory.resolve("evidence-results.plresults");
+
+        new PrivateResultsBundleBuilder().build(
+                output, "revision-1", "a".repeat(64), List.of(), evidence);
+
+        var entries = readTarGz(output);
+        assertEquals("pathlab.ai-evidence/1", text(entries, "evidence.json", "schema"));
+        assertEquals("pathlab-private-results/v1", text(entries, "manifest.json", "schema"));
+    }
+
     private static String text(HashMap<String, byte[]> entries, String name, String key) throws Exception {
         return new com.fasterxml.jackson.databind.ObjectMapper()
                 .readTree(entries.get(name)).get(key).asText();

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pathlab.local/schemas/pathlab-model-qualification-report-v1.schema.json",
+  "title": "PathLab Model Qualification Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "protocolId", "protocolSha256", "generatedAt", "syntheticOnly", "researchOnly", "notDiagnostic", "overallStatus", "tracks"],
+  "properties": {
+    "schema": {"const": "pathlab.model-qualification-report/1"},
+    "protocolId": {"const": "pathlab-brightfield-synthetic-qualification-v1"},
+    "protocolSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "syntheticOnly": {"const": true},
+    "researchOnly": {"const": true},
+    "notDiagnostic": {"const": true},
+    "overallStatus": {"enum": ["qualified", "experimental", "unsupported", "not_evaluable"]},
+    "tracks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability", "packId", "packVersion", "packManifestSha256", "status", "checks", "reasons"],
+        "properties": {
+          "capability": {"enum": ["cell-morphology", "ihc-descriptive"]},
+          "packId": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"},
+          "packVersion": {"type": "string", "maxLength": 64},
+          "packManifestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "status": {"enum": ["qualified", "experimental", "unsupported", "not_evaluable"]},
+          "checks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "outcome"],
+              "properties": {
+                "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,119}$"},
+                "outcome": {"enum": ["pass", "fail", "not_evaluable"]},
+                "observed": {"type": "number"},
+                "required": {"type": "number"},
+                "tolerance": {"type": "number", "minimum": 0},
+                "detail": {"type": "string", "maxLength": 500}
+              }
+            }
+          },
+          "reasons": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^[A-Z0-9_]{1,120}$"}}
+        }
+      }
+    }
+  }
+}

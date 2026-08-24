@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://pathlab.local/schemas/pathlab-model-qualification-report-v2.schema.json",
+  "title": "PathLab Model Qualification Report v2", "type": "object", "additionalProperties": false,
+  "required": ["schema", "campaignId", "campaignManifestSha256", "trackId", "candidateId", "capability", "scope", "packManifestSha256", "protocolSha256", "generatedAt", "researchOnly", "notDiagnostic", "status", "checks", "reasons", "manifestSha256", "signature"],
+  "properties": {
+    "schema": {"const": "pathlab.model-qualification-report/2"}, "campaignId": {"$ref": "#/$defs/id"}, "campaignManifestSha256": {"$ref": "#/$defs/sha"},
+    "trackId": {"$ref": "#/$defs/id"}, "candidateId": {"$ref": "#/$defs/id"},
+    "capability": {"enum": ["he-evidence", "cell-morphology", "ihc-descriptive", "special-stain-descriptive", "cytology-descriptive", "grounded-tutor", "atlas-distillation"]},
+    "scope": {"enum": ["deployment", "research-restricted", "local-benchmark"]}, "packManifestSha256": {"$ref": "#/$defs/sha"}, "protocolSha256": {"$ref": "#/$defs/sha"},
+    "generatedAt": {"type": "string", "format": "date-time"}, "researchOnly": {"const": true}, "notDiagnostic": {"const": true},
+    "status": {"enum": ["qualified", "experimental", "unsupported", "not_evaluable"]},
+    "checks": {"type": "array", "minItems": 1, "maxItems": 200, "items": {"type": "object", "additionalProperties": false, "required": ["id", "outcome"], "properties": {"id": {"$ref": "#/$defs/id"}, "outcome": {"enum": ["pass", "fail", "not_evaluable"]}, "observed": {"type": ["number", "string", "null"]}, "required": {"type": ["number", "string", "null"]}, "detail": {"type": "string", "maxLength": 1000}}}},
+    "reasons": {"type": "array", "maxItems": 100, "items": {"type": "string", "pattern": "^[A-Z0-9_]{1,120}$"}},
+    "manifestSha256": {"$ref": "#/$defs/sha"}, "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "signature": {"type": "object", "additionalProperties": false, "required": ["algorithm", "keyId", "value"], "properties": {"algorithm": {"const": "Ed25519"}, "keyId": {"$ref": "#/$defs/sha"}, "value": {"type": "string", "minLength": 1, "maxLength": 1000}}}
+  }
+}

@@ -1,0 +1,1 @@
+{"schema":"pathlab.qualification-protocol/1","id":"cell-od-watershed-v2","gates":{"macroPqMinimum":0.45,"instanceDiceMinimum":0.70,"countErrorMaximum":0.15,"morphometryBiasMaximum":0.10,"failedRegionRateMaximum":0.05,"deterministicRepeatRequired":true},"split":"patient-source-held-out","researchOnly":true}

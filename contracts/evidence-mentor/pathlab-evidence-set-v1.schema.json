@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://pathlab.local/schemas/pathlab-evidence-set-v1.schema.json",
+  "title": "PathLab Evidence Set v1", "type": "object", "additionalProperties": false,
+  "required": ["schema", "setId", "source", "bundles", "reviewRequired", "manifestSha256", "signature"],
+  "properties": {
+    "schema": {"const": "pathlab.evidence-set/1"}, "setId": {"$ref": "#/$defs/id"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["slideSha256", "revision"], "properties": {"slideSha256": {"$ref": "#/$defs/sha"}, "revision": {"type": "string", "minLength": 1, "maxLength": 160}}},
+    "bundles": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "object", "additionalProperties": false, "required": ["capability", "packId", "manifestSha256", "qualificationAttestationSha256"], "properties": {"capability": {"type": "string", "maxLength": 120}, "packId": {"$ref": "#/$defs/id"}, "manifestSha256": {"$ref": "#/$defs/sha"}, "qualificationAttestationSha256": {"$ref": "#/$defs/sha"}}}},
+    "reviewRequired": {"const": true}, "manifestSha256": {"$ref": "#/$defs/sha"}, "signature": {"$ref": "#/$defs/signature"}
+  }, "$defs": {"id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,160}$"}, "sha": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "signature": {"type": "object", "additionalProperties": false, "required": ["algorithm", "keyId", "value"], "properties": {"algorithm": {"const": "Ed25519"}, "keyId": {"$ref": "#/$defs/sha"}, "value": {"type": "string", "minLength": 1, "maxLength": 1000}}}}
+}

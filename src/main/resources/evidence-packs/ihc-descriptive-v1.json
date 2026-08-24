@@ -1,0 +1,41 @@
+{
+  "schema": "pathlab.ai-pack/1",
+  "packId": "ihc-descriptive-v1",
+  "version": "1",
+  "capability": "ihc-descriptive",
+  "acceptedStains": [
+    "ihc_dab"
+  ],
+  "preprocessing": {
+    "id": "od-v1",
+    "tilePixels": 512
+  },
+  "artifacts": [],
+  "rights": {
+    "license": "PathLab deterministic implementation",
+    "allowedUse": "private-research",
+    "redistributable": false,
+    "derivativesAllowed": false,
+    "reviewedAt": "2026-08-22T00:00:00Z"
+  },
+  "resourceEnvelope": {
+    "maxRamMiB": 1024,
+    "maxVramMiB": 0,
+    "maxSeconds": 120,
+    "network": false
+  },
+  "validation": {
+    "status": "experimental",
+    "modelCard": "docs/model-cards/ihc-descriptive-v1.md",
+    "heldOutEvaluation": "pending-independent-qualification"
+  },
+  "outputSchema": "pathlab.ai-evidence/1",
+  "markers": [
+    "generic",
+    "er",
+    "pr",
+    "ki-67",
+    "her2",
+    "pd-l1"
+  ]
+}

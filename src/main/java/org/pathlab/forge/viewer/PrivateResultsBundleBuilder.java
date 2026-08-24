@@ -29,6 +29,15 @@ public final class PrivateResultsBundleBuilder {
             String artifactRevisionId,
             String slideSha256,
             List<AnnotationRecord> annotations) throws IOException {
+        return build(output, artifactRevisionId, slideSha256, annotations, null);
+    }
+
+    public Result build(
+            Path output,
+            String artifactRevisionId,
+            String slideSha256,
+            List<AnnotationRecord> annotations,
+            Path evidenceManifest) throws IOException {
         var manifest = JSON.writeValueAsBytes(Map.of(
                 "schema", "pathlab-private-results/v1",
                 "artifactRevisionId", artifactRevisionId,
@@ -68,6 +77,13 @@ public final class PrivateResultsBundleBuilder {
         entries.put("objects.ndjson", objects.toString().getBytes(StandardCharsets.UTF_8));
         entries.put("measurements.ndjson", measurements.toString().getBytes(StandardCharsets.UTF_8));
         entries.put("runs.ndjson", runs.getBytes(StandardCharsets.UTF_8));
+        if (evidenceManifest != null) {
+            var evidence = Files.readAllBytes(evidenceManifest.toAbsolutePath().normalize());
+            if (evidence.length == 0 || evidence.length > 2 * 1024 * 1024) {
+                throw new IOException("Evidence manifest exceeds delivery limit");
+            }
+            entries.put("evidence.json", evidence);
+        }
         var normalized = output.toAbsolutePath().normalize();
         Files.createDirectories(normalized.getParent());
         var partial = normalized.resolveSibling(normalized.getFileName() + ".partial");

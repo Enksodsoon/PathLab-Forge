@@ -22,6 +22,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 import org.pathlab.forge.annotation.AnnotationRecord;
+import org.pathlab.forge.evidence.EvidenceArtifactStore;
+import org.pathlab.forge.evidence.EvidenceMentorRunner;
 import org.pathlab.forge.annotation.AnnotationTransformer;
 import org.pathlab.forge.conversion.ArtifactIntegrityStamp;
 import org.pathlab.forge.conversion.ArtifactRevision;
@@ -646,8 +648,11 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 .toList();
         var sidecar = Path.of(revision.omePath()).resolveSibling(
                 revision.id() + ".plresults");
+        var evidence = EvidenceArtifactStore.find(
+                EvidenceMentorRunner.defaultStateRoot(), revision.omeSha256(), revision.id())
+                .orElse(null);
         var bundle = new PrivateResultsBundleBuilder().build(
-                sidecar, revision.id(), revision.omeSha256(), transformed);
+                sidecar, revision.id(), revision.omeSha256(), transformed, evidence);
         var create = sendJson(
                 credential.base().resolve("/api/v2/desktop/slides/"
                         + readyJob.remoteSlideId() + "/result-deliveries"),
