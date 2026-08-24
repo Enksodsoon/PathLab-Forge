@@ -3,6 +3,7 @@ package org.pathlab.forge.evidence;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Path;
@@ -55,6 +56,9 @@ final class ExternalModelWorkerTest {
 
         assertEquals("CUDA sm_61 host is unavailable",
                 ExternalModelWorker.safeFailureDetail(output));
+        assertEquals("worker exceeded its declared resource envelope",
+                ExternalModelWorker.safeFailureDetail(
+                        "PathLab model worker failed closed: worker exceeded its declared resource envelope"));
         assertEquals("", ExternalModelWorker.safeFailureDetail(
                 "Traceback C:\\private\\patient-123.svs"));
     }
@@ -83,5 +87,75 @@ final class ExternalModelWorkerTest {
                 """.formatted(hash));
         assertThrows(IllegalArgumentException.class,
                 () -> ExternalModelWorker.validateRuntimeFileLedger(traversal, install));
+    }
+
+    @Test void validatesSharedRuntimeAndCandidateReferencesBeforeLaunch(@TempDir Path state) throws Exception {
+        var models = state.resolve("models");
+        var runtimeRoot = models.resolve("he-dinov2-small-v1/1");
+        var python = runtimeRoot.resolve("runtime/Scripts/python.exe");
+        Files.createDirectories(python.getParent());
+        Files.writeString(python, "portable-python");
+        var pythonHash = sha256(python);
+        var runtimeManifest = runtimeRoot.resolve("runtime-manifest.json");
+        Files.writeString(runtimeManifest, """
+                {"schema":"pathlab.model-runtime/1","files":[
+                  {"path":"runtime/Scripts/python.exe","bytes":15,"sha256":"%s"}
+                ]}
+                """.formatted(pythonHash));
+        var candidateRoot = models.resolve("hovernet-fast-monusac-v1/1");
+        Files.createDirectories(candidateRoot);
+        var ledger = candidateRoot.resolve("candidate-ledger.json");
+        var weight = candidateRoot.resolve("weights.tar");
+        Files.writeString(ledger, "frozen-candidate");
+        Files.writeString(weight, "frozen-weight");
+        var install = models.resolve("cell-hovernet-fast-monusac-v1/4");
+        Files.createDirectories(install);
+        var reference = JSON.readTree("""
+                {"schema":"pathlab.model-runtime-reference/1",
+                 "sharedRuntimePack":"he-dinov2-small-v1","sharedRuntimeVersion":"1",
+                 "sharedRuntimeRoot":"%s","sharedRuntimeManifestSha256":"%s",
+                 "pythonRelativePath":"runtime/Scripts/python.exe",
+                 "candidateId":"hovernet-fast-monusac-v1","candidateVersion":"1",
+                 "candidateRoot":"%s","candidateLedgerSha256":"%s",
+                 "weightFile":"weights.tar","weightSha256":"%s",
+                 "runtimeCopiedIntoCandidate":false,"analysisNetwork":"disabled"}
+                """.formatted(runtimeRoot.toString().replace("\\", "\\\\"), sha256(runtimeManifest),
+                        candidateRoot.toString().replace("\\", "\\\\"), sha256(ledger), sha256(weight)));
+
+        var resolved = ExternalModelWorker.resolveSharedRuntime(state, install, reference);
+        assertEquals(python.toAbsolutePath().normalize(), resolved.python());
+        assertEquals(runtimeRoot.toAbsolutePath().normalize(), resolved.root());
+        Files.writeString(weight, "tampered");
+        assertThrows(IllegalArgumentException.class,
+                () -> ExternalModelWorker.resolveSharedRuntime(state, install, reference));
+    }
+
+    @Test void acceptsBoundedCellQualificationMetrics() throws Exception {
+        var pack = EvidencePackManifest.load(Path.of(
+                "src/main/resources/evidence-packs/cell-hovernet-fast-v1.json"));
+        var result = JSON.readTree("""
+                {"schema":"pathlab.model-worker-result/1","status":"completed",
+                 "packManifestSha256":"%s","regions":[],"qualificationMetrics":{
+                   "schema":"pathlab.cell-instance-metrics/1","cohortManifestSha256":"%s",
+                   "sampleCount":23,"evaluatedSampleCount":23,"macroPq":0.5,"instanceDice":0.75,
+                   "countError":0.1,"morphometryBias":0.08,"failedRegionRate":0.0,
+                   "deterministicRepeat":true,"crossTissuePerformance":true,
+                   "rightsAndIntegrityPassed":true,"resourceCompliant":true,
+                   "elapsedSeconds":200.0,"peakHeapMiB":1200.0,"minimumMacroPq":0.45,
+                   "minimumInstanceDice":0.7,"maximumCountError":0.15,
+                   "maximumMorphometryBias":0.1,"maximumFailedRegionRate":0.05,
+                   "sourceIntegrity":"local-first-acquisition-sha256","upstreamChecksumAvailable":false,
+                   "perOrgan":{},"notEvaluableReasons":[]}}
+                """.formatted(pack.sha256(), "a".repeat(64)));
+
+        assertDoesNotThrow(() -> ExternalModelWorker.validateResult(result, pack));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) result.path("qualificationMetrics"))
+                .put("macroPq", Double.NaN);
+        assertThrows(IllegalArgumentException.class, () -> ExternalModelWorker.validateResult(result, pack));
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(Files.readAllBytes(path)));
     }
 }

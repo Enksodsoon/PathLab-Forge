@@ -342,3 +342,13 @@ not MoNuSAC held-out accuracy or qualification. The pack remains inactive and
 `not_evaluable`; service integration, immutable progress/checkpoints, and the
 unchanged 23-patient gates remain. Exact hashes and measurements are in
 `docs/evidence/hovernet-runtime-probe-result-20260824.md`.
+
+The branch runner now validates `pathlab.model-runtime-reference/1` before
+launching a shared-runtime worker: exact state-root identities, canonical-path
+containment, the complete shared runtime file ledger, candidate ledger, weight,
+worker, and reference hashes must all pass. It also validates bounded
+`pathlab.cell-instance-metrics/1` results and supplies deterministic CuBLAS
+configuration. This is source-ready infrastructure only. The installed 2.1.5
+service is unchanged, cell jobs are not yet routed to the external worker, and
+the HoVer-Net worker still lacks durable cohort/checkpoint execution. Details
+are in `docs/evidence/hovernet-runner-integration-status-20260824.md`.

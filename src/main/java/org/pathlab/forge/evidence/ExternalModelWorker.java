@@ -48,17 +48,28 @@ public final class ExternalModelWorker {
         }
         var install = stateRoot.resolve("models").resolve(pack.packId()).resolve(pack.version()).normalize();
         require(install.startsWith(stateRoot.resolve("models")), "Model worker path escaped state root");
-        var executable = install.resolve(System.getProperty("os.name", "").startsWith("Windows")
-                ? "worker.exe" : "worker");
-        require(Files.isRegularFile(executable), "Model worker artifact is not installed");
-        var expected = pack.artifacts().stream().filter(item -> "worker".equals(item.name()))
-                .map(EvidencePackManifest.Artifact::sha256).findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("Model worker checksum is not declared"));
-        require(expected.equals(sha256(executable)), "Model worker checksum does not match");
-        verifyArtifact(pack, "workerSource", install.resolve("worker.py"));
-        var runtimeManifestPath = install.resolve("runtime-manifest.json");
-        verifyArtifact(pack, "runtime-manifest", runtimeManifestPath);
-        validateRuntimeFileLedger(JSON.readTree(runtimeManifestPath.toFile()), install);
+        var command = new java.util.ArrayList<String>();
+        var runtimeReferencePath = install.resolve("runtime-reference.json");
+        if (Files.isRegularFile(runtimeReferencePath)) {
+            verifyArtifact(pack, "runtime-reference", runtimeReferencePath);
+            verifyArtifact(pack, "workerSource", install.resolve("worker.py"));
+            var shared = resolveSharedRuntime(stateRoot, install, JSON.readTree(runtimeReferencePath.toFile()));
+            command.add(shared.python().toString());
+            command.add(install.resolve("worker.py").toString());
+        } else {
+            var executable = install.resolve(System.getProperty("os.name", "").startsWith("Windows")
+                    ? "worker.exe" : "worker");
+            require(Files.isRegularFile(executable), "Model worker artifact is not installed");
+            var expected = pack.artifacts().stream().filter(item -> "worker".equals(item.name()))
+                    .map(EvidencePackManifest.Artifact::sha256).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Model worker checksum is not declared"));
+            require(expected.equals(sha256(executable)), "Model worker checksum does not match");
+            verifyArtifact(pack, "workerSource", install.resolve("worker.py"));
+            var runtimeManifestPath = install.resolve("runtime-manifest.json");
+            verifyArtifact(pack, "runtime-manifest", runtimeManifestPath);
+            validateRuntimeFileLedger(JSON.readTree(runtimeManifestPath.toFile()), install);
+            command.add(executable.toString());
+        }
 
         var outputRoot = stateRoot.resolve("worker-output").resolve(jobId).normalize();
         require(outputRoot.startsWith(stateRoot.resolve("worker-output")), "Model output path escaped state root");
@@ -69,8 +80,7 @@ public final class ExternalModelWorker {
         var diagnosticPath = outputRoot.resolve("diagnostic.log");
         Files.deleteIfExists(partial);
         Files.deleteIfExists(diagnosticPath);
-        var command = new java.util.ArrayList<String>();
-        command.add(executable.toString()); command.add("--request"); command.add(request.toString());
+        command.add("--request"); command.add(request.toString());
         command.add("--output"); command.add(partial.toString()); command.add("--offline");
         if (resumeCheckpoint != null) {
             require("pathlab.model-worker/2".equals(runtime.workerProtocol()),
@@ -86,6 +96,7 @@ public final class ExternalModelWorker {
         environment.put("PATHLAB_ANALYSIS_NETWORK", "disabled");
         environment.put("PATHLAB_MAX_VRAM_MIB", Integer.toString(pack.maxVramMiB()));
         environment.put("PATHLAB_MAX_RAM_MIB", Integer.toString(pack.maxRamMiB()));
+        environment.put("CUBLAS_WORKSPACE_CONFIG", ":4096:8");
         var process = ChildProcessContainment.global().register(builder.redirectErrorStream(true).start());
         var diagnosticBytes = new ByteArrayOutputStream(16_384);
         var outputReader = new Thread(() -> drainBounded(process.getInputStream(), diagnosticBytes),
@@ -217,8 +228,9 @@ public final class ExternalModelWorker {
 
     static String safeFailureDetail(String output) {
         if (output == null || output.isBlank()) return "";
-        var prefix = "PathLab DINOv2 worker failed closed: ";
         for (var line : output.split("\\R")) {
+            var prefix = line.startsWith("PathLab model worker failed closed: ")
+                    ? "PathLab model worker failed closed: " : "PathLab DINOv2 worker failed closed: ";
             if (!line.startsWith(prefix)) continue;
             var detail = line.substring(prefix.length()).trim();
             if (Set.of(
@@ -282,9 +294,63 @@ public final class ExternalModelWorker {
         }
     }
 
+    static SharedRuntime resolveSharedRuntime(Path stateRoot, Path installRoot, JsonNode reference)
+            throws IOException {
+        require(reference.isObject() && fieldNames(reference).equals(Set.of(
+                        "schema", "sharedRuntimePack", "sharedRuntimeVersion", "sharedRuntimeRoot",
+                        "sharedRuntimeManifestSha256", "pythonRelativePath", "candidateId",
+                        "candidateVersion", "candidateRoot", "candidateLedgerSha256", "weightFile",
+                        "weightSha256", "runtimeCopiedIntoCandidate", "analysisNetwork")),
+                "Model shared-runtime reference fields are invalid");
+        require("pathlab.model-runtime-reference/1".equals(reference.path("schema").asText())
+                        && !reference.path("runtimeCopiedIntoCandidate").asBoolean(true)
+                        && "disabled".equals(reference.path("analysisNetwork").asText()),
+                "Model shared-runtime reference policy is invalid");
+        var state = stateRoot.toAbsolutePath().normalize();
+        var models = state.resolve("models").normalize();
+        var realModels = models.toRealPath();
+        require(installRoot.toAbsolutePath().normalize().startsWith(models),
+                "Model install root escaped state root");
+        var runtimePack = reference.path("sharedRuntimePack").asText();
+        var runtimeVersion = reference.path("sharedRuntimeVersion").asText();
+        var runtimeRoot = Path.of(reference.path("sharedRuntimeRoot").asText()).toAbsolutePath().normalize();
+        require(runtimeRoot.equals(models.resolve(runtimePack).resolve(runtimeVersion).normalize()),
+                "Model shared-runtime identity is invalid");
+        require(runtimeRoot.toRealPath().startsWith(realModels), "Model shared-runtime path escaped state root");
+        var manifest = runtimeRoot.resolve("runtime-manifest.json");
+        require(Files.isRegularFile(manifest)
+                        && reference.path("sharedRuntimeManifestSha256").asText().equals(sha256(manifest)),
+                "Model shared-runtime manifest checksum changed");
+        validateRuntimeFileLedger(JSON.readTree(manifest.toFile()), runtimeRoot);
+        var pythonRelative = Path.of(reference.path("pythonRelativePath").asText());
+        var python = runtimeRoot.resolve(pythonRelative).normalize();
+        require(!pythonRelative.isAbsolute() && python.startsWith(runtimeRoot) && Files.isRegularFile(python)
+                        && python.toRealPath().startsWith(runtimeRoot.toRealPath()),
+                "Model shared Python executable is invalid");
+
+        var candidateId = reference.path("candidateId").asText();
+        var candidateVersion = reference.path("candidateVersion").asText();
+        var candidate = Path.of(reference.path("candidateRoot").asText()).toAbsolutePath().normalize();
+        require(candidate.equals(models.resolve(candidateId).resolve(candidateVersion).normalize()),
+                "Model candidate identity is invalid");
+        require(candidate.toRealPath().startsWith(realModels), "Model candidate path escaped state root");
+        var ledger = candidate.resolve("candidate-ledger.json");
+        require(Files.isRegularFile(ledger)
+                        && reference.path("candidateLedgerSha256").asText().equals(sha256(ledger)),
+                "Model candidate ledger checksum changed");
+        var weightRelative = Path.of(reference.path("weightFile").asText());
+        var weight = candidate.resolve(weightRelative).normalize();
+        require(!weightRelative.isAbsolute() && weight.startsWith(candidate) && Files.isRegularFile(weight)
+                        && weight.toRealPath().startsWith(candidate.toRealPath())
+                        && reference.path("weightSha256").asText().equals(sha256(weight)),
+                "Model candidate weight checksum changed");
+        return new SharedRuntime(runtimeRoot, python);
+    }
+
     @FunctionalInterface
     public interface ProgressListener { void update(Progress progress) throws IOException; }
     public record Progress(long completedUnits, long totalUnits, Path checkpointPath, String checkpointSha256) { }
+    record SharedRuntime(Path root, Path python) { }
     public static final class ResourceLimitException extends IOException {
         private static final long serialVersionUID = 1L;
         ResourceLimitException(String message) { super(message); }
@@ -314,6 +380,10 @@ public final class ExternalModelWorker {
     }
 
     private static void validateQualificationMetrics(JsonNode metrics) {
+        if ("pathlab.cell-instance-metrics/1".equals(metrics.path("schema").asText())) {
+            validateCellQualificationMetrics(metrics);
+            return;
+        }
         require(metrics.isObject()
                         && "pathlab.he-retrieval-metrics/1".equals(metrics.path("schema").asText())
                         && metrics.path("cohortManifestSha256").asText().matches("[a-f0-9]{64}")
@@ -333,6 +403,30 @@ public final class ExternalModelWorker {
                         && finite(metrics, "macroNdcgAt10Improvement")
                         && metrics.path("notEvaluableReasons").isArray(),
                 "Model worker qualification metrics are invalid");
+    }
+
+    private static void validateCellQualificationMetrics(JsonNode metrics) {
+        require(metrics.isObject()
+                        && metrics.path("cohortManifestSha256").asText().matches("[a-f0-9]{64}")
+                        && metrics.path("sampleCount").asInt(-1) >= 4
+                        && metrics.path("evaluatedSampleCount").asInt(-1) >= 1
+                        && metrics.path("evaluatedSampleCount").asInt() <= metrics.path("sampleCount").asInt()
+                        && finite(metrics, "macroPq") && finite(metrics, "instanceDice")
+                        && finite(metrics, "countError") && finite(metrics, "morphometryBias")
+                        && finite(metrics, "failedRegionRate") && finite(metrics, "elapsedSeconds")
+                        && finite(metrics, "peakHeapMiB")
+                        && finite(metrics, "minimumMacroPq") && finite(metrics, "minimumInstanceDice")
+                        && finite(metrics, "maximumCountError") && finite(metrics, "maximumMorphometryBias")
+                        && finite(metrics, "maximumFailedRegionRate")
+                        && metrics.path("deterministicRepeat").isBoolean()
+                        && metrics.path("crossTissuePerformance").isBoolean()
+                        && metrics.path("rightsAndIntegrityPassed").isBoolean()
+                        && metrics.path("resourceCompliant").isBoolean()
+                        && metrics.path("upstreamChecksumAvailable").isBoolean()
+                        && metrics.path("sourceIntegrity").isTextual()
+                        && metrics.path("perOrgan").isObject()
+                        && metrics.path("notEvaluableReasons").isArray(),
+                "Model worker cell qualification metrics are invalid");
     }
 
     private static boolean finite(JsonNode node, String field) {
