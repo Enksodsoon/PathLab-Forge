@@ -62,14 +62,24 @@ The probe is synthetic runtime conformance only. It is not held-out accuracy.
 
 ## Remaining gate
 
-The installed Windows service is `2.1.7`. Two elevated `2.1.8` upgrade prompts
-were declined, so campaign
-`monusac-hovernet-fast-heldout-20260824-v2-remediation` has not been submitted.
-After the prepared upgrade is approved, run
-`scripts/stage-hovernet-monusac-qualification.ps1`. This is the campaign's one
-bounded remediation attempt and uses the unchanged 23-patient cohort and frozen
-gates. Its purpose is accurate failure attribution and 23/23 terminal progress;
-it is not permission to tune to the test set or lower a gate.
+Service `2.1.8` was installed after explicit administrator approval. Campaign
+`monusac-hovernet-fast-heldout-20260824-v2-remediation` then completed its one
+bounded remediation attempt with zero retry and a correct terminal dashboard
+record of 23/23 units. Its campaign manifest is SHA-256
+`34c7b82ad6e0f5f4506bc2803e6871383e785b4806165693982189899b85c71a`;
+the complete attestation file is SHA-256
+`ad97838a6f7d0f6f0545d8465a73aafbd22bfe0ec516159ce58f368183afb437`;
+and its signed manifest is
+`ebfbae5c58c9d626e6eb0fe153e38776af995b78029a73551bb71e1232563a30`.
+
+The verdict remains `experimental`, `campaignCompleted=true`, and
+`campaignTargetMet=false`. Metrics reproduced the first campaign exactly, so
+all accuracy, count, morphometry, and failed-region gates still fail. The model
+must not be activated or tuned against this held-out cohort. The worker now
+retains three bounded sample failure records, but qualification-report v2
+includes only their aggregate integrity outcome. Surfacing their stable codes
+in a future signed operator report is a remaining observability improvement; it
+does not justify another remediation attempt or change this terminal verdict.
 
 The weight lineage remains CC BY-NC-SA 4.0 restricted private research. It is
 not Atlas-Clean eligible and cannot enter OCI or activation through this work.

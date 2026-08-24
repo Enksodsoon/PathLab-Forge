@@ -361,8 +361,13 @@ dashboard stopped at 22/23 because the worker wrote its final sidecar immediatel
 before exiting, and the first result retained only a failure count rather than
 bounded sample-level failure codes. Runner `2.1.8` and pack version `7` repair
 both observability defects without changing the model, cohort, or gates. The
-real P2000 probe, full tests, and repository policy verification pass. Two UAC
-prompts to install `2.1.8` were declined, so the installed service remains
-`2.1.7` and the single unchanged-gate remediation campaign is staged but not
-submitted. The candidate remains inactive. Exact results and boundaries are in
+real P2000 probe, full tests, repository policy verification, and exact-head
+Linux/macOS/Windows CI pass. Service `2.1.8` is installed and the single
+unchanged-gate remediation campaign completed at an accurately reported 23/23
+units with zero retry. Its signed verdict remains `experimental` and
+`campaignTargetMet=false`; the unchanged model produced the same failing
+held-out metrics. The bounded worker result now retains three sample failure
+records, but the signed v2 report exposes only their aggregate integrity
+outcome, so exact sample failure codes remain an operator-reporting limitation.
+The candidate remains inactive. Exact results and boundaries are in
 `docs/evidence/hovernet-cohort-worker-status-20260824.md`.
