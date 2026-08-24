@@ -96,7 +96,7 @@ final class EvidenceMentorRunnerTest {
 
             var endpoint = JSON.readTree(temporaryDirectory.resolve("state/endpoint.json").toFile());
             assertEquals("pathlab.runner-endpoint/1", endpoint.path("schema").asText());
-            assertEquals("2.1.4", endpoint.path("serviceVersion").asText());
+            assertEquals("2.1.6", endpoint.path("serviceVersion").asText());
             assertEquals(runner.uri("/").getPort(), endpoint.path("port").asInt());
             assertTrue(!endpoint.has("token"));
         }

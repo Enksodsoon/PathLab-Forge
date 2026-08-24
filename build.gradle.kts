@@ -149,6 +149,21 @@ tasks.register<JavaExec>("brightfieldQualification") {
         "--output", report.get())
 }
 
+tasks.register<JavaExec>("cellInstanceQualification") {
+    group = "verification"
+    description = "Runs the frozen held-out cell-instance qualification evaluator."
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.evidence.CellInstanceQualificationEvaluator"
+    maxHeapSize = "768m"
+    val cohort = providers.gradleProperty("pathlab.cell.cohort")
+    val cohortSha = providers.gradleProperty("pathlab.cell.cohortSha256")
+    val report = providers.gradleProperty("pathlab.cell.output")
+        .orElse(layout.buildDirectory.file("qualification/cell-instance-metrics.json")
+            .map { it.asFile.absolutePath })
+    doFirst { setArgs(listOf(cohort.get(), cohortSha.get(), report.get())) }
+}
+
 val installVersionedRuntime = tasks.register<Sync>("installVersionedRuntime") {
     dependsOn(tasks.installDist)
     val localAppData = providers.environmentVariable("LOCALAPPDATA")

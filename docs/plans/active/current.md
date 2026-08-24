@@ -300,3 +300,21 @@ publishes local SHA-256 values. Because the organizer provides no upstream
 cryptographic checksums, acquisition completion is preparation only: it remains
 restricted, Atlas-Clean-ineligible, and `not_evaluable` until archive metadata,
 patient/slide grouping, masks, and integrity corroboration are frozen.
+
+MoNuSAC acquisition and cohort preparation subsequently completed. The frozen
+23-patient, four-organ held-out cohort is SHA-256
+`63885be5c1e271669acf9debaba2419b0b8cddeb6a7e5bf102d751e55a9727c8`;
+the two published train/test patient overlaps were excluded. Campaign
+`monusac-od-watershed-heldout-20260824-v1` completed with a signed
+`experimental` attestation and `campaignTargetMet=false`. Macro PQ, instance
+Dice, count error, and morphometry gates failed decisively while deterministic
+repeat, four-tissue coverage, and failed-region rate passed.
+
+The first evaluator also exceeded the cell pack's resource envelope and made
+the operations API temporarily unresponsive. The bounded-memory replacement
+reproduced the exact metrics locally in 7.32 seconds with 395.94 MiB peak heap.
+Runner `2.1.6` passed the complete build, but two UAC prompts to install it were
+declined, so the installed service remains `2.1.5` and the one unchanged-gate
+signed remediation campaign is pending. Watershed remains a fail-closed
+fallback; it is not qualified or activated. Exact results and hashes are in
+`docs/evidence/monusac-cell-qualification-result-20260824.md`.

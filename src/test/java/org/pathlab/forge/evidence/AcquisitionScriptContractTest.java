@@ -242,4 +242,44 @@ final class AcquisitionScriptContractTest {
         assertFalse(script.contains("RepetitionInterval"));
         assertFalse(script.contains("--continue-at"));
     }
+
+    @Test
+    void monusacCohortIsPatientHeldOutFourOrganAndChecksumBounded() throws Exception {
+        var script = Files.readString(Path.of("scripts/build-monusac-cell-cohort.ps1"));
+
+        assertTrue(script.contains("monusac2020-cell-heldout-23-v1"));
+        assertTrue(script.contains("$derivedQuotaBytes = 25GB"));
+        assertTrue(script.contains("5b7cbeb34817a8f880d3fddc28391e48d3329a91bf3adcbd131ea149a725cd92"));
+        assertTrue(script.contains("bcbc38f6bf8b149230c90c29f3428cc7b2b76f8acd7766ce9fc908fc896c2674"));
+        assertTrue(script.contains("2e4e7774559595a77ed57387ff47177a1da65ccff6154bc2c5d311c8ef02a878"));
+        assertTrue(script.contains("TCGA-MP-A4T7"));
+        assertTrue(script.contains("TCGA-A2-A0ES"));
+        assertTrue(script.contains("patientOverlapWithTraining=$false"));
+        assertTrue(script.contains("@($samples).Count -ne 23"));
+        assertTrue(script.contains("CC-BY-NC-SA-4.0"));
+        assertTrue(script.contains("private-research-restricted"));
+        assertTrue(script.contains("ZipArchiveMode]::Read"));
+        assertTrue(script.contains("Find-VipsBinary 'vips.exe'"));
+        assertTrue(script.contains("Get-FileHash -LiteralPath"));
+        assertTrue(script.contains("qualification-held-out-test"));
+        assertFalse(script.contains("Invoke-WebRequest"));
+        assertFalse(script.contains("Invoke-RestMethod"));
+    }
+
+    @Test
+    void monusacCampaignBindsExactCohortAndFrozenCellGates() throws Exception {
+        var script = Files.readString(Path.of("scripts/stage-monusac-cell-qualification.ps1"));
+
+        assertTrue(script.contains("monusac-od-watershed-heldout-20260824-v1"));
+        assertTrue(script.contains("qualificationCohortManifest = $cohortPath"));
+        assertTrue(script.contains("qualificationCohortManifestSha256 = $cohortSha"));
+        assertTrue(script.contains("minimumMacroPq -ne 0.45"));
+        assertTrue(script.contains("minimumInstanceDice -ne 0.70"));
+        assertTrue(script.contains("maximumCountError -ne 0.15"));
+        assertTrue(script.contains("maximumMorphometryBias -ne 0.10"));
+        assertTrue(script.contains("maximumFailedRegionRate -ne 0.05"));
+        assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
+        assertTrue(script.contains("/v1/qualification-runs"));
+        assertTrue(script.contains("private-research-restricted"));
+    }
 }

@@ -113,6 +113,23 @@ public final class EvidenceJobProcessor {
                 "Requested IHC marker is unsupported and generic fallback is unavailable");
         var sourceWidth = positiveInt(request, "sourceWidth");
         var sourceHeight = positiveInt(request, "sourceHeight");
+        require(request.has("qualificationCohortManifest")
+                        == request.has("qualificationCohortManifestSha256"),
+                "Qualification cohort path and checksum must be supplied together");
+        Path qualificationCohortPath = null;
+        var qualificationCohortSha = "";
+        if (request.has("qualificationCohortManifest")) {
+            require(request.has("qualificationCampaignManifest"),
+                    "Only campaign jobs may attach a qualification cohort");
+            qualificationCohortPath = regularPath(request, "qualificationCohortManifest");
+            qualificationCohortSha = text(request, "qualificationCohortManifestSha256");
+            require(qualificationCohortSha.matches("[a-f0-9]{64}")
+                            && qualificationCohortSha.equals(sha256(qualificationCohortPath)),
+                    "Qualification cohort checksum does not match");
+            require(Set.of(EvidencePackManifest.Capability.HE_EVIDENCE,
+                            EvidencePackManifest.Capability.CELL_MORPHOLOGY).contains(pack.capability()),
+                    "This capability cannot attach a qualification cohort");
+        }
         if (pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE) {
             var tileManifestPath = regularPath(request, "tileCacheManifest");
             var tileManifestSha = text(request, "tileCacheManifestSha256");
@@ -122,17 +139,6 @@ public final class EvidenceJobProcessor {
             require(tileCache.sample().bytes() == Files.size(source)
                             && "private-research".equals(tileCache.sample().permittedUse()),
                     "H&E source provenance or permitted use is invalid");
-            require(request.has("qualificationCohortManifest")
-                            == request.has("qualificationCohortManifestSha256"),
-                    "Qualification cohort path and checksum must be supplied together");
-            if (request.has("qualificationCohortManifest")) {
-                require(request.has("qualificationCampaignManifest"),
-                        "Only campaign jobs may attach a qualification cohort");
-                var cohortPath = regularPath(request, "qualificationCohortManifest");
-                var cohortSha = text(request, "qualificationCohortManifestSha256");
-                require(cohortSha.matches("[a-f0-9]{64}") && cohortSha.equals(sha256(cohortPath)),
-                        "Qualification cohort checksum does not match");
-            }
         } else {
             require(!request.has("tileCacheManifest") && !request.has("tileCacheManifestSha256"),
                     "Only H&E evidence jobs may provide a tile cache");
@@ -152,6 +158,12 @@ public final class EvidenceJobProcessor {
         }
         require(image != null, "Evidence preview could not be decoded");
         var analysis = BrightfieldTileAnalyzer.analyze(image, marker);
+        JsonNode cellQualificationMetrics = null;
+        if (pack.capability() == EvidencePackManifest.Capability.CELL_MORPHOLOGY
+                && qualificationCohortPath != null) {
+            cellQualificationMetrics = CellInstanceQualificationEvaluator.evaluate(
+                    qualificationCohortPath, qualificationCohortSha);
+        }
         JsonNode modelResult = null;
         if (pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE) {
             modelResult = new ExternalModelWorker(stateRoot).execute(pack, job.requestPath(), job.id(),
@@ -231,7 +243,8 @@ public final class EvidenceJobProcessor {
         else new EvidenceBundleWriter(stateRoot.resolve("signing")).write(finalArtifact, unsigned);
         if (job.id().matches("qualification-[a-f0-9]{8,64}")
                 && request.path("qualificationCampaignManifest").isTextual()) {
-            writeQualificationReport(job, request, pack, modelResult, abstained, now.plusMillis(2400));
+            writeQualificationReport(job, request, pack, modelResult, cellQualificationMetrics,
+                    abstained, now.plusMillis(2400));
         }
         queue.recordFinalArtifact(job.id(), workerId, sha256(finalArtifact), now.plusMillis(2500));
         var terminal = abstained ? EvidenceJobState.ABSTAINED : EvidenceJobState.COMPLETED;
@@ -244,7 +257,8 @@ public final class EvidenceJobProcessor {
     }
 
     private void writeQualificationReport(EvidenceJob job, JsonNode request, EvidencePackManifest pack,
-            JsonNode modelResult, boolean abstained, Instant now) throws IOException {
+            JsonNode modelResult, JsonNode cellQualificationMetrics, boolean abstained, Instant now)
+            throws IOException {
         var campaign = QualificationCampaignManifest.load(
                 regularPath(request, "qualificationCampaignManifest"));
         var normalizedRequest = job.requestPath().toAbsolutePath().normalize();
@@ -278,6 +292,9 @@ public final class EvidenceJobProcessor {
         var retrieval = modelResult == null ? null : modelResult.path("qualificationMetrics");
         var hasRetrieval = retrieval != null && retrieval.isObject()
                 && "pathlab.he-retrieval-metrics/1".equals(retrieval.path("schema").asText());
+        var hasCellMetrics = cellQualificationMetrics != null && cellQualificationMetrics.isObject()
+                && CellInstanceQualificationEvaluator.SCHEMA.equals(
+                        cellQualificationMetrics.path("schema").asText());
         var repeatable = hasRetrieval && retrieval.path("exactRankingRepeatability").asBoolean(false);
         var recallPass = hasRetrieval && finiteAtLeast(retrieval, "macroRecallAt5Improvement",
                 retrieval.path("minimumMacroRecallAt5Improvement").asDouble(Double.POSITIVE_INFINITY));
@@ -286,13 +303,61 @@ public final class EvidenceJobProcessor {
         var oodPass = hasRetrieval && finiteAtLeast(retrieval, "oodAuRoc",
                 retrieval.path("minimumOodAuRoc").asDouble(Double.POSITIVE_INFINITY));
         var fullCohort = hasRetrieval && "ready".equals(retrieval.path("cohortStatus").asText());
-        var qualified = !abstained && fullCohort && repeatable && recallPass && ndcgPass && oodPass;
+        var cellPqPass = hasCellMetrics && finiteAtLeast(cellQualificationMetrics, "macroPq",
+                cellQualificationMetrics.path("minimumMacroPq").asDouble(Double.POSITIVE_INFINITY));
+        var cellDicePass = hasCellMetrics && finiteAtLeast(cellQualificationMetrics, "instanceDice",
+                cellQualificationMetrics.path("minimumInstanceDice").asDouble(Double.POSITIVE_INFINITY));
+        var cellCountPass = hasCellMetrics && finiteAtMost(cellQualificationMetrics, "countError",
+                cellQualificationMetrics.path("maximumCountError").asDouble(Double.NEGATIVE_INFINITY));
+        var cellMorphometryPass = hasCellMetrics && finiteAtMost(cellQualificationMetrics, "morphometryBias",
+                cellQualificationMetrics.path("maximumMorphometryBias").asDouble(Double.NEGATIVE_INFINITY));
+        var cellFailurePass = hasCellMetrics && finiteAtMost(cellQualificationMetrics, "failedRegionRate",
+                cellQualificationMetrics.path("maximumFailedRegionRate").asDouble(Double.NEGATIVE_INFINITY));
+        var cellRepeatable = hasCellMetrics && cellQualificationMetrics.path("deterministicRepeat").asBoolean(false);
+        var cellCoverage = hasCellMetrics && cellQualificationMetrics.path("crossTissuePerformance").asBoolean(false);
+        var cellIntegrity = hasCellMetrics && cellQualificationMetrics.path("rightsAndIntegrityPassed").asBoolean(false);
+        var cellResources = hasCellMetrics && cellQualificationMetrics.path("resourceCompliant").asBoolean(false);
+        var cellQualified = hasCellMetrics && cellPqPass && cellDicePass && cellCountPass
+                && cellMorphometryPass && cellFailurePass && cellRepeatable && cellCoverage
+                && cellIntegrity && cellResources;
+        var qualified = !abstained && (pack.capability() == EvidencePackManifest.Capability.CELL_MORPHOLOGY
+                ? cellQualified : fullCohort && repeatable && recallPass && ndcgPass && oodPass);
         report.put("status", abstained ? "not_evaluable" : qualified ? "qualified" : "experimental");
         var checks = report.putArray("checks");
         checks.addObject().put("id", "offline-bounded-execution").put("outcome",
-                abstained ? "not_evaluable" : "pass")
-                .put("detail", "Candidate executed without network access inside its declared resource envelope");
-        if (hasRetrieval) {
+                abstained ? "not_evaluable" : hasCellMetrics && !cellResources ? "fail" : "pass")
+                .put("detail", hasCellMetrics && !cellResources
+                        ? "Candidate exceeded its declared time or memory envelope"
+                        : "Candidate executed without network access inside its declared resource envelope");
+        if (hasCellMetrics) {
+            checks.addObject().put("id", "cell-cohort-integrity-and-rights")
+                    .put("outcome", cellIntegrity ? "pass" : "fail")
+                    .put("detail", "Restricted held-out samples passed exact local checksums and patient overlap audit")
+                    .put("cohortManifestSha256", cellQualificationMetrics.path("cohortManifestSha256").asText())
+                    .put("sampleCount", cellQualificationMetrics.path("sampleCount").asInt())
+                    .put("upstreamChecksumAvailable",
+                            cellQualificationMetrics.path("upstreamChecksumAvailable").asBoolean(false));
+            checks.addObject().put("id", "cell-instance-accuracy")
+                    .put("outcome", cellPqPass && cellDicePass ? "pass" : "fail")
+                    .put("macroPq", cellQualificationMetrics.path("macroPq").asDouble())
+                    .put("instanceDice", cellQualificationMetrics.path("instanceDice").asDouble());
+            checks.addObject().put("id", "cell-count-and-morphometry")
+                    .put("outcome", cellCountPass && cellMorphometryPass ? "pass" : "fail")
+                    .put("countError", cellQualificationMetrics.path("countError").asDouble())
+                    .put("morphometryBias", cellQualificationMetrics.path("morphometryBias").asDouble());
+            checks.addObject().put("id", "cell-failure-rate")
+                    .put("outcome", cellFailurePass ? "pass" : "fail")
+                    .put("failedRegionRate", cellQualificationMetrics.path("failedRegionRate").asDouble());
+            checks.addObject().put("id", "cell-determinism-cross-tissue-resources")
+                    .put("outcome", cellRepeatable && cellCoverage && cellResources ? "pass" : "fail")
+                    .put("deterministicRepeat", cellRepeatable)
+                    .put("crossTissuePerformance", cellCoverage)
+                    .put("resourceCompliant", cellResources);
+            checks.addObject().put("id", "preregistered-held-out-gates")
+                    .put("outcome", qualified ? "pass" : "fail")
+                    .put("detail", qualified ? "Every frozen cell-instance gate passed"
+                            : "One or more frozen cell-instance gates failed");
+        } else if (hasRetrieval) {
             checks.addObject().put("id", "cohort-integrity-and-rights").put("outcome", "pass")
                     .put("detail", "Every cohort tile and provenance record passed checksum and permitted-use validation")
                     .put("cohortManifestSha256", retrieval.path("cohortManifestSha256").asText())
@@ -320,6 +385,16 @@ public final class EvidenceJobProcessor {
         if (abstained) reasons.add("INPUT_QC_FAILED");
         else if (qualified) {
             // A qualified report has no unresolved reason codes.
+        } else if (hasCellMetrics) {
+            cellQualificationMetrics.path("notEvaluableReasons")
+                    .forEach(reason -> reasons.add(reason.asText()));
+            if (!cellPqPass || !cellDicePass) reasons.add("CELL_INSTANCE_ACCURACY_GATE_FAILED");
+            if (!cellCountPass) reasons.add("CELL_COUNT_ERROR_GATE_FAILED");
+            if (!cellMorphometryPass) reasons.add("CELL_MORPHOMETRY_GATE_FAILED");
+            if (!cellFailurePass) reasons.add("CELL_FAILED_REGION_GATE_FAILED");
+            if (!cellRepeatable) reasons.add("CELL_DETERMINISM_GATE_FAILED");
+            if (!cellCoverage) reasons.add("CELL_CROSS_TISSUE_GATE_FAILED");
+            if (!cellResources) reasons.add("CELL_RESOURCE_GATE_FAILED");
         } else if (hasRetrieval) {
             retrieval.path("notEvaluableReasons").forEach(reason -> reasons.add(reason.asText()));
             if (!recallPass || !ndcgPass) reasons.add("RETRIEVAL_BASELINE_GATE_FAILED");
@@ -333,6 +408,12 @@ public final class EvidenceJobProcessor {
         var value = node.path(field);
         return value.isNumber() && Double.isFinite(value.doubleValue())
                 && Double.isFinite(minimum) && value.doubleValue() >= minimum;
+    }
+
+    private static boolean finiteAtMost(JsonNode node, String field, double maximum) {
+        var value = node.path(field);
+        return value.isNumber() && Double.isFinite(value.doubleValue())
+                && Double.isFinite(maximum) && value.doubleValue() <= maximum;
     }
 
     private static ObjectNode evidence(
