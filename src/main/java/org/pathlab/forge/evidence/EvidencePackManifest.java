@@ -188,8 +188,11 @@ public record EvidencePackManifest(
         }
         if (jobId != null && jobId.matches("qualification-[a-f0-9]{8,64}")) {
             if (SCHEMA_V2.equals(schema)) return;
-            require("private-research".equals(allowedUse)
-                            && validationStatus == ValidationStatus.EXPERIMENTAL,
+            require(("private-research".equals(allowedUse)
+                            && validationStatus == ValidationStatus.EXPERIMENTAL)
+                            || (Set.of("private-research", "benchmark-only").contains(allowedUse)
+                            && validationStatus == ValidationStatus.NOT_EVALUABLE
+                            && runtimeCompatibility.requiresExternalWorker()),
                     "AI pack is not eligible for qualification execution");
             return;
         }

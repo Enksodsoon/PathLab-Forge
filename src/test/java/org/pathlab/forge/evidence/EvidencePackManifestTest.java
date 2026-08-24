@@ -2,6 +2,7 @@ package org.pathlab.forge.evidence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -112,6 +113,7 @@ final class EvidencePackManifestTest {
         assertFalse(hoverNet.pilotEligible());
         assertEquals("cuda", hoverNet.runtimeCompatibility().executionProvider());
         assertEquals(2, hoverNet.licenseLedger().size());
+        assertDoesNotThrow(() -> hoverNet.requireExecutableForJob("qualification-0123abcd"));
         assertFalse(EvidencePackManifest.load(root.resolve("he-gigapath-benchmark-v1.json")).pilotEligible());
     }
 

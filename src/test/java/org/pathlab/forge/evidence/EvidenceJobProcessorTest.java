@@ -22,6 +22,17 @@ final class EvidenceJobProcessorTest {
     @TempDir Path temporaryDirectory;
 
     @Test
+    void routesExternalCellCandidatesThroughTheModelWorker() throws Exception {
+        var external = EvidencePackManifest.load(Path.of(
+                "src/main/resources/evidence-packs/cell-hovernet-fast-v1.json"));
+        var deterministic = EvidencePackManifest.load(Path.of(
+                "src/main/resources/evidence-packs/cell-od-watershed-v2.json"));
+
+        assertTrue(EvidenceJobProcessor.usesExternalModelWorker(external));
+        assertEquals(false, EvidenceJobProcessor.usesExternalModelWorker(deterministic));
+    }
+
+    @Test
     void treatsMalformedRequestJsonAsPermanentValidationFailure() throws Exception {
         var request = temporaryDirectory.resolve("malformed-request.json");
         Files.writeString(request, "{not-json");

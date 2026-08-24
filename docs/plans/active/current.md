@@ -352,3 +352,17 @@ configuration. This is source-ready infrastructure only. The installed 2.1.5
 service is unchanged, cell jobs are not yet routed to the external worker, and
 the HoVer-Net worker still lacks durable cohort/checkpoint execution. Details
 are in `docs/evidence/hovernet-runner-integration-status-20260824.md`.
+
+The HoVer-Net adapter has now advanced to source-ready pack version `6` and the
+runner source to `2.1.7`. External cell candidates use the durable GPU worker
+path; the worker loads the frozen model once, evaluates the 23-patient cohort
+twice, emits immutable per-sample checkpoints and progress sidecars, validates
+resume identity, and returns bounded instance metrics without masks or reusable
+embeddings. A real P2000 compatibility probe still returns 72 instances within
+the declared RAM/VRAM envelope. Full tests and repository policy checks pass.
+The administrator upgrade prompt was not approved, so the installed service
+remains `2.1.5`, the held-out campaign has not started, and the candidate remains
+`not_evaluable` and inactive. The staged next command is
+`scripts/stage-hovernet-monusac-qualification.ps1` after installing `2.1.7`.
+Exact hashes and boundaries are recorded in
+`docs/evidence/hovernet-cohort-worker-status-20260824.md`.

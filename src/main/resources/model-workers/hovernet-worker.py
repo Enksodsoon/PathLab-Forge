@@ -9,9 +9,16 @@ from pathlib import Path
 import socket
 import sys
 import time
+from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
 
 
 MICRO_BATCH = 1
+RESULT_SCHEMA = "pathlab.model-worker-result/1"
+PROGRESS_SCHEMA = "pathlab.model-worker-progress/1"
+CHECKPOINT_SCHEMA = "pathlab.model-worker-checkpoint/1"
+COHORT_SCHEMA = "pathlab.cell-qualification-cohort/1"
+ORGANS = {"lung", "kidney", "breast", "prostate"}
 
 
 def fail(message: str) -> None:
@@ -32,6 +39,19 @@ def load_json(path: Path) -> dict:
     if not isinstance(value, dict):
         fail(f"JSON object required: {path.name}")
     return value
+
+
+def write_json_atomic(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.name + ".partial")
+    with partial.open("w", encoding="utf-8", newline="\n") as stream:
+        json.dump(value, stream, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        stream.write("\n")
+    os.replace(partial, path)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def require_offline(flag: bool) -> None:
@@ -173,11 +193,26 @@ def postprocess(probability, horizontal, vertical):
     return instances.astype(np.int32)
 
 
-def infer(image_path: Path, weight_path: Path):
+def load_model(weight_path: Path):
+    import torch
+    from models.hovernet.net_desc import create_model
+
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
+    model = create_model(mode="fast", nr_types=5)
+    checkpoint = torch.load(weight_path, map_location="cpu", weights_only=True)
+    model.load_state_dict(checkpoint["desc"], strict=True)
+    return model.eval().to("cuda")
+
+
+def infer(image_path: Path, model):
     import numpy as np
     from PIL import Image
     import torch
-    from models.hovernet.net_desc import create_model
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability(0) != (6, 1):
         fail("CUDA sm_61 host is unavailable")
@@ -192,18 +227,6 @@ def infer(image_path: Path, weight_path: Path):
         image = np.asarray(opened.convert("RGB"), dtype=np.uint8)
     if image.shape[0] > 2048 or image.shape[1] > 2048 or image.shape[0] < 64 or image.shape[1] < 64:
         fail("probe image geometry is invalid")
-
-    torch.manual_seed(0)
-    torch.cuda.manual_seed_all(0)
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cudnn.benchmark = False
-    torch.use_deterministic_algorithms(True)
-    torch.cuda.reset_peak_memory_stats()
-    model = create_model(mode="fast", nr_types=5)
-    checkpoint = torch.load(weight_path, map_location="cpu", weights_only=True)
-    model.load_state_dict(checkpoint["desc"], strict=True)
-    model.eval().to("cuda")
 
     output_size = 164
     border = 46
@@ -254,7 +277,265 @@ def infer(image_path: Path, weight_path: Path):
     }
     if runtime["peakVramMiB"] > max_vram or runtime["peakRamMiB"] > max_ram:
         fail("worker exceeded its declared resource envelope")
-    return int(instances.max()), research_counts, runtime
+    return instances, research_counts, runtime
+
+
+def required_text(value: dict, name: str) -> str:
+    result = value.get(name)
+    if not isinstance(result, str) or not result:
+        fail(f"cell qualification field is invalid: {name}")
+    return result
+
+
+def relative_file(root: Path, relative_value: str) -> Path:
+    relative = Path(relative_value)
+    path = (root / relative).resolve()
+    if relative.is_absolute() or not path.is_relative_to(root.resolve()) or not path.is_file():
+        fail("cell qualification sample path is invalid")
+    return path
+
+
+def ground_truth_labels(annotation_path: Path, width: int, height: int):
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    try:
+        tree = ET.parse(annotation_path)
+    except ET.ParseError as error:
+        raise RuntimeError("cell qualification annotation is invalid") from error
+    labels = Image.new("I", (width, height), 0)
+    draw = ImageDraw.Draw(labels)
+    instance_id = 0
+    for region in tree.getroot().iter("Region"):
+        vertices = []
+        for vertex in region.iter("Vertex"):
+            try:
+                vertices.append((round(float(vertex.attrib["X"])), round(float(vertex.attrib["Y"]))))
+            except (KeyError, ValueError) as error:
+                raise RuntimeError("cell qualification annotation is invalid") from error
+        if len(vertices) >= 3:
+            instance_id += 1
+            draw.polygon(vertices, fill=instance_id)
+    if instance_id == 0:
+        fail("cell qualification annotation contains no instances")
+    return np.asarray(labels, dtype=np.int32)
+
+
+def perimeters(labels, count: int):
+    import numpy as np
+    from scipy import ndimage
+
+    result = np.zeros(count + 1, dtype=np.float64)
+    for instance_id in range(1, count + 1):
+        mask = labels == instance_id
+        if not np.any(mask):
+            continue
+        eroded = ndimage.binary_erosion(mask, structure=np.ones((3, 3), dtype=bool), border_value=0)
+        result[instance_id] = float(np.count_nonzero(mask & ~eroded))
+    return result
+
+
+def compare_instances(organ: str, truth, predicted: object) -> dict:
+    import numpy as np
+
+    truth_count = int(truth.max())
+    predicted_count = int(predicted.max())
+    truth_area = np.bincount(truth.ravel(), minlength=truth_count + 1)
+    predicted_area = np.bincount(predicted.ravel(), minlength=predicted_count + 1)
+    factor = predicted_count + 1
+    overlap_pixels = (truth > 0) & (predicted > 0)
+    encoded = truth[overlap_pixels].astype(np.int64) * factor + predicted[overlap_pixels].astype(np.int64)
+    pairs = []
+    if encoded.size:
+        keys, intersections = np.unique(encoded, return_counts=True)
+        for key, intersection in zip(keys.tolist(), intersections.tolist()):
+            truth_id = key // factor
+            predicted_id = key % factor
+            union = int(truth_area[truth_id] + predicted_area[predicted_id] - intersection)
+            iou = intersection / union
+            if iou >= 0.5:
+                pairs.append((iou, truth_id, predicted_id, intersection))
+    pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
+    used_truth = set()
+    used_predicted = set()
+    matches = []
+    for pair in pairs:
+        if pair[1] not in used_truth and pair[2] not in used_predicted:
+            matches.append(pair)
+            used_truth.add(pair[1])
+            used_predicted.add(pair[2])
+    denominator = len(matches) + 0.5 * (predicted_count - len(matches)) + 0.5 * (truth_count - len(matches))
+    pq = sum(pair[0] for pair in matches) / denominator if denominator else 0.0
+    dice_denominator = max(truth_count, predicted_count)
+    dice = (sum(2.0 * pair[3] / (truth_area[pair[1]] + predicted_area[pair[2]])
+                for pair in matches) / dice_denominator if dice_denominator else 0.0)
+    truth_perimeters = perimeters(truth, truth_count)
+    predicted_perimeters = perimeters(predicted, predicted_count)
+    biases = []
+    for _, truth_id, predicted_id, _ in matches:
+        area_bias = abs(int(predicted_area[predicted_id]) - int(truth_area[truth_id])) / max(1, int(truth_area[truth_id]))
+        perimeter_bias = abs(predicted_perimeters[predicted_id] - truth_perimeters[truth_id]) / max(1.0, truth_perimeters[truth_id])
+        biases.append((area_bias + perimeter_bias) / 2.0)
+    return {
+        "organ": organ, "pq": pq, "dice": dice,
+        "countError": abs(predicted_count - truth_count) / max(1, truth_count),
+        "morphometryBias": float(np.median(biases)) if biases else 1.0,
+    }
+
+
+def validate_cohort(path: Path, expected_hash: str) -> tuple[dict, list[dict]]:
+    if not path.is_file() or sha256(path) != expected_hash:
+        fail("cell qualification cohort checksum does not match")
+    cohort = load_json(path)
+    samples = cohort.get("samples")
+    if (cohort.get("schema") != COHORT_SCHEMA or not isinstance(samples, list)
+            or len(samples) < 4 or cohort.get("sampleCount") != len(samples)):
+        fail("cell qualification cohort contract is invalid")
+    return cohort, samples
+
+
+def checkpoint(output_path: Path, job_id: str, pack_hash: str, request_hash: str,
+               cohort_hash: str, rows: list[dict], failures: int, organs: set[str],
+               repeatable: bool, total: int) -> None:
+    completed = len(rows) + failures
+    checkpoint_path = output_path.parent / f"checkpoint-{completed:06d}.json"
+    value = {
+        "schema": CHECKPOINT_SCHEMA, "jobId": job_id, "packManifestSha256": pack_hash,
+        "requestSha256": request_hash, "cohortManifestSha256": cohort_hash,
+        "completedUnits": completed, "totalUnits": total, "rows": rows,
+        "failedSamples": failures, "observedOrgans": sorted(organs),
+        "deterministicRepeat": repeatable, "updatedAt": utc_now(),
+    }
+    write_json_atomic(checkpoint_path, value)
+    write_json_atomic(output_path.parent / "progress.json", {
+        "schema": PROGRESS_SCHEMA, "jobId": job_id, "packManifestSha256": pack_hash,
+        "completedUnits": completed, "totalUnits": total,
+        "checkpointPath": str(checkpoint_path), "checkpointSha256": sha256(checkpoint_path),
+        "updatedAt": utc_now(),
+    })
+
+
+def restore_checkpoint(path_value: str | None, job_id: str, pack_hash: str,
+                       request_hash: str, cohort_hash: str, total: int):
+    if not path_value:
+        return [], 0, set(), True
+    path = Path(path_value).resolve()
+    value = load_json(path)
+    if (value.get("schema") != CHECKPOINT_SCHEMA or value.get("jobId") != job_id
+            or value.get("packManifestSha256") != pack_hash
+            or value.get("requestSha256") != request_hash
+            or value.get("cohortManifestSha256") != cohort_hash
+            or value.get("totalUnits") != total):
+        fail("model worker checkpoint identity changed")
+    rows = value.get("rows")
+    failures = value.get("failedSamples")
+    completed = value.get("completedUnits")
+    if (not isinstance(rows, list) or not isinstance(failures, int) or failures < 0
+            or completed != len(rows) + failures or completed < 0 or completed > total):
+        fail("model worker checkpoint counts are invalid")
+    organs = value.get("observedOrgans")
+    if not isinstance(organs, list) or not set(organs).issubset(ORGANS):
+        fail("model worker checkpoint tissues are invalid")
+    return rows, failures, set(organs), bool(value.get("deterministicRepeat", False))
+
+
+def cohort_qualification(request: dict, request_path: Path, output_path: Path,
+                         pack_hash: str, weight: Path, resume_path: str | None):
+    import numpy as np
+    import torch
+
+    cohort_path = Path(required_text(request, "qualificationCohortManifest")).resolve()
+    cohort_hash = required_text(request, "qualificationCohortManifestSha256")
+    cohort, samples = validate_cohort(cohort_path, cohort_hash)
+    job_id = output_path.parent.name
+    request_hash = sha256(request_path)
+    rows, failures, observed_organs, repeatable = restore_checkpoint(
+        resume_path, job_id, pack_hash, request_hash, cohort_hash, len(samples))
+    completed = len(rows) + failures
+    started = time.perf_counter()
+    torch.cuda.reset_peak_memory_stats()
+    model = load_model(weight)
+    root = cohort_path.parent
+    for sample in samples[completed:]:
+        try:
+            organ = required_text(sample, "organ")
+            if (organ not in ORGANS or required_text(sample, "split") != "qualification-held-out-test"
+                    or bool(sample.get("patientOverlapWithTraining", True))
+                    or required_text(sample, "license") != "CC-BY-NC-SA-4.0"
+                    or required_text(sample, "permittedUse") != "private-research-restricted"):
+                fail("cell qualification sample rights or split is invalid")
+            image_path = relative_file(root, required_text(sample, "imagePath"))
+            annotation_path = relative_file(root, required_text(sample, "annotationPath"))
+            if sha256(image_path) != required_text(sample, "imageSha256") or sha256(annotation_path) != required_text(sample, "annotationSha256"):
+                fail("cell qualification sample checksum changed")
+            width = int(sample.get("width", 0))
+            height = int(sample.get("height", 0))
+            if width < 64 or height < 64 or width * height > 4_194_304:
+                fail("cell qualification image geometry is invalid")
+            truth = ground_truth_labels(annotation_path, width, height)
+            first, _, _ = infer(image_path, model)
+            second, _, _ = infer(image_path, model)
+            repeatable = repeatable and np.array_equal(first, second)
+            rows.append(compare_instances(organ, truth, first))
+            observed_organs.add(organ)
+        except (OSError, RuntimeError, ValueError, KeyError):
+            failures += 1
+        checkpoint(output_path, job_id, pack_hash, request_hash, cohort_hash,
+                   rows, failures, observed_organs, repeatable, len(samples))
+    elapsed = time.perf_counter() - started
+    peak_ram = working_set_mib()
+    peak_vram = torch.cuda.max_memory_reserved() / (1024 * 1024)
+    if not rows:
+        fail("no cell qualification region was evaluable")
+    gates = cohort.get("gates", {})
+    required_gates = ["minimumMacroPq", "minimumInstanceDice", "maximumCountError",
+                      "maximumMorphometryBias", "maximumFailedRegionRate"]
+    if any(not isinstance(gates.get(name), (int, float)) for name in required_gates):
+        fail("cell qualification gates are invalid")
+    per_organ = {}
+    for organ in sorted(ORGANS):
+        organ_rows = [row for row in rows if row["organ"] == organ]
+        per_organ[organ] = {
+            "sampleCount": len(organ_rows),
+            "macroPq": sum(row["pq"] for row in organ_rows) / len(organ_rows) if organ_rows else 0.0,
+            "instanceDice": sum(row["dice"] for row in organ_rows) / len(organ_rows) if organ_rows else 0.0,
+            "countError": sum(row["countError"] for row in organ_rows) / len(organ_rows) if organ_rows else 1.0,
+        }
+    rights_passed = failures == 0
+    cross_tissue = observed_organs == ORGANS
+    resource_compliant = (peak_ram <= int(os.environ["PATHLAB_MAX_RAM_MIB"])
+                          and peak_vram <= int(os.environ["PATHLAB_MAX_VRAM_MIB"]))
+    reasons = []
+    if not rights_passed:
+        reasons.append("CELL_COHORT_RIGHTS_OR_INTEGRITY_FAILED")
+    if not cross_tissue:
+        reasons.append("CELL_CROSS_TISSUE_COVERAGE_INCOMPLETE")
+    if not resource_compliant:
+        reasons.append("CELL_RESOURCE_ENVELOPE_EXCEEDED")
+    metrics = {
+        "schema": "pathlab.cell-instance-metrics/1", "cohortManifestSha256": cohort_hash,
+        "sampleCount": len(samples), "evaluatedSampleCount": len(rows),
+        "macroPq": sum(row["pq"] for row in rows) / len(rows),
+        "instanceDice": sum(row["dice"] for row in rows) / len(rows),
+        "countError": sum(row["countError"] for row in rows) / len(rows),
+        "morphometryBias": float(np.median([row["morphometryBias"] for row in rows])),
+        "failedRegionRate": failures / len(samples), "deterministicRepeat": repeatable,
+        "crossTissuePerformance": cross_tissue, "rightsAndIntegrityPassed": rights_passed,
+        "resourceCompliant": resource_compliant, "elapsedSeconds": elapsed,
+        "peakHeapMiB": peak_ram, "minimumMacroPq": float(gates["minimumMacroPq"]),
+        "minimumInstanceDice": float(gates["minimumInstanceDice"]),
+        "maximumCountError": float(gates["maximumCountError"]),
+        "maximumMorphometryBias": float(gates["maximumMorphometryBias"]),
+        "maximumFailedRegionRate": float(gates["maximumFailedRegionRate"]),
+        "sourceIntegrity": str(cohort.get("source", {}).get("integrity", "local-first-acquisition-sha256")),
+        "upstreamChecksumAvailable": bool(cohort.get("source", {}).get("upstreamChecksumAvailable", False)),
+        "perOrgan": per_organ, "notEvaluableReasons": reasons,
+    }
+    runtime = {"device": torch.cuda.get_device_name(0), "cuda": torch.version.cuda,
+               "architecture": "sm_61", "microBatch": MICRO_BATCH, "samples": len(samples),
+               "elapsedSeconds": round(elapsed, 6), "peakVramMiB": round(peak_vram, 3),
+               "peakRamMiB": round(peak_ram, 3), "analysisNetwork": "disabled"}
+    return metrics, runtime
 
 
 def main() -> int:
@@ -262,6 +543,7 @@ def main() -> int:
     parser.add_argument("--request", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--resume-checkpoint")
     arguments = parser.parse_args()
     require_offline(arguments.offline)
     install_root = Path(__file__).resolve().parent
@@ -276,23 +558,34 @@ def main() -> int:
     disable_network()
     request_path = Path(arguments.request).resolve()
     request = load_json(request_path)
-    if request.get("schema") != "pathlab.hovernet-runtime-probe/1":
-        fail("HoVer-Net request schema is unsupported")
-    image_path = Path(str(request.get("imagePath", ""))).resolve()
-    if not image_path.is_file() or sha256(image_path) != request.get("imageSha256"):
-        fail("probe image checksum changed")
-    count, type_counts, runtime = infer(image_path, weight)
-    result = {
-        "schema": "pathlab.hovernet-runtime-probe-result/1",
-        "status": "completed", "scope": "runtime-probe-only-not-qualification",
-        "instanceCount": count, "researchTypeCounts": type_counts,
-        "runtime": runtime, "activationEligible": False,
-    }
     output = Path(arguments.output).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("x", encoding="utf-8", newline="\n") as stream:
-        json.dump(result, stream, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        stream.write("\n")
+    if request.get("schema") == "pathlab.hovernet-runtime-probe/1":
+        import torch
+        image_path = Path(str(request.get("imagePath", ""))).resolve()
+        if not image_path.is_file() or sha256(image_path) != request.get("imageSha256"):
+            fail("probe image checksum changed")
+        torch.cuda.reset_peak_memory_stats()
+        model = load_model(weight)
+        instances, type_counts, runtime = infer(image_path, model)
+        result = {
+            "schema": "pathlab.hovernet-runtime-probe-result/1",
+            "status": "completed", "scope": "runtime-probe-only-not-qualification",
+            "instanceCount": int(instances.max()), "researchTypeCounts": type_counts,
+            "runtime": runtime, "activationEligible": False,
+        }
+    elif request.get("schema") in {"pathlab.evidence-job/1", "pathlab.evidence-job/2"}:
+        pack_path = Path(required_text(request, "packManifest")).resolve()
+        if not pack_path.is_file():
+            fail("pack manifest is unavailable")
+        pack_hash = sha256(pack_path)
+        metrics, runtime = cohort_qualification(
+            request, request_path, output, pack_hash, weight, arguments.resume_checkpoint)
+        result = {"schema": RESULT_SCHEMA, "status": "completed",
+                  "packManifestSha256": pack_hash, "regions": [],
+                  "runtime": runtime, "qualificationMetrics": metrics}
+    else:
+        fail("HoVer-Net request schema is unsupported")
+    write_json_atomic(output, result)
     return 0
 
 

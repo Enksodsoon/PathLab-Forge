@@ -283,6 +283,7 @@ final class AcquisitionScriptContractTest {
     void hoverNetAdapterIsPinnedOfflineSharedRuntimeAndResearchOnly() throws Exception {
         var build = Files.readString(Path.of("scripts/build-hovernet-fast-monusac-pack.ps1"));
         var probe = Files.readString(Path.of("scripts/probe-hovernet-fast-monusac.ps1"));
+        var stage = Files.readString(Path.of("scripts/stage-hovernet-monusac-qualification.ps1"));
         var worker = Files.readString(Path.of("src/main/resources/model-workers/hovernet-worker.py"));
 
         assertTrue(build.contains("cell-hovernet-fast-monusac-v1"));
@@ -304,6 +305,12 @@ final class AcquisitionScriptContractTest {
         assertTrue(worker.contains("from scipy import ndimage"));
         assertTrue(worker.contains("researchTypeCounts"));
         assertTrue(worker.contains("analysisNetwork\": \"disabled"));
+        assertTrue(worker.contains("pathlab.cell-qualification-cohort/1"));
+        assertTrue(worker.contains("pathlab.model-worker-progress/1"));
+        assertTrue(worker.contains("pathlab.model-worker-checkpoint/1"));
+        assertTrue(worker.contains("--resume-checkpoint"));
+        assertTrue(worker.contains("qualificationMetrics"));
+        assertTrue(build.contains("workerProtocol='pathlab.model-worker/2'"));
         assertFalse(worker.contains("diagnosis"));
         assertFalse(worker.contains("clinicalScore"));
         assertFalse(worker.contains("embeddings"));
@@ -314,6 +321,13 @@ final class AcquisitionScriptContractTest {
         assertTrue(probe.contains("CUBLAS_WORKSPACE_CONFIG = ':4096:8'"));
         assertTrue(probe.contains("NVIDIA Quadro P2000"));
         assertTrue(probe.contains("runtime-probe-only-not-qualification"));
+
+        assertTrue(stage.contains("monusac-hovernet-fast-heldout-20260824-v1"));
+        assertTrue(stage.contains("pathlab.model-worker/2"));
+        assertTrue(stage.contains("qualificationCohortManifestSha256=$cohortSha"));
+        assertTrue(stage.contains("scope='local-benchmark'"));
+        assertTrue(stage.contains("SetSecurityDescriptorSddlForm"));
+        assertTrue(stage.contains("/v1/qualification-runs"));
     }
 
     @Test

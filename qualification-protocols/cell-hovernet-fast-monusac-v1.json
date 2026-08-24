@@ -1,0 +1,1 @@
+{"schema":"pathlab.qualification-protocol/1","id":"cell-hovernet-fast-monusac-v1","gates":{"macroPqMinimum":0.45,"instanceDiceMinimum":0.70,"countErrorMaximum":0.15,"morphometryBiasMaximum":0.10,"failedRegionRateMaximum":0.05,"deterministicRepeatRequired":true},"split":"patient-source-held-out","researchOnly":true,"weightLineage":"CC-BY-NC-SA-4.0-restricted"}

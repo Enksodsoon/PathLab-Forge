@@ -69,6 +69,13 @@ public final class EvidenceJobProcessor {
 
     public record ExecutionPlan(EvidenceExecutionLane lane, String packSha256) { }
 
+    static boolean usesExternalModelWorker(EvidencePackManifest pack) {
+        return pack.runtimeCompatibility().requiresExternalWorker()
+                && Set.of(EvidencePackManifest.Capability.HE_EVIDENCE,
+                        EvidencePackManifest.Capability.CELL_MORPHOLOGY)
+                        .contains(pack.capability());
+    }
+
     public EvidenceJob process(EvidenceJob job, String workerId, Instant now) throws IOException {
         final JsonNode request;
         try {
@@ -160,12 +167,12 @@ public final class EvidenceJobProcessor {
         var analysis = BrightfieldTileAnalyzer.analyze(image, marker);
         JsonNode cellQualificationMetrics = null;
         if (pack.capability() == EvidencePackManifest.Capability.CELL_MORPHOLOGY
-                && qualificationCohortPath != null) {
+                && qualificationCohortPath != null && !usesExternalModelWorker(pack)) {
             cellQualificationMetrics = CellInstanceQualificationEvaluator.evaluate(
                     qualificationCohortPath, qualificationCohortSha);
         }
         JsonNode modelResult = null;
-        if (pack.capability() == EvidencePackManifest.Capability.HE_EVIDENCE) {
+        if (usesExternalModelWorker(pack)) {
             modelResult = new ExternalModelWorker(stateRoot).execute(pack, job.requestPath(), job.id(),
                     durable.checkpointPath(), progress -> {
                 var current = queue.find(job.id()).orElseThrow();
@@ -176,7 +183,10 @@ public final class EvidenceJobProcessor {
                         progress.checkpointPath(), progress.checkpointSha256(), Instant.now(), LEASE);
             });
             require("completed".equals(modelResult.path("status").asText()),
-                    "H&E model worker returned unsupported or not_evaluable");
+                    "External model worker returned unsupported or not_evaluable");
+            if (pack.capability() == EvidencePackManifest.Capability.CELL_MORPHOLOGY) {
+                cellQualificationMetrics = modelResult.path("qualificationMetrics");
+            }
         }
         var stainQc = BrightfieldStainQc.inspect(image,
                 request.path("controlsValidated").isBoolean()

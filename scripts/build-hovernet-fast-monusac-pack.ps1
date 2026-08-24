@@ -4,7 +4,7 @@ param([string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $packId = 'cell-hovernet-fast-monusac-v1'
-$version = '4'
+$version = '6'
 $modelLimit = 10GB
 $reservationBytes = 512MB
 $candidateId = 'hovernet-fast-monusac-v1'
@@ -158,8 +158,7 @@ try {
             [ordered]@{name='runtime-reference';sha256=$runtimeReferenceSha;source='pathlab-local:he-dinov2-small-v1/1'},
             [ordered]@{name='weights';sha256=$weightSha256;source='official-hovernet:monusac-fast-checkpoint'}
         )
-        usageLimits=[ordered]@{acceptanceOnly=$true}
-        runtimeCompatibility=[ordered]@{workerProtocol='pathlab.model-worker-result/1';executionProvider='cuda';cuda='12.6';gpuArchitecture='sm_61';requiresExternalWorker=$true}
+        runtimeCompatibility=[ordered]@{workerProtocol='pathlab.model-worker/2';executionProvider='cuda';cuda='12.6';gpuArchitecture='sm_61';requiresExternalWorker=$true}
         licenseLedger=@(
             [ordered]@{component='HoVer-Net code';license='MIT';revision=$codeCommit;permittedUse='private-research';redistributable=$false;derivativesAllowed=$true},
             [ordered]@{component='MoNuSAC-derived weights';license='CC-BY-NC-SA-4.0';revision=$weightSha256;permittedUse='private-research';redistributable=$false;derivativesAllowed=$false},
@@ -167,7 +166,7 @@ try {
         )
         rights=[ordered]@{license='Mixed restricted research lineage';allowedUse='benchmark-only';redistributable=$false;derivativesAllowed=$false;reviewedAt=[DateTimeOffset]::UtcNow.ToString('o')}
         resourceEnvelope=[ordered]@{maxRamMiB=16384;maxVramMiB=4608;maxSeconds=1200;network=$false}
-        validation=[ordered]@{status='not-evaluable';modelCard='docs/model-cards/cell-hovernet-fast-monusac-v1.md';heldOutEvaluation='not-evaluable-runtime-probe-pending'}
+        validation=[ordered]@{status='not-evaluable';modelCard='docs/model-cards/cell-hovernet-fast-monusac-v1.md';heldOutEvaluation='not-evaluable-held-out-campaign-pending'}
         outputSchema='pathlab.ai-evidence/1'
     })
     Write-JsonAtomic (Join-Path $stagingRoot 'build-receipt.json') ([ordered]@{
