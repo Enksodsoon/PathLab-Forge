@@ -371,3 +371,16 @@ records, but the signed v2 report exposes only their aggregate integrity
 outcome, so exact sample failure codes remain an operator-reporting limitation.
 The candidate remains inactive. Exact results and boundaries are in
 `docs/evidence/hovernet-cohort-worker-status-20260824.md`.
+
+The next independent H&E track used the grandfathered BRACS ROI collection to
+freeze 40 validation-reference and 40 test-query samples across breast and
+benign/reactive groups. Campaign
+`dinov2-bracs-breast-retrieval-20260824-v2-engineering-repair` completed 160/160
+offline GPU units with zero retry and exact ranking repeatability. Cohort rights,
+checksums, patient-split isolation, and resource gates passed. DINOv2 failed the
+unchanged retrieval comparison: Recall@5 improvement was `-0.153741497`, and
+NDCG@10 improvement was `0.005640305` versus the required `0.03`. BRACS is also
+a single source and supplies no OOD group. The signed verdict is `experimental`,
+`campaignTargetMet=false`, and the pack remains inactive. Exact hashes and the
+first-attempt engineering failure are in
+`docs/evidence/bracs-breast-dinov2-retrieval-result-20260824.md`.

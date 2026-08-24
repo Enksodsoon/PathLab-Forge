@@ -132,6 +132,40 @@ final class AcquisitionScriptContractTest {
     }
 
     @Test
+    void bracsBreastCohortIsPatientDisjointChecksumBoundedAndSingleSourceFailClosed() throws Exception {
+        var script = Files.readString(Path.of("scripts/build-bracs-breast-dinov2-cohort.ps1"));
+
+        assertTrue(script.contains("bracs-roi-breast-retrieval-20x2-v1"));
+        assertTrue(script.contains("$derivedQuotaBytes = 25GB"));
+        assertTrue(script.contains("BRACS_RoI_latest_version"));
+        assertTrue(script.contains("CC-BY-NC-4.0"));
+        assertTrue(script.contains("$provenance.patient_disjoint"));
+        assertTrue(script.contains("@($samples | Where-Object split -eq 'reference').Count -ne 40"));
+        assertTrue(script.contains("@($samples | Where-Object split -eq 'query').Count -ne 40"));
+        assertTrue(script.contains("SOURCE_HELD_OUT_NOT_MET_SINGLE_BRACS_RELEASE"));
+        assertTrue(script.contains("LYMPH_NODE_GI_LUNG_AND_OOD_GROUPS_ABSENT"));
+        assertTrue(script.contains("maximumSourceOverlap=0"));
+        assertFalse(script.contains("Invoke-WebRequest"));
+        assertFalse(script.contains("Invoke-RestMethod"));
+    }
+
+    @Test
+    void bracsBreastCampaignUsesExactCohortAndInstalledAutonomousRunner() throws Exception {
+        var script = Files.readString(Path.of("scripts/stage-bracs-breast-dinov2-retrieval.ps1"));
+
+        assertTrue(script.contains("2.1.8"));
+        assertTrue(script.contains("@($cohort.samples).Count -ne 80"));
+        assertTrue(script.contains("qualificationCohortManifest=$cohortPath"));
+        assertTrue(script.contains("qualificationCohortManifestSha256=$cohortSha"));
+        assertTrue(script.contains("scope='deployment'"));
+        assertTrue(script.contains("$pack.rights.allowedUse -ne 'private-research'"));
+        assertTrue(script.contains("/v1/qualification-runs"));
+        assertTrue(script.contains("campaignTargetMet"));
+        assertTrue(script.contains("ReadAndExecute"));
+        assertTrue(script.contains("SetSecurityDescriptorSddlForm"));
+    }
+
+    @Test
     void tcgaCohortBuildCanWaitAutonomouslyForAcquisition() throws Exception {
         var script = Files.readString(Path.of("scripts/start-tcga-lung-cohort-build.ps1"));
 

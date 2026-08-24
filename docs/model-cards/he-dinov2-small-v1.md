@@ -108,3 +108,15 @@ pre-registered 0.03 threshold. Exact ranking repeatability, rights/integrity,
 offline execution, and resource-envelope checks passed. OOD and full
 cross-tissue gates remain not evaluable. The signed verdict is therefore
 `experimental`; no threshold was rounded down or relaxed.
+
+## BRACS breast and benign/reactive retrieval
+
+Campaign `dinov2-bracs-breast-retrieval-20260824-v2-engineering-repair`
+completed 160/160 offline P2000 work units over a checksum-bound 40-reference,
+40-query patient-disjoint BRACS cohort. Exact rankings repeated, but DINOv2
+underperformed the identical-tile color-histogram baseline for Recall@5 by
+`0.153741497` and improved NDCG@10 by only `0.005640305`, below the frozen
+`0.03` requirement. BRACS is also a single source release and supplies no OOD
+group. The signed verdict is `experimental`, and the candidate remains inactive.
+Exact hashes and boundaries are recorded in
+`docs/evidence/bracs-breast-dinov2-retrieval-result-20260824.md`.
