@@ -4,7 +4,7 @@ param([string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $packId = 'cell-hovernet-fast-monusac-v1'
-$version = '6'
+$version = '7'
 $modelLimit = 10GB
 $reservationBytes = 512MB
 $candidateId = 'hovernet-fast-monusac-v1'

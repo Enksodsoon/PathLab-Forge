@@ -6,7 +6,7 @@ Set-StrictMode -Version Latest
 $state = [IO.Path]::GetFullPath($StateRoot)
 $repository = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot 'build-hovernet-fast-monusac-pack.ps1') -StateRoot $state
-$packRoot = Join-Path $state 'models\cell-hovernet-fast-monusac-v1\6'
+$packRoot = Join-Path $state 'models\cell-hovernet-fast-monusac-v1\7'
 $runtimeRoot = Join-Path $state 'models\he-dinov2-small-v1\1'
 $python = Join-Path $runtimeRoot 'runtime\Scripts\python.exe'
 $worker = Join-Path $packRoot 'worker.py'

@@ -103,11 +103,11 @@ public final class ExternalModelWorker {
                 "pathlab-model-worker-output-" + jobId);
         outputReader.setDaemon(true);
         outputReader.start();
+        var lastProgress = new Progress(0, 0, null, "");
         try {
             var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(pack.maxSeconds());
             var lastProgressModified = -1L;
             var lastHeartbeat = 0L;
-            var lastProgress = new Progress(0, 0, null, "");
             while (!process.waitFor(1, TimeUnit.SECONDS)) {
                 if (System.nanoTime() >= deadline) {
                     process.destroyForcibly();
@@ -150,6 +150,7 @@ public final class ExternalModelWorker {
         }
         var result = JSON.readTree(partial.toFile());
         validateResult(result, pack);
+        notifyFinalProgress(progressPath, jobId, pack, lastProgress, listener);
         try {
             Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                     java.nio.file.StandardCopyOption.ATOMIC_MOVE);
@@ -157,6 +158,17 @@ public final class ExternalModelWorker {
             Files.move(partial, output, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
         return result;
+    }
+
+    static Progress notifyFinalProgress(Path progressPath, String jobId, EvidencePackManifest pack,
+            Progress observed, ProgressListener listener) throws IOException {
+        if (!Files.isRegularFile(progressPath)) return observed;
+        var latest = readProgress(progressPath, jobId, pack);
+        require(latest.completedUnits() >= observed.completedUnits()
+                        && (observed.totalUnits() == 0 || latest.totalUnits() == observed.totalUnits()),
+                "Model worker final progress is not monotonic");
+        if (!latest.equals(observed)) listener.update(latest);
+        return latest;
     }
 
     private static void writeDiagnostic(Path path, byte[] value) {
@@ -406,6 +418,7 @@ public final class ExternalModelWorker {
     }
 
     private static void validateCellQualificationMetrics(JsonNode metrics) {
+        var sampleFailures = metrics.path("sampleFailures");
         require(metrics.isObject()
                         && metrics.path("cohortManifestSha256").asText().matches("[a-f0-9]{64}")
                         && metrics.path("sampleCount").asInt(-1) >= 4
@@ -425,8 +438,24 @@ public final class ExternalModelWorker {
                         && metrics.path("upstreamChecksumAvailable").isBoolean()
                         && metrics.path("sourceIntegrity").isTextual()
                         && metrics.path("perOrgan").isObject()
+                        && sampleFailures.isArray()
+                        && metrics.path("evaluatedSampleCount").asInt() + sampleFailures.size()
+                                == metrics.path("sampleCount").asInt()
+                        && Math.abs(metrics.path("failedRegionRate").asDouble()
+                                - (double) sampleFailures.size() / metrics.path("sampleCount").asInt()) < 1.0e-9
                         && metrics.path("notEvaluableReasons").isArray(),
                 "Model worker cell qualification metrics are invalid");
+        var failureCodes = Set.of("SAMPLE_RIGHTS_OR_SPLIT_INVALID", "SAMPLE_CHECKSUM_CHANGED",
+                "SAMPLE_GEOMETRY_INVALID", "SAMPLE_ANNOTATION_INVALID",
+                "MODEL_INFERENCE_FAILED", "SAMPLE_EVALUATION_FAILED");
+        for (var failure : sampleFailures) {
+            require(failure.isObject() && fieldNames(failure).equals(Set.of("sampleId", "organ", "code"))
+                            && failure.path("sampleId").asText().matches("[A-Za-z0-9._-]{1,120}")
+                            && Set.of("lung", "kidney", "breast", "prostate", "unknown")
+                                    .contains(failure.path("organ").asText())
+                            && failureCodes.contains(failure.path("code").asText()),
+                    "Model worker cell sample failure is invalid");
+        }
     }
 
     private static boolean finite(JsonNode node, String field) {

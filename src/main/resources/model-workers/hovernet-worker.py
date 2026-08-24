@@ -395,15 +395,15 @@ def validate_cohort(path: Path, expected_hash: str) -> tuple[dict, list[dict]]:
 
 
 def checkpoint(output_path: Path, job_id: str, pack_hash: str, request_hash: str,
-               cohort_hash: str, rows: list[dict], failures: int, organs: set[str],
+               cohort_hash: str, rows: list[dict], failures: list[dict], organs: set[str],
                repeatable: bool, total: int) -> None:
-    completed = len(rows) + failures
+    completed = len(rows) + len(failures)
     checkpoint_path = output_path.parent / f"checkpoint-{completed:06d}.json"
     value = {
         "schema": CHECKPOINT_SCHEMA, "jobId": job_id, "packManifestSha256": pack_hash,
         "requestSha256": request_hash, "cohortManifestSha256": cohort_hash,
         "completedUnits": completed, "totalUnits": total, "rows": rows,
-        "failedSamples": failures, "observedOrgans": sorted(organs),
+        "sampleFailures": failures, "observedOrgans": sorted(organs),
         "deterministicRepeat": repeatable, "updatedAt": utc_now(),
     }
     write_json_atomic(checkpoint_path, value)
@@ -418,7 +418,7 @@ def checkpoint(output_path: Path, job_id: str, pack_hash: str, request_hash: str
 def restore_checkpoint(path_value: str | None, job_id: str, pack_hash: str,
                        request_hash: str, cohort_hash: str, total: int):
     if not path_value:
-        return [], 0, set(), True
+        return [], [], set(), True
     path = Path(path_value).resolve()
     value = load_json(path)
     if (value.get("schema") != CHECKPOINT_SCHEMA or value.get("jobId") != job_id
@@ -428,15 +428,36 @@ def restore_checkpoint(path_value: str | None, job_id: str, pack_hash: str,
             or value.get("totalUnits") != total):
         fail("model worker checkpoint identity changed")
     rows = value.get("rows")
-    failures = value.get("failedSamples")
+    failures = value.get("sampleFailures")
     completed = value.get("completedUnits")
-    if (not isinstance(rows, list) or not isinstance(failures, int) or failures < 0
-            or completed != len(rows) + failures or completed < 0 or completed > total):
+    if (not isinstance(rows, list) or not isinstance(failures, list)
+            or completed != len(rows) + len(failures) or completed < 0 or completed > total):
         fail("model worker checkpoint counts are invalid")
     organs = value.get("observedOrgans")
     if not isinstance(organs, list) or not set(organs).issubset(ORGANS):
         fail("model worker checkpoint tissues are invalid")
     return rows, failures, set(organs), bool(value.get("deterministicRepeat", False))
+
+
+def bounded_failure(sample: dict, sample_index: int, error: Exception) -> dict:
+    sample_id = sample.get("sampleId")
+    if not isinstance(sample_id, str) or not sample_id or len(sample_id) > 120:
+        sample_id = f"sample-{sample_index:03d}"
+    organ = sample.get("organ") if sample.get("organ") in ORGANS else "unknown"
+    message = str(error).lower()
+    if "rights or split" in message:
+        code = "SAMPLE_RIGHTS_OR_SPLIT_INVALID"
+    elif "checksum changed" in message or "path is invalid" in message:
+        code = "SAMPLE_CHECKSUM_CHANGED"
+    elif "geometry is invalid" in message:
+        code = "SAMPLE_GEOMETRY_INVALID"
+    elif "annotation" in message:
+        code = "SAMPLE_ANNOTATION_INVALID"
+    elif any(value in message for value in ("cuda", "tensor", "shape", "memory", "model")):
+        code = "MODEL_INFERENCE_FAILED"
+    else:
+        code = "SAMPLE_EVALUATION_FAILED"
+    return {"sampleId": sample_id, "organ": organ, "code": code}
 
 
 def cohort_qualification(request: dict, request_path: Path, output_path: Path,
@@ -449,14 +470,14 @@ def cohort_qualification(request: dict, request_path: Path, output_path: Path,
     cohort, samples = validate_cohort(cohort_path, cohort_hash)
     job_id = output_path.parent.name
     request_hash = sha256(request_path)
-    rows, failures, observed_organs, repeatable = restore_checkpoint(
+    rows, sample_failures, observed_organs, repeatable = restore_checkpoint(
         resume_path, job_id, pack_hash, request_hash, cohort_hash, len(samples))
-    completed = len(rows) + failures
+    completed = len(rows) + len(sample_failures)
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats()
     model = load_model(weight)
     root = cohort_path.parent
-    for sample in samples[completed:]:
+    for sample_index, sample in enumerate(samples[completed:], start=completed):
         try:
             organ = required_text(sample, "organ")
             if (organ not in ORGANS or required_text(sample, "split") != "qualification-held-out-test"
@@ -478,10 +499,10 @@ def cohort_qualification(request: dict, request_path: Path, output_path: Path,
             repeatable = repeatable and np.array_equal(first, second)
             rows.append(compare_instances(organ, truth, first))
             observed_organs.add(organ)
-        except (OSError, RuntimeError, ValueError, KeyError):
-            failures += 1
+        except (OSError, RuntimeError, ValueError, KeyError) as error:
+            sample_failures.append(bounded_failure(sample, sample_index, error))
         checkpoint(output_path, job_id, pack_hash, request_hash, cohort_hash,
-                   rows, failures, observed_organs, repeatable, len(samples))
+                   rows, sample_failures, observed_organs, repeatable, len(samples))
     elapsed = time.perf_counter() - started
     peak_ram = working_set_mib()
     peak_vram = torch.cuda.max_memory_reserved() / (1024 * 1024)
@@ -501,7 +522,9 @@ def cohort_qualification(request: dict, request_path: Path, output_path: Path,
             "instanceDice": sum(row["dice"] for row in organ_rows) / len(organ_rows) if organ_rows else 0.0,
             "countError": sum(row["countError"] for row in organ_rows) / len(organ_rows) if organ_rows else 1.0,
         }
-    rights_passed = failures == 0
+    integrity_failure_codes = {"SAMPLE_RIGHTS_OR_SPLIT_INVALID", "SAMPLE_CHECKSUM_CHANGED",
+                               "SAMPLE_GEOMETRY_INVALID", "SAMPLE_ANNOTATION_INVALID"}
+    rights_passed = not any(item["code"] in integrity_failure_codes for item in sample_failures)
     cross_tissue = observed_organs == ORGANS
     resource_compliant = (peak_ram <= int(os.environ["PATHLAB_MAX_RAM_MIB"])
                           and peak_vram <= int(os.environ["PATHLAB_MAX_VRAM_MIB"]))
@@ -519,7 +542,7 @@ def cohort_qualification(request: dict, request_path: Path, output_path: Path,
         "instanceDice": sum(row["dice"] for row in rows) / len(rows),
         "countError": sum(row["countError"] for row in rows) / len(rows),
         "morphometryBias": float(np.median([row["morphometryBias"] for row in rows])),
-        "failedRegionRate": failures / len(samples), "deterministicRepeat": repeatable,
+        "failedRegionRate": len(sample_failures) / len(samples), "deterministicRepeat": repeatable,
         "crossTissuePerformance": cross_tissue, "rightsAndIntegrityPassed": rights_passed,
         "resourceCompliant": resource_compliant, "elapsedSeconds": elapsed,
         "peakHeapMiB": peak_ram, "minimumMacroPq": float(gates["minimumMacroPq"]),
@@ -529,7 +552,8 @@ def cohort_qualification(request: dict, request_path: Path, output_path: Path,
         "maximumFailedRegionRate": float(gates["maximumFailedRegionRate"]),
         "sourceIntegrity": str(cohort.get("source", {}).get("integrity", "local-first-acquisition-sha256")),
         "upstreamChecksumAvailable": bool(cohort.get("source", {}).get("upstreamChecksumAvailable", False)),
-        "perOrgan": per_organ, "notEvaluableReasons": reasons,
+        "perOrgan": per_organ, "sampleFailures": sample_failures,
+        "notEvaluableReasons": reasons,
     }
     runtime = {"device": torch.cuda.get_device_name(0), "cuda": torch.version.cuda,
                "architecture": "sm_61", "microBatch": MICRO_BATCH, "samples": len(samples),

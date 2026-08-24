@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -145,13 +146,34 @@ final class ExternalModelWorkerTest {
                    "minimumInstanceDice":0.7,"maximumCountError":0.15,
                    "maximumMorphometryBias":0.1,"maximumFailedRegionRate":0.05,
                    "sourceIntegrity":"local-first-acquisition-sha256","upstreamChecksumAvailable":false,
-                   "perOrgan":{},"notEvaluableReasons":[]}}
+                   "perOrgan":{},"sampleFailures":[],"notEvaluableReasons":[]}}
                 """.formatted(pack.sha256(), "a".repeat(64)));
 
         assertDoesNotThrow(() -> ExternalModelWorker.validateResult(result, pack));
         ((com.fasterxml.jackson.databind.node.ObjectNode) result.path("qualificationMetrics"))
                 .put("macroPq", Double.NaN);
         assertThrows(IllegalArgumentException.class, () -> ExternalModelWorker.validateResult(result, pack));
+    }
+
+    @Test void deliversFinalProgressWrittenAsTheWorkerExits(@TempDir Path root) throws Exception {
+        var pack = EvidencePackManifest.load(Path.of(
+                "src/main/resources/evidence-packs/he-dinov2-small-v1.json"));
+        var checkpoint = root.resolve("checkpoint-000023.json");
+        Files.writeString(checkpoint, "final-checkpoint");
+        var progress = root.resolve("progress.json");
+        Files.writeString(progress, """
+                {"schema":"pathlab.model-worker-progress/1","jobId":"qualification-0123abcd",
+                 "packManifestSha256":"%s","completedUnits":23,"totalUnits":23,
+                 "checkpointPath":"%s","checkpointSha256":"%s",
+                 "updatedAt":"2026-08-24T00:00:00Z"}
+                """.formatted(pack.sha256(), checkpoint.toString().replace("\\", "\\\\"), sha256(checkpoint)));
+        var delivered = new AtomicReference<ExternalModelWorker.Progress>();
+
+        var result = ExternalModelWorker.notifyFinalProgress(progress, "qualification-0123abcd", pack,
+                new ExternalModelWorker.Progress(22, 23, null, ""), delivered::set);
+
+        assertEquals(23, result.completedUnits());
+        assertEquals(23, delivered.get().completedUnits());
     }
 
     private static String sha256(Path path) throws Exception {

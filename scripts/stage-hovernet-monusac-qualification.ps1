@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
     [string] $StateRoot = 'D:\PathLabData\EvidenceMentor\state',
-    [string] $CampaignId = 'monusac-hovernet-fast-heldout-20260824-v1',
-    [string] $CohortId = 'monusac2020-cell-heldout-23-v1'
+    [string] $CampaignId = 'monusac-hovernet-fast-heldout-20260824-v2-remediation',
+    [string] $CohortId = 'monusac2020-cell-heldout-23-v1',
+    [string] $PackVersion = '7'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +13,7 @@ $state = [IO.Path]::GetFullPath($StateRoot)
 $derivedRoot = Join-Path $state 'derived'
 $cohortRoot = Join-Path $derivedRoot "qualification-prepared\$CohortId"
 $cohortPath = Join-Path $cohortRoot 'cohort.json'
-$packSource = Join-Path $state 'models\cell-hovernet-fast-monusac-v1\6\pack.json'
+$packSource = Join-Path $state "models\cell-hovernet-fast-monusac-v1\$PackVersion\pack.json"
 $protocolPath = Join-Path $repository 'qualification-protocols\cell-hovernet-fast-monusac-v1.json'
 $campaignRoot = Join-Path $state "acceptance\campaigns\$CampaignId"
 $campaignPath = Join-Path $campaignRoot 'campaign.json'
@@ -35,8 +36,8 @@ foreach ($required in @($packSource,$protocolPath,(Join-Path $state 'endpoint.js
     }
 }
 $endpoint = Get-Content -LiteralPath (Join-Path $state 'endpoint.json') -Raw | ConvertFrom-Json
-if ([version]$endpoint.serviceVersion -lt [version]'2.1.7') {
-    throw 'Service 2.1.7 is required for resumable HoVer-Net held-out qualification.'
+if ([version]$endpoint.serviceVersion -lt [version]'2.1.8') {
+    throw 'Service 2.1.8 is required for final-progress and failure-attribution repair.'
 }
 $token = [IO.File]::ReadAllText((Join-Path $state 'ipc-token')).Trim()
 $headers = @{Authorization="Bearer $token"}
@@ -79,7 +80,7 @@ try {
     Copy-Item -LiteralPath $packSource -Destination "$packTarget.partial" -Force
     Move-Item -LiteralPath "$packTarget.partial" -Destination $packTarget -Force
     $pack = Get-Content -LiteralPath $packTarget -Raw | ConvertFrom-Json
-    if ($pack.packId -ne 'cell-hovernet-fast-monusac-v1' -or $pack.version -ne '6' -or
+    if ($pack.packId -ne 'cell-hovernet-fast-monusac-v1' -or $pack.version -ne $PackVersion -or
             $pack.runtimeCompatibility.workerProtocol -ne 'pathlab.model-worker/2' -or
             $pack.validation.status -ne 'not-evaluable' -or $pack.rights.allowedUse -ne 'benchmark-only') {
         throw 'The installed HoVer-Net qualification pack changed.'
@@ -133,5 +134,5 @@ try {
 [pscustomobject]@{
     CampaignId=$response.id;State=$response.state;campaignCompleted=$response.campaignCompleted
     campaignTargetMet=$response.campaignTargetMet;AcceptingJobs=$control.acceptingJobs
-    SampleCount=23;CohortManifestSha256=$cohortSha;PackVersion='6';PermittedUse='private-research-restricted'
+    SampleCount=23;CohortManifestSha256=$cohortSha;PackVersion=$PackVersion;PermittedUse='private-research-restricted'
 }

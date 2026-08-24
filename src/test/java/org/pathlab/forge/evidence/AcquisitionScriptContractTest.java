@@ -310,6 +310,9 @@ final class AcquisitionScriptContractTest {
         assertTrue(worker.contains("pathlab.model-worker-checkpoint/1"));
         assertTrue(worker.contains("--resume-checkpoint"));
         assertTrue(worker.contains("qualificationMetrics"));
+        assertTrue(worker.contains("sampleFailures"));
+        assertTrue(worker.contains("SAMPLE_CHECKSUM_CHANGED"));
+        assertTrue(worker.contains("MODEL_INFERENCE_FAILED"));
         assertTrue(build.contains("workerProtocol='pathlab.model-worker/2'"));
         assertFalse(worker.contains("diagnosis"));
         assertFalse(worker.contains("clinicalScore"));
@@ -322,8 +325,9 @@ final class AcquisitionScriptContractTest {
         assertTrue(probe.contains("NVIDIA Quadro P2000"));
         assertTrue(probe.contains("runtime-probe-only-not-qualification"));
 
-        assertTrue(stage.contains("monusac-hovernet-fast-heldout-20260824-v1"));
+        assertTrue(stage.contains("monusac-hovernet-fast-heldout-20260824-v2-remediation"));
         assertTrue(stage.contains("pathlab.model-worker/2"));
+        assertTrue(stage.contains("Service 2.1.8"));
         assertTrue(stage.contains("qualificationCohortManifestSha256=$cohortSha"));
         assertTrue(stage.contains("scope='local-benchmark'"));
         assertTrue(stage.contains("SetSecurityDescriptorSddlForm"));
