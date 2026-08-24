@@ -244,6 +244,42 @@ final class AcquisitionScriptContractTest {
     }
 
     @Test
+    void hoverNetCandidateFreezesCodeAndWeightsWithSeparateRightsAndSharedRuntime() throws Exception {
+        var script = Files.readString(Path.of("scripts/acquire-hovernet-candidate.ps1"));
+
+        assertTrue(script.contains("hovernet-fast-monusac-v1"));
+        assertTrue(script.contains("PathLabHoverNetAcquisition"));
+        assertTrue(script.contains("$modelLimit = 10GB"));
+        assertTrue(script.contains("https://github.com/vqdang/hover_net.git"));
+        assertTrue(script.contains("https://codeload.github.com/vqdang/hover_net/zip/"));
+        assertTrue(script.contains("67e2ce5e3f1a64a2ece77ad1c24233653a9e0901"));
+        assertTrue(script.contains("13qkxDqv7CUqxN-l5CpeFVmc24mDw6CeV"));
+        assertTrue(script.contains("hovernet_fast_monusac_type_tf2pytorch.tar"));
+        assertTrue(script.contains("150995854L"));
+        assertTrue(script.contains("codeLicense='MIT'"));
+        assertTrue(script.contains("weightLicense='CC-BY-NC-SA-4.0'"));
+        assertTrue(script.contains("codeAndWeightLicensesReviewedSeparately=$true"));
+        assertTrue(script.contains("private-research-restricted"));
+        assertTrue(script.contains("atlasCleanEligible=$false"));
+        assertTrue(script.contains("upstreamChecksumAvailable=$false"));
+        assertTrue(script.contains("Get-FileHash $weightPartial -Algorithm SHA256"));
+        assertTrue(script.contains("for ($attempt = 1; $attempt -le 3; $attempt++)"));
+        assertTrue(script.contains("$chunkBytes = 8MB"));
+        assertTrue(script.contains("'--range'"));
+        assertTrue(script.contains("Content-Range"));
+        assertTrue(script.contains("bytes $offset-$end/$weightBytes"));
+        assertTrue(script.contains("source-integrity-frozen-after-first-acquisition"));
+        assertTrue(script.contains("sharedRuntimeCandidate='he-dinov2-small-v1/1'"));
+        assertTrue(script.contains("runtimeCopiedIntoCandidate=$false"));
+        assertTrue(script.contains("qualificationStatus='not_evaluable'"));
+        assertTrue(script.contains("Existing HoVer-Net candidate artifact checksum changed"));
+        assertTrue(script.contains("PathLab-Forge/2.1 research acquisition"));
+        assertTrue(script.contains("'--retry' '3' '--max-time' '300'"));
+        assertFalse(script.contains("RepetitionInterval"));
+        assertFalse(script.contains("--continue-at"));
+    }
+
+    @Test
     void monusacCohortIsPatientHeldOutFourOrganAndChecksumBounded() throws Exception {
         var script = Files.readString(Path.of("scripts/build-monusac-cell-cohort.ps1"));
 

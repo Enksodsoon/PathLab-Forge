@@ -318,3 +318,16 @@ declined, so the installed service remains `2.1.5` and the one unchanged-gate
 signed remediation campaign is pending. Watershed remains a fail-closed
 fallback; it is not qualified or activated. Exact results and hashes are in
 `docs/evidence/monusac-cell-qualification-result-20260824.md`.
+
+The official HoVer-Net code at revision
+`67e2ce5e3f1a64a2ece77ad1c24233653a9e0901` and the 150,995,854-byte fast
+MoNuSAC checkpoint are now locally acquired and checksum-frozen. Code and
+weight rights remain separate: the code is MIT, while the checkpoint stays in
+the MoNuSAC `CC-BY-NC-SA-4.0` restricted research lineage and is not
+Atlas-Clean eligible. Safe CPU checkpoint loading succeeded in the shared
+PyTorch 2.7.1+cu126 runtime, but the original post-processing dependencies are
+absent. The candidate remains `not_evaluable` and inactive until a pinned
+compatibility overlay or reviewed minimal adapter passes offline P2000
+inference and the unchanged 23-patient held-out gates. Exact hashes and the
+remaining boundary are recorded in
+`docs/evidence/hovernet-candidate-acquisition-result-20260824.md`.
