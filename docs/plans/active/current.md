@@ -331,3 +331,14 @@ compatibility overlay or reviewed minimal adapter passes offline P2000
 inference and the unchanged 23-patient held-out gates. Exact hashes and the
 remaining boundary are recorded in
 `docs/evidence/hovernet-candidate-acquisition-result-20260824.md`.
+
+The checksum-pinned compatibility adapter then reached real P2000 execution as
+`cell-hovernet-fast-monusac-v1/4`. It references the existing PyTorch
+2.7.1+cu126 runtime instead of copying or mutating it, and adds a locally
+manifested SciPy 1.18.1 overlay. Two offline synthetic probes produced the same
+72 instance detections and research-category counts using 532 MiB peak VRAM
+and approximately 1.1 GiB peak RAM. This is synthetic runtime conformance only,
+not MoNuSAC held-out accuracy or qualification. The pack remains inactive and
+`not_evaluable`; service integration, immutable progress/checkpoints, and the
+unchanged 23-patient gates remain. Exact hashes and measurements are in
+`docs/evidence/hovernet-runtime-probe-result-20260824.md`.

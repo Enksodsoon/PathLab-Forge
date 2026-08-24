@@ -280,6 +280,43 @@ final class AcquisitionScriptContractTest {
     }
 
     @Test
+    void hoverNetAdapterIsPinnedOfflineSharedRuntimeAndResearchOnly() throws Exception {
+        var build = Files.readString(Path.of("scripts/build-hovernet-fast-monusac-pack.ps1"));
+        var probe = Files.readString(Path.of("scripts/probe-hovernet-fast-monusac.ps1"));
+        var worker = Files.readString(Path.of("src/main/resources/model-workers/hovernet-worker.py"));
+
+        assertTrue(build.contains("cell-hovernet-fast-monusac-v1"));
+        assertTrue(build.contains("67e2ce5e3f1a64a2ece77ad1c24233653a9e0901"));
+        assertTrue(build.contains("5b1c642d9884e20c8fa0b80a6cfef793f483d47eaa5df6183baddc3f57e88a35"));
+        assertTrue(build.contains("scipy-1.18.1-cp312-cp312-win_amd64.whl"));
+        assertTrue(build.contains("5e4d44984abc0020154ea81b247adeddcc3ac5527b975ff798bd1ba0adc513c2"));
+        assertTrue(build.contains("$modelLimit = 10GB"));
+        assertTrue(build.contains("sharedRuntimePack='he-dinov2-small-v1'"));
+        assertTrue(build.contains("runtimeCopiedIntoCandidate=$false"));
+        assertTrue(build.contains("analysisNetwork='disabled'"));
+        assertFalse(build.contains("pip install"));
+
+        assertTrue(worker.contains("weights_only=True"));
+        assertTrue(worker.contains("socket.socket = blocked_socket"));
+        assertTrue(worker.contains("torch.use_deterministic_algorithms(True)"));
+        assertTrue(worker.contains("create_model(mode=\"fast\", nr_types=5)"));
+        assertTrue(worker.contains("MICRO_BATCH = 1"));
+        assertTrue(worker.contains("from scipy import ndimage"));
+        assertTrue(worker.contains("researchTypeCounts"));
+        assertTrue(worker.contains("analysisNetwork\": \"disabled"));
+        assertFalse(worker.contains("diagnosis"));
+        assertFalse(worker.contains("clinicalScore"));
+        assertFalse(worker.contains("embeddings"));
+
+        assertTrue(probe.contains("PATHLAB_ANALYSIS_NETWORK = 'disabled'"));
+        assertTrue(probe.contains("HF_HUB_OFFLINE = '1'"));
+        assertTrue(probe.contains("TRANSFORMERS_OFFLINE = '1'"));
+        assertTrue(probe.contains("CUBLAS_WORKSPACE_CONFIG = ':4096:8'"));
+        assertTrue(probe.contains("NVIDIA Quadro P2000"));
+        assertTrue(probe.contains("runtime-probe-only-not-qualification"));
+    }
+
+    @Test
     void monusacCohortIsPatientHeldOutFourOrganAndChecksumBounded() throws Exception {
         var script = Files.readString(Path.of("scripts/build-monusac-cell-cohort.ps1"));
 
