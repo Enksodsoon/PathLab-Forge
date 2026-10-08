@@ -9,6 +9,7 @@ import org.pathlab.forge.library.DatasetInspector;
 import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.runtime.DataRootLock;
+import org.pathlab.forge.runtime.DesktopStartup;
 import org.pathlab.forge.runtime.ForgeCommandLine;
 import org.pathlab.forge.runtime.ReaderRuntimeSelfTest;
 import org.pathlab.forge.benchmark.ForgeBenchmark;
@@ -19,12 +20,14 @@ public final class ForgeApp {
     public static void main(String[] args)
             throws IOException, InterruptedException, DatasetInspectionException {
         var command = ForgeCommandLine.parse(args);
+        if (command.dataRoot() == null || command.desktop()) ForgePaths.migrateLegacyMacData();
         var paths = command.dataRoot() == null
                 ? ForgePaths.defaults()
                 : ForgePaths.at(command.dataRoot());
         if (command.port() != null) {
             System.setProperty("pathlab.forge.port", Integer.toString(command.port()));
         }
+        if (command.desktop()) System.setProperty("pathlab.forge.desktop", "true");
         try (var dataRootLock = acquireOrOpenExisting(paths, command)) {
             if (dataRootLock == null) {
                 return;
@@ -66,12 +69,24 @@ public final class ForgeApp {
                 }
                 var stopped = new CountDownLatch(1);
                 var server = ForgeServer.start(paths, repository);
-                Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                    server.close();
-                    stopped.countDown();
-                }, "pathlab-forge-shutdown"));
-                System.out.println("PathLab Forge permanent local link: " + server.appUri());
-                System.out.println("Authorize a new browser once with: " + server.launchUri());
+                var closing = new java.util.concurrent.atomic.AtomicBoolean();
+                Runnable stop = () -> {
+                    if (closing.compareAndSet(false, true)) {
+                        try {
+                            server.close();
+                        } finally {
+                            stopped.countDown();
+                        }
+                    }
+                };
+                Runtime.getRuntime().addShutdownHook(new Thread(stop, "pathlab-forge-shutdown"));
+                if (command.desktop()) {
+                    DesktopStartup.ready(System.out, server.appUri(), server.launchUri(), server.desktopSecret());
+                    DesktopStartup.watchOwner(System.in, stop);
+                } else {
+                    System.out.println("PathLab Forge permanent local link: " + server.appUri());
+                    System.out.println("Authorize a new browser once with: " + server.launchUri());
+                }
                 if (!command.noBrowser()
                         && Desktop.isDesktopSupported()
                         && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
@@ -86,8 +101,8 @@ public final class ForgeApp {
             ForgePaths paths, ForgeCommandLine command) throws IOException {
         try {
             return DataRootLock.acquire(paths.dataRoot());
-        } catch (IOException error) {
-            if (!command.serve()) {
+        } catch (DataRootLock.AlreadyOwnedException error) {
+            if (!command.serve() || command.desktop() || command.port() != null) {
                 throw error;
             }
             var uri = java.net.URI.create("http://127.0.0.1:51274/app");

@@ -9,6 +9,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
 public final class DataRootLock implements AutoCloseable {
+    public static final class AlreadyOwnedException extends IOException {
+        private static final long serialVersionUID = 1L;
+        private AlreadyOwnedException(Throwable cause) {
+            super("PathLab Forge data root is already owned by another process", cause);
+        }
+    }
     private final FileChannel channel;
     private final FileLock lock;
 
@@ -28,12 +34,15 @@ public final class DataRootLock implements AutoCloseable {
             var lock = channel.tryLock();
             if (lock == null) {
                 channel.close();
-                throw new IOException("PathLab Forge data root is already owned by another process");
+                throw new AlreadyOwnedException(null);
             }
             return new DataRootLock(channel, lock);
         } catch (OverlappingFileLockException error) {
             channel.close();
-            throw new IOException("PathLab Forge data root is already owned by another process", error);
+            throw new AlreadyOwnedException(error);
+        } catch (IOException error) {
+            channel.close();
+            throw error;
         }
     }
 

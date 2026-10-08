@@ -9,6 +9,18 @@ import org.junit.jupiter.api.Test;
 
 final class ForgeCommandLineTest {
     @Test
+    void desktopUsesPrivateDynamicServiceAndRejectsOtherCommands() {
+        var command = ForgeCommandLine.parse(new String[] {"--desktop"});
+        assertTrue(command.desktop());
+        assertTrue(command.serve());
+        assertTrue(command.noBrowser());
+        assertEquals(0, command.port());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> ForgeCommandLine.parse(new String[] {"--desktop", "--port", "1234"}));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> ForgeCommandLine.parse(new String[] {"--desktop", "--import", "case.svs"}));
+    }
+    @Test
     void parsesIsolatedRootBenchmarkAndPerformanceReport() {
         var command = ForgeCommandLine.parse(new String[] {
             "--serve",

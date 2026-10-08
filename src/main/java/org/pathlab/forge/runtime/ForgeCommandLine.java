@@ -14,7 +14,8 @@ public record ForgeCommandLine(
         Path performanceReport,
         boolean readerSelfTest,
         List<Path> selfTestSources,
-        Integer port) {
+        Integer port,
+        boolean desktop) {
     public ForgeCommandLine {
         selfTestSources = List.copyOf(selfTestSources);
     }
@@ -29,9 +30,11 @@ public record ForgeCommandLine(
         boolean readerSelfTest = false;
         var selfTestSources = new ArrayList<Path>();
         Integer port = null;
+        boolean desktop = false;
         for (int index = 0; index < args.length; index++) {
             switch (args[index]) {
                 case "--serve" -> serve = true;
+                case "--desktop" -> desktop = true;
                 case "--no-browser" -> noBrowser = true;
                 case "--data-root" -> dataRoot = Path.of(value(args, ++index, "--data-root"));
                 case "--import" -> importSource = Path.of(value(args, ++index, "--import"));
@@ -46,9 +49,19 @@ public record ForgeCommandLine(
                 default -> throw new IllegalArgumentException("Unknown argument: " + args[index]);
             }
         }
+        if (desktop) {
+            if (importSource != null || benchmarkSource != null || readerSelfTest
+                    || performanceReport != null || !selfTestSources.isEmpty()
+                    || (port != null && port != 0)) {
+                throw new IllegalArgumentException("--desktop cannot run CLI jobs or a fixed port");
+            }
+            serve = true;
+            noBrowser = true;
+            port = 0;
+        }
         return new ForgeCommandLine(
                 serve, noBrowser, dataRoot, importSource, benchmarkSource, performanceReport,
-                readerSelfTest, selfTestSources, port);
+                readerSelfTest, selfTestSources, port, desktop);
     }
 
     private static String value(String[] args, int index, String option) {

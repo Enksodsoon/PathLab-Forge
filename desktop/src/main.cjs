@@ -1,0 +1,202 @@
+const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require('electron');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { localUrl, readiness, externalUrl, allowedPath, windowState, serviceEnvironment } = require('./policy.cjs');
+
+// Squirrel invokes these during install/update; no service or data root is opened.
+if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)$/.test(value))) {
+  const update = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
+  const remove = process.argv.includes('--squirrel-uninstall');
+  if (!process.argv.includes('--squirrel-obsolete') && fs.existsSync(update)) {
+    const child = spawn(update, [remove ? '--removeShortcut' : '--createShortcut', path.basename(process.execPath)], { windowsHide: true });
+    child.once('exit', () => app.quit());
+    child.once('error', () => app.quit());
+  } else app.quit();
+} else if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  let window, service, origin, desktopSecret, quitting = false, stopped = false;
+  const selected = new Set();
+  const externalOrigins = ['https://github.com'];
+  const smoke = process.argv.includes('--forge-smoke-test');
+  const defaultDataRoot = process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData/Local'), 'PathLab Forge')
+    : path.join(app.getPath('home'), 'Library/Application Support/PathLab Forge');
+  const dataRoot = smoke ? fs.mkdtempSync(path.join(os.tmpdir(), 'forge-desktop-smoke-')) : defaultDataRoot;
+  // Chromium state is separate so it cannot create the legacy migration target.
+  const desktopRoot = smoke ? path.join(dataRoot, 'desktop') : `${dataRoot} Desktop`;
+  fs.mkdirSync(desktopRoot, { recursive: true });
+  app.setPath('userData', desktopRoot);
+  const preferencesFile = path.join(desktopRoot, 'desktop-window.json');
+  const focus = () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } };
+  app.on('second-instance', focus);
+  app.on('activate', focus);
+  app.on('window-all-closed', () => app.quit());
+  app.on('before-quit', event => {
+    quitting = true;
+    if (!service || stopped) return;
+    event.preventDefault();
+    // Closing stdin lets Java drain and close its queue and repository before exit.
+    service.stdin.end();
+    const timer = setTimeout(() => service.kill(), 10000);
+    timer.unref();
+  });
+
+  const trusted = event => {
+    if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
+        || !localUrl(event.senderFrame.url, origin)) throw new Error('Untrusted desktop caller');
+  };
+  const handle = (name, action) => ipcMain.handle(name, async (event, ...args) => { trusted(event); return action(...args); });
+  const remember = async (values, purpose) => {
+    const response = await fetch(`${origin}/api/desktop/selections`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forge-Desktop-Secret': desktopSecret },
+      body: JSON.stringify({ paths: values, purpose }), signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error('Native selection could not be authorized');
+    for (const value of values) selected.add(path.resolve(value));
+    return values;
+  };
+  handle('forge:select-sources', async () => {
+    const result = await dialog.showOpenDialog(window, { title: 'Open slide sources', properties: ['openFile', 'multiSelections'] });
+    return result.canceled ? [] : remember(result.filePaths, 'import');
+  });
+  handle('forge:select-directory', async () => {
+    const result = await dialog.showOpenDialog(window, { title: 'Open slide folder', properties: ['openDirectory'] });
+    return result.canceled ? null : (await remember(result.filePaths, 'directory'))[0];
+  });
+  handle('forge:export-destination', async name => {
+    if (typeof name !== 'string' || name.length > 200 || !name || /[\x00-\x1f/\\:]/.test(name)) throw new Error('Invalid export name');
+    const result = await dialog.showSaveDialog(window, { title: 'Export', defaultPath: name });
+    return result.canceled || !result.filePath ? null : (await remember([result.filePath], 'export'))[0];
+  });
+  handle('forge:reveal', value => {
+    if (!allowedPath(value, selected)) throw new Error('Path was not selected in a native dialog');
+    shell.showItemInFolder(path.resolve(value));
+  });
+  handle('forge:external', async value => {
+    if (!externalUrl(value, externalOrigins)) throw new Error('External destination is not approved');
+    await shell.openExternal(value);
+  });
+
+  function startService() {
+    const root = app.isPackaged ? path.join(process.resourcesPath, 'service') : path.join(__dirname, '../resources/service');
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime-manifest.json'), 'utf8'));
+    if (smoke && manifest.internalValidation !== true) throw new Error('Smoke requires an internal validation package');
+    if (manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error('Java runtime target mismatch');
+    const java = path.join(root, 'runtime/bin', process.platform === 'win32' ? 'java.exe' : 'java');
+    const args = ['-Xmx512m', '--enable-native-access=ALL-UNNAMED',
+      `-Dpathlab.forge.runtime.requireProduction=${manifest.internalValidation !== true}`,
+      `-Dpathlab.forge.readerDataRoot=${path.join(root, 'reader-data')}`];
+    if (manifest.viewerOrigin) {
+      const viewer = new URL(manifest.viewerOrigin);
+      if (viewer.protocol !== 'https:' || viewer.username || viewer.password || viewer.origin !== manifest.viewerOrigin) throw new Error('Invalid Viewer origin');
+      externalOrigins.push(viewer.origin);
+      args.push(`-Dpathlab.forge.viewer.defaultOrigin=${viewer.origin}`);
+    }
+    args.push('-cp', path.join(root, 'lib/*'), 'org.pathlab.forge.ForgeApp', '--desktop', '--data-root', dataRoot);
+    const environment = serviceEnvironment(process.env);
+    service = spawn(java, args, { cwd: root, env: environment, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    service.stdin.on('error', () => {});
+    // Never forward child logs: readiness contains a one-use bootstrap secret.
+    service.stderr.resume();
+    return new Promise((resolve, reject) => {
+      let buffer = '', ready = false;
+      const timeout = setTimeout(() => { service.stdin.end(); reject(new Error('Local service startup timed out')); }, 60000);
+      service.once('error', () => { clearTimeout(timeout); reject(new Error('Unable to start the bundled Java service')); });
+      service.once('exit', () => {
+        clearTimeout(timeout); stopped = true;
+        if (!ready) reject(new Error('Local service exited before readiness'));
+        else if (!quitting) { dialog.showErrorBox('PathLab Forge', 'The local service stopped. Reopen Forge to recover queued work.'); app.quit(); }
+        else app.quit();
+      });
+      service.stdout.on('data', chunk => {
+        if (ready) return;
+        buffer += chunk.toString('utf8');
+        if (buffer.length > 65536) { clearTimeout(timeout); service.stdin.end(); reject(new Error('Invalid local service startup')); return; }
+        let end;
+        while ((end = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 1);
+          try {
+            const record = readiness(line);
+            if (record) { ready = true; clearTimeout(timeout); buffer = ''; resolve(record); return; }
+          } catch { clearTimeout(timeout); service.stdin.end(); reject(new Error('Invalid local service readiness')); return; }
+        }
+      });
+    });
+  }
+
+  app.whenReady().then(async () => {
+    const record = await startService();
+    origin = record.origin;
+    desktopSecret = record.desktopSecret;
+    const localSession = session.fromPartition('forge-desktop');
+    localSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    localSession.setPermissionCheckHandler(() => false);
+    // Desktop assets and API use one local origin. No renderer network access to external sites.
+    localSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !localUrl(details.url, origin) }));
+    let state;
+    try { state = windowState(JSON.parse(fs.readFileSync(preferencesFile, 'utf8'))); } catch { state = windowState(null); }
+    window = new BrowserWindow({ ...state, minWidth: 640, minHeight: 480, show: false, title: 'PathLab Forge',
+      webPreferences: { preload: path.join(__dirname, 'preload.cjs'), partition: 'forge-desktop',
+        sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: !app.isPackaged } });
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', (event, url) => { if (!localUrl(url, origin)) event.preventDefault(); });
+    window.webContents.on('will-redirect', (event, url) => { if (!localUrl(url, origin)) event.preventDefault(); });
+    window.webContents.on('will-attach-webview', event => event.preventDefault());
+    window.webContents.on('render-process-gone', () => { if (!quitting) { dialog.showErrorBox('PathLab Forge', 'The desktop view stopped. Reopen Forge to recover your work.'); app.quit(); } });
+    window.on('close', () => {
+      try {
+        fs.writeFileSync(`${preferencesFile}.partial`, JSON.stringify(windowState(window.getNormalBounds())));
+        fs.renameSync(`${preferencesFile}.partial`, preferencesFile);
+      } catch { /* A preferences failure must not prevent service shutdown. */ }
+    });
+    const command = value => window.webContents.send('forge:command', value);
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+      { label: 'File', submenu: [{ label: 'Open slides…', accelerator: 'CmdOrCtrl+O', click: () => command('open-sources') },
+        { label: 'Open folder…', click: () => command('open-directory') }, { type: 'separator' }, { role: 'quit' }] },
+      { role: 'editMenu' },
+      { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+      { role: 'windowMenu' },
+    ]));
+    await window.loadURL(record.launchUrl);
+    window.show();
+    if (smoke) {
+      const renderer = await window.webContents.executeJavaScript(`(async () => {
+        const session = await fetch('/api/session');
+        const datasets = await fetch('/api/datasets');
+        const deadline = Date.now() + 10000;
+        while (!document.body.innerText.includes('Choose a slide to begin') && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        const unauthorizedGrant = await fetch('/api/desktop/selections', { method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Forge-Desktop-Secret': 'invalid' },
+          body: JSON.stringify({ paths: ['/unselected-file'], purpose: 'import' }) });
+        const rejected = async action => { try { await action(); return false; } catch { return true; } };
+        return {
+          noNode: typeof process === 'undefined' && typeof require === 'undefined',
+          bridge: typeof window.forgeDesktop?.selectSources === 'function',
+          rendered: !!document.querySelector('[aria-label="PathLab Forge"]'),
+          authenticatedApi: session.ok && datasets.ok,
+          workspaceReady: document.body.innerText.includes('Choose a slide to begin'),
+          rendererGrantRejected: !unauthorizedGrant.ok,
+          invalidIpcRejected: await rejected(() => window.forgeDesktop.openExternal('file:///outside'))
+            && await rejected(() => window.forgeDesktop.revealPath('/unselected-file'))
+            && await rejected(() => window.forgeDesktop.selectExportDestination('../outside'))
+        };
+      })()`);
+      const preferences = window.webContents.getLastWebPreferences();
+      const screenshot = path.join(dataRoot, 'desktop-smoke.png');
+      fs.writeFileSync(screenshot, (await window.webContents.capturePage()).toPNG());
+      const result = { packaged: app.isPackaged, renderer, sandbox: preferences.sandbox, screenshot,
+        contextIsolation: preferences.contextIsolation, nodeIntegration: preferences.nodeIntegration, servicePid: service.pid };
+      process.stdout.write(`PATHLAB_FORGE_SMOKE ${JSON.stringify(result)}\n`);
+      app.quit();
+    }
+  }).catch(() => {
+    dialog.showErrorBox('PathLab Forge', 'Forge could not start its bundled local service. Check that the desktop package includes the matching Java runtime and service.');
+    app.quit();
+  });
+}
