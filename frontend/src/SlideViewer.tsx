@@ -75,6 +75,9 @@ export const SlideViewer = memo(function SlideViewer({
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
   const cropGestureRef = useRef<CropPointerGesture | null>(null)
+  const cropDrawInitialRef = useRef<CropBox | undefined>(undefined)
+  const cropBoxRef = useRef(cropBox)
+  cropBoxRef.current = cropBox
   const optimizingRef = useRef(false)
   const draftRef = useRef<AnnotationPoint[]>([])
   const [draft, setDraft] = useState<AnnotationPoint[]>([])
@@ -222,6 +225,9 @@ export const SlideViewer = memo(function SlideViewer({
     const multiClick = ['polygon', 'polyline', 'angle'].includes(activeTool)
     const sampled = ['freehand', 'brush_add', 'brush_subtract'].includes(activeTool)
     const cancel = () => {
+      const initialCrop = cropGestureRef.current?.initial || cropDrawInitialRef.current
+      if (initialCrop) onCropChange?.(initialCrop)
+      cropDrawInitialRef.current = undefined
       dragStartRef.current = null
       cropGestureRef.current = null
       editRef.current = null
@@ -245,6 +251,7 @@ export const SlideViewer = memo(function SlideViewer({
       if (!drawing) return
       event.preventDefaultAction = true
       dragStartRef.current = sourcePointFromPixel(event.position)
+      if (cropEditing) cropDrawInitialRef.current = cropBoxRef.current
       if (!cropEditing && !multiClick) setPoints([dragStartRef.current])
     }
     const drag = (event: ViewerPointerEvent) => {
@@ -277,6 +284,7 @@ export const SlideViewer = memo(function SlideViewer({
       dragStartRef.current = null
       if (cropEditing) {
         onCropChange?.(cropFromPoints(start, end, sourceWidth, sourceHeight))
+        cropDrawInitialRef.current = undefined
         return
       }
       if (activeTool === 'point' || activeTool === 'text') {
@@ -501,6 +509,11 @@ export const SlideViewer = memo(function SlideViewer({
     }
   }
 
+  const cancelCropGesture = () => {
+    if (cropGestureRef.current) onCropChange?.(cropGestureRef.current.initial)
+    cropGestureRef.current = null
+  }
+
   const showCrop = Boolean(
     cropBox
     && shouldShowCropOverlay(cropEditing, cropBox, sourceWidth, sourceHeight),
@@ -579,7 +592,7 @@ export const SlideViewer = memo(function SlideViewer({
                 onPointerDown={(event) => startCropGesture(event, 'move')}
                 onPointerMove={continueCropGesture}
                 onPointerUp={endCropGesture}
-                onPointerCancel={endCropGesture}
+                onPointerCancel={cancelCropGesture}
               />
               {(Object.keys(cropHandleLabels) as CropHandle[]).map((handle) => (
                 <button
@@ -590,7 +603,7 @@ export const SlideViewer = memo(function SlideViewer({
                   onPointerDown={(event) => startCropGesture(event, 'resize', handle)}
                   onPointerMove={continueCropGesture}
                   onPointerUp={endCropGesture}
-                  onPointerCancel={endCropGesture}
+                  onPointerCancel={cancelCropGesture}
                 />
               ))}
             </>
