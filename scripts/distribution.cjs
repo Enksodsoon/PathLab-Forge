@@ -5,6 +5,48 @@ const { inventory, sha256, targets, validateReview } = require('../desktop/relea
 const root = path.join(__dirname, '..');
 const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 const write = (file, value) => { fs.writeFileSync(`${file}.partial`, JSON.stringify(value, null, 2) + '\n'); fs.renameSync(`${file}.partial`, file); };
+function collectNpm(projectRoot, project, output) {
+  const store = path.join(projectRoot, 'node_modules');
+  if (!fs.existsSync(store)) throw new Error(`Install frozen ${project} dependencies first`);
+  const records = [], modulesToVisit = [store], packages = new Set(), modulesVisited = new Set();
+  const virtualStore = path.join(store, '.pnpm');
+  if (fs.existsSync(virtualStore)) for (const entry of fs.readdirSync(virtualStore)) {
+    const modules = path.join(virtualStore, entry, 'node_modules');
+    if (fs.existsSync(modules)) modulesToVisit.push(modules);
+  }
+  for (const modules of modulesToVisit) {
+    const actualModules = fs.realpathSync(modules);
+    if (modulesVisited.has(actualModules)) continue;
+    modulesVisited.add(actualModules);
+    const names = fs.readdirSync(actualModules).filter(name => !name.startsWith('.')).flatMap(name => name.startsWith('@')
+      ? fs.readdirSync(path.join(actualModules, name)).map(child => `${name}/${child}`) : [name]);
+    for (const name of names) {
+      const candidate = path.join(actualModules, name);
+      if (!fs.existsSync(path.join(candidate, 'package.json'))) continue;
+      const packageRoot = fs.realpathSync(candidate);
+      if (packages.has(packageRoot)) continue;
+      packages.add(packageRoot);
+      const metadata = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+      if (typeof metadata.name !== 'string' || !metadata.name || typeof metadata.version !== 'string' || !metadata.version) throw new Error('Installed package metadata is incomplete');
+      if (fs.existsSync(path.join(packageRoot, 'node_modules'))) modulesToVisit.push(path.join(packageRoot, 'node_modules'));
+      const legal = fs.readdirSync(packageRoot).filter(file => /^(license|notice|copying|copyright)/i.test(file)
+        && fs.statSync(path.join(packageRoot, file)).isFile());
+      const notices = legal.map(file => {
+        const source = path.join(packageRoot, file), digest = sha256(source);
+        const destination = path.join(output, 'npm-notices', digest);
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.copyFileSync(source, destination);
+        return { file: `npm-notices/${digest}`, sha256: digest };
+      });
+      records.push({ project, name: metadata.name, version: metadata.version, declaredLicense: metadata.license || 'UNKNOWN',
+        packageJsonSha256: sha256(path.join(packageRoot, 'package.json')), decision: 'PENDING_REVIEW', notices });
+    }
+  }
+  const declared = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  const direct = Object.keys({ ...declared.dependencies, ...declared.devDependencies });
+  if (!records.length || !direct.every(name => records.some(record => record.name === name))) throw new Error(`Incomplete installed dependency inventory for ${project}`);
+  return records.sort((a, b) => `${a.name}@${a.version}:${a.packageJsonSha256}`.localeCompare(`${b.name}@${b.version}:${b.packageJsonSha256}`));
+}
 function collect(service, output, target) {
   if (!targets.has(target)) throw new Error('Unsupported inventory target');
   if (git(['status', '--porcelain', '--untracked-files=normal'])) throw new Error('Source archive requires clean committed tree');
@@ -17,35 +59,7 @@ function collect(service, output, target) {
   if (!fs.existsSync(dependencyFile)) throw new Error('Run distributionDependencies before collecting inputs');
   const lockfiles = ['frontend/pnpm-lock.yaml', 'desktop/pnpm-lock.yaml', 'reader-runtime.lock.properties', 'gradle/wrapper/gradle-wrapper.properties'];
   const dependencyInputs = lockfiles.map(file => ({ file, sha256: sha256(path.join(root, file)) }));
-  const npm = [];
-  for (const project of ['frontend', 'desktop']) {
-    const store = path.join(root, project, 'node_modules');
-    if (!fs.existsSync(store)) throw new Error(`Install frozen ${project} dependencies first`);
-    const moduleDirectories = [store];
-    for (const modules of moduleDirectories) {
-      const names = fs.readdirSync(modules).flatMap(name => name.startsWith('@')
-        ? fs.readdirSync(path.join(modules, name)).map(child => `${name}/${child}`) : [name]);
-      for (const name of names) {
-        const packageRoot = path.join(modules, name);
-        if (fs.lstatSync(packageRoot).isSymbolicLink() || !fs.existsSync(path.join(packageRoot, 'package.json'))) continue;
-        if (fs.existsSync(path.join(packageRoot, 'node_modules'))) moduleDirectories.push(path.join(packageRoot, 'node_modules'));
-        const metadata = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
-        const legal = fs.readdirSync(packageRoot).filter(file => /^(license|notice|copying|copyright)/i.test(file)
-          && fs.statSync(path.join(packageRoot, file)).isFile());
-        const notices = legal.map(file => {
-          const source = path.join(packageRoot, file);
-          const digest = sha256(source);
-          const destination = path.join(output, 'npm-notices', digest);
-          fs.mkdirSync(path.dirname(destination), { recursive: true });
-          fs.copyFileSync(source, destination);
-          return { file: `npm-notices/${digest}`, sha256: digest };
-        });
-        npm.push({ project, name: metadata.name, version: metadata.version, declaredLicense: metadata.license || 'UNKNOWN',
-          packageJsonSha256: sha256(path.join(packageRoot, 'package.json')), decision: 'PENDING_REVIEW', notices });
-      }
-    }
-  }
-  if (npm.length === 0) throw new Error('No installed dependency metadata discovered');
+  const npm = ['frontend', 'desktop'].flatMap(project => collectNpm(path.join(root, project), project, output));
   write(path.join(output, 'npm-dependencies.json'), npm);
   const legalFiles = ['java-notices', 'npm-notices'].flatMap(folder => {
     const base = path.join(output, folder);
@@ -78,7 +92,8 @@ function validateCatalog(directory, catalog) {
   const appInventory = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.appInventory.file), 'utf8'));
   if (appInventory.schema !== 'pathlab.forge.final-app-inventory/1' || appInventory.commit !== receipt.commit
       || `${appInventory.platform}-${appInventory.arch}` !== receipt.target || appInventory.version !== receipt.version
-      || appInventory.distribution !== 'PRODUCTION' || appInventory.sourceDirty !== false || !Array.isArray(appInventory.files)) throw new Error('Final app inventory identity mismatch');
+      || appInventory.distribution !== 'PRODUCTION' || appInventory.sourceDirty !== false || appInventory.payloadBound !== true
+      || appInventory.artifactSha256 !== catalog.artifact.sha256 || !Array.isArray(appInventory.files)) throw new Error('Final app inventory identity mismatch');
   const finalReview = JSON.parse(fs.readFileSync(path.join(directory, 'final-review.json'), 'utf8'));
   if (finalReview.schema !== 'pathlab.forge.final-distribution-review/1' || finalReview.commit !== receipt.commit
       || finalReview.target !== receipt.target || finalReview.version !== receipt.version
@@ -103,7 +118,7 @@ function validateCatalog(directory, catalog) {
   const required = receipt.target === 'win32-x64' ? ['Windows 10 22H2', 'Windows 11'] : ['macOS 14'];
   if (!required.every(os => acceptance.platforms?.includes(os)) || acceptance.dataPreserved !== true
       || acceptance.upgradeRollback !== true || acceptance.accessibility !== true || acceptance.journeys !== true) throw new Error('Native acceptance incomplete');
-  if (signature.timestampVerified !== true || signature.nestedVerified !== true || signature.fusesVerified !== true || signature.policyVerified !== true
+  if (signature.timestampVerified !== true || signature.nestedVerified !== true || signature.fusesVerified !== true || signature.policyVerified !== true || signature.payloadVerified !== true
       || signature.appInventorySha256 !== catalog.appInventory.sha256
       || (receipt.target.startsWith('darwin') && (signature.notarized !== true || signature.stapled !== true))) throw new Error('Signature evidence incomplete');
   return catalog;
@@ -117,4 +132,4 @@ if (require.main === module) {
     console.log(command === 'inventory' ? 'Inventory generated: NON_REDISTRIBUTABLE_PENDING_REVIEW' : 'Exact catalog inputs verified; publication remains separately authorized');
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
-module.exports = { collect, validateCatalog };
+module.exports = { collect, collectNpm, validateCatalog };

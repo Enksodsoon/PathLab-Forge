@@ -79,6 +79,9 @@ function preflight(serviceRoot, platform, arch, env = process.env) {
   exactInventory(serviceRoot, receipt.files);
   validateReview(read(path.join(directory, 'review.json')), receipt, directory);
   require('./native-signing.cjs').verifyService(serviceRoot);
+  execFileSync(path.join(serviceRoot, 'runtime/bin', platform === 'win32' ? 'java.exe' : 'java'), [
+    '-cp', path.join(serviceRoot, 'lib/*'), 'org.pathlab.forge.runtime.PackagedReaderRuntimeVerifier', serviceRoot, 'PRODUCTION',
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
   return true;
 }
 function signing(platform, env = process.env) {

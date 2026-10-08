@@ -33,7 +33,19 @@ function verifyMac(files) {
   }
 }
 function nativeFiles(root) {
-  return process.platform === 'darwin' ? machFiles(root) : inventory(root).filter(file => /\.(exe|dll|node)$/i.test(file.path)).map(file => path.resolve(root, file.path));
+  if (process.platform === 'darwin') return machFiles(root);
+  return inventory(root).filter(file => {
+    if (!file.sha256 || file.bytes < 64) return false;
+    const fd = fs.openSync(path.join(root, file.path), 'r'), header = Buffer.alloc(64);
+    try {
+      fs.readSync(fd, header, 0, header.length, 0);
+      if (header.toString('ascii', 0, 2) !== 'MZ') return false;
+      const offset = header.readUInt32LE(60), signature = Buffer.alloc(4);
+      if (offset > file.bytes - 4) return false;
+      fs.readSync(fd, signature, 0, 4, offset);
+      return signature.equals(Buffer.from('PE\0\0'));
+    } finally { fs.closeSync(fd); }
+  }).map(file => path.resolve(root, file.path));
 }
 function verifyService(root) {
   const files = nativeFiles(root);
@@ -45,16 +57,25 @@ async function signService(root) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime-manifest.json'), 'utf8'));
   if (manifest.distribution !== 'PRODUCTION' || manifest.internalValidation !== false
       || manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error('Sign only native staged production service');
-  const options = signing(process.platform);
-  if (process.platform === 'win32') {
-    const { sign } = await import(pathToFileURL(require.resolve('@electron/windows-sign')).href);
-    await sign({ ...options.windowsSign, files: nativeFiles(root) });
-  } else {
-    for (const file of nativeFiles(root)) run('codesign', ['--force', '--sign', options.osxSign.identity, '--timestamp', '--options', 'runtime',
-      '--entitlements', path.join(__dirname, 'service-entitlements.plist'), file]);
-  }
-  verifyService(root);
+  await signPayload(root);
   return { schema: 'pathlab.forge.service-signature/1', target: `${process.platform}-${process.arch}`,
     result: 'PASS', inventorySha256: require('node:crypto').createHash('sha256').update(JSON.stringify(inventory(root))).digest('hex') };
 }
-module.exports = { signService, verifyService, verifyWindows, verifyMac, nativeFiles, machFiles, run };
+async function signPayload(root) {
+  const options = signing(process.platform);
+  const files = nativeFiles(root);
+  if (!files.length) throw new Error('Native payload is empty');
+  if (process.platform === 'win32') {
+    const { sign } = await import(pathToFileURL(require.resolve('@electron/windows-sign')).href);
+    const unsigned = files.filter(file => { try { verifyWindows([file]); return false; } catch { return true; } });
+    if (unsigned.length) await sign({ ...options.windowsSign, files: unsigned });
+  } else {
+    for (const file of files) {
+      try { verifyMac([file]); continue; } catch { /* Sign once before reader manifest assembly. */ }
+      run('codesign', ['--force', '--sign', options.osxSign.identity, '--timestamp', '--options', 'runtime',
+        '--entitlements', path.join(__dirname, 'service-entitlements.plist'), file]);
+    }
+  }
+  verifyService(root);
+}
+module.exports = { signService, signPayload, verifyService, verifyWindows, verifyMac, nativeFiles, machFiles, run };

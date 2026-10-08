@@ -7,14 +7,7 @@ const production = fs.existsSync(manifestFile) && JSON.parse(fs.readFileSync(man
 const signatures = production ? release.signing(process.platform) : {};
 const policies = new Map();
 if (signatures.windowsSign) {
-  const options = { ...signatures.windowsSign };
-  signatures.windowsSign.hookFunction = async file => {
-    if (/[\\/]resources[\\/]service(?:[\\/]|$)/i.test(file)) return; // Already signed and inventoried.
-    try { require('./native-signing.cjs').verifyWindows([file]); return; }
-    catch { /* Sign new Electron/Squirrel files; preserve already trusted final-app bytes. */ }
-    const { sign } = await import('@electron/windows-sign');
-    await sign({ ...options, files: [file] });
-  };
+  signatures.windowsSign.hookModulePath = path.join(__dirname, 'windows-sign-hook.cjs');
 }
 module.exports = {
   packagerConfig: {
@@ -90,7 +83,7 @@ module.exports = {
   },
   makers: [
     { name: '@electron-forge/maker-squirrel', platforms: ['win32'], config: { name: 'PathLabForge',
-      noDelta: true, ...signatures } },
+      noDelta: true, additionalFiles: [{ src: 'LICENSES.chromium.html', target: 'lib\\net45\\LICENSES.chromium.html' }, { src: 'version', target: 'lib\\net45\\version' }], ...signatures } },
     { name: '@electron-forge/maker-dmg', platforms: ['darwin'], config: { format: 'ULFO' } },
   ],
   hooks: {
@@ -107,6 +100,15 @@ module.exports = {
           execFileSync('xcrun', ['stapler', 'staple', artifact], { stdio: ['ignore', 'pipe', 'pipe'] });
           execFileSync('xcrun', ['stapler', 'validate', artifact], { stdio: ['ignore', 'pipe', 'pipe'] });
         }
+      }
+      const { withPayload, comparePayload } = require('./installer-payload.cjs');
+      for (const result of results) for (const artifact of result.artifacts.filter(file => /\.(exe|dmg)$/.test(file))) {
+        const file = path.join(__dirname, `../build/distribution-inputs/final-app-${result.platform}-${result.arch}.json`);
+        const expected = JSON.parse(fs.readFileSync(file, 'utf8'));
+        await withPayload(artifact, async payload => {
+          const files = comparePayload(payload, expected.files, result.platform === 'win32');
+          fs.writeFileSync(file, JSON.stringify({ ...expected, files, payloadBound: true, artifactSha256: release.sha256(artifact) }) + '\n');
+        }, result.platform);
       }
       return results;
     },

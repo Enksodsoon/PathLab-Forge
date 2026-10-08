@@ -65,7 +65,7 @@ test('review and catalog fail closed on incomplete or mismatched exact evidence'
   fs.writeFileSync(path.join(directory, 'review.json'), JSON.stringify(review));
   const artifact = { file: 'installer.exe', sha256: sha256(path.join(directory, 'installer.exe')), bytes: fs.statSync(path.join(directory, 'installer.exe')).size };
   fs.writeFileSync(path.join(directory, 'final-app.json'), JSON.stringify({ schema: 'pathlab.forge.final-app-inventory/1', commit,
-    platform: 'win32', arch: 'x64', version: receipt.version, distribution: 'PRODUCTION', sourceDirty: false, files: receipt.files }));
+    platform: 'win32', arch: 'x64', version: receipt.version, distribution: 'PRODUCTION', sourceDirty: false, payloadBound: true, artifactSha256: artifact.sha256, files: receipt.files }));
   const appInventory = { file: 'final-app.json', sha256: sha256(path.join(directory, 'final-app.json')) };
   const finalReview = { schema: 'pathlab.forge.final-distribution-review/1', commit, target: receipt.target, version: receipt.version,
     artifactSha256: artifact.sha256, appInventorySha256: appInventory.sha256, distributionReviewSha256: sha256(path.join(directory, 'review.json')),
@@ -73,7 +73,7 @@ test('review and catalog fail closed on incomplete or mismatched exact evidence'
   fs.writeFileSync(path.join(directory, 'final-review.json'), JSON.stringify(finalReview));
   const evidence = { schema: 'pathlab.forge.native-acceptance/1', commit, target: receipt.target, version: receipt.version, artifactSha256: artifact.sha256, result: 'PASS', platforms: ['Windows 10 22H2', 'Windows 11'],
     dataPreserved: true, upgradeRollback: true, accessibility: true, journeys: true, timestampVerified: true, nestedVerified: true,
-    fusesVerified: true, policyVerified: true, appInventorySha256: appInventory.sha256 };
+    fusesVerified: true, policyVerified: true, payloadVerified: true, appInventorySha256: appInventory.sha256 };
   fs.writeFileSync(path.join(directory, 'acceptance.json'), JSON.stringify(evidence));
   fs.writeFileSync(path.join(directory, 'signature.json'), JSON.stringify({ ...evidence, schema: 'pathlab.forge.signature-verification/1' }));
   const catalog = { schema: 'pathlab.forge.release/1', commit, version: receipt.version, target: receipt.target, channel: 'candidate', inventorySha256: review.inventorySha256, sourceSha256: sourceHash,

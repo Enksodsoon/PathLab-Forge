@@ -397,10 +397,61 @@ tasks.register("distributionDependencies") {
     }
 }
 
+val electronReaderSource = layout.buildDirectory.dir("electron-reader-source")
+val electronService = layout.projectDirectory.dir("desktop/resources/service")
+val electronChannel = providers.gradleProperty("pathlab.forge.distributionChannel").orElse("MISSING")
+val electronOwnerReaders = providers.gradleProperty("pathlab.forge.readerRuntimeRoot").orElse("PENDING_REVIEW")
+val electronOwnerReaderDirectory = file(electronOwnerReaders.get())
+
+val stageElectronReaderSource = tasks.register<Sync>("stageElectronReaderSource") {
+    group = "distribution"
+    description = "Copies the reviewed owner runtime into managed build staging; never signs owner source files."
+    if (electronChannel.get() == "PRODUCTION") dependsOn("verifyReaderRuntimeBundle")
+    from(electronOwnerReaders)
+    into(electronReaderSource)
+    onlyIf { electronOwnerReaderDirectory.isDirectory }
+}
+
+val signElectronReaderPayload = tasks.register<Exec>("signElectronReaderPayload") {
+    group = "distribution"
+    description = "Signs reader native payload before its manifest/fingerprint/current pointer are assembled."
+    dependsOn(stageElectronReaderSource)
+    onlyIf { electronChannel.get() == "PRODUCTION" }
+    environment("PATH", frontendPath)
+    commandLine("node", "scripts/sign-distribution-service.cjs", electronReaderSource.get().asFile,
+        "build/distribution-inputs/reader-payload-signature.json", "READERS")
+}
+
+val cleanElectronReaders = tasks.register<Delete>("cleanElectronReaders") {
+    dependsOn("stageElectronService")
+    delete(electronService.dir("reader-data"), electronService.file("reader-runtime-manifest.json"),
+        electronService.file("NON_REDISTRIBUTABLE"))
+}
+
+val assembleElectronReaders = tasks.register<JavaExec>("assembleElectronReaders") {
+    group = "distribution"
+    description = "Installs signed readers and creates usable matching manifest/fingerprint/pointer in Electron service."
+    dependsOn(cleanElectronReaders, signElectronReaderPayload, tasks.classes)
+    onlyIf { electronOwnerReaderDirectory.isDirectory }
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.runtime.ReaderRuntimeAssembler"
+    args(electronReaderSource.get().asFile.absolutePath, electronService.dir("reader-data").asFile.absolutePath,
+        electronChannel.get(), readerPlatform)
+}
+
+tasks.register<JavaExec>("verifyElectronReaders") {
+    group = "verification"
+    dependsOn(assembleElectronReaders)
+    onlyIf { electronOwnerReaderDirectory.isDirectory || electronChannel.get() == "PRODUCTION" }
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.runtime.PackagedReaderRuntimeVerifier"
+    args(electronService.asFile.absolutePath, electronChannel.get())
+}
+
 tasks.register<Exec>("signElectronService") {
     group = "distribution"
     description = "Signs the native production service before final byte inventory; trusted identities required."
-    dependsOn("stageElectronService")
+    dependsOn("verifyElectronReaders")
     environment("PATH", frontendPath)
     commandLine("node", "scripts/sign-distribution-service.cjs", "desktop/resources/service", "build/distribution-inputs/service-signature.json")
 }
@@ -408,7 +459,7 @@ tasks.register<Exec>("signElectronService") {
 tasks.register<Exec>("distributionInventory") {
     group = "distribution"
     description = "Creates clean-commit source and staged-byte receipts, explicitly NON_REDISTRIBUTABLE."
-    dependsOn("stageElectronService", "distributionDependencies")
+    dependsOn("verifyElectronReaders", "distributionDependencies")
     if (providers.gradleProperty("pathlab.forge.distributionChannel").orNull == "PRODUCTION") dependsOn("signElectronService")
     environment("PATH", frontendPath)
     commandLine("node", "scripts/distribution.cjs", "inventory", "build/distribution-inputs",
