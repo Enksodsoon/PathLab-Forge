@@ -36,7 +36,7 @@
 | Nucleus candidates/geometry/accept/reject | Implemented; approximate candidates only | Integration M6 |
 | Registration manual transform | Implemented; saved manual landmarks, independent residuals and bounded overlay | Integration M6 |
 | Accepted private deterministic result delivery | Implemented; immutable scope/review/transform, OME and Teaching package SHA binding | Sync M9 + Integration M6 |
-| Non-AI signed Feature Center lifecycle | Implemented; install progress/cancel/enable/disable/uninstall/rollback; real signed catalog open | Integration M7; authenticated catalog absent |
+| Non-AI signed Feature Center lifecycle | Implemented; paired downloads or unpaired native signed-file import, progress/cancel/enable/disable/uninstall/rollback and source preservation tested | Integration M7; production key/packs and platform journeys open |
 | AI/training catalog entries | Deliberately unavailable and hidden | Integration M7; no model activation |
 | Study drafts/autosave/version/import/export/manual keys/provenance | Implemented; local CAS/autosave/version/recovery tests | Teaching M8 |
 | CSV/JSON/QTI/Moodle/Anki bounded import | Implemented text parsers; binary APKG/QTI archives unavailable | Teaching M8; no invented answers |
