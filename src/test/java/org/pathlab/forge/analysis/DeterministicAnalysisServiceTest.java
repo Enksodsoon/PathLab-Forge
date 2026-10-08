@@ -50,7 +50,15 @@ final class DeterministicAnalysisServiceTest {
                 var next = service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),tool,
                         tool.equals("nucleus_candidates") ? Map.of("darknessThreshold",150.0) : Map.of()));
                 assertEquals("SUCCEEDED", awaitTerminal(service,next.id()).status(), tool);
+                if (tool.equals("he")) {
+                    var he = service.get(next.id());
+                    assertEquals(8, he.outputs().get("maskWidth"));
+                    assertEquals(0, he.outputs().get("maskX"));
+                    var bits = java.util.BitSet.valueOf(java.util.Base64.getDecoder().decode(he.outputs().get("hematoxylinMaskBitsetBase64").toString()));
+                    assertTrue(bits.cardinality() <= ((Number) he.outputs().get("sampledPixels")).intValue(), "Threshold mask must exclude pixels outside the polygon");
+                }
                 if (tool.equals("tma")) {
+                    assertThrows(IllegalStateException.class, () -> service.persistReviewedTma(next.id(), 0));
                     var review = service.review(next.id());
                     assertEquals(9,review.objects().size());
                     var core = review.objects().get(0);
@@ -61,6 +69,24 @@ final class DeterministicAnalysisServiceTest {
                     assertEquals("true",saved.objects().get(0).properties().get("missing"));
                     assertEquals("Corrected core",service.review(next.id()).objects().get(0).classification());
                     assertThrows(IllegalStateException.class,()->service.saveReview(next.id(),review));
+                    var persisted = service.persistReviewedTma(next.id(), saved.revision());
+                    assertEquals(8, persisted.size(), "Missing cores must not become real annotation ROIs");
+                    assertEquals(8, service.persistReviewedTma(next.id(), saved.revision()).size());
+                    assertEquals(9, annotations.list(datasetId).size(), "Repeated persistence must not duplicate the grid");
+                    assertTrue(persisted.stream().allMatch(item -> item.parentId().equals(roi.id())
+                            && item.series() == 2 && item.z() == 3 && item.t() == 4 && item.viewRevision().equals(view.revision())));
+                    assertThrows(IllegalArgumentException.class, () -> service.submitTmaCore(next.id(), saved.revision(), core.id(), "qc", Map.of()));
+                    var present = saved.objects().get(1);
+                    var coreRun = awaitTerminal(service, service.submitTmaCore(next.id(), saved.revision(), present.id(), "qc", Map.of()).id());
+                    assertEquals("SUCCEEDED", coreRun.status());
+                    assertEquals(next.id(), coreRun.provenance().secondaryInputs().get("tmaRunId"));
+                    assertEquals("1", coreRun.provenance().secondaryInputs().get("tmaReviewRevision"));
+                    assertEquals(present.geometry(), coreRun.provenance().annotationGeometry());
+                    var directCoreRun = awaitTerminal(service, service.submit(new DeterministicAnalysisService.Request(datasetId, present.id(), "qc", Map.of())).id());
+                    assertEquals(next.id(), directCoreRun.provenance().secondaryInputs().get("tmaRunId"), "Every submission path must retain reviewed-core provenance");
+                    var changedReview = service.saveReview(next.id(), saved);
+                    assertTrue(service.get(coreRun.id()).stale(), "Changed review invalidates core-run acceptance");
+                    assertThrows(IllegalStateException.class, () -> service.persistReviewedTma(next.id(), changedReview.revision()));
                 }
                 if (tool.equals("stain_vector")) {
                     var review=service.review(next.id());
@@ -92,6 +118,11 @@ final class DeterministicAnalysisServiceTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertEquals("CANCELLED", service.cancel(cancelled.id()).status()); release.countDown();
             assertEquals("CANCELLED", awaitTerminal(service,cancelled.id()).status());
+            var firstPage = service.page(datasetId, 2, 0);
+            assertTrue(firstPage.hasMore()); assertEquals(2, firstPage.nextOffset());
+            var secondPage = service.page(datasetId, 2, firstPage.nextOffset());
+            assertTrue(secondPage.runs().stream().noneMatch(item -> firstPage.runs().stream().anyMatch(first -> first.id().equals(item.id()))));
+            assertThrows(IllegalArgumentException.class, () -> service.page(datasetId, 101, 0));
             Files.write(source,new byte[] {1,2,3,4});
             assertTrue(service.get(completedId).stale(),"External source change must invalidate an unchanged stored fingerprint");
             annotations.updateGeometry(datasetId,roi.id(),"0,0;6,0;0,6","","#ffaa22",1);

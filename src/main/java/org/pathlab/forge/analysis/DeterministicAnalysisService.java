@@ -63,6 +63,10 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         requireNativeView(dataset, roi);
         if (!request.tool().equals("registration")) new RoiMask(roi.type(), roi.geometry()).bounds();
         var secondary = new TreeMap<String, String>();
+        var derived = annotations.derivedProvenance(request.datasetId(), roi.id());
+        if (!derived.get("sourceRunId").isBlank()) {
+            secondary.putAll(tmaCoreInputs(derived.get("sourceRunId"), Long.parseLong(derived.get("reviewRevision")), roi.id()));
+        }
         if (request.tool().equals("registration")) {
             var targetDataset = datasets.find(request.targetDatasetId()).orElseThrow(() -> new IllegalArgumentException("Target dataset was not found"));
             var target = annotation(request.targetDatasetId(), request.targetAnnotationId());
@@ -112,6 +116,56 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         var result = new java.util.ArrayList<AnalysisRun>();
         for (var run : store.list(datasetId)) result.add(get(run.id()));
         return List.copyOf(result);
+    }
+
+    public HistoryPage page(String datasetId, int limit, int offset) throws IOException {
+        if (limit < 1 || limit > 100 || offset < 0 || offset > Integer.MAX_VALUE - 101) throw new IllegalArgumentException("Analysis history page is invalid");
+        var rows = store.list(datasetId, limit + 1, offset);
+        var result = new java.util.ArrayList<AnalysisRun>();
+        for (var run : rows.subList(0, Math.min(limit, rows.size()))) result.add(get(run.id()));
+        return new HistoryPage(List.copyOf(result), rows.size() > limit, offset + result.size());
+    }
+    public record HistoryPage(List<AnalysisRun> runs, boolean hasMore, int nextOffset) {}
+
+    public synchronized List<AnnotationRecord> persistReviewedTma(String id, long expectedReviewRevision) throws IOException {
+        var run = get(id); var reviewed = currentTmaReview(run, expectedReviewRevision);
+        return annotations.saveTmaCores(run.datasetId(), run.annotationId(), run.provenance().annotationRevision(),
+                id, reviewed.revision(), reviewed.objects());
+    }
+
+    public synchronized AnalysisRun submitTmaCore(String id, long expectedReviewRevision,
+            String coreId, String tool, Map<String, Double> configuration) throws IOException {
+        if (!Set.of("he", "tissue", "qc", "nucleus_candidates", "stain_vector", "normalize_preview").contains(tool)) {
+            throw new IllegalArgumentException("Select a deterministic image tool for the reviewed core");
+        }
+        tmaCoreInputs(id, expectedReviewRevision, coreId);
+        return submit(new Request(get(id).datasetId(), coreId, tool, configuration));
+    }
+
+    private Map<String, String> tmaCoreInputs(String id, long expectedReviewRevision, String coreId) throws IOException {
+        var run = get(id); var reviewed = currentTmaReview(run, expectedReviewRevision);
+        var core = reviewed.objects().stream().filter(item -> item.id().equals(coreId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Reviewed TMA core was not found"));
+        if ("true".equals(core.properties().get("missing"))) throw new IllegalArgumentException("Missing cores cannot be analyzed");
+        var saved = annotation(run.datasetId(), coreId); var provenance = annotations.derivedProvenance(run.datasetId(), coreId);
+        if (!saved.geometry().equals(core.geometry()) || !saved.parentId().equals(run.annotationId())
+                || !saved.classification().equals(core.classification()) || !provenance.get("sourceRunId").equals(id)
+                || !provenance.get("reviewRevision").equals(Long.toString(reviewed.revision()))
+                || !provenance.get("objectRevision").equals(Long.toString(core.revision()))) {
+            throw new IllegalStateException("Persist the exact reviewed grid before analyzing its cores");
+        }
+        return Map.of(
+                "tmaRunId", id, "tmaReviewRevision", Long.toString(reviewed.revision()),
+                "tmaCoreId", coreId, "tmaObjectRevision", Long.toString(core.revision()));
+    }
+
+    private AnalysisReview currentTmaReview(AnalysisRun run, long expectedRevision) throws IOException {
+        if (!run.tool().equals("tma") || !run.status().equals("SUCCEEDED") || run.stale()) {
+            throw new IllegalStateException("A current completed TMA grid is required");
+        }
+        var reviewed = review(run.id());
+        if (reviewed.revision() < 1 || reviewed.revision() != expectedRevision) throw new IllegalStateException("Save and reload the exact TMA review first");
+        return reviewed;
     }
     public AnalysisRun cancel(String id) throws IOException {
         var current = store.get(id);
@@ -253,6 +307,9 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         var maximumSamples = Math.toIntExact(((long) region.width() + stride - 1) / stride * (((long) region.height() + stride - 1) / stride));
         var h = new double[maximumSamples]; var e = new double[maximumSamples];
         int count = 0, hAbove = 0, eAbove = 0;
+        var maskWidth = (region.width() + stride - 1) / stride;
+        var maskHeight = (region.height() + stride - 1) / stride;
+        var hBits = new java.util.BitSet(maximumSamples); var eBits = new java.util.BitSet(maximumSamples);
         double hSum = 0, eSum = 0;
         for (var y = 0; y < region.height(); y += stride) {
             checkCancelled();
@@ -262,18 +319,27 @@ public final class DeterministicAnalysisService implements AutoCloseable {
                 var concentration = HeAnalysisService.concentrations(rgb[index * 3] & 255, rgb[index * 3 + 1] & 255, rgb[index * 3 + 2] & 255);
                 h[count] = concentration[0]; e[count] = concentration[1];
                 hSum += h[count]; eSum += e[count];
-                if (h[count] >= value(request, "hematoxylinThreshold", .15)) hAbove++;
-                if (e[count] >= value(request, "eosinThreshold", .15)) eAbove++;
+                var maskIndex = (y / stride) * maskWidth + x / stride;
+                if (h[count] >= value(request, "hematoxylinThreshold", .15)) { hAbove++; hBits.set(maskIndex); }
+                if (e[count] >= value(request, "eosinThreshold", .15)) { eAbove++; eBits.set(maskIndex); }
                 count++;
             }
         }
         if (count == 0) throw new IllegalArgumentException("ROI contains no sampled pixels");
         Arrays.sort(h, 0, count); Arrays.sort(e, 0, count);
-        return Map.of("sampledPixels", count, "samplingStride", stride,
+        var outputs = new TreeMap<String, Object>(Map.of("sampledPixels", count, "samplingStride", stride,
                 "hematoxylin", new HeAnalysisService.StainStats(hSum / count, h[(count - 1) / 2], h[(int) ((count - 1) * .9)], (double) hAbove / count),
                 "eosin", new HeAnalysisService.StainStats(eSum / count, e[(count - 1) / 2], e[(int) ((count - 1) * .9)], (double) eAbove / count),
                 "algorithm", HeAnalysisService.ALGORITHM, "hematoxylinVector", new double[] {.65,.70,.29}, "eosinVector", new double[] {.2159,.8012,.5581},
-                "background", new int[] {255,255,255}, "preset", "qupath-he-default");
+                "background", new int[] {255,255,255}, "preset", "qupath-he-default"));
+        outputs.put("hematoxylinMaskBitsetBase64", Base64.getEncoder().encodeToString(hBits.toByteArray()));
+        outputs.put("eosinMaskBitsetBase64", Base64.getEncoder().encodeToString(eBits.toByteArray()));
+        outputs.put("maskEncoding", "row-major LSB-first sampled threshold bitset");
+        outputs.put("maskX", region.x()); outputs.put("maskY", region.y());
+        outputs.put("maskWidth", maskWidth); outputs.put("maskHeight", maskHeight);
+        outputs.put("maskSourceWidth", region.width()); outputs.put("maskSourceHeight", region.height());
+        outputs.put("maskSampleStride", stride);
+        return outputs;
     }
 
     private Map<String, Object> registration(Request request) throws IOException {
@@ -393,7 +459,7 @@ public final class DeterministicAnalysisService implements AutoCloseable {
             try { requireNativeView(dataset.get(), roi.get()); } catch (IllegalArgumentException | IOException error) { changed = true; }
         }
         var target = run.provenance().secondaryInputs();
-        if (!target.isEmpty()) {
+        if (target.containsKey("targetDatasetId")) {
             var targetDataset = datasets.find(target.get("targetDatasetId"));
             var targetRoi = annotations.list(target.get("targetDatasetId")).stream().filter(item -> item.id().equals(target.get("targetAnnotationId"))).findFirst();
             changed |= targetDataset.isEmpty() || targetRoi.isEmpty()
@@ -405,6 +471,14 @@ public final class DeterministicAnalysisService implements AutoCloseable {
             if (targetDataset.isPresent() && targetRoi.isPresent()) {
                 try { requireNativeView(targetDataset.get(), targetRoi.get()); } catch (IllegalArgumentException | IOException error) { changed = true; }
             }
+        }
+        if (target.containsKey("tmaRunId")) {
+            var grid = get(target.get("tmaRunId"));
+            var reviewed = review(grid.id());
+            changed |= grid.stale() || reviewed.revision() != Long.parseLong(target.get("tmaReviewRevision"));
+            var core = reviewed.objects().stream().filter(item -> item.id().equals(target.get("tmaCoreId"))).findFirst();
+            changed |= core.isEmpty() || "true".equals(core.get().properties().get("missing"))
+                    || core.get().revision() != Long.parseLong(target.get("tmaObjectRevision"));
         }
         return changed;
     }

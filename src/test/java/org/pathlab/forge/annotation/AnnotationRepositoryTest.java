@@ -9,6 +9,21 @@ import org.junit.jupiter.api.Test;
 
 final class AnnotationRepositoryTest {
     @Test
+    void invalidReviewedGridDoesNotPartiallyWriteHierarchy() throws Exception {
+        var repository = new AnnotationRepository(Files.createTempDirectory("forge-grid"));
+        var dataset = "ca38d59a-08ce-44a2-aaf2-cb96bd147bdf";
+        var parent = repository.create(dataset, "rectangle", "0,0;20,20", "Grid", "#ffaa22", 1, 2, 3, "view");
+        var run = "fcafc4bf-2350-470c-aa3a-ad5f5a0d9734";
+        var cores = org.pathlab.forge.analysis.TmaGrid.create(dataset, parent.id(), 1, 2, 0, 0, 20, 20);
+        var valid = cores.get(0); var invalid = cores.get(1);
+        var reviewed = java.util.List.of(
+                new org.pathlab.forge.analysis.PathObject(valid.id(), dataset, parent.id(), valid.kind(), valid.geometry(), "A", run, valid.properties(), 2),
+                new org.pathlab.forge.analysis.PathObject(invalid.id(), dataset, parent.id(), invalid.kind(), "10,0;50,20", "B", run, invalid.properties(), 2));
+        assertThrows(IllegalArgumentException.class, () -> repository.saveTmaCores(dataset, parent.id(), 1, run, 1, reviewed));
+        assertEquals(1, repository.list(dataset).size());
+    }
+
+    @Test
     void rejectsAncestorCyclesAndPreservesChildrenOnDelete() throws Exception {
         var repository = new AnnotationRepository(Files.createTempDirectory("forge-hierarchy"));
         var dataset = "ca38d59a-08ce-44a2-aaf2-cb96bd147bdf";
@@ -50,7 +65,7 @@ final class AnnotationRepositoryTest {
     }
 
     @Test
-    void scopesAnnotationsToExactPlaneAndMigratesLegacyRecords() throws Exception {
+    void scopesNewAnnotationsButPreservesUnknownLegacyPlane() throws Exception {
         var root = Files.createTempDirectory("forge-annotations");
         var repository = new AnnotationRepository(root);
         var datasetId = "ca38d59a-08ce-44a2-aaf2-cb96bd147bdf";
@@ -64,9 +79,10 @@ final class AnnotationRepositoryTest {
 
         var annotations = repository.list(datasetId);
         assertEquals(2, annotations.size());
-        assertEquals(2, annotations.stream().filter(item -> item.series() == 2).count());
-        assertEquals("a".repeat(64), annotations.stream()
+        assertEquals(1, annotations.stream().filter(item -> item.series() == 2).count());
+        assertEquals("", annotations.stream()
                 .filter(item -> item.id().equals(legacy.id())).findFirst().orElseThrow().viewRevision());
+        assertEquals(-1, annotations.stream().filter(item -> item.id().equals(legacy.id())).findFirst().orElseThrow().series());
         assertEquals(5, annotations.stream()
                 .filter(item -> item.id().equals(scoped.id())).findFirst().orElseThrow().z());
         assertThrows(IllegalArgumentException.class,

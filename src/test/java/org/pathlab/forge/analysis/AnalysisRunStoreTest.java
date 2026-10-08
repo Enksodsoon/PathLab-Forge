@@ -28,4 +28,20 @@ final class AnalysisRunStoreTest {
         assertTrue(recovered.outputs().isEmpty());
         assertEquals(3, recovered.provenance().z());
     }
+    @Test void pagingPreservesOldOutputsAndRecoversActiveRowsBeyondFirstPage() throws Exception {
+        var file = Files.createTempDirectory("analysis-paging").resolve("runs.sqlite");
+        var store = new AnalysisRunStore(file);
+        for (var index = 0; index < 125; index++) {
+            var source = run(index == 0 ? "RUNNING" : "SUCCEEDED");
+            store.insert(new AnalysisRun("id-" + index, source.datasetId(), source.annotationId(), source.tool(),
+                    source.status(), index, 0, 0, "", source.provenance(), source.configuration(), source.outputs(), false));
+        }
+        assertEquals("id-124", store.list("dataset", 50, 0).get(0).id());
+        assertEquals(25, store.list("dataset", 50, 100).size());
+        var reopened = new AnalysisRunStore(file);
+        assertEquals("INTERRUPTED", reopened.get("id-0").status());
+        assertEquals(2, reopened.get("id-1").outputs().get("value"));
+        assertEquals(125, reopened.list("dataset").size());
+        assertThrows(IllegalArgumentException.class, () -> reopened.list("dataset", 0, 0));
+    }
 }

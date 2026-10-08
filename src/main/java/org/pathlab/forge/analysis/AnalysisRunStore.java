@@ -8,10 +8,8 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 
 public final class AnalysisRunStore {
-    private static final Set<String> TERMINAL = Set.of("SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED");
     private final String url;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -23,8 +21,9 @@ public final class AnalysisRunStore {
             statement.execute("CREATE TABLE IF NOT EXISTS analysis_runs (id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, status TEXT NOT NULL, record_json TEXT NOT NULL)");
             statement.execute("CREATE TABLE IF NOT EXISTS analysis_reviews (run_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, record_json TEXT NOT NULL)");
         } catch (SQLException error) { throw new IOException("Analysis store could not be opened", error); }
-        for (var run : list("")) {
-            if (!TERMINAL.contains(run.status())) update(new AnalysisRun(
+        // Recovery is independent of history paging, including old active rows.
+        for (var run : activeRuns()) {
+            update(new AnalysisRun(
                     run.id(), run.datasetId(), run.annotationId(), run.tool(), "INTERRUPTED",
                     run.createdAt(), run.startedAt(), System.currentTimeMillis(),
                     "Forge restarted before this run completed; submit a new run", run.provenance(),
@@ -62,15 +61,32 @@ public final class AnalysisRunStore {
     }
 
     public synchronized List<AnalysisRun> list(String datasetId) throws IOException {
+        return list(datasetId, Integer.MAX_VALUE, 0);
+    }
+
+    public synchronized List<AnalysisRun> list(String datasetId, int limit, int offset) throws IOException {
+        if (limit < 1 || offset < 0) throw new IllegalArgumentException("Analysis history page is invalid");
         try (var connection = DriverManager.getConnection(url);
-                var statement = connection.prepareStatement("SELECT record_json FROM analysis_runs WHERE (?='' OR dataset_id=?) ORDER BY rowid DESC")) {
+                var statement = connection.prepareStatement("SELECT record_json FROM analysis_runs WHERE (?='' OR dataset_id=?) ORDER BY rowid DESC LIMIT ? OFFSET ?")) {
             statement.setString(1, datasetId); statement.setString(2, datasetId);
+            statement.setInt(3, limit); statement.setInt(4, offset);
             var result = new ArrayList<AnalysisRun>();
             try (var rows = statement.executeQuery()) {
                 while (rows.next()) result.add(mapper.readValue(rows.getString(1), AnalysisRun.class));
             }
             return List.copyOf(result);
         } catch (SQLException error) { throw new IOException("Analysis runs could not be listed", error); }
+    }
+
+    private List<AnalysisRun> activeRuns() throws IOException {
+        try (var connection = DriverManager.getConnection(url);
+                var statement = connection.prepareStatement("SELECT record_json FROM analysis_runs WHERE status IN ('QUEUED','RUNNING')")) {
+            var result = new ArrayList<AnalysisRun>();
+            try (var rows = statement.executeQuery()) {
+                while (rows.next()) result.add(mapper.readValue(rows.getString(1), AnalysisRun.class));
+            }
+            return result;
+        } catch (SQLException error) { throw new IOException("Unfinished analysis runs could not be recovered", error); }
     }
 
     public synchronized java.util.Optional<AnalysisReview> review(String runId) throws IOException {

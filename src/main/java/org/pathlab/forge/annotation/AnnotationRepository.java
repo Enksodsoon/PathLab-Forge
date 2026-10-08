@@ -108,18 +108,81 @@ public final class AnnotationRepository {
 
     public synchronized void scopeLegacy(
             String datasetId, int series, int z, int t, String viewRevision) throws IOException {
-        var properties = read(datasetId);
-        var changed = false;
-        for (var annotation : list(datasetId)) {
-            if (annotation.series() >= 0) continue;
-            var prefix = "annotation." + annotation.id() + ".";
-            properties.setProperty(prefix + "series", Integer.toString(series));
-            properties.setProperty(prefix + "z", Integer.toString(z));
-            properties.setProperty(prefix + "t", Integer.toString(t));
-            properties.setProperty(prefix + "viewRevision", viewRevision);
-            changed = true;
+        // Legacy coordinates have no evidence of series/Z/T. Preserve them unscoped;
+        // operators must redraw on a verified view before using them for analysis.
+        file(datasetId);
+    }
+
+    /** Atomically persist reviewed, present TMA cores; never overwrite operator edits. */
+    public synchronized List<AnnotationRecord> saveTmaCores(
+            String datasetId, String parentId, long expectedParentRevision,
+            String runId, long reviewRevision, List<org.pathlab.forge.analysis.PathObject> cores)
+            throws IOException {
+        var parent = list(datasetId).stream().filter(item -> item.id().equals(parentId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("TMA parent was not found"));
+        if (parent.revision() != expectedParentRevision) throw new IllegalStateException("TMA parent revision changed");
+        if (parent.series() < 0 || parent.z() < 0 || parent.t() < 0 || parent.viewRevision().isBlank()
+                || reviewRevision < 1 || !runId.matches("[0-9a-fA-F-]{36}")) {
+            throw new IllegalArgumentException("TMA requires an explicitly saved review and exact view scope");
         }
-        if (changed) write(datasetId, properties);
+        if (cores.size() > 10_000) throw new IllegalArgumentException("TMA grid exceeds 100 by 100 cores");
+        var bounds = new org.pathlab.forge.analysis.RoiMask(parent.type(), parent.geometry()).bounds();
+        var properties = read(datasetId);
+        var ids = new java.util.HashSet<String>();
+        for (var core : cores) {
+            if (!ids.add(core.id()) || !core.id().matches("[0-9a-fA-F-]{36}")
+                    || !core.datasetId().equals(datasetId) || !core.parentId().equals(parentId)
+                    || !core.sourceRunId().equals(runId) || core.kind() != org.pathlab.forge.analysis.PathObject.Kind.TMA_CORE
+                    || core.classification().length() > 120
+                    || !Set.of("true", "false").contains(core.properties().getOrDefault("missing", ""))) throw new IllegalArgumentException("TMA core identity is invalid");
+            org.pathlab.forge.analysis.GeometryMeasurements.validate("rectangle", core.geometry());
+            for (var coordinates : core.geometry().split(";")) {
+                var point = coordinates.split(","); var x = Double.parseDouble(point[0]); var y = Double.parseDouble(point[1]);
+                if (x < bounds.x() || y < bounds.y() || x > (long) bounds.x() + bounds.width()
+                        || y > (long) bounds.y() + bounds.height()) throw new IllegalArgumentException("TMA core extends outside its reviewed grid");
+            }
+            var prefix = "annotation." + core.id() + ".";
+            if (properties.containsKey(prefix + "type")) {
+                if (!properties.getProperty(prefix + "sourceRunId", "").equals(runId)
+                        || !properties.getProperty(prefix + "reviewRevision", "").equals(Long.toString(reviewRevision))
+                        || !properties.getProperty(prefix + "objectRevision", "").equals(Long.toString(core.revision()))
+                        || !properties.getProperty(prefix + "geometry", "").equals(core.geometry())
+                        || !properties.getProperty(prefix + "parentId", "").equals(parentId)
+                        || !properties.getProperty(prefix + "classification", "").equals(core.classification())) {
+                    throw new IllegalStateException("Persisted TMA core changed; preserve it and create a new reviewed grid");
+                }
+                continue;
+            }
+            if ("true".equals(core.properties().get("missing"))) continue;
+            var now = System.currentTimeMillis();
+            var record = new AnnotationRecord(core.id(), "rectangle", core.geometry(), core.classification(),
+                    parent.color(), now, parentId, core.classification(), now, 1,
+                    parent.series(), parent.z(), parent.t(), parent.viewRevision());
+            properties.setProperty(prefix + "type", record.type());
+            properties.setProperty(prefix + "geometry", record.geometry());
+            properties.setProperty(prefix + "label", record.label());
+            properties.setProperty(prefix + "color", record.color());
+            properties.setProperty(prefix + "createdAt", Long.toString(now));
+            properties.setProperty(prefix + "updatedAt", Long.toString(now));
+            properties.setProperty(prefix + "revision", "1");
+            properties.setProperty(prefix + "parentId", parentId);
+            properties.setProperty(prefix + "classification", core.classification());
+            properties.setProperty(prefix + "sourceRunId", runId);
+            properties.setProperty(prefix + "reviewRevision", Long.toString(reviewRevision));
+            properties.setProperty(prefix + "objectRevision", Long.toString(core.revision()));
+            writeScope(properties, prefix, record);
+        }
+        write(datasetId, properties);
+        return list(datasetId).stream().filter(item -> ids.contains(item.id())
+                && cores.stream().anyMatch(core -> core.id().equals(item.id()) && !"true".equals(core.properties().get("missing")))).toList();
+    }
+
+    public synchronized java.util.Map<String, String> derivedProvenance(String datasetId, String annotationId)
+            throws IOException {
+        var properties = read(datasetId); var prefix = "annotation." + annotationId + ".";
+        return java.util.Map.of("sourceRunId", properties.getProperty(prefix + "sourceRunId", ""),
+                "reviewRevision", properties.getProperty(prefix + "reviewRevision", ""),
+                "objectRevision", properties.getProperty(prefix + "objectRevision", ""));
     }
 
     public synchronized AnnotationRecord updateMetadata(
