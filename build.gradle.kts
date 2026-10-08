@@ -132,6 +132,7 @@ tasks.withType<Test>().configureEach {
     }
     maxParallelForks = 1
     systemProperty("file.encoding", "UTF-8")
+    systemProperty("java.io.tmpdir", file(System.getProperty("java.io.tmpdir")).canonicalPath)
     systemProperty("user.language", "en")
     systemProperty("user.country", "US")
     systemProperty("user.timezone", "UTC")
