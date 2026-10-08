@@ -51,6 +51,13 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         thread.setDaemon(true);
         return thread;
     });
+    @FunctionalInterface
+    public interface AcceptedAnalysisProvider {
+        List<PrivateResultsBundleBuilder.AcceptedAnalysis> acceptedFor(ArtifactRevision revision) throws IOException;
+    }
+    private volatile AcceptedAnalysisProvider acceptedAnalysisProvider = revision -> List.of();
+    public void setAcceptedAnalysisProvider(AcceptedAnalysisProvider provider) { acceptedAnalysisProvider = java.util.Objects.requireNonNull(provider); }
+
     private PendingPairing pending;
     private volatile ActiveUpload activeUpload;
     private volatile String uploadScopeKey = "";
@@ -298,6 +305,8 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     }
 
     public ViewerUploadStatus uploadStatus() {
+        try { if (!uploadScopeKey.isEmpty() && !uploadScopeKey.equals(connectionKey())) return ViewerUploadStatus.idle(); }
+        catch (IOException error) { return ViewerUploadStatus.idle(); }
         return uploadStatus;
     }
 
@@ -319,6 +328,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     }
 
     public synchronized ViewerUploadStatus cancelUpload() throws IOException {
+        if (!uploadScopeKey.isEmpty() && !uploadScopeKey.equals(connectionKey())) throw new IOException("Viewer account changed; previous delivery cannot be cancelled with this credential");
         var session = activeUpload;
         if (session == null) {
             return uploadStatus;
@@ -672,21 +682,22 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                     "Private image is ready; reconnect once to enable structured result sync");
             return;
         }
-        var transformed = annotations.stream().map(annotation ->
-                        AnnotationTransformer.transform(
-                                        annotation.geometry(), cropX, cropY, cropWidth, cropHeight,
-                                        downsample)
-                                .map(geometry -> new AnnotationRecord(
-                                        annotation.id(), annotation.type(), geometry,
-                                        annotation.label(), annotation.color(), annotation.createdAt(),
-                                        annotation.parentId(), annotation.classification(),
-                                        annotation.updatedAt(), annotation.revision())))
-                .flatMap(java.util.Optional::stream)
-                .toList();
-        var sidecar = Path.of(revision.omePath()).resolveSibling(
-                revision.id() + ".plresults");
-        var bundle = new PrivateResultsBundleBuilder().build(
-                sidecar, revision.id(), revision.omeSha256(), transformed);
+        var sidecar = Path.of(revision.omePath()).resolveSibling(revision.id() + "." + readyJob.id() + ".plresults");
+        PrivateResultsBundleBuilder.Result bundle;
+        if (!readyJob.resultSha256().isBlank()) {
+            if (!Files.isRegularFile(sidecar, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(sidecar) != readyJob.resultBytes() || !PrivateResultsBundleBuilder.sha256(sidecar).equalsIgnoreCase(readyJob.resultSha256()))
+                throw new IOException("Saved result delivery payload changed or is missing; exact intent retained");
+            bundle = new PrivateResultsBundleBuilder.Result(sidecar,readyJob.resultBytes(),readyJob.resultSha256());
+        } else {
+            bundle = new PrivateResultsBundleBuilder().build(sidecar,revision,annotations,
+                    acceptedAnalysisProvider.acceptedFor(revision),cropX,cropY,cropWidth,cropHeight,downsample);
+            // Freeze the payload identity before creating a remote result reservation. A lost
+            // create acknowledgement must retry these bytes even if local reviews later change.
+            readyJob = readyJob.withResults("",bundle.sha256(),bundle.bytes(),ViewerDeliveryState.IMAGE_READY,
+                    "Verified result intent saved before reservation",Instant.now());
+            deliveryStore.save(readyJob);
+        }
         var create = sendJson(
                 credential.base().resolve("/api/v2/desktop/slides/"
                         + readyJob.remoteSlideId() + "/result-deliveries"),
@@ -763,7 +774,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             int cropHeight,
             double downsample)
             throws IOException {
-        if (!"READY_PRIVATE".equals(uploadStatus.state())
+        if (!Set.of("IMAGE_READY", "COMPLETE").contains(uploadStatus().state())
                 || uploadStatus.viewerSlideId().isBlank()
                 || !uploadStatus.artifactRevisionId().equals(revision.id())) {
             throw new IllegalStateException("Upload this exact artifact before synchronizing annotations");
@@ -954,7 +965,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
 
     private HttpResponse<String> send(HttpRequest request) throws IOException {
         boolean ownedTransfer = Thread.currentThread().getName().equals("pathlab-forge-viewer-upload");
-        if (ownedTransfer && !uploadScopeKey.equals(connectionKey())) throw new IOException("Viewer account changed during delivery");
+        if (ownedTransfer && ("CANCELLED".equals(uploadStatus.state()) || !uploadScopeKey.equals(connectionKey()))) throw new IOException("Viewer account changed during delivery");
         try {
             var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
             String body;
@@ -963,7 +974,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 if (bytes.length > MAX_RESPONSE_BYTES) throw new IOException("Viewer response is too large");
                 body = new String(bytes, StandardCharsets.UTF_8);
             }
-            if (ownedTransfer && !uploadScopeKey.equals(connectionKey())) throw new IOException("Viewer account changed during delivery");
+            if (ownedTransfer && ("CANCELLED".equals(uploadStatus.state()) || !uploadScopeKey.equals(connectionKey()))) throw new IOException("Viewer account changed during delivery");
             if (body.isEmpty() && response.statusCode() != 204 && !"HEAD".equals(request.method()))
                 throw new IOException("Viewer response was empty");
             final String boundedBody = body;

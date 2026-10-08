@@ -42,6 +42,31 @@ final class PrivateResultsBundleBuilderTest {
         assertFalse(entries.keySet().stream().anyMatch(name -> name.contains(":\\") || name.startsWith("/")));
     }
 
+    @Test
+    void acceptedDeterministicResultsPreserveScopeTransformGeometryAndStableHash() throws Exception {
+        var roi = new AnnotationRecord("roi","rectangle","10,20;30,50","ROI","#ff0000",1,"","",2,3);
+        var provenance = new org.pathlab.forge.analysis.AnalysisRun.Provenance("source","inventory","reader","runtime",roi.geometry(),roi.type(),3,0,0,0,"view-1","config","classical","px",java.util.Map.of());
+        var run = new org.pathlab.forge.analysis.AnalysisRun("run-1","dataset","roi","nucleus_candidates","SUCCEEDED",1,2,3,"",provenance,java.util.Map.of(),java.util.Map.of("count",2),false);
+        var good = new org.pathlab.forge.analysis.PathObject("cell-1","dataset","roi",org.pathlab.forge.analysis.PathObject.Kind.NUCLEUS,"20,30","Reviewed","run-1",java.util.Map.of("accepted","true","geometryType","point"),2);
+        var rejected = new org.pathlab.forge.analysis.PathObject("cell-2","dataset","roi",org.pathlab.forge.analysis.PathObject.Kind.NUCLEUS,"21,31","Rejected","run-1",java.util.Map.of("accepted","false"),2);
+        var review = new org.pathlab.forge.analysis.AnalysisReview("run-1",1,List.of(rejected,good),List.of());
+        var revision = new org.pathlab.forge.conversion.ArtifactRevision("revision","dataset","view-1","source",1,org.pathlab.forge.conversion.ArtifactRevisionStatus.APPROVED,org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1,"ome","derivative","package","a".repeat(64),"",10,15,"ome-dynamic-v1",75,2,"Export","");
+        var accepted = new PrivateResultsBundleBuilder.AcceptedAnalysis(run,review,"view-1");
+        var builder = new PrivateResultsBundleBuilder();
+        var first = builder.build(temporaryDirectory.resolve("first.plresults"),revision,List.of(roi),List.of(accepted),10,20,20,30,2);
+        var second = builder.build(temporaryDirectory.resolve("second.plresults"),revision,List.of(roi),List.of(accepted),10,20,20,30,2);
+        assertEquals(first.sha256(),second.sha256());
+        var entries = readTarGz(first.path());
+        var objects = new String(entries.get("objects.ndjson"),StandardCharsets.UTF_8);
+        assertTrue(objects.contains("run-1:cell-1")); assertFalse(objects.contains("run-1:cell-2")); assertTrue(objects.contains("\"x\":5.0"));
+        var runs = new String(entries.get("runs.ndjson"),StandardCharsets.UTF_8);
+        assertTrue(runs.contains("originalScope")); assertTrue(runs.contains("10,20;30,50"));
+        assertTrue(new String(entries.get("reviews.ndjson"),StandardCharsets.UTF_8).contains("cell-2"));
+        assertTrue(new String(entries.get("measurements.ndjson"),StandardCharsets.UTF_8).contains("run:run-1:count"));
+        org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException.class,() -> builder.build(temporaryDirectory.resolve("bad.plresults"),revision,List.of(roi),List.of(new PrivateResultsBundleBuilder.AcceptedAnalysis(run,review,"different-view")),10,20,20,30,2));
+        org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException.class,() -> builder.build(temporaryDirectory.resolve("unreviewed.plresults"),revision,List.of(roi),List.of(new PrivateResultsBundleBuilder.AcceptedAnalysis(run,new org.pathlab.forge.analysis.AnalysisReview("run-1",0,List.of(good),List.of()),"view-1")),10,20,20,30,2));
+    }
+
     private static String text(HashMap<String, byte[]> entries, String name, String key) throws Exception {
         return new com.fasterxml.jackson.databind.ObjectMapper()
                 .readTree(entries.get(name)).get(key).asText();
