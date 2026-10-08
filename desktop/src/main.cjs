@@ -235,7 +235,8 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
         const rejected = async action => { try { await action(); return false; } catch { return true; } };
         return {
           noNode: typeof process === 'undefined' && typeof require === 'undefined',
-          bridge: typeof window.forgeDesktop?.selectSources === 'function',
+          bridge: typeof window.forgeDesktop?.selectSources === 'function'
+            && typeof window.forgeDesktop?.selectFeatureFiles === 'function',
           rendered: !!document.querySelector('[aria-label="PathLab Forge"]'),
           authenticatedApi: session.ok && datasets.ok,
           workspaceReady: document.body.innerText.includes('Choose a slide to begin'),
