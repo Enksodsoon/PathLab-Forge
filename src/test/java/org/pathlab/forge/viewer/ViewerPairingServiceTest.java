@@ -28,6 +28,33 @@ final class ViewerPairingServiceTest {
     @TempDir
     Path temporaryDirectory;
 
+    @Test void boundMutationUsesOneCredentialSnapshotBeforeSending() throws Exception {
+        var seen = new AtomicReference<String>();
+        var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        viewer.createContext("/api/probe", exchange -> {
+            seen.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            exchange.sendResponseHeaders(200, 0); exchange.close();
+        });
+        viewer.start();
+        var base = "http://127.0.0.1:" + viewer.getAddress().getPort();
+        var template = "{\"origin\":\"%s\",\"token\":\"%s\",\"organizationId\":\"org\",\"userId\":\"%s\",\"credentialId\":\"%s\"}";
+        class SwitchingStore implements CredentialStore {
+            int reads; boolean flip;
+            public Optional<String> read() { reads++; var owner = flip && reads >= 3 ? "b" : "a"; return Optional.of(template.formatted(base, "token-" + owner, owner, owner)); }
+            public void write(String value) {} public void delete() {}
+        }
+        var store = new SwitchingStore();
+        try (var service = new ViewerPairingService(store)) {
+            var key = service.connectionKey();
+            assertEquals(1, store.reads);
+            store.reads = 0; store.flip = true;
+            try (var response = service.requestBound(key, "PATCH", "/api/probe", java.util.Map.of(), "private A metadata".getBytes(StandardCharsets.UTF_8))) {
+                assertEquals(200, response.status());
+            }
+            assertEquals("Bearer token-a", seen.get());
+        } finally { viewer.stop(0); }
+    }
+
     @Test
     void retriesTransportFailuresButPausesPermanentViewerValidationFailures() {
         assertTrue(ViewerPairingService.transientFailure("Viewer request failed (503)"));

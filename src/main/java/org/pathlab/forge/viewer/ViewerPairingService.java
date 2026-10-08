@@ -166,7 +166,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (stored.isEmpty()) {
             return new ViewerConnection(false, defaultOrigin, "", List.of());
         }
-        var parsedCredential = storedCredential();
+        var parsedCredential = parseStoredCredential(stored.get());
         var base = parsedCredential.base();
         var token = parsedCredential.token();
         var request = HttpRequest.newBuilder(base.resolve("/api/v1/desktop/credential"))
@@ -1007,14 +1007,13 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     public ConnectionIdentity connectionIdentity() throws IOException {
         var stored = storedCredential();
         if (stored == null) return new ConnectionIdentity("", "", "", "", "");
-        var saved = credentialStore.read().orElseThrow();
-        String organization = "", user = "", credential = "";
-        if (saved.startsWith("{")) {
-            var identity = JSON.readTree(saved);
-            organization = identity.path("organizationId").asText("");
-            user = identity.path("userId").asText("");
-            credential = identity.path("credentialId").asText("");
-        }
+        return connectionIdentity(stored);
+    }
+
+    private static ConnectionIdentity connectionIdentity(StoredCredential stored) {
+        var organization = stored.organizationId();
+        var user = stored.userId();
+        var credential = stored.credentialId();
         if (organization.isBlank() || user.isBlank() || credential.isBlank())
             return new ConnectionIdentity(stored.base().toString(), organization, user, credential, "");
         var material = stored.base() + "\n" + organization + "\n" + user + "\n" + credential + "\n" + stored.token();
@@ -1042,19 +1041,24 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (stored.isEmpty()) {
             return null;
         }
-        if (stored.get().startsWith("{")) {
-            var document = JSON.readTree(stored.get());
+        return parseStoredCredential(stored.get());
+    }
+
+    private static StoredCredential parseStoredCredential(String stored) throws IOException {
+        if (stored.startsWith("{")) {
+            var document = JSON.readTree(stored);
             var token = document.path("token").asText("");
             if (token.isBlank()) throw new IOException("Stored Viewer credential is invalid");
-            return new StoredCredential(validateBase(document.path("origin").asText("")), token);
+            return new StoredCredential(validateBase(document.path("origin").asText("")), token,
+                    document.path("organizationId").asText(""), document.path("userId").asText(""), document.path("credentialId").asText(""));
         }
-        var separator = stored.get().indexOf('\n');
-        if (separator <= 0 || separator == stored.get().length() - 1) {
+        var separator = stored.indexOf('\n');
+        if (separator <= 0 || separator == stored.length() - 1) {
             throw new IOException("Stored Viewer credential is invalid");
         }
         return new StoredCredential(
-                validateBase(stored.get().substring(0, separator)),
-                stored.get().substring(separator + 1));
+                validateBase(stored.substring(0, separator)),
+                stored.substring(separator + 1), "", "", "");
     }
 
     private static String tarText(Path archive, String expected, int maximum)
@@ -1141,11 +1145,28 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     @Override
     public ViewerHttpResponse request(String method, String path, java.util.Map<String, String> headers,
             byte[] body) throws IOException {
+        var credential = storedCredential();
+        if (credential == null) throw new IllegalStateException("Connect to Viewer first");
+        return requestWithCredential(credential, method, path, headers, body);
+    }
+
+    @Override public ViewerHttpResponse requestBound(String expectedKey, String method, String path,
+            java.util.Map<String, String> headers, byte[] body) throws IOException {
+        var credential = storedCredential();
+        if (expectedKey.isBlank() || credential == null || !expectedKey.equals(connectionIdentity(credential).key()))
+            throw new IOException("Viewer account changed");
+        var response = requestWithCredential(credential, method, path, headers, body);
+        if (!expectedKey.equals(connectionKey())) { response.close(); throw new IOException("Viewer account changed"); }
+        return response;
+    }
+
+    private ViewerHttpResponse requestWithCredential(StoredCredential credential, String method, String path,
+            java.util.Map<String, String> headers, byte[] body) throws IOException {
         if (!path.startsWith("/api/") || path.contains("..")) {
             throw new IllegalArgumentException("Viewer API path is invalid");
         }
-        var credential = storedCredential();
-        if (credential == null) throw new IllegalStateException("Connect to Viewer first");
+        if (headers.keySet().stream().anyMatch(name -> name.equalsIgnoreCase("Authorization")))
+            throw new IllegalArgumentException("Viewer authorization is owned by the captured credential");
         var builder = HttpRequest.newBuilder(credential.base().resolve(path))
                 .timeout(Duration.ofMinutes(5))
                 .header("Authorization", "Bearer " + credential.token());
@@ -1234,7 +1255,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
 
     private record PendingPairing(URI base, String deviceCode, String deviceSecret) {}
 
-    private record StoredCredential(URI base, String token) {}
+    private record StoredCredential(URI base, String token, String organizationId, String userId, String credentialId) {}
 
     private record ActiveUpload(
             String revisionId, URI uploadUri, String uploadMode, String jobId, String ingestId) {}
