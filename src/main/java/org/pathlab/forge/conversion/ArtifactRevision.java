@@ -68,6 +68,10 @@ public record ArtifactRevision(
                 "");
     }
 
+    public ArtifactRevision restarting() {
+        return withStatus(ArtifactRevisionStatus.CONVERTING, omeSha256, packageSha256, 0, "");
+    }
+
     public ArtifactRevision failed(String message) {
         return withStatus(
                 ArtifactRevisionStatus.FAILED,

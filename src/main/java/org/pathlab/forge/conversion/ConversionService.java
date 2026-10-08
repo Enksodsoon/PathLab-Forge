@@ -57,6 +57,7 @@ public final class ConversionService implements AutoCloseable {
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final ExecutorService conversionExecutor;
     private final int maximumConcurrentConversions;
+    private volatile boolean queueDispatchEnabled;
     private final int maximumReaderSessions;
     private final long readerSessionBytes;
     private final java.util.concurrent.ScheduledExecutorService memorySampler =
@@ -71,6 +72,12 @@ public final class ConversionService implements AutoCloseable {
             ConversionEngine engine,
             DerivativeEngine derivativeEngine,
             Path managedRoot) {
+        this(repository, engine, derivativeEngine, managedRoot, false);
+    }
+
+    public ConversionService(DatasetRepository repository, ConversionEngine engine,
+            DerivativeEngine derivativeEngine, Path managedRoot, boolean deferQueueDispatch) {
+        queueDispatchEnabled = !deferQueueDispatch;
         this.repository = repository;
         this.engine = engine;
         this.derivativeEngine = derivativeEngine;
@@ -96,6 +103,11 @@ public final class ConversionService implements AutoCloseable {
                 0,
                 1_000,
                 java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    public synchronized void resumeQueueDispatch() {
+        queueDispatchEnabled = true;
+        dispatchQueuedSafely();
     }
 
     public int maximumConcurrentConversions() {
@@ -220,6 +232,10 @@ public final class ConversionService implements AutoCloseable {
             }
         }
         return bytes.array();
+    }
+
+    public java.util.Optional<ArtifactRevision> savedRevision(String id, String revisionId) throws IOException {
+        return artifactRepository.find(id, revisionId);
     }
 
     public List<ArtifactRevision> revisions(String id) throws IOException {
@@ -1098,15 +1114,64 @@ public final class ConversionService implements AutoCloseable {
         return engine.readRgbRegion(Path.of(dataset.sourcePath()), series, z, t, x, y, width, height);
     }
 
-    public LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
+    @FunctionalInterface
+    public interface Admission { void save(LocalDataset admitted) throws IOException; }
+
+    public synchronized LocalDataset startExpected(
+            LocalDataset expected, ArtifactRevisionFormat format, Admission admission) throws IOException {
+        var current = requireDataset(expected.id());
+        requireExpectedSettings(expected, current);
+        return start(current.id(), format, admission, true, false);
+    }
+
+    static void requireExpectedSettings(LocalDataset expected, LocalDataset current) {
+        if (!expected.configurationRevision().equals(current.configurationRevision())
+                || !expected.sourcePath().equals(current.sourcePath())
+                || expected.sourceBytes() != current.sourceBytes()
+                || !expected.sourceFingerprint().equals(current.sourceFingerprint())
+                || !expected.sourceInventory().equals(current.sourceInventory())
+                || !expected.format().equals(current.format())
+                || expected.selectedSeries() != current.selectedSeries()
+                || expected.width() != current.width() || expected.height() != current.height()
+                || expected.cropX() != current.cropX() || expected.cropY() != current.cropY()
+                || expected.cropWidth() != current.cropWidth() || expected.cropHeight() != current.cropHeight()
+                || Double.compare(expected.downsample(), current.downsample()) != 0
+                || !expected.readerEngine().equals(current.readerEngine())
+                || !expected.readerId().equals(current.readerId())
+                || !expected.runtimeFingerprint().equals(current.runtimeFingerprint())
+                || !expected.viewDefinitionJson().equals(current.viewDefinitionJson())) {
+            throw new IllegalStateException("Batch source or settings changed; restore the saved settings or create a new batch");
+        }
+    }
+
+    public synchronized LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
+        return start(id, requestedFormat, admitted -> {}, false, false);
+    }
+
+    public synchronized LocalDataset startTeaching(String id) throws IOException {
+        return start(id, ArtifactRevisionFormat.PREPARED_DZI_V2, admitted -> {}, false, true);
+    }
+
+    private LocalDataset start(String id, ArtifactRevisionFormat requestedFormat,
+            Admission admission, boolean fixedSettings, boolean teaching) throws IOException {
         var dataset = requireDataset(id);
-        requestedFormat = selectedConversionFormat(requestedFormat);
-        requestedFormats.put(id, requestedFormat);
-        if (dataset.status() == DatasetStatus.QUEUED
+        requestedFormat = teaching ? ArtifactRevisionFormat.PREPARED_DZI_V2 : selectedConversionFormat(requestedFormat);
+        var existingEntry = repository.listQueueEntries().stream()
+                .filter(entry -> entry.datasetId().equals(id)).findFirst().orElse(null);
+        if (existingEntry != null || activeConversions.containsKey(id)) {
+            if (fixedSettings && dataset.currentArtifactRevision().isBlank()
+                    || (fixedSettings || teaching) && existingEntry != null
+                        && !existingEntry.requestedFormat().equals(requestedFormat.name())) {
+                throw new IllegalStateException("Existing conversion has no matching pinned artifact; wait for it to finish");
+            }
+            admission.save(dataset);
+            return dataset;
+        }
+        if (!fixedSettings && (dataset.status() == DatasetStatus.QUEUED
                 || dataset.status() == DatasetStatus.WAITING_RESOURCES
                 || dataset.status() == DatasetStatus.CONVERTING
                 || dataset.status() == DatasetStatus.OPTIMIZING_OME
-                || dataset.status() == DatasetStatus.VALIDATING) {
+                || dataset.status() == DatasetStatus.VALIDATING)) {
             return dataset;
         }
         if (dataset.selectedSeries() < 0) {
@@ -1116,7 +1181,7 @@ public final class ConversionService implements AutoCloseable {
         var request = request(dataset);
         var secondsBudgetEnabled = Boolean.parseBoolean(
                 System.getProperty("pathlab.forge.secondsBudget.enabled", "false"));
-        if (secondsBudgetEnabled
+        if (!fixedSettings && secondsBudgetEnabled
                 && Boolean.parseBoolean(
                         System.getProperty("pathlab.forge.fastProfile.enabled", "false"))) {
             var fastDownsample = QuPathRuntime.fastProfileDownsample(request);
@@ -1188,6 +1253,7 @@ public final class ConversionService implements AutoCloseable {
                             reusable.id());
             cached = restoreReusableApproval(cached, reusable);
             repository.save(cached);
+            admission.save(cached);
             return cached;
         }
         if (secondsBudgetEnabled) {
@@ -1199,19 +1265,31 @@ public final class ConversionService implements AutoCloseable {
                         .max()
                         .orElse(0L)
                 + 1;
-        repository.saveQueueEntry(new ConversionQueueEntry(
-                dataset.id(),
-                nextPosition,
-                dataset.configurationRevision(),
-                System.currentTimeMillis(),
-                requestedFormat.name(),
-                "Waiting for an available conversion slot"));
         var queued = dataset.withPreparation(
                 DatasetStatus.QUEUED,
-                "Queued #" + nextPosition + " · settings snapshot locked",
-                dataset.outputPath(),
-                dataset.sha256());
+                "Queued #" + nextPosition + " - settings snapshot locked",
+                dataset.outputPath(), dataset.sha256());
+        if (fixedSettings) {
+            var revision = resumableRevision(dataset).orElse(null);
+            if (revision != null && revision.format() != requestedFormat) revision = null;
+            if (revision == null) {
+                revision = artifactRepository.create(dataset, request.outputWidth(), request.outputHeight(), requestedFormat);
+                saveCheckpoint(new StageCheckpointStore(Path.of(revision.omePath()).getParent()),
+                        revision, StageCheckpoint.Stage.SOURCE_VERIFIED, 1, 1);
+            } else if (revision.status() == ArtifactRevisionStatus.FAILED) {
+                revision = revision.restarting();
+                artifactRepository.save(revision);
+            }
+            queued = queued.withArtifactRevision(DatasetStatus.QUEUED, queued.detail(),
+                    dataset.outputPath(), dataset.sha256(), revision.id());
+        }
         repository.save(queued);
+        // The batch manifest owns this identity before any scheduler can see the queue row.
+        admission.save(queued);
+        requestedFormats.put(id, requestedFormat);
+        repository.saveQueueEntry(new ConversionQueueEntry(dataset.id(), nextPosition,
+                dataset.configurationRevision(), System.currentTimeMillis(), requestedFormat.name(),
+                "Waiting for an available conversion slot"));
         progress.put(
                 dataset.id(),
                 new ConversionProgress(
@@ -1235,7 +1313,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void dispatchQueued() throws IOException {
-        if (repository.queuePaused()) return;
+        if (!queueDispatchEnabled || repository.queuePaused()) return;
         while (activeConversionCount() < maximumConcurrentConversions) {
             var entry = repository.listQueueEntries().stream()
                     .filter(item -> !activeConversions.containsKey(item.datasetId()))
@@ -1261,8 +1339,9 @@ public final class ConversionService implements AutoCloseable {
             try {
                 requestedFormats.put(
                         queued.id(),
-                        selectedConversionFormat(
-                                ArtifactRevisionFormat.valueOf(entry.requestedFormat())));
+                        entry.requestedFormat().equals(ArtifactRevisionFormat.PREPARED_DZI_V2.name())
+                                ? ArtifactRevisionFormat.PREPARED_DZI_V2
+                                : selectedConversionFormat(ArtifactRevisionFormat.valueOf(entry.requestedFormat())));
             } catch (IllegalArgumentException invalidFormat) {
                 repository.deleteQueueEntry(entry.datasetId());
                 repository.save(queued.withPreparation(
@@ -1270,6 +1349,17 @@ public final class ConversionService implements AutoCloseable {
                         "Queued artifact format is unsupported; queue this slide again",
                         queued.outputPath(),
                         queued.sha256()));
+                continue;
+            }
+            try {
+                verifySourceFingerprint(queued);
+            } catch (IOException | IllegalStateException changedSource) {
+                var revision = queued.currentArtifactRevision().isBlank() ? null
+                        : artifactRepository.find(queued.id(), queued.currentArtifactRevision()).orElse(null);
+                if (revision != null) artifactRepository.save(revision.failed(concise(changedSource.getMessage())));
+                repository.save(queued.withPreparation(DatasetStatus.FAILED, concise(changedSource.getMessage()),
+                        queued.outputPath(), queued.sha256()));
+                repository.deleteQueueEntry(queued.id());
                 continue;
             }
             try {
@@ -1300,14 +1390,18 @@ public final class ConversionService implements AutoCloseable {
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
-        var requestedFormat = selectedConversionFormat(requestedFormats.getOrDefault(
-                dataset.id(), ArtifactRevisionFormat.OME_DYNAMIC_V1));
+        var requestedFormat = requestedFormats.getOrDefault(
+                dataset.id(), ArtifactRevisionFormat.OME_DYNAMIC_V1);
         var resumable = resumableRevision(dataset).filter(
                 candidate -> candidate.format() == requestedFormat);
         var revision = resumable.isPresent()
                 ? resumable.get()
                 : artifactRepository.create(
                         dataset, request.outputWidth(), request.outputHeight(), requestedFormat);
+        if (revision.status() == ArtifactRevisionStatus.FAILED) {
+            revision = revision.restarting();
+            artifactRepository.save(revision);
+        }
         requestedFormats.remove(dataset.id());
         var directDzi = useDirectDziFromRegions(requestedFormat, dataset, request);
         var profileName = org.pathlab.forge.runtime.RuntimeProfile.system().name();
@@ -1785,6 +1879,7 @@ public final class ConversionService implements AutoCloseable {
                         request.outputHeight(),
                         request.downsample());
                 digest = sha256(partial);
+                verifySourceFingerprint(dataset);
                 atomicReplace(partial, output);
                 saveCheckpoint(
                         checkpoints,
