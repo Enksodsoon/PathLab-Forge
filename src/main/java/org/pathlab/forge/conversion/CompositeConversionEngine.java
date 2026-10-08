@@ -86,6 +86,9 @@ public final class CompositeConversionEngine implements ConversionEngine {
     @Override public RgbRegion readRgbRegion(Path source, int seriesIndex, int x, int y, int width, int height) throws IOException {
         return engine(source).readRgbRegion(source, seriesIndex, x, y, width, height);
     }
+    @Override public RgbRegion readRgbRegion(Path source, int seriesIndex, int z, int t, int x, int y, int width, int height) throws IOException {
+        return engine(source).readRgbRegion(source, seriesIndex, z, t, x, y, width, height);
+    }
     @Override public void closeDirectSource(Path source) throws IOException { engine(source).closeDirectSource(source); }
     @Override public void convert(ConversionRequest request, Path output) throws IOException { engine(request.source()).convert(request, output); }
     @Override public boolean supportsParallelRegions() { return true; }

@@ -82,6 +82,13 @@ public interface ConversionEngine extends AutoCloseable {
         throw new IOException("This conversion engine does not support raw RGB regions");
     }
 
+    default RgbRegion readRgbRegion(
+            Path source, int seriesIndex, int z, int t, int x, int y, int width, int height)
+            throws IOException {
+        if (z != 0 || t != 0) throw new IOException("This reader has not qualified exact Z/T RGB regions");
+        return readRgbRegion(source, seriesIndex, x, y, width, height);
+    }
+
     default void closeDirectSource(Path source) throws IOException {
         // Engines without persistent direct readers have nothing to release.
     }

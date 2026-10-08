@@ -938,11 +938,18 @@ public final class BioFormatsEngine implements ConversionEngine {
     public RgbRegion readRgbRegion(
             Path source, int seriesIndex, int x, int y, int width, int height)
             throws IOException {
+        return readRgbRegion(source, seriesIndex, 0, 0, x, y, width, height);
+    }
+
+    @Override
+    public RgbRegion readRgbRegion(
+            Path source, int seriesIndex, int z, int t, int x, int y, int width, int height)
+            throws IOException {
         var pixels = Math.multiplyExact(width, height);
         if (x < 0 || y < 0 || width < 1 || height < 1 || pixels > 4_194_304) {
             throw new IOException("Raw RGB analysis region exceeds the bounded reader limit");
         }
-        var image = directReader(source).read(seriesIndex, 0, x, y, width, height);
+        var image = directReader(source).readRawRgb(seriesIndex, z, t, x, y, width, height);
         var rgb = new byte[Math.multiplyExact(pixels, 3)];
         for (var index = 0; index < pixels; index++) {
             var value = image.getRGB(index % width, index / width);
@@ -1453,6 +1460,30 @@ public final class BioFormatsEngine implements ConversionEngine {
             }
         }
 
+        private synchronized BufferedImage readRawRgb(
+                int series, int z, int t, int x, int y, int width, int height) throws IOException {
+            try {
+                invoke("setSeries", new Class<?>[] {int.class}, series);
+                invoke("setResolution", new Class<?>[] {int.class}, 0);
+                var sizeZ = (int) invoke("getSizeZ", new Class<?>[0]);
+                var sizeT = (int) invoke("getSizeT", new Class<?>[0]);
+                var sizeX = (int) invoke("getSizeX", new Class<?>[0]);
+                var sizeY = (int) invoke("getSizeY", new Class<?>[0]);
+                if (z < 0 || z >= sizeZ || t < 0 || t >= sizeT
+                        || x < 0 || y < 0 || width < 1 || height < 1
+                        || (long) x + width > sizeX || (long) y + height > sizeY) {
+                    throw new IOException("Exact RGB region is outside requested series/Z/T");
+                }
+                if (!(boolean) invoke("isRGB", new Class<?>[0])
+                        || (int) invoke("getBitsPerPixel", new Class<?>[0]) != 8) {
+                    throw new IOException("Raw pathology analysis requires native 8-bit RGB");
+                }
+                return readRgbPlane(series, 0, z, t, x, y, width, height);
+            } catch (ReflectiveOperationException error) {
+                throw new IOException("Bio-Formats could not read the exact RGB plane", error);
+            }
+        }
+
         private BufferedImage readRgbPlane(
                 int series, int resolution, int z, int t,
                 int x, int y, int width, int height)
@@ -1471,6 +1502,9 @@ public final class BioFormatsEngine implements ConversionEngine {
                     new Class<?>[] {int.class, int.class, int.class, int.class, int.class},
                     plane, x, y, width, height);
             var pixels = Math.multiplyExact(width, height);
+            if (bytes.length < Math.multiplyExact(pixels, channels)) {
+                throw new IOException("Bio-Formats returned an incomplete RGB plane");
+            }
             var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
             var rgb = new int[pixels];
             for (var index = 0; index < pixels; index++) {
