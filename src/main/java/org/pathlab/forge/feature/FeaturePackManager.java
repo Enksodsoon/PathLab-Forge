@@ -34,7 +34,21 @@ public final class FeaturePackManager {
     private static final int MAX_ARCHIVE_ENTRIES = 10_000;
     private final Path root;
     private final ObjectMapper mapper = new ObjectMapper();
-    private volatile HttpClient client;
+    private volatile HttpClient client; // Only the package-private deterministic test seam uses this client.
+    private volatile org.pathlab.forge.viewer.ViewerAuthorizedClient viewerTransport;
+    private volatile OriginProvider viewerOrigin;
+    private volatile NetworkScope installScope;
+    private record NetworkScope(org.pathlab.forge.viewer.ViewerAuthorizedClient client, URI origin, String key) {}
+    @FunctionalInterface interface OriginProvider { String origin() throws IOException; }
+
+    public void setViewerTransport(org.pathlab.forge.viewer.ViewerPairingService viewer) {
+        setViewerTransport(viewer, viewer::connectionOrigin);
+    }
+    void setViewerTransport(org.pathlab.forge.viewer.ViewerAuthorizedClient viewer, OriginProvider origin) {
+        viewerTransport = java.util.Objects.requireNonNull(viewer);
+        viewerOrigin = java.util.Objects.requireNonNull(origin);
+    }
+
     private volatile List<FeaturePackDescriptor> catalog = List.of();
     private volatile CatalogEnvelope catalogEnvelope;
     private final java.util.concurrent.ConcurrentHashMap<String, ActiveVersion> active = new java.util.concurrent.ConcurrentHashMap<>();
@@ -87,14 +101,21 @@ public final class FeaturePackManager {
     }
 
     public synchronized List<FeaturePackDescriptor> refresh() throws IOException {
+        var scope = networkScope();
         var configured = System.getProperty("pathlab.forge.featureCatalogUrl", "").trim();
-        if (configured.isEmpty()) throw new IOException("No PathLab feature catalog is configured");
-        var uri = URI.create(configured);
+        if (configured.isEmpty() && scope == null) throw new IOException("No PathLab feature catalog is configured");
+        URI uri;
+        try { uri = configured.isEmpty() ? scope.origin().resolve("/api/v2/forge/features/catalog") : URI.create(configured); }
+        catch (IllegalArgumentException error) { throw new IOException("Feature catalog URI is invalid",error); }
         requireHttps(uri);
-        var response = send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30)).GET().build());
-        try (var body = response.body()) {
-            if (response.statusCode() != 200) throw new IOException("Feature catalog response was rejected");
+        requireOrigin(scope,uri);
+        try (var response = get(uri,scope); var body = response.body()) {
+            if (response.status() != 200) throw new IOException("Feature catalog response was rejected");
             var bytes = body.readNBytes(Math.toIntExact(MAX_CATALOG_BYTES + 1));
+            if (bytes.length > MAX_CATALOG_BYTES) throw new IOException("Feature catalog response was rejected");
+            var envelope = mapper.readValue(bytes,CatalogEnvelope.class);
+            for (var descriptor : verifiedCatalog(envelope)) requireOrigin(scope,descriptor.downloadUri());
+            checkAccount(scope);
             acceptCatalog(bytes);
         }
         return list();
@@ -144,10 +165,12 @@ public final class FeaturePackManager {
         Path archive = null, staging = null;
         Throwable failure = null;
         try {
+            installScope = networkScope();
             var descriptor = catalog.stream().filter(candidate -> candidate.id().equals(id))
                     .max((a, b) -> SemanticVersion.compare(a.version(), b.version()))
                     .orElseThrow(() -> new IOException("Feature pack is not in the verified catalog"));
             validateDescriptor(descriptor);
+            requireOrigin(installScope,descriptor.downloadUri());
             requireCompatible(descriptor);
             var envelope = catalogEnvelope;
             if (envelope == null || !verifiedCatalog(envelope).contains(descriptor)) throw new IOException("Catalog changed during installation");
@@ -201,6 +224,7 @@ public final class FeaturePackManager {
                 selfTestProcess = null;
                 installerThread = null;
                 installing.set(false);
+                installScope = null;
                 if (cancelled) Thread.interrupted();
             }
         }
@@ -217,8 +241,18 @@ public final class FeaturePackManager {
         var previous = before == null ? "" : before.version();
         if (version.equals(previous)) previous = before.previousVersion();
         var next = new ActiveVersion(version, previous, true);
-        atomicJson(root.resolve(id).resolve("active.json"), next);
-        active.put(id, next);
+        var activationPath = root.resolve(id).resolve("active.json");
+        try {
+            atomicJson(activationPath,next);
+            checkCancelled();
+            active.put(id,next);
+        } catch (IOException error) {
+            // An account may change while the durable pointer is being written. Restore
+            // the exact previous pointer before reporting failure to the caller.
+            try { if (before == null) Files.deleteIfExists(activationPath); else atomicJson(activationPath,before); }
+            catch (IOException rollback) { error.addSuppressed(rollback); }
+            throw error;
+        }
     }
 
     public synchronized void rollback(String id) throws IOException {
@@ -240,8 +274,18 @@ public final class FeaturePackManager {
         var before = active.get(id);
         if (before == null) throw new IOException("Feature pack is not activated");
         var next = new ActiveVersion(before.version(), before.previousVersion(), false);
-        atomicJson(root.resolve(id).resolve("active.json"), next);
-        active.put(id, next);
+        var activationPath = root.resolve(id).resolve("active.json");
+        try {
+            atomicJson(activationPath,next);
+            checkCancelled();
+            active.put(id,next);
+        } catch (IOException error) {
+            // An account may change while the durable pointer is being written. Restore
+            // the exact previous pointer before reporting failure to the caller.
+            try { if (before == null) Files.deleteIfExists(activationPath); else atomicJson(activationPath,before); }
+            catch (IOException rollback) { error.addSuppressed(rollback); }
+            throw error;
+        }
     }
 
     public synchronized void uninstall(String id) throws IOException {
@@ -343,6 +387,7 @@ public final class FeaturePackManager {
     }
 
     private void checkCancelled() throws IOException {
+        if (Thread.currentThread() == installerThread) checkAccount(installScope);
         if (installing.get() && (cancelled || Thread.currentThread().isInterrupted())) throw new IOException("Feature installation cancelled");
     }
 
@@ -357,11 +402,10 @@ public final class FeaturePackManager {
     }
 
     private void download(FeaturePackDescriptor descriptor, Path archive) throws IOException {
-        var response = send(HttpRequest.newBuilder(descriptor.downloadUri())
-                .timeout(Duration.ofMinutes(10)).GET().build());
-        try (var input = response.body(); var output = Files.newOutputStream(archive, java.nio.file.StandardOpenOption.CREATE_NEW,
+        var response = get(descriptor.downloadUri(),installScope);
+        try (response; var input = response.body(); var output = Files.newOutputStream(archive, java.nio.file.StandardOpenOption.CREATE_NEW,
                 java.nio.file.StandardOpenOption.WRITE)) {
-            if (response.statusCode() != 200) throw new IOException("Feature pack download failed");
+            if (response.status() != 200) throw new IOException("Feature pack download failed");
             downloadStream = input;
             var digest = sha256Digest();
             var buffer = new byte[64 * 1024];
@@ -541,26 +585,57 @@ public final class FeaturePackManager {
         }
     }
 
-    private HttpResponse<InputStream> send(HttpRequest request) throws IOException {
-        try {
-            return client().send(request, HttpResponse.BodyHandlers.ofInputStream());
-        } catch (InterruptedException error) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Feature catalog request was interrupted", error);
+    private NetworkScope networkScope() throws IOException {
+        var transport = viewerTransport;
+        if (transport == null) {
+            if (client != null) return null; // Explicit injected test transport only.
+            throw new IOException("Connect to verified Viewer before refreshing or installing feature packs");
         }
+        var originText = viewerOrigin.origin();
+        var key = transport.connectionKey();
+        if (originText.isBlank() || !key.matches("[0-9a-f]{64}"))
+            throw new IOException("Feature packs require verified Viewer organization, user and credential identity");
+        URI origin;
+        try { origin = URI.create(originText); }
+        catch (IllegalArgumentException error) { throw new IOException("Viewer origin is invalid",error); }
+        requireHttps(origin);
+        if (origin.getRawQuery() != null || !(origin.getPath().isEmpty() || origin.getPath().equals("/")))
+            throw new IOException("Viewer origin must contain only scheme, host and port");
+        var scope = new NetworkScope(transport,origin,key);
+        checkAccount(scope);
+        return scope;
     }
 
-    private HttpClient client() {
-        var existing = client;
-        if (existing != null) return existing;
-        synchronized (this) {
-            if (client == null) {
-                client = HttpClient.newBuilder()
-                        .connectTimeout(Duration.ofSeconds(15))
-                        .followRedirects(HttpClient.Redirect.NEVER)
-                        .build();
-            }
-            return client;
+    private void checkAccount(NetworkScope scope) throws IOException {
+        if (scope == null) return;
+        if (scope.client() != viewerTransport || !scope.key().equals(scope.client().connectionKey())
+                || !scope.origin().equals(URI.create(viewerOrigin.origin())))
+            throw new IOException("Viewer account changed during feature-pack operation; previous active version preserved");
+    }
+
+    private static void requireOrigin(NetworkScope scope, URI uri) throws IOException {
+        requireHttps(uri);
+        if (scope == null) return;
+        var base = scope.origin();
+        int sourcePort = base.getPort() < 0 ? 443 : base.getPort();
+        int targetPort = uri.getPort() < 0 ? 443 : uri.getPort();
+        if (!base.getScheme().equalsIgnoreCase(uri.getScheme()) || !base.getHost().equalsIgnoreCase(uri.getHost()) || sourcePort != targetPort)
+            throw new IOException("Signed feature catalog/download URI does not match the active Viewer origin");
+    }
+
+    private org.pathlab.forge.viewer.ViewerHttpResponse get(URI uri, NetworkScope scope) throws IOException {
+        requireOrigin(scope,uri);
+        checkAccount(scope);
+        if (scope != null) {
+            var path = uri.getRawPath() + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery());
+            return scope.client().requestBound(scope.key(),"GET",path,java.util.Map.of(),new byte[0]);
+        }
+        if (client == null) throw new IOException("Feature packs require authenticated Viewer transport");
+        try {
+            var response = client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(10)).GET().build(),HttpResponse.BodyHandlers.ofInputStream());
+            return new org.pathlab.forge.viewer.ViewerHttpResponse(response.statusCode(),response.headers().map(),response.body());
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt(); throw new IOException("Feature catalog request was interrupted",error);
         }
     }
 

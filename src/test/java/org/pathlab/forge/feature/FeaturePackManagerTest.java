@@ -197,6 +197,65 @@ final class FeaturePackManagerTest {
         assertFalse(SemanticVersion.valid("1.0.0-rc.01"));
     }
 
+    @Test void productionTransportRequiresCredentialAndExactConfiguredAndSignedOrigin() throws Exception {
+        var zip = archive(false,null); var catalog = envelope(List.of(descriptor("1.0.0",zip)));
+        var transport = new BoundTransport(catalog,zip); var manager = new FeaturePackManager(temp);
+        manager.setViewerTransport(transport,() -> transport.key.isBlank() ? "" : "https://packs.example.test");
+        transport.key="";
+        assertThrows(IOException.class,manager::refresh); assertEquals(0,transport.requests);
+        transport.key="a".repeat(64);
+        var previous = System.getProperty("pathlab.forge.featureCatalogUrl");
+        try {
+            System.setProperty("pathlab.forge.featureCatalogUrl","https://other.example.test/catalog");
+            assertThrows(IOException.class,manager::refresh); assertEquals(0,transport.requests);
+            System.clearProperty("pathlab.forge.featureCatalogUrl");
+            manager.setViewerTransport(transport,() -> "https://other.example.test");
+            assertThrows(IOException.class,manager::refresh); assertEquals(1,transport.requests);
+            assertFalse(Files.exists(temp.resolve("feature-packs/catalog-envelope.json")));
+            manager.setViewerTransport(transport,() -> "https://packs.example.test");
+            manager.refresh(); assertEquals("/api/v2/forge/features/catalog",transport.path);
+            assertEquals("1.0.0",pack(manager).version());
+        } finally { if(previous==null)System.clearProperty("pathlab.forge.featureCatalogUrl");else System.setProperty("pathlab.forge.featureCatalogUrl",previous); }
+    }
+
+    @Test void accountChangeDuringCatalogBodyCannotReplaceVerifiedOfflineCatalog() throws Exception {
+        var zip = archive(false,null); var manager = new FeaturePackManager(temp);
+        manager.acceptCatalog(envelope(List.of(descriptor("1.0.0",zip))));
+        var transport = new BoundTransport(envelope(List.of(descriptor("1.1.0",zip))),zip);
+        transport.changeDuringBody=true; manager.setViewerTransport(transport,() -> "https://packs.example.test");
+        assertThrows(IOException.class,manager::refresh);
+        assertEquals("1.0.0",pack(manager).version()); assertEquals("1.0.0",pack(new FeaturePackManager(temp)).version());
+    }
+
+    @Test void accountChangeDuringDownloadPreservesExactActiveVersion() throws Exception {
+        var zip=archive(false,null); var transport=new BoundTransport(envelope(List.of(descriptor("1.0.0",zip))),zip);
+        var manager=new FeaturePackManager(temp); manager.setViewerTransport(transport,() -> "https://packs.example.test");
+        manager.refresh(); manager.install("pathology-tools");
+        manager.acceptCatalog(envelope(List.of(descriptor("1.1.0",zip)))); transport.changeDuringBody=true;
+        assertThrows(IOException.class,() -> manager.install("pathology-tools"));
+        assertEquals("1.0.0",manager.activeVersion("pathology-tools").orElseThrow());
+        assertEquals("1.0.0",new FeaturePackManager(temp).activeVersion("pathology-tools").orElseThrow());
+        assertFalse(Files.exists(temp.resolve("feature-packs/pathology-tools.download.partial")));
+    }
+
+    private static final class BoundTransport implements org.pathlab.forge.viewer.ViewerAuthorizedClient {
+        String key="a".repeat(64),path=""; int requests; boolean changeDuringBody;
+        final byte[] catalog,zip;
+        BoundTransport(byte[] catalog,byte[] zip) { this.catalog=catalog;this.zip=zip; }
+        public String connectionKey() { return key; }
+        public org.pathlab.forge.viewer.ViewerHttpResponse request(String method,String path,Map<String,String> headers,byte[] body) {
+            this.path=path;requests++;
+            assertEquals("GET",method);
+            byte[] bytes=path.equals("/api/v2/forge/features/catalog") ? catalog : zip;
+            InputStream stream=new ByteArrayInputStream(bytes) {
+                @Override public synchronized int read(byte[] target,int start,int length) {
+                    int read=super.read(target,start,length); if(changeDuringBody) key="b".repeat(64); return read;
+                }
+            };
+            return new org.pathlab.forge.viewer.ViewerHttpResponse(200,Map.of(),stream);
+        }
+    }
+
     private FeaturePackDescriptor pack(FeaturePackManager manager) {
         return manager.list().stream().filter(p -> p.id().equals("pathology-tools")).findFirst().orElseThrow();
     }
