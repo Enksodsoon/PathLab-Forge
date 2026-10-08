@@ -256,6 +256,14 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         var total = Files.size(artifactPath);
         var manifestSha256 = "";
         var uploadMode = "OME_DYNAMIC";
+        var latest = deliveryStore.findLatestByArtifact(revision.id());
+        if (latest.isPresent() && latest.get().state() == ViewerDeliveryState.COMPLETE) {
+            var completed = latest.get();
+            uploadStatus = new ViewerUploadStatus("COMPLETE",revision.id(),completed.resultBytes(),completed.resultBytes(),
+                    completed.remoteSlideId(),completed.artifactSha256(),"OME_DYNAMIC","This exact artifact delivery is already complete");
+            return uploadStatus;
+        }
+        activeUpload = null;
         var existingJob = deliveryStore.resumable().stream()
                 .filter(job -> job.artifactRevisionId().equals(revision.id()))
                 .filter(job -> job.viewerOrigin().equals(credential.base().toString()))

@@ -66,6 +66,7 @@ final class ViewerPairingServiceTest {
     @Test
     void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception {
         var receivedCreateBody = new AtomicReference<String>();
+        var createRequests = new AtomicInteger();
         var receivedPayload = new AtomicReference<byte[]>();
         var receivedResults = new AtomicReference<byte[]>();
         var expectedSha = new AtomicReference<String>();
@@ -81,6 +82,7 @@ final class ViewerPairingServiceTest {
                 respond(exchange, 200, "{\"deviceName\":\"Forge\",\"scopes\":["
                         + "\"desktop:ingest\",\"slides:private:read\",\"results:sync\"]}");
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
+                createRequests.incrementAndGet();
                 receivedCreateBody.set(new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 respond(exchange, 201, "{\"uploadUrl\":\"/api/v1/desktop/ingests/one/content\"}");
@@ -144,6 +146,8 @@ final class ViewerPairingServiceTest {
                         HexFormat.of().formatHex(Files.readAllBytes(ome)),
                         HexFormat.of().formatHex(receivedPayload.get()));
                 assertTrue(receivedResults.get().length > 0);
+                assertEquals("COMPLETE", service.startUpload("case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5).state());
+                assertEquals(1,createRequests.get());
             }
         } finally {
             viewer.stop(0);
