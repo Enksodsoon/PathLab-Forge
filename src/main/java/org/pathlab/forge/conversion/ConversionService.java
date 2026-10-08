@@ -58,6 +58,10 @@ public final class ConversionService implements AutoCloseable {
     private final ExecutorService conversionExecutor;
     private final int maximumConcurrentConversions;
     private volatile boolean queueDispatchEnabled;
+    private volatile Runnable batchMaintenance = () -> {};
+    private String batchPreparationId = "";
+    private Thread batchPreparationThread;
+    private boolean batchPreparationCancelled;
     private final int maximumReaderSessions;
     private final long readerSessionBytes;
     private final java.util.concurrent.ScheduledExecutorService memorySampler =
@@ -108,6 +112,39 @@ public final class ConversionService implements AutoCloseable {
     public synchronized void resumeQueueDispatch() {
         queueDispatchEnabled = true;
         dispatchQueuedSafely();
+    }
+
+    public void setBatchMaintenance(Runnable callback) { batchMaintenance = java.util.Objects.requireNonNull(callback); }
+
+    public synchronized boolean submitBatchPreparation(String id, Runnable operation) {
+        if (!queueDispatchEnabled || queuePaused() || !batchPreparationId.isBlank()
+                || activeConversionCount() > 0 || !repository.listQueueEntries().isEmpty()
+                || conversionExecutor.isShutdown()) return false;
+        batchPreparationId = id;
+        batchPreparationCancelled = false;
+        conversionExecutor.execute(() -> {
+            try {
+                synchronized (this) {
+                    batchPreparationThread = Thread.currentThread();
+                    if (batchPreparationCancelled) batchPreparationThread.interrupt();
+                }
+                operation.run(); // Metadata readers never run while holding the service monitor.
+            } finally {
+                synchronized (this) {
+                    batchPreparationThread = null;
+                    batchPreparationId = "";
+                }
+                Thread.interrupted();
+                dispatchQueuedSafely();
+            }
+        });
+        return true;
+    }
+
+    public synchronized void cancelBatchPreparation(String id) {
+        if (!id.equals(batchPreparationId)) return;
+        batchPreparationCancelled = true;
+        if (batchPreparationThread != null) batchPreparationThread.interrupt();
     }
 
     public int maximumConcurrentConversions() {
@@ -904,6 +941,7 @@ public final class ConversionService implements AutoCloseable {
 
     private List<SeriesInfo> restoreSeries(String id, LocalDataset dataset)
             throws IOException {
+        if (dataset.selectedSeries() >= 0) verifySourceFingerprint(dataset);
         var existing = inspectedSeries.getOrDefault(id, List.of());
         if (!existing.isEmpty()) {
             return existing;
@@ -911,7 +949,6 @@ public final class ConversionService implements AutoCloseable {
         if (dataset.selectedSeries() < 0) {
             return List.of();
         }
-        verifySourceFingerprint(dataset);
         var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
         if (cached.isPresent()) {
             inspectedSeries.put(id, cached.get());
@@ -976,6 +1013,36 @@ public final class ConversionService implements AutoCloseable {
             List<SeriesInfo> series,
             boolean cacheHit,
             DatasetStatus nextStatus) throws IOException {
+        var configuration = inspectedConfiguration(dataset, series, "", nextStatus);
+        repository.update(dataset.id(), current -> {
+            var effectiveStatus = nextStatus == DatasetStatus.VERIFYING_SOURCE
+                    && !current.sourceFingerprint().isBlank()
+                    ? DatasetStatus.READY_TO_CONVERT : nextStatus;
+            if (nextStatus == DatasetStatus.VERIFYING_SOURCE
+                    && java.util.Set.of(DatasetStatus.FAILED, DatasetStatus.NEEDS_COMPANIONS).contains(current.status())) {
+                effectiveStatus = current.status();
+            }
+            return current.withExportConfiguration(
+                effectiveStatus,
+                effectiveStatus == DatasetStatus.VERIFYING_SOURCE
+                        ? series.size() + " image series found; source verification is still running"
+                        : cacheHit
+                        ? series.size() + " image series loaded instantly from verified cache"
+                        : series.size() + " image series found; thumbnails are ready on demand",
+                configuration.selectedSeries(),
+                configuration.width(),
+                configuration.height(),
+                configuration.downsample(),
+                configuration.estimatedOutputBytes(),
+                configuration.cropX(),
+                configuration.cropY(),
+                configuration.cropWidth(),
+                configuration.cropHeight());
+        });
+    }
+
+    private static LocalDataset inspectedConfiguration(LocalDataset dataset, List<SeriesInfo> series,
+            String detail, DatasetStatus status) {
         var previouslySelected = series.stream()
                 .filter(item -> item.index() == dataset.selectedSeries())
                 .filter(SeriesInfo::isRgbPlane)
@@ -995,31 +1062,109 @@ public final class ConversionService implements AutoCloseable {
         var cropWidth = preserveConfiguration ? dataset.cropWidth() : selected.width();
         var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
         var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
-        repository.update(dataset.id(), current -> {
-            var effectiveStatus = nextStatus == DatasetStatus.VERIFYING_SOURCE
-                    && !current.sourceFingerprint().isBlank()
-                    ? DatasetStatus.READY_TO_CONVERT : nextStatus;
-            if (nextStatus == DatasetStatus.VERIFYING_SOURCE
-                    && java.util.Set.of(DatasetStatus.FAILED, DatasetStatus.NEEDS_COMPANIONS).contains(current.status())) {
-                effectiveStatus = current.status();
+        return dataset.withExportConfiguration(status, detail, selected.index(), selected.width(),
+                selected.height(), downsample, OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
+                cropX, cropY, cropWidth, cropHeight);
+    }
+
+    // The caller owns a durable inspection intent; only short CAS commits touch the dataset repository.
+    public LocalDataset prepareExpected(LocalDataset initial) throws IOException {
+        requireInitialSettings(initial, requireDataset(initial.id()));
+        var before = initialSourceSnapshot(initial);
+        var digest = org.pathlab.forge.library.SourceDigest.compute(before);
+        initialSourceSnapshot(initial);
+        if (!initial.sourceFingerprint().isBlank() && !initial.sourceFingerprint().equals(digest.fingerprint()))
+            throw new IllegalStateException("Batch source content changed before inspection");
+        var current = requireDataset(initial.id());
+        requireInitialSettings(initial, current);
+        if (!current.sourceFingerprint().isBlank() && !current.sourceFingerprint().equals(digest.fingerprint()))
+            throw new IllegalStateException("Batch source verification no longer matches the saved intent");
+        requireNotInterrupted();
+        var verified = initial.withSourceIdentity(DatasetStatus.READY_TO_CONVERT,
+                "Batch source verified", digest.fingerprint(), digest.serializedInventory());
+        if (initial.selectedSeries() >= 0) return verified;
+        if (!initial.viewDefinitionJson().isBlank())
+            throw new IllegalStateException("Select an exact image series before batching this saved view");
+        var cached = seriesMetadataCache.load(initial.id(), verified.sourceFingerprint());
+        var series = cached.isPresent() ? cached.get() : engine.inspect(Path.of(initial.sourcePath()));
+        requireNotInterrupted();
+        if (series.stream().noneMatch(SeriesInfo::isRgbPlane))
+            throw new IllegalStateException("No supported RGB image plane was found for batch conversion");
+        initialSourceSnapshot(initial); // Reject mutations/removal while the external metadata reader ran.
+        requireInitialSettings(initial, requireDataset(initial.id()));
+        var prepared = inspectedConfiguration(verified, series, "Batch inspection settings frozen", DatasetStatus.READY_TO_CONVERT);
+        inspectedSeries.put(initial.id(), series);
+        seriesMetadataCache.save(initial.id(), verified.sourceFingerprint(), series);
+        return prepared;
+    }
+
+    public void validatePreparedSource(LocalDataset prepared) throws IOException {
+        var snapshot = initialSourceSnapshot(prepared);
+        if (!org.pathlab.forge.library.SourceDigest.compute(snapshot).fingerprint().equals(prepared.sourceFingerprint()))
+            throw new IllegalStateException("Batch source content changed after its settings were frozen");
+        initialSourceSnapshot(prepared);
+        requireNotInterrupted();
+    }
+
+    public LocalDataset applyPreparedExpected(LocalDataset initial, LocalDataset prepared) throws IOException {
+        return repository.update(initial.id(), current -> {
+            try {
+                requireExpectedSettings(prepared, current);
+                return current; // Recovery after the dataset CAS was already committed.
+            } catch (IllegalStateException notApplied) {
+                requireInitialSettings(initial, current);
+                if (!current.currentArtifactRevision().equals(initial.currentArtifactRevision())
+                        || !current.approvedArtifactRevision().equals(initial.approvedArtifactRevision()))
+                    throw new IllegalStateException("An artifact changed during batch inspection; review the saved batch intent");
+                if (!current.sourceFingerprint().isBlank()
+                        && !current.sourceFingerprint().equals(prepared.sourceFingerprint()))
+                    throw new IllegalStateException("Source verification changed during batch inspection");
+                var verified = current.withSourceIdentity(DatasetStatus.READY_TO_CONVERT, prepared.detail(),
+                        prepared.sourceFingerprint(), prepared.sourceInventory());
+                return initial.selectedSeries() >= 0 ? verified : verified.withExportConfiguration(
+                        DatasetStatus.READY_TO_CONVERT, prepared.detail(), prepared.selectedSeries(),
+                        prepared.width(), prepared.height(), prepared.downsample(), prepared.estimatedOutputBytes(),
+                        prepared.cropX(), prepared.cropY(), prepared.cropWidth(), prepared.cropHeight());
             }
-            return current.withExportConfiguration(
-                effectiveStatus,
-                effectiveStatus == DatasetStatus.VERIFYING_SOURCE
-                        ? series.size() + " image series found; source verification is still running"
-                        : cacheHit
-                        ? series.size() + " image series loaded instantly from verified cache"
-                        : series.size() + " image series found; thumbnails are ready on demand",
-                selected.index(),
-                selected.width(),
-                selected.height(),
-                downsample,
-                OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
-                cropX,
-                cropY,
-                cropWidth,
-                cropHeight);
         });
+    }
+
+    private static void requireNotInterrupted() throws IOException {
+        if (Thread.currentThread().isInterrupted()) throw new IOException("Batch inspection interrupted");
+    }
+
+    private static void requireInitialSettings(LocalDataset initial, LocalDataset current) {
+        if (!initial.sourceFingerprint().isBlank()) {
+            requireExpectedSettings(initial, current);
+            return;
+        }
+        if (!metadataInventory(initial.sourceInventory()).equals(metadataInventory(current.sourceInventory())))
+            throw new IllegalStateException("Batch source inventory changed before inspection");
+        requireExpectedSettings(initial, current.withSourceIdentity(current.status(), current.detail(),
+                initial.sourceFingerprint(), initial.sourceInventory()));
+    }
+
+    private static String metadataInventory(String inventory) {
+        return inventory.lines().filter(line -> !line.isBlank()).map(line -> {
+            var fields = line.split("\\|", 5);
+            if (fields.length != 4 && fields.length != 5) throw new IllegalStateException("Batch source inventory is unavailable");
+            return String.join("|", fields[0], fields[1], fields[2], fields[3]);
+        }).collect(java.util.stream.Collectors.joining("\n", "", "\n"));
+    }
+
+    private static org.pathlab.forge.library.SourceSnapshot initialSourceSnapshot(LocalDataset initial) throws IOException {
+        if (initial.sourceInventory().isBlank()) throw new IllegalStateException("Batch source identity is unavailable; restore missing companions and create a new batch");
+        org.pathlab.forge.library.SourceSnapshot snapshot;
+        try {
+            snapshot = initial.format().equals(DatasetFormat.VSI)
+                    ? org.pathlab.forge.library.SourceSnapshot.forVsi(Path.of(initial.sourcePath()))
+                    : org.pathlab.forge.library.SourceSnapshot.fromSerialized(Path.of(initial.sourcePath()), initial.sourceInventory());
+        } catch (org.pathlab.forge.library.DatasetInspectionException failure) {
+            throw new IOException(failure.getMessage(), failure);
+        }
+        if (!snapshot.serialized().equals(metadataInventory(initial.sourceInventory())))
+            throw new IllegalStateException("Batch source or companion files changed before inspection");
+        return snapshot;
     }
 
     public LocalDataset selectSeries(String id, int seriesIndex, double downsample)
@@ -1313,7 +1458,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void dispatchQueued() throws IOException {
-        if (!queueDispatchEnabled || repository.queuePaused()) return;
+        if (!queueDispatchEnabled || !batchPreparationId.isBlank() || repository.queuePaused()) return;
         while (activeConversionCount() < maximumConcurrentConversions) {
             var entry = repository.listQueueEntries().stream()
                     .filter(item -> !activeConversions.containsKey(item.datasetId()))
@@ -2258,6 +2403,7 @@ public final class ConversionService implements AutoCloseable {
     private void maintenanceTick() {
         sampleActiveMemory();
         dispatchQueuedSafely();
+        if (queueDispatchEnabled) batchMaintenance.run();
     }
 
     private boolean useDirectFinalOme(ConversionRequest request) {

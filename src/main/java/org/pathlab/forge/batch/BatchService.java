@@ -15,12 +15,15 @@ import org.pathlab.forge.conversion.ArtifactRevisionStatus;
 import org.pathlab.forge.conversion.ConversionService;
 import org.pathlab.forge.library.DatasetRepository;
 
-public final class BatchService {
+public final class BatchService implements AutoCloseable {
     private static final Set<String> TERMINAL = Set.of("SUCCEEDED", "FAILED", "CANCELLED");
     private final DatasetRepository datasets;
     private final ConversionService conversions;
     private final BatchStore store;
     private final Function<String, Delivery> delivery;
+    private boolean closed;
+    private int preparationPageOffset;
+    private String activePreparation = "";
     public record Delivery(String state, String nextAction, String detail) {}
     public record SlideReport(BatchRun.Item item, ArtifactRevision artifact, long artifactBytes, Delivery delivery, String nextAction) {}
     public record Report(String batchId, long createdAt, ArtifactRevisionFormat format, boolean queuePaused, List<SlideReport> slides) {}
@@ -28,6 +31,7 @@ public final class BatchService {
     public BatchService(DatasetRepository datasets, ConversionService conversions, BatchStore store,
             Function<String, Delivery> delivery) {
         this.datasets = datasets; this.conversions = conversions; this.store = store; this.delivery = delivery;
+        conversions.setBatchMaintenance(this::maintenance);
     }
 
     public synchronized BatchRun create(List<String> ids, ArtifactRevisionFormat format) throws IOException {
@@ -42,19 +46,99 @@ public final class BatchService {
         }
         var batch = new BatchRun(UUID.randomUUID().toString(), System.currentTimeMillis(), format, items);
         store.save(batch); // Every original setting and source identity exists before the first dispatch.
-        for (var item : items) admit(batch.id(), item.snapshot().id());
+        for (var item : items) if (!needsPreparation(item)) admit(batch.id(), item.snapshot().id());
         return get(batch.id());
     }
 
     private void admit(String id, String datasetId) throws IOException {
         var batch = store.get(id);
         var item = requireItem(batch, datasetId);
+        if (closed || TERMINAL.contains(item.state())) return;
         try {
             conversions.startExpected(item.snapshot(), batch.format(), admitted ->
                     updateItem(id, item.withOutcome(admitted.currentArtifactRevision(), "ADMITTED", admitted.detail())));
         } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
             updateItem(id, item.withOutcome(item.artifactRevisionId(), "FAILED", failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage()));
         }
+    }
+
+    private static boolean needsPreparation(BatchRun.Item item) {
+        return item.snapshot().selectedSeries() < 0 || item.snapshot().sourceFingerprint().isBlank()
+                || item.state().equals("PREPARED")
+                || item.artifactRevisionId().isBlank() && !item.snapshot().equals(item.initialSnapshot());
+    }
+
+    private static String preparationKey(String batchId, String datasetId) { return batchId + ":" + datasetId; }
+
+    private synchronized void maintenance() {
+        if (closed || !activePreparation.isBlank() || conversions.queuePaused()) return;
+        try {
+            var page = store.list(100, preparationPageOffset);
+            for (var batch : page) for (var item : batch.items()) {
+                if (TERMINAL.contains(item.state()) || item.state().equals("CANCEL_REQUESTED") || !needsPreparation(item)) continue;
+                var key = preparationKey(batch.id(), item.snapshot().id());
+                if (conversions.submitBatchPreparation(key, () -> prepare(batch.id(), item, key))) activePreparation = key;
+                return;
+            }
+            preparationPageOffset = page.size() < 100 ? 0 : preparationPageOffset + 100;
+        } catch (IOException | RuntimeException ignored) {
+            // The durable row remains pending; the next bounded scheduler pass retries the store read.
+        }
+    }
+
+    private static boolean samePreparationAttempt(BatchRun.Item current, BatchRun.Item expected) {
+        return current.attempts() == expected.attempts() && current.initialSnapshot().equals(expected.initialSnapshot())
+                && current.snapshot().equals(expected.snapshot());
+    }
+
+    private void prepare(String id, BatchRun.Item scheduled, String key) {
+        var datasetId = scheduled.snapshot().id();
+        BatchRun.Item original = scheduled;
+        try {
+            synchronized (this) {
+                var current = requireItem(store.get(id), datasetId);
+                if (!samePreparationAttempt(current, scheduled)) return;
+                original = current;
+                if (closed || TERMINAL.contains(original.state()) || original.state().equals("CANCEL_REQUESTED")
+                        || conversions.queuePaused()) return;
+                updateItem(id, original.withOutcome(original.artifactRevisionId(), "INSPECTING", "Reading saved source metadata; original batch intent is durable"));
+            }
+            // Existing conversion executor: one metadata inspection, no store/repository/service lock held.
+            var alreadyPrepared = original.snapshot().selectedSeries() >= 0 && !original.snapshot().sourceFingerprint().isBlank();
+            org.pathlab.forge.library.LocalDataset prepared;
+            if (alreadyPrepared) {
+                conversions.validatePreparedSource(original.snapshot());
+                prepared = original.snapshot();
+            } else prepared = conversions.prepareExpected(original.initialSnapshot());
+            synchronized (this) {
+                var current = requireItem(store.get(id), datasetId);
+                if (!samePreparationAttempt(current, original) || closed || TERMINAL.contains(current.state()) || current.state().equals("CANCEL_REQUESTED")
+                        || Thread.currentThread().isInterrupted()) return;
+                original = current.withPrepared(prepared);
+                updateItem(id, original); // Durable exact settings before the dataset CAS.
+                conversions.applyPreparedExpected(current.initialSnapshot(), prepared);
+                var frozen = requireItem(store.get(id), datasetId);
+                updateItem(id, frozen.withOutcome(frozen.artifactRevisionId(), "PENDING", "Inspection complete; waiting for durable conversion admission"));
+                // The preparation is frozen even if admission is interrupted; snapshot differs from initial intent.
+                admit(id, datasetId);
+            }
+        } catch (IOException | RuntimeException failure) {
+            synchronized (this) {
+                try {
+                    var current = requireItem(store.get(id), datasetId);
+                    if (samePreparationAttempt(current, original) && !closed && !TERMINAL.contains(current.state()) && !current.state().equals("CANCEL_REQUESTED"))
+                        updateItem(id, current.withOutcome(current.artifactRevisionId(), "FAILED", failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage()));
+                } catch (IOException ignored) { /* Existing INSPECTING/PREPARED record remains recoverable. */ }
+            }
+        } finally {
+            synchronized (this) { if (activePreparation.equals(key)) activePreparation = ""; }
+        }
+    }
+
+    @Override public synchronized void close() {
+        closed = true;
+        conversions.setBatchMaintenance(() -> {});
+        if (!activePreparation.isBlank()) conversions.cancelBatchPreparation(activePreparation);
     }
 
     public synchronized BatchRun get(String id) throws IOException {
@@ -96,8 +180,8 @@ public final class BatchService {
         var item = requireItem(get(id), datasetId);
         if (!item.state().equals("FAILED") && !item.state().equals("CANCELLED"))
             throw new IllegalStateException("Only a failed or cancelled slide can be retried");
-        updateItem(id, new BatchRun.Item(item.snapshot(), item.artifactRevisionId(), "PENDING", "Retry pending", item.attempts() + 1));
-        admit(id, datasetId);
+        updateItem(id, new BatchRun.Item(item.snapshot(), item.artifactRevisionId(), "PENDING", "Retry pending", item.attempts() + 1, item.initialSnapshot()));
+        if (!needsPreparation(requireItem(store.get(id), datasetId))) admit(id, datasetId);
         return get(id);
     }
 
@@ -109,6 +193,7 @@ public final class BatchService {
         store.save(batch); // Persist cancellation of every remaining item before interrupting any reader.
         for (var item : batch.items()) {
             if (TERMINAL.contains(item.state())) continue;
+            conversions.cancelBatchPreparation(preparationKey(id, item.snapshot().id()));
             var current = datasets.find(item.snapshot().id()).orElse(null);
             if (current != null && current.configurationRevision().equals(item.snapshot().configurationRevision())
                     && current.currentArtifactRevision().equals(item.artifactRevisionId())) conversions.cancel(current.id());
@@ -127,7 +212,7 @@ public final class BatchService {
                     cancel(batch.id());
                     continue;
                 }
-                for (var item : batch.items()) if (!TERMINAL.contains(item.state())) admit(batch.id(), item.snapshot().id());
+                for (var item : batch.items()) if (!TERMINAL.contains(item.state()) && !needsPreparation(item)) admit(batch.id(), item.snapshot().id());
             }
             if (page.size() < 100) return;
         }

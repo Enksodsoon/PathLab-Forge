@@ -421,6 +421,11 @@ final class ForgeServerTest {
             assertEquals(201, created.statusCode(), created.body()); id = mapper.readTree(created.body()).path("id").asText();
             var report = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches/" + id + "/report")).GET().build(), HttpResponse.BodyHandlers.ofString());
             assertEquals(200, report.statusCode(), report.body());
+            for (int attempt = 0; attempt < 250 && !mapper.readTree(report.body()).path("slides").get(0).path("item").path("state").asText().equals("FAILED"); attempt++) {
+                Thread.sleep(20);
+                report = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches/" + id + "/report")).GET().build(), HttpResponse.BodyHandlers.ofString());
+                assertEquals(200, report.statusCode(), report.body());
+            }
             assertEquals("FAILED", mapper.readTree(report.body()).path("slides").get(0).path("item").path("state").asText());
             assertTrue(report.body().contains("Uninspected source"));
             var csv = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches/" + id + "/export?format=csv")).GET().build(), HttpResponse.BodyHandlers.ofString());
