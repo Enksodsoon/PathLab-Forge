@@ -40,7 +40,11 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
     event.preventDefault();
     // Closing stdin lets Java drain and close its queue and repository before exit.
     service.stdin.end();
-    const timer = setTimeout(() => service.kill(), 10000);
+    const timer = setTimeout(() => {
+      if (process.platform === 'darwin') {
+        try { process.kill(-service.pid, 'SIGKILL'); } catch { service.kill('SIGKILL'); }
+      } else service.kill();
+    }, 10000);
     timer.unref();
   });
 
@@ -97,7 +101,8 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
     }
     args.push('-cp', path.join(root, 'lib/*'), 'org.pathlab.forge.ForgeApp', '--desktop', '--data-root', dataRoot);
     const environment = serviceEnvironment(process.env);
-    service = spawn(java, args, { cwd: root, env: environment, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    service = spawn(java, args, { cwd: root, env: environment, windowsHide: true,
+      detached: process.platform === 'darwin', stdio: ['pipe', 'pipe', 'pipe'] });
     service.stdin.on('error', () => {});
     // Never forward child logs: readiness contains a one-use bootstrap secret.
     service.stderr.resume();
