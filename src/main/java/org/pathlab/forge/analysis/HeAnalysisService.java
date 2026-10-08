@@ -10,7 +10,6 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HexFormat;
-import java.util.List;
 import java.util.Set;
 import org.pathlab.forge.annotation.AnnotationRecord;
 import org.pathlab.forge.annotation.AnnotationRepository;
@@ -22,7 +21,7 @@ public final class HeAnalysisService {
     public static final String ALGORITHM = "ruifrok-johnston-od-v1";
     private static final int MAX_SAMPLED_PIXELS = 1_048_576;
     private static final Set<String> CLOSED_TYPES = Set.of(
-            "rectangle", "ellipse", "polygon", "freehand", "brush_add", "brush_subtract");
+            "rectangle", "ellipse", "polygon", "freehand", "brush_add", "roi_mask");
     private static final double[] H = {0.65, 0.70, 0.29};
     private static final double[] E = {0.2159, 0.8012, 0.5581};
     private final DatasetRepository datasets;
@@ -57,8 +56,10 @@ public final class HeAnalysisService {
         if (!CLOSED_TYPES.contains(annotation.type())) {
             throw new IllegalArgumentException("H&E analysis requires a closed annotation ROI");
         }
-        var points = points(annotation.geometry());
-        var bounds = bounds(points, dataset.width(), dataset.height());
+        var mask = new RoiMask(annotation.type(),annotation.geometry());
+        var maskBounds=mask.bounds();
+        if((long)maskBounds.x()+maskBounds.width()>dataset.width()||(long)maskBounds.y()+maskBounds.height()>dataset.height())throw new IllegalArgumentException("H&E ROI extends outside source");
+        var bounds = new Bounds(maskBounds.x(),maskBounds.y(),maskBounds.width(),maskBounds.height());
         if ((long) bounds.width() * bounds.height() > 4_194_304) {
             throw new IllegalArgumentException(
                     "H&E ROI exceeds 4,194,304 decoded pixels; draw a smaller ROI");
@@ -81,7 +82,7 @@ public final class HeAnalysisService {
             for (var x = 0; x < bounds.width(); x += stride) {
                 var sourceX = bounds.x() + x + 0.5;
                 var sourceY = bounds.y() + y + 0.5;
-                if (!inside(annotation.type(), points, sourceX, sourceY)) {
+                if (!mask.contains(sourceX,sourceY)) {
                     continue;
                 }
                 var index = (y * bounds.width() + x) * 3;
@@ -178,48 +179,6 @@ public final class HeAnalysisService {
         return values[Math.min(count - 1, Math.max(0, (int) Math.floor((count - 1) * fraction)))];
     }
 
-    private static List<Point> points(String geometry) {
-        return Arrays.stream(geometry.split(";"))
-                .map(point -> point.split(",", -1))
-                .map(parts -> new Point(Double.parseDouble(parts[0]), Double.parseDouble(parts[1])))
-                .toList();
-    }
-
-    private static Bounds bounds(List<Point> points, int width, int height) {
-        var minX = Math.max(0, (int) Math.floor(points.stream().mapToDouble(Point::x).min().orElseThrow()));
-        var minY = Math.max(0, (int) Math.floor(points.stream().mapToDouble(Point::y).min().orElseThrow()));
-        var maxX = Math.min(width, (int) Math.ceil(points.stream().mapToDouble(Point::x).max().orElseThrow()));
-        var maxY = Math.min(height, (int) Math.ceil(points.stream().mapToDouble(Point::y).max().orElseThrow()));
-        if (maxX <= minX || maxY <= minY) {
-            throw new IllegalArgumentException("H&E ROI has no area");
-        }
-        return new Bounds(minX, minY, maxX - minX, maxY - minY);
-    }
-
-    private static boolean inside(String type, List<Point> points, double x, double y) {
-        if ("rectangle".equals(type)) {
-            return true;
-        }
-        if ("ellipse".equals(type) && points.size() >= 2) {
-            var centerX = (points.get(0).x() + points.get(1).x()) / 2;
-            var centerY = (points.get(0).y() + points.get(1).y()) / 2;
-            var radiusX = Math.abs(points.get(1).x() - points.get(0).x()) / 2;
-            var radiusY = Math.abs(points.get(1).y() - points.get(0).y()) / 2;
-            return radiusX > 0 && radiusY > 0
-                    && Math.pow((x - centerX) / radiusX, 2) + Math.pow((y - centerY) / radiusY, 2) <= 1;
-        }
-        var contained = false;
-        for (int current = 0, previous = points.size() - 1; current < points.size(); previous = current++) {
-            var a = points.get(current);
-            var b = points.get(previous);
-            if ((a.y() > y) != (b.y() > y)
-                    && x < (b.x() - a.x()) * (y - a.y()) / (b.y() - a.y()) + a.x()) {
-                contained = !contained;
-            }
-        }
-        return contained;
-    }
-
     private static double[][] stainMatrix() {
         var h = normalize(H);
         var e = normalize(E);
@@ -288,6 +247,5 @@ public final class HeAnalysisService {
             long createdAt) {}
 
     public record StainStats(double meanOd, double medianOd, double p90Od, double fractionAboveThreshold) {}
-    private record Point(double x, double y) {}
     private record Bounds(int x, int y, int width, int height) {}
 }

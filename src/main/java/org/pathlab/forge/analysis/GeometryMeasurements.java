@@ -8,6 +8,7 @@ public final class GeometryMeasurements {
 
     public static Map<String, Double> measure(String type, String geometry) {
         validate(type, geometry);
+        if(type.equals("roi_mask"))return MaskContours.measure(geometry,1,1);
         var points = java.util.Arrays.stream(geometry.split(";"))
                 .map(point -> point.split(",", -1))
                 .map(parts -> new Point(Double.parseDouble(parts[0]), Double.parseDouble(parts[1])))
@@ -54,11 +55,17 @@ public final class GeometryMeasurements {
     }
 
     public static void validate(String type, String geometry) {
-        if (geometry == null || geometry.length() > 65_536 || !geometry.matches(
-                "-?\\d+(?:\\.\\d+)?,-?\\d+(?:\\.\\d+)?(?:;-?\\d+(?:\\.\\d+)?,-?\\d+(?:\\.\\d+)?)*")) {
+        if(type.equals("roi_mask")){MaskContours.parse(geometry);return;}
+        if (geometry == null || geometry.length() > 65_536) {
             throw new IllegalArgumentException("Annotation geometry is invalid");
         }
-        var count = geometry.split(";").length;
+        var points = geometry.split(";", -1);
+        for (var point : points) {
+            if (point.length() > 128 || !point.matches("-?\\d+(?:\\.\\d+)?,-?\\d+(?:\\.\\d+)?")) {
+                throw new IllegalArgumentException("Annotation geometry is invalid");
+            }
+        }
+        var count = points.length;
         var valid = switch (type) {
             case "point", "text" -> count == 1;
             case "rectangle", "ellipse", "ruler", "line", "measure" -> count == 2;
@@ -95,6 +102,7 @@ public final class GeometryMeasurements {
         var result = new LinkedHashMap<>(measure(type, geometry));
         if (!Double.isFinite(pixelSizeXMicrons) || pixelSizeXMicrons <= 0
                 || !Double.isFinite(pixelSizeYMicrons) || pixelSizeYMicrons <= 0) return Map.copyOf(result);
+        if(type.equals("roi_mask")){var scaled=MaskContours.measure(geometry,pixelSizeXMicrons,pixelSizeYMicrons);result.put("areaUm2",scaled.get("areaPx2"));result.put("perimeterUm",scaled.get("perimeterPx"));return Map.copyOf(result);}
         var scaled = java.util.Arrays.stream(geometry.split(";"))
                 .map(point -> point.split(","))
                 .map(parts -> java.math.BigDecimal.valueOf(Double.parseDouble(parts[0]) * pixelSizeXMicrons)

@@ -67,6 +67,14 @@ final class PrivateResultsBundleBuilderTest {
         org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException.class,() -> builder.build(temporaryDirectory.resolve("unreviewed.plresults"),revision,List.of(roi),List.of(new PrivateResultsBundleBuilder.AcceptedAnalysis(run,new org.pathlab.forge.analysis.AnalysisReview("run-1",0,List.of(good),List.of()),"view-1")),10,20,20,30,2));
     }
 
+    @Test void preservesCompoundContourMaskInPrivateResultMetadata()throws Exception{
+        var geometry=org.pathlab.forge.analysis.MaskContours.compose("rectangle","0,0;10,10","brush_subtract","2,2;8,2;8,8;2,8");
+        var output=temporaryDirectory.resolve("mask.plresults");new PrivateResultsBundleBuilder().build(output,"revision","a".repeat(64),List.of(new AnnotationRecord("mask","roi_mask",geometry,"ROI","#ffaa22",1)));
+        var entries=readTarGz(output);var object=new com.fasterxml.jackson.databind.ObjectMapper().readTree(new String(entries.get("objects.ndjson"),StandardCharsets.UTF_8));
+        assertEquals("evenodd",object.path("geometry").path("fillRule").asText());assertEquals(2,object.path("geometry").path("contours").size());
+        assertTrue(new String(entries.get("measurements.ndjson"),StandardCharsets.UTF_8).contains("64.0"));
+    }
+
     private static String text(HashMap<String, byte[]> entries, String name, String key) throws Exception {
         return new com.fasterxml.jackson.databind.ObjectMapper()
                 .readTree(entries.get(name)).get(key).asText();

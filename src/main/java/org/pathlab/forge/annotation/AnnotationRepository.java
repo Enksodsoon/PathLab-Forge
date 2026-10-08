@@ -22,6 +22,7 @@ public final class AnnotationRepository {
             "ellipse",
             "polygon",
             "freehand",
+            "roi_mask",
             "brush_add",
             "brush_subtract",
             "text",
@@ -246,6 +247,20 @@ public final class AnnotationRepository {
         properties.setProperty(prefix + "z", Integer.toString(record.z()));
         properties.setProperty(prefix + "t", Integer.toString(record.t()));
         properties.setProperty(prefix + "viewRevision", record.viewRevision());
+    }
+
+    /** Compose one stroke into the selected exact-view parent atomically; no child ROI is created. */
+    public synchronized AnnotationRecord composeBrush(String datasetId,String parentId,long expectedRevision,
+            String operation,String strokeGeometry,int series,int z,int t,String viewRevision)throws IOException {
+        var current=list(datasetId).stream().filter(item->item.id().equals(parentId)).findFirst().orElseThrow(()->new IllegalArgumentException("Brush parent was not found"));
+        if(current.revision()!=expectedRevision)throw new IllegalStateException("Brush parent revision changed");
+        if(series<0||z<0||t<0||viewRevision==null||viewRevision.isBlank()||current.series()!=series||current.z()!=z||current.t()!=t||!current.viewRevision().equals(viewRevision))throw new IllegalStateException("Brush parent must belong to this exact saved view");
+        var geometry=org.pathlab.forge.analysis.MaskContours.compose(current.type(),current.geometry(),operation,strokeGeometry);
+        var properties=read(datasetId);var prefix="annotation."+parentId+".";
+        properties.setProperty(prefix+"type","roi_mask");properties.setProperty(prefix+"geometry",geometry);
+        properties.setProperty(prefix+"revision",Long.toString(current.revision()+1));properties.setProperty(prefix+"updatedAt",Long.toString(System.currentTimeMillis()));
+        if(Thread.currentThread().isInterrupted())throw new java.util.concurrent.CancellationException("Brush composition cancelled");
+        write(datasetId,properties);return list(datasetId).stream().filter(item->item.id().equals(parentId)).findFirst().orElseThrow();
     }
 
     public synchronized AnnotationRecord updateGeometry(

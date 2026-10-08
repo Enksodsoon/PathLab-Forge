@@ -177,6 +177,7 @@ public final class PrivateResultsBundleBuilder {
     }
 
     private static Map<String, Object> geometry(String type, String encoded) {
+        if(type.equals("roi_mask"))return Map.of("type","roi_mask","format","mask/1","fillRule","evenodd","contours",org.pathlab.forge.analysis.MaskContours.parse(encoded).stream().map(ring->ring.stream().map(p->Map.of("x",p.x(),"y",p.y())).toList()).toList());
         var points = new ArrayList<Map<String, Double>>();
         for (var point : encoded.split(";")) {
             var parts = point.split(",", -1);

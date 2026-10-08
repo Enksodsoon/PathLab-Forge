@@ -5,7 +5,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { AnnotationRecord } from './api'
 import { AnalysisMaskOverlay, type MaskChannel } from './AnalysisMaskOverlay'
 import type { DeterministicRun } from './DeterministicTools'
-import { geometryText, parseGeometry, shapePath, validGeometry, type AnnotationPoint } from './annotationGeometry'
+import { geometryText, geometryWithPoints, maskPath, parseGeometry, shapePath, validGeometry, type AnnotationPoint } from './annotationGeometry'
 import {
   cropFromPoints,
   moveCrop,
@@ -56,6 +56,7 @@ export const SlideViewer = memo(function SlideViewer({
   selectedAnnotationId,
   onSelect,
   onUpdate,
+  onComposeBrush,
   onReady,
 }: {
   tileSource: string
@@ -75,8 +76,10 @@ export const SlideViewer = memo(function SlideViewer({
   selectedAnnotationId?: string
   onSelect?: (id: string) => void
   onUpdate?: (id: string, geometry: string) => void
+  onComposeBrush?: (parentId: string, operation: 'brush_add' | 'brush_subtract', strokeGeometry: string, expectedRevision: number) => void
   onReady?: (viewer: OpenSeadragon.Viewer | null) => void
 }) {
+  const annotationRevisionKey = annotations.map((annotation) => `${annotation.id}:${annotation.revision}`).join('|')
   const elementRef = useRef<HTMLDivElement>(null)
   const cropOverlayRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
@@ -92,6 +95,7 @@ export const SlideViewer = memo(function SlideViewer({
   const editRef = useRef<{ id: string; vertex?: number; start: AnnotationPoint; points: AnnotationPoint[] } | null>(null)
   const [edited, setEdited] = useState<{ id: string; points: AnnotationPoint[] } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [brushError, setBrushError] = useState('')
   const [loadError, setLoadError] = useState('')
   const [sourceEpoch, setSourceEpoch] = useState(0)
   const [optimizing, setOptimizing] = useState(false)
@@ -220,13 +224,20 @@ export const SlideViewer = memo(function SlideViewer({
 
     draftRef.current = []
     setDraft([])
+    setBrushError('')
     dragStartRef.current = null
     const setPoints = (points: AnnotationPoint[]) => {
       draftRef.current = points
       setDraft(points)
     }
     const finish = () => {
-      if (validGeometry(activeTool, draftRef.current)) onCreate?.(geometryText(draftRef.current))
+      if (validGeometry(activeTool, draftRef.current)) {
+        if (activeTool === 'brush_add' || activeTool === 'brush_subtract') {
+          const parent = annotations.find((item) => item.id === selectedAnnotationId)
+          if (!parent || !['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'roi_mask'].includes(parent.type) || parent.series === undefined || parent.series < 0 || parent.z === undefined || parent.z < 0 || parent.t === undefined || parent.t < 0 || !parent.viewRevision || !onComposeBrush) setBrushError('Select a saved closed ROI before adding or subtracting a brush region.')
+          else { setBrushError(''); onComposeBrush(parent.id, activeTool, geometryText(draftRef.current), parent.revision) }
+        } else onCreate?.(geometryText(draftRef.current))
+      }
       setPoints([])
     }
     const multiClick = ['polygon', 'polyline', 'angle'].includes(activeTool)
@@ -270,8 +281,9 @@ export const SlideViewer = memo(function SlideViewer({
         if (sampled) {
           const previous = draftRef.current.at(-1)
           if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) >= 0.1) {
-            // ponytail: 4096 vertices per stroke; simplify paths if longer strokes are needed.
-            if (draftRef.current.length < 4095) setPoints([...draftRef.current, point])
+            const limit = activeTool === 'freehand' ? 4095 : 1023
+            if (draftRef.current.length < limit) setPoints([...draftRef.current, point])
+            else { dragStartRef.current = null; setPoints([]); setBrushError('Stroke exceeds its vertex limit. Draw a shorter region.'); }
           }
         } else setPoints([dragStartRef.current, point])
         return
@@ -337,6 +349,9 @@ export const SlideViewer = memo(function SlideViewer({
     downsample,
     onCropChange,
     onCreate,
+    onComposeBrush,
+    selectedAnnotationId,
+    annotationRevisionKey,
     sourceHeight,
     sourceWidth,
     tileSource,
@@ -463,7 +478,7 @@ export const SlideViewer = memo(function SlideViewer({
     const points = continueEdit(event)
     if (edit && points) {
       const annotation = annotations.find((item) => item.id === edit.id)
-      if (annotation && validGeometry(annotation.type, points)) onUpdate?.(edit.id, geometryText(points))
+      if (annotation && validGeometry(annotation.type, points)) onUpdate?.(edit.id, geometryWithPoints(annotation.geometry, points))
     }
     editRef.current = null
     setEdited(null)
@@ -538,6 +553,7 @@ export const SlideViewer = memo(function SlideViewer({
 
   return (
     <div className="forge-osd-shell">
+      {brushError ? <p role="alert">{brushError}</p> : null}
       <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
       <svg aria-label="Slide annotations" data-projection={projectionEpoch}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' }}>
@@ -559,7 +575,7 @@ export const SlideViewer = memo(function SlideViewer({
               event.stopPropagation()
               const [x, y] = delta[event.key]
               const step = event.shiftKey ? 10 : 1
-              onUpdate(annotation.id, geometryText(parseGeometry(annotation.geometry).map((point) => ({ x: point.x + x * step, y: point.y + y * step }))))
+              onUpdate(annotation.id, geometryWithPoints(annotation.geometry, parseGeometry(annotation.geometry).map((point) => ({ x: point.x + x * step, y: point.y + y * step }))))
             },
             onPointerDown: (event: ReactPointerEvent<SVGElement>) => beginEdit(event, annotation),
             onPointerMove: continueEdit,
@@ -569,11 +585,12 @@ export const SlideViewer = memo(function SlideViewer({
           }
           return <g key={annotation.id} stroke={annotation.color} strokeWidth={selected ? 3 : 2}
             fill="none" aria-label={annotation.label || `${annotation.type} annotation`}>
+            {annotation.type === 'brush_subtract' ? <title>Legacy subtract stroke; not applied to a parent ROI</title> : null}
             {['point', 'text'].includes(annotation.type)
               ? <g {...common}><circle cx={points[0].x} cy={points[0].y} r="5" />
                   {annotation.type === 'text' ? <text x={points[0].x + 8} y={points[0].y} stroke="none" fill={annotation.color}>{annotation.label}</text> : null}</g>
-              : <path {...common} d={shapePath(annotation.type, points)} vectorEffect="non-scaling-stroke"
-                  fill={['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'brush_subtract'].includes(annotation.type) ? annotation.color : 'none'} fillOpacity="0.12" />}
+              : <path {...common} d={annotation.type === 'roi_mask' ? maskPath(edited?.id === annotation.id ? geometryWithPoints(annotation.geometry, edited.points) : annotation.geometry, project) : shapePath(annotation.type, points)} fillRule="evenodd" vectorEffect="non-scaling-stroke"
+                  fill={['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'roi_mask'].includes(annotation.type) ? annotation.color : 'none'} fillOpacity="0.12" />}
             {selected && selectable ? points.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="5" fill="white"
               {...common} onPointerDown={(event) => beginEdit(event, annotation, index)} />) : null}
           </g>

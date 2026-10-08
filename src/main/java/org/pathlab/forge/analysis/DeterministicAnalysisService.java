@@ -63,6 +63,7 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         requireNativeView(dataset, roi);
         if (!request.tool().equals("registration")) new RoiMask(roi.type(), roi.geometry()).bounds();
         var secondary = new TreeMap<String, String>();
+        if(roi.type().equals("roi_mask")){secondary.put("roiMaskFormat","mask/1-even-odd");secondary.put("boundaryFlatteningTolerancePx",Double.toString(MaskContours.FLATNESS));}
         var derived = annotations.derivedProvenance(request.datasetId(), roi.id());
         if (!derived.get("sourceRunId").isBlank()) {
             secondary.putAll(tmaCoreInputs(derived.get("sourceRunId"), Long.parseLong(derived.get("reviewRevision")), roi.id()));
@@ -451,6 +452,7 @@ public final class DeterministicAnalysisService implements AutoCloseable {
                 || !hash(dataset.get().sourceInventory()).equals(run.provenance().sourceInventorySha256())
                 || roi.get().revision() != run.provenance().annotationRevision()
                 || !roi.get().geometry().equals(run.provenance().annotationGeometry())
+                || !roi.get().type().equals(run.provenance().annotationType())
                 || !roi.get().viewRevision().equals(run.provenance().viewRevision())
                 || !dataset.get().runtimeFingerprint().equals(run.provenance().runtimeFingerprint());
         if (dataset.isPresent()) changed |= !org.pathlab.forge.library.DatasetSourceInventory.matchesSnapshot(

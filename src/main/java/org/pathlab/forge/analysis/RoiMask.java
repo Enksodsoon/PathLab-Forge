@@ -7,14 +7,16 @@ import org.pathlab.forge.conversion.RgbRegion;
 public final class RoiMask {
     private final String type;
     private final List<Point> points;
+    private final java.awt.geom.Area contourMask;
 
     public RoiMask(String type, String geometry) {
         GeometryMeasurements.validate(type, geometry);
-        if (!java.util.Set.of("rectangle", "ellipse", "polygon", "freehand", "brush_add", "brush_subtract").contains(type)) {
+        contourMask=type.equals("roi_mask")?MaskContours.shape(type,geometry):null;
+        if (!java.util.Set.of("rectangle", "ellipse", "polygon", "freehand", "brush_add", "roi_mask").contains(type)) {
             throw new IllegalArgumentException("Analysis requires a closed ROI");
         }
         this.type = type;
-        points = Arrays.stream(geometry.split(";")).map(value -> value.split(","))
+        points = contourMask!=null?MaskContours.parse(geometry).stream().flatMap(java.util.Collection::stream).map(p->new Point(p.x(),p.y())).toList():Arrays.stream(geometry.split(";")).map(value -> value.split(","))
                 .map(value -> new Point(Double.parseDouble(value[0]), Double.parseDouble(value[1]))).toList();
     }
 
@@ -30,6 +32,7 @@ public final class RoiMask {
     }
 
     public boolean contains(double x, double y) {
+        if(contourMask!=null)return contourMask.contains(x,y);
         if (type.equals("rectangle")) {
             return x >= Math.min(points.get(0).x(), points.get(1).x())
                     && x <= Math.max(points.get(0).x(), points.get(1).x())

@@ -1,11 +1,32 @@
 export interface AnnotationPoint { x: number; y: number }
 
 export function parseGeometry(geometry: string): AnnotationPoint[] {
+  if (geometry.startsWith('mask/1|')) return geometryContours(geometry).flat()
   const points = geometry.split(';').map((value) => {
     const [x, y] = value.split(',').map(Number)
     return { x, y }
   })
   return points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) ? points : []
+}
+
+export function geometryContours(geometry: string): AnnotationPoint[][] {
+  if (!geometry.startsWith('mask/1|')) return [parseGeometry(geometry)]
+  if (geometry.length > 65536) return []
+  const rings = geometry.slice(7).split('|').map((ring) => parseGeometry(ring))
+  return rings.length <= 64 && rings.every((ring) => ring.length >= 3) && rings.flat().length <= 2048 ? rings : []
+}
+
+/** Keep contour boundaries during translation or vertex editing. */
+export function geometryWithPoints(original: string, points: AnnotationPoint[]) {
+  if (!original.startsWith('mask/1|')) return geometryText(points)
+  let offset = 0
+  return 'mask/1|' + geometryContours(original).map((ring) => {
+    const text = geometryText(points.slice(offset, offset + ring.length)); offset += ring.length; return text
+  }).join('|')
+}
+
+export function maskPath(geometry: string, project: (point: AnnotationPoint) => AnnotationPoint) {
+  return geometryContours(geometry).map((ring) => shapePath('polygon', ring.map(project))).join('')
 }
 
 export function geometryText(points: AnnotationPoint[]) {
@@ -20,7 +41,7 @@ export function validGeometry(type: string, points: AnnotationPoint[]) {
   if (type === 'angle') return points.length === 3
     && (points[0].x !== points[1].x || points[0].y !== points[1].y)
     && (points[1].x !== points[2].x || points[1].y !== points[2].y)
-  if (['polygon', 'freehand', 'brush_add', 'brush_subtract'].includes(type)) return points.length >= 3
+  if (['polygon', 'freehand', 'brush_add', 'brush_subtract', 'roi_mask'].includes(type)) return points.length >= 3
   return points.length >= 2
 }
 

@@ -68,6 +68,28 @@ describe('annotation gesture capture', () => {
     emit('canvas-release', 9, 10)
     expect(onCreate).toHaveBeenCalledTimes(1)
   })
+  it('composes brush strokes only into a selected scoped parent and cancels before committing', () => {
+    const onCreate = vi.fn(), onComposeBrush = vi.fn()
+    const annotations = [{ id: 'parent', type: 'rectangle', geometry: '0,0;100,100', label: 'ROI', color: '#ffaa22', createdAt: 0, updatedAt: 0, revision: 1, parentId: '', classification: '', series: 0, z: 0, t: 0, viewRevision: 'view' }]
+    const { rerender } = render(<SlideViewer tileSource="slide.dzi" sourceWidth={100} sourceHeight={100} activeTool="brush_subtract" onCreate={onCreate} onComposeBrush={onComposeBrush} annotations={annotations} />)
+    emit('canvas-press', 2, 2); emit('canvas-drag', 8, 2); emit('canvas-drag', 8, 8); emit('canvas-release', 2, 8)
+    expect(onCreate).not.toHaveBeenCalled(); expect(onComposeBrush).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Select a saved closed ROI')
+    rerender(<SlideViewer tileSource="slide.dzi" sourceWidth={100} sourceHeight={100} activeTool="brush_subtract" selectedAnnotationId="parent" onComposeBrush={onComposeBrush} annotations={annotations} />)
+    emit('canvas-press', 2, 2); emit('canvas-drag', 8, 2); emit('canvas-drag', 8, 8); fireEvent.keyDown(window, { key: 'Escape' }); emit('canvas-release', 2, 8)
+    expect(onComposeBrush).not.toHaveBeenCalled()
+    emit('canvas-press', 2, 2); emit('canvas-drag', 8, 2); emit('canvas-drag', 8, 8); emit('canvas-release', 2, 8)
+    expect(onComposeBrush).toHaveBeenCalledWith('parent', 'brush_subtract', '2,2;8,2;8,8;2,8', 1)
+  })
+  it('renders and keyboard edits a compound mask with independent hole contours', () => {
+    const onUpdate = vi.fn()
+    render(<SlideViewer tileSource="slide.dzi" sourceWidth={100} sourceHeight={100} activeTool="select" onUpdate={onUpdate} annotations={[{ id: 'mask', type: 'roi_mask', geometry: 'mask/1|0,0;10,0;10,10;0,10|2,2;8,2;8,8;2,8', label: 'Hole ROI', color: '#ffaa22', createdAt: 0, updatedAt: 0, revision: 2, parentId: '', classification: '' }]} />)
+    const path = screen.getByRole('button', { name: 'Hole ROI' })
+    expect(path).toHaveAttribute('fill-rule', 'evenodd')
+    expect(path).toHaveAttribute('d', 'M0,0L10,0L10,10L0,10ZM2,2L8,2L8,8L2,8Z')
+    fireEvent.keyDown(path, { key: 'ArrowRight' })
+    expect(onUpdate).toHaveBeenCalledWith('mask', 'mask/1|1,0;11,0;11,10;1,10|3,2;9,2;9,8;3,8')
+  })
   it('renders real paths and supports keyboard moves without altering vertices', () => {
     const onUpdate = vi.fn()
     render(<SlideViewer tileSource="slide.dzi" sourceWidth={100} sourceHeight={100} activeTool="select" onUpdate={onUpdate} annotations={[{
