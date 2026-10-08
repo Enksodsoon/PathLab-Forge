@@ -1,5 +1,13 @@
 import type { StudyDraftRecord } from './StudyAuthoring'
 import type { DeterministicRun, DeterministicRequest, DeterministicReview } from './DeterministicTools'
+import type { BatchSummary, BatchReport } from './BatchReports'
+
+export const batches = () => request<BatchSummary[]>('/api/batches?limit=50')
+export const createBatch = (datasetIds: string[]) => request<BatchSummary>('/api/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetIds }) })
+export const batchReport = (id: string) => request<BatchReport>(`/api/batches/${encodeURIComponent(id)}/report`)
+export const retryBatchItem = (id: string, datasetId: string) => request<BatchSummary>(`/api/batches/${encodeURIComponent(id)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetId }) })
+export const cancelBatch = (id: string) => request<BatchSummary>(`/api/batches/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+export const exportBatch = (batchId: string, format: 'csv' | 'json', destination: string) => request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'batch', batchId, format, destination }) })
 
 export interface ExportState { id: string; status: string; completedBytes: number; totalBytes: number; destination: string; detail: string }
 export const exportState = () => request<ExportState>('/api/exports')

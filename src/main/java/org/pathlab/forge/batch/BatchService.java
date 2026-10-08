@@ -154,11 +154,11 @@ public final class BatchService {
 
     public String reportCsv(String id) throws IOException {
         var report = report(id);
-        var csv = new StringBuilder("batch_id,dataset_id,source_path,source_fingerprint,configuration_revision,series,crop_x,crop_y,crop_width,crop_height,downsample,artifact_revision,local_state,detail,artifact_sha256,artifact_bytes,viewer_state,next_action\r\n");
+        var csv = new StringBuilder("batch_id,dataset_id,display_name,source_path,source_fingerprint,configuration_revision,series,crop_x,crop_y,crop_width,crop_height,downsample,artifact_revision,local_state,detail,artifact_sha256,artifact_bytes,viewer_state,next_action\r\n");
         for (var slide : report.slides()) {
             var item = slide.item(); var snapshot = item.snapshot(); var artifact = slide.artifact();
             var sha = artifact == null ? "" : report.format() == ArtifactRevisionFormat.OME_DYNAMIC_V1 ? artifact.omeSha256() : artifact.packageSha256();
-            var values = List.of(report.batchId(), snapshot.id(), snapshot.sourcePath(), snapshot.sourceFingerprint(), snapshot.configurationRevision(), Integer.toString(snapshot.selectedSeries()), Integer.toString(snapshot.cropX()), Integer.toString(snapshot.cropY()), Integer.toString(snapshot.cropWidth()), Integer.toString(snapshot.cropHeight()), Double.toString(snapshot.downsample()), item.artifactRevisionId(), item.state(), item.detail(), sha, Long.toString(slide.artifactBytes()), slide.delivery().state(), slide.nextAction());
+            var values = List.of(report.batchId(), snapshot.id(), snapshot.displayName(), snapshot.sourcePath(), snapshot.sourceFingerprint(), snapshot.configurationRevision(), Integer.toString(snapshot.selectedSeries()), Integer.toString(snapshot.cropX()), Integer.toString(snapshot.cropY()), Integer.toString(snapshot.cropWidth()), Integer.toString(snapshot.cropHeight()), Double.toString(snapshot.downsample()), item.artifactRevisionId(), item.state(), item.detail(), sha, Long.toString(slide.artifactBytes()), slide.delivery().state(), slide.nextAction());
             csv.append(values.stream().map(BatchService::csvCell).collect(java.util.stream.Collectors.joining(","))).append("\r\n");
         }
         return csv.toString();

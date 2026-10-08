@@ -40,6 +40,12 @@ vi.mock('../SlideViewer', () => ({
 }))
 
 vi.mock('../api', () => ({
+  batches: vi.fn(async () => []),
+  createBatch: vi.fn(),
+  batchReport: vi.fn(),
+  retryBatchItem: vi.fn(),
+  cancelBatch: vi.fn(),
+  exportBatch: vi.fn(),
   bootstrap: vi.fn(async () => [[], {
     conversionRuntime: 'Bio-Formats test',
     derivativeRuntime: 'libvips test',
@@ -1262,6 +1268,8 @@ test('opens a thumbnail queue list before starting ready conversions', async () 
     vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
   }])
   vi.mocked(api.datasets).mockResolvedValue([ready])
+  vi.mocked(api.createBatch).mockResolvedValue({ id: 'saved-batch', createdAt: 1, format: 'OME_DYNAMIC_V1', items: [{ snapshot: { ...ready, sourcePath: 'source.svs' }, artifactRevisionId: 'artifact', state: 'ADMITTED', detail: 'Queued', attempts: 1 }] })
+  vi.mocked(api.batchReport).mockResolvedValue({ batchId: 'saved-batch', createdAt: 1, format: 'OME_DYNAMIC_V1', queuePaused: false, slides: [] })
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'View queue · 1' }))
@@ -1272,7 +1280,8 @@ test('opens a thumbnail queue list before starting ready conversions', async () 
   expect(within(dialog).getByText('Ready to queue')).toBeVisible()
   expect(dialog.querySelector('.forge-queue-thumbnail img')).toHaveAttribute('src', '/api/datasets/queued-preview/series/0/thumbnail?v=queue-source')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Start 1 ready slide' }))
-  await waitFor(() => expect(api.convert).toHaveBeenCalledWith('queued-preview'))
+  await waitFor(() => expect(api.createBatch).toHaveBeenCalledWith(['queued-preview']))
+  expect(await screen.findByRole('dialog', { name: 'Saved batch workspace' })).toBeVisible()
 })
 
 test('opens each workflow step as a focused menu instead of showing one static progress list', async () => {

@@ -56,6 +56,7 @@ import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer, type AnalysisOverlayShape } from './SlideViewer'
 import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
 import { StudyAuthoring, type StudyDraftRecord } from './StudyAuthoring'
+import { BatchReports, type BatchSummary } from './BatchReports'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -139,6 +140,9 @@ export function App() {
   const [localFolders, setLocalFolders] = useState<string[]>(() => readStored('pathlab-forge-folders-v1', [DEFAULT_LOCAL_FOLDER]))
   const [folderByDataset, setFolderByDataset] = useState<Record<string, string>>(() => readStored('pathlab-forge-folder-map-v1', {}))
   const [batchRemoveIds, setBatchRemoveIds] = useState<string[]>([])
+  const [savedBatches, setSavedBatches] = useState<BatchSummary[]>([])
+  const [batchReportsOpen, setBatchReportsOpen] = useState(false)
+  const [batchExportRequest, setBatchExportRequest] = useState<{ id: string; format: 'csv' | 'json' }>()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
   const remoteEpoch = useRef(0)
@@ -491,15 +495,20 @@ export function App() {
     const candidates = datasets.filter((item) => selectedIds.has(item.id) && QUEUEABLE_STATUSES.has(item.status))
     if (!candidates.length) return
     setNotice(`Preparing ${candidates.length} slides for the adaptive queue…`)
-    for (const candidate of candidates) {
-      try {
-        if (candidate.selectedSeries < 0) await api.inspectDataset(candidate.id)
-        await api.convert(candidate.id)
-      } catch (nextError) {
-        setError(`${candidate.displayName}: ${message(nextError)}`)
+    try {
+      for (const candidate of candidates) if (candidate.selectedSeries < 0) {
+        try { await api.inspectDataset(candidate.id) } catch { /* Keep invalid items in the durable per-slide report. */ }
       }
-    }
-    await refresh()
+      const batch = await api.createBatch(candidates.map((candidate) => candidate.id))
+      setSavedBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)])
+      setBatchReportsOpen(true); await refresh()
+      setNotice(`Saved ${batch.items.length}-slide batch; inspect per-slide outcomes and retry without replacing completed artifacts`)
+    } catch (cause) { setError(message(cause)) }
+  }
+  const readBatchReport = useCallback(api.batchReport, [])
+  const openBatchReports = async () => {
+    setBatchReportsOpen(true)
+    try { setSavedBatches(await api.batches()) } catch (cause) { setError(message(cause)) }
   }
 
   const removeSelectedDatasets = async () => {
@@ -1039,6 +1048,15 @@ export function App() {
           )}
         />
       </div>
+      <button type="button" className="forge-viewer-sync-launcher" onClick={() => void openBatchReports()}>Saved batch reports</button>
+      {batchReportsOpen ? <div className="forge-dialog-backdrop" role="presentation"><section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Saved batch workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setBatchReportsOpen(false) } }}>
+        <button type="button" aria-label="Close batch reports" onClick={() => setBatchReportsOpen(false)}><X aria-hidden="true" /></button>
+        <BatchReports batches={savedBatches} onReport={readBatchReport} onRetry={api.retryBatchItem} onCancel={api.cancelBatch} onExport={(id, format) => {
+          if (window.forgeDesktop) setBatchExportRequest({ id, format })
+          else { const link = document.createElement('a'); link.href = `/api/batches/${encodeURIComponent(id)}/export?format=${format}`; link.download = `batch-${id}.${format}`; link.click() }
+        }} />
+        {batchExportRequest ? <NativeExport key={`${batchExportRequest.id}:${batchExportRequest.format}`} datasetId="" batchId={batchExportRequest.id} batchFormat={batchExportRequest.format} /> : null}
+      </section></div> : null}
       {connection?.connected && viewerUpload?.viewerSlideId
         && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (
         <ExternalViewerLink
@@ -2617,12 +2635,12 @@ function MultidimensionalViewControls({ dataset, image, onUpdate }: {
   </fieldset>
 }
 
-export function NativeExport({ datasetId, revision, runId }: { datasetId: string; revision?: ArtifactRevision; runId?: string }) {
+export function NativeExport({ datasetId, revision, runId, batchId, batchFormat = 'json' }: { datasetId: string; revision?: ArtifactRevision; runId?: string; batchId?: string; batchFormat?: 'csv' | 'json' }) {
   const [state, setState] = useState<api.ExportState>()
   const [error, setError] = useState('')
-  const selection = `${datasetId}:${revision?.id || ''}:${runId || ''}`
+  const selection = `${datasetId}:${revision?.id || ''}:${runId || ''}:${batchId || ''}:${batchFormat}`
   const selectionRef = useRef(selection); selectionRef.current = selection
-  useEffect(() => { setState(undefined); setError('') }, [datasetId, revision?.id, runId])
+  useEffect(() => { setState(undefined); setError('') }, [datasetId, revision?.id, runId, batchId, batchFormat])
   const active = state && ['COPYING', 'VERIFYING'].includes(state.status)
   useEffect(() => {
     if (!active) return
@@ -2632,24 +2650,24 @@ export function NativeExport({ datasetId, revision, runId }: { datasetId: string
     }, 500)
     return () => { stopped = true; window.clearTimeout(timer) }
   }, [active, state])
-  const save = async (kind: 'ome' | 'package' | 'analysis' | 'measurements') => {
+  const save = async (kind: 'ome' | 'package' | 'analysis' | 'measurements' | 'batch') => {
     setError('')
     const capturedSelection = selectionRef.current
     try {
-      const name = (revision?.name || runId || 'measurements').replace(/[\x00-\x1f/\\:]/g, '_')
-      const extension = kind === 'ome' ? '.ome.tif' : kind === 'package' ? '.plslide' : kind === 'analysis' ? '.json' : '.csv'
+      const name = (revision?.name || runId || (batchId ? `batch-${batchId}` : 'measurements')).replace(/[\x00-\x1f/\\:]/g, '_')
+      const extension = kind === 'batch' ? `.${batchFormat}` : kind === 'ome' ? '.ome.tif' : kind === 'package' ? '.plslide' : kind === 'analysis' ? '.json' : '.csv'
       const destination = await window.forgeDesktop?.selectExportDestination(`${name}${extension}`)
       if (capturedSelection !== selectionRef.current) return
       if (destination) { const accepted = await (kind === 'ome' || kind === 'package'
         ? api.exportArtifact(datasetId, revision!.id, kind, destination)
-        : api.exportResult(kind, datasetId, runId || '', destination))
+        : kind === 'batch' ? api.exportBatch(batchId!, batchFormat, destination) : api.exportResult(kind, datasetId, runId || '', destination))
         if (capturedSelection === selectionRef.current) setState(accepted)
       }
     } catch (error) { setError(message(error)) }
   }
   return <div aria-label="Native export">
-    <button type="button" disabled={Boolean(active)} onClick={() => void save(revision ? 'ome' : runId ? 'analysis' : 'measurements')}>
-      {revision ? 'Save verified OME as…' : runId ? 'Save selected result as…' : 'Save measurements CSV as…'}</button>
+    <button type="button" disabled={Boolean(active)} onClick={() => void save(batchId ? 'batch' : revision ? 'ome' : runId ? 'analysis' : 'measurements')}>
+      {batchId ? `Save batch ${batchFormat.toUpperCase()} as…` : revision ? 'Save verified OME as…' : runId ? 'Save selected result as…' : 'Save measurements CSV as…'}</button>
     {revision && revision.format !== 'OME_DYNAMIC_V1' ? <button type="button" disabled={Boolean(active)} onClick={() => void save('package')}>Save package as…</button> : null}
     {state ? <p role="status">{state.detail} · {formatBytes(state.completedBytes)} / {formatBytes(state.totalBytes)}</p> : null}
     {active ? <button type="button" onClick={() => void api.cancelExport(state!.id).then((next) => { if (next.id === state!.id) setState(next) }).catch((cause) => setError(message(cause)))}>Cancel export</button> : null}

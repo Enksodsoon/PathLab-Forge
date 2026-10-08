@@ -203,8 +203,8 @@ final class ForgeServerTest {
                             .POST(HttpRequest.BodyPublishers.ofString("{}"))
                             .build(),
                     HttpResponse.BodyHandlers.ofString());
-            assertEquals(201, accepted.statusCode());
-            assertTrue(accepted.body().contains("\"state\":\"staged\""));
+            assertEquals(409, accepted.statusCode());
+            assertTrue(accepted.body().contains("Select datasetIds"), "Authorized empty payload reaches real batch validation");
         }
     }
 
@@ -308,6 +308,43 @@ final class ForgeServerTest {
         }
     }
 
+    @Test void batchHttpJourneyRetainsFailureSnapshotExportsAndRestarts() throws Exception {
+        var repository = new PropertiesDatasetRepository(temp.resolve("library-0.properties"));
+        var datasetId = java.util.UUID.randomUUID().toString();
+        var source = temp.resolve("incomplete.tif"); java.nio.file.Files.write(source, new byte[] {1,2,3});
+        repository.save(new org.pathlab.forge.library.LocalDataset(datasetId, "Uninspected source", source.toString(), 3,
+                org.pathlab.forge.library.DatasetFormat.OME_TIFF, org.pathlab.forge.library.DatasetStatus.READY, "", "", ""));
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper(); String id;
+        try (var server = startEphemeral()) {
+            var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
+            assertEquals(401, client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(), HttpResponse.BodyHandlers.discarding());
+            var csrf = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(), HttpResponse.BodyHandlers.discarding()).headers().firstValue("X-Forge-CSRF").orElseThrow();
+            var created = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches"))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"datasetIds\":[\"" + datasetId + "\"]}")).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(201, created.statusCode(), created.body()); id = mapper.readTree(created.body()).path("id").asText();
+            var report = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches/" + id + "/report")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, report.statusCode(), report.body());
+            assertEquals("FAILED", mapper.readTree(report.body()).path("slides").get(0).path("item").path("state").asText());
+            assertTrue(report.body().contains("Uninspected source"));
+            var csv = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches/" + id + "/export?format=csv")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, csv.statusCode()); assertTrue(csv.body().contains("Uninspected source"));
+            var destination = temp.resolve("native-batch.csv");
+            var payload = mapper.writeValueAsString(java.util.Map.of("kind", "batch", "batchId", id, "format", "csv", "destination", destination.toString()));
+            var saved = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/exports"))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf).POST(HttpRequest.BodyPublishers.ofString(payload)).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, saved.statusCode(), saved.body());
+            for (var attempt = 0; attempt < 100 && !java.nio.file.Files.exists(destination); attempt++) Thread.sleep(10);
+            assertEquals(csv.body(), java.nio.file.Files.readString(destination));
+        }
+        try (var server = startEphemeral()) {
+            var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(), HttpResponse.BodyHandlers.discarding());
+            var report = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/batches/" + id + "/report")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, report.statusCode()); assertTrue(report.body().contains("Uninspected source"));
+        }
+    }
     private ForgeServer startEphemeral() throws Exception {
         return startOnPort(0, LocalBrowserSession.randomToken());
     }

@@ -42,7 +42,6 @@ import org.pathlab.forge.library.ProjectFolderScanner;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.library.SwingDatasetPicker;
 import org.pathlab.forge.library.SourceVerificationService;
-import org.pathlab.forge.model.BatchId;
 import org.pathlab.forge.viewer.ViewerConnection;
 import org.pathlab.forge.viewer.ViewerPairingService;
 import org.pathlab.forge.viewer.SqliteViewerDeliveryStore;
@@ -86,6 +85,7 @@ public final class ForgeServer implements AutoCloseable {
     private final DeterministicAnalysisService analysisService;
     private final VerifiedExportService exportService = new VerifiedExportService();
     private final org.pathlab.forge.study.StudyAuthoringService studyService;
+    private final org.pathlab.forge.batch.BatchService batchService;
     private final ViewerPairingService viewerPairingService;
     private final ViewerSyncService viewerSyncService;
     private final ViewerTileCache viewerTileCache;
@@ -116,7 +116,7 @@ public final class ForgeServer implements AutoCloseable {
         preparationService = new DatasetPreparationService(repository, managedRoot);
         sourceVerificationService = new SourceVerificationService(repository);
         conversionService =
-                new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot);
+                new ConversionService(repository, conversionEngine, derivativeEngine, managedRoot, true);
         universalDatasetImporter = new UniversalDatasetImporter(repository,
                 source -> probeDataset(conversionEngine, derivativeEngine, source));
         universalReaderAvailable = conversionEngine.available();
@@ -156,6 +156,24 @@ public final class ForgeServer implements AutoCloseable {
                 viewerPairingService, new SqliteViewerSyncStore(dataRoot.resolve("viewer-sync.db")),
                 dataRoot.resolve("viewer-offline"));
         viewerTileCache = new ViewerTileCache(viewerPairingService, dataRoot.resolve("viewer-cache"));
+        batchService = new org.pathlab.forge.batch.BatchService(repository, conversionService,
+                new org.pathlab.forge.batch.BatchStore(dataRoot.resolve("forge.db")), artifactId -> {
+                    try {
+                        return viewerPairingService.deliveryForArtifact(artifactId).map(job ->
+                                new org.pathlab.forge.batch.BatchService.Delivery(job.state().name(),
+                                        switch (job.state()) {
+                                            case COMPLETE -> "No action required";
+                                            case IMAGE_READY, SYNCING_RESULTS -> "Wait for structured results to finish";
+                                            case FAILED, PAUSED, CANCELLED -> "Reconnect and retry this verified artifact's delivery";
+                                            default -> "Wait for the current delivery";
+                                        }, job.detail())).orElse(new org.pathlab.forge.batch.BatchService.Delivery(
+                                                "NOT_SENT", "Select this verified artifact for Viewer delivery", "No delivery for this artifact in the current connection"));
+                    } catch (IOException error) {
+                        return new org.pathlab.forge.batch.BatchService.Delivery("UNAVAILABLE", "Reconnect to inspect delivery", "Current connection delivery status is unavailable");
+                    }
+                });
+        batchService.recoverPending();
+        conversionService.resumeQueueDispatch();
     }
 
     public static ForgeServer start() throws IOException {
@@ -595,8 +613,8 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 deleteDataset(exchange, path.substring("/api/datasets/".length()));
-            } else if ("/api/batches".equals(path) && "POST".equals(exchange.getRequestMethod())) {
-                createBatch(exchange);
+            } else if ("/api/batches".equals(path) || path.matches("/api/batches/[0-9a-fA-F-]{36}(/report|/retry|/cancel|/export)?")) {
+                batches(exchange, path);
             } else {
                 respond(exchange, 404, "application/json", "{\"error\":\"not_found\"}");
             }
@@ -1139,10 +1157,11 @@ public final class ForgeServer implements AutoCloseable {
                 requireDesktopSelection(destination, "export");
                 var datasetId = body.path("datasetId").asText();
                 var kind = body.path("kind").asText();
-                if (java.util.Set.of("analysis", "measurements", "study").contains(kind)) {
+                if (java.util.Set.of("analysis", "measurements", "study", "batch").contains(kind)) {
                     var content = switch (kind) {
                         case "analysis" -> analysisService.exportJson(body.path("runId").asText());
                         case "study" -> studyExport(body.path("draftId").asText(), body.path("format").asText(), body.path("checksum").asText());
+                        case "batch" -> batchExport(body.path("batchId").asText(), body.path("format").asText());
                         default -> measurementsCsv(datasetId);
                     };
                     result = exportService.submitBytes(content.getBytes(StandardCharsets.UTF_8), destination);
@@ -2369,16 +2388,40 @@ public final class ForgeServer implements AutoCloseable {
         exchange.sendResponseHeaders(204, -1);
     }
 
-    private void createBatch(HttpExchange exchange) throws IOException {
-        if (!requireWrite(exchange)) {
-            return;
+    private void batches(HttpExchange exchange, String path) throws IOException {
+        var method = exchange.getRequestMethod();
+        if ("GET".equals(method)) { if (!requireAuthenticated(exchange)) return; }
+        else if (!requireWriteHeaders(exchange)) return;
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        try {
+            var parts = path.split("/"); Object result; var status = 200;
+            if (parts.length == 3 && "GET".equals(method)) result = batchService.list(
+                    Integer.parseInt(queryValue(exchange, "limit", "50")), Integer.parseInt(queryValue(exchange, "offset", "0")));
+            else if (parts.length == 3 && "POST".equals(method)) {
+                var body = mapper.readTree(boundedAnalysisBody(exchange));
+                if (!body.path("datasetIds").isArray()) throw new IllegalArgumentException("Select datasetIds for this batch");
+                if (body.has("format") && !"OME_DYNAMIC_V1".equals(body.path("format").asText())) throw new IllegalArgumentException("Select Teaching delivery separately; normal batches use direct OME");
+                var ids = new java.util.ArrayList<String>();
+                for (var id : body.path("datasetIds")) { if (!id.isTextual()) throw new IllegalArgumentException("Dataset IDs must be strings"); ids.add(id.asText()); }
+                result = batchService.create(ids, org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1); status = 201;
+            } else if (parts.length == 4 && "GET".equals(method)) result = batchService.get(parts[3]);
+            else if (parts.length == 5 && "report".equals(parts[4]) && "GET".equals(method)) result = batchService.report(parts[3]);
+            else if (parts.length == 5 && "cancel".equals(parts[4]) && "POST".equals(method)) result = batchService.cancel(parts[3]);
+            else if (parts.length == 5 && "retry".equals(parts[4]) && "POST".equals(method)) {
+                var body = mapper.readTree(boundedAnalysisBody(exchange)); result = batchService.retry(parts[3], body.path("datasetId").asText());
+            } else if (parts.length == 5 && "export".equals(parts[4]) && "GET".equals(method)) {
+                var format = queryValue(exchange, "format", "json"); var content = batchExport(parts[3], format);
+                exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"batch-" + parts[3] + "." + format + "\"");
+                respond(exchange, 200, "csv".equals(format) ? "text/csv; charset=utf-8" : "application/json", content); return;
+            } else { respond(exchange, 405, "application/json", "{\"error\":\"method_not_allowed\"}"); return; }
+            respond(exchange, status, "application/json", mapper.writeValueAsString(result));
+        } catch (IllegalArgumentException | IllegalStateException | IOException error) {
+            respond(exchange, 409, "application/json", "{\"error\":\"batch_action_failed\",\"detail\":" + json(error.getMessage()) + "}");
         }
-        var batchId = BatchId.of(UUID.randomUUID().toString());
-        respond(
-                exchange,
-                201,
-                "application/json",
-                "{\"batchId\":\"" + batchId.value() + "\",\"state\":\"staged\"}");
+    }
+    private String batchExport(String id, String format) throws IOException {
+        return switch (format) { case "csv" -> batchService.reportCsv(id); case "json" -> batchService.reportJson(id);
+            default -> throw new IllegalArgumentException("Batch report format must be csv or json"); };
     }
 
     private boolean requireAuthenticated(HttpExchange exchange) throws IOException {
