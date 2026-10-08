@@ -9,6 +9,7 @@ import org.pathlab.forge.library.DatasetInspector;
 import org.pathlab.forge.library.ForgePaths;
 import org.pathlab.forge.library.SqliteDatasetRepository;
 import org.pathlab.forge.runtime.DataRootLock;
+import org.pathlab.forge.runtime.DataUpgradeRecovery;
 import org.pathlab.forge.runtime.DesktopStartup;
 import org.pathlab.forge.runtime.ForgeCommandLine;
 import org.pathlab.forge.runtime.ReaderRuntimeSelfTest;
@@ -26,13 +27,14 @@ public final class ForgeApp {
             if (!command.desktop()) throw error;
             DesktopStartup.failed(System.out, error instanceof DataRootLock.AlreadyOwnedException
                     ? "DATA_LOCKED" : error instanceof java.nio.file.AccessDeniedException
-                    ? "DATA_DENIED" : "SERVICE_UNAVAILABLE");
+                    ? "DATA_DENIED" : error instanceof DataUpgradeRecovery.Failure upgrade
+                    ? upgrade.startupCode() : "SERVICE_UNAVAILABLE");
         }
     }
 
     private static void run(ForgeCommandLine command)
             throws IOException, InterruptedException, DatasetInspectionException {
-        if (command.dataRoot() == null || command.desktop()) ForgePaths.migrateLegacyMacData();
+        if (!command.readerSelfTest() && (command.dataRoot() == null || command.desktop())) ForgePaths.migrateLegacyMacData();
         var paths = command.dataRoot() == null
                 ? ForgePaths.defaults()
                 : ForgePaths.at(command.dataRoot());
@@ -48,6 +50,10 @@ public final class ForgeApp {
                 System.out.println(ReaderRuntimeSelfTest.run(paths, command.selfTestSources()));
                 return;
             }
+            var installedVersion = ForgeApp.class.getPackage().getImplementationVersion();
+            DataUpgradeRecovery.prepare(paths, dataRootLock,
+                    installedVersion == null && Boolean.getBoolean("pathlab.forge.runtime.requireProduction")
+                            ? "" : installedVersion);
             try (var repository = new SqliteDatasetRepository(
                     paths.repositoryFile(),
                     paths.dataRoot().resolve("library.properties"))) {

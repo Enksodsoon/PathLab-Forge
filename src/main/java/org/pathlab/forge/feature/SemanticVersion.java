@@ -3,9 +3,9 @@ package org.pathlab.forge.feature;
 import java.math.BigInteger;
 
 /** SemVer precedence, including numeric prerelease identifiers and ignored build metadata. */
-final class SemanticVersion {
+public final class SemanticVersion {
     private SemanticVersion() {}
-    static boolean valid(String value) {
+    public static boolean valid(String value) {
         if (value == null || value.length() > 64 || !value.matches(
                 "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?")) return false;
         var parts = value.split("\\+", 2)[0].split("-", 2);
@@ -13,7 +13,7 @@ final class SemanticVersion {
             if (part.matches("[0-9]+") && part.length() > 1 && part.startsWith("0")) return false;
         return true;
     }
-    static int compare(String left, String right) {
+    public static int compare(String left, String right) {
         if (!valid(left) || !valid(right)) throw new IllegalArgumentException("Invalid semantic version");
         var a = left.split("\\+", 2)[0].split("-", 2);
         var b = right.split("\\+", 2)[0].split("-", 2);

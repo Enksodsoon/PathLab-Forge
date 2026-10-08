@@ -17,32 +17,51 @@ public final class DataRootLock implements AutoCloseable {
     }
     private final FileChannel channel;
     private final FileLock lock;
+    private final Path root;
 
-    private DataRootLock(FileChannel channel, FileLock lock) {
+    private DataRootLock(FileChannel channel, FileLock lock, Path root) {
         this.channel = channel;
         this.lock = lock;
+        this.root = root;
     }
 
     public static DataRootLock acquire(Path dataRoot) throws IOException {
         var root = dataRoot.toAbsolutePath().normalize();
+        requireSafePath(root);
         Files.createDirectories(root);
         var channel = FileChannel.open(
                 root.resolve("forge.lock"),
                 StandardOpenOption.CREATE,
-                StandardOpenOption.WRITE);
+                StandardOpenOption.WRITE, java.nio.file.LinkOption.NOFOLLOW_LINKS);
         try {
             var lock = channel.tryLock();
             if (lock == null) {
                 channel.close();
                 throw new AlreadyOwnedException(null);
             }
-            return new DataRootLock(channel, lock);
+            return new DataRootLock(channel, lock, root);
         } catch (OverlappingFileLockException error) {
             channel.close();
             throw new AlreadyOwnedException(error);
         } catch (IOException error) {
             channel.close();
             throw error;
+        }
+    }
+
+    /** Proves this still-live lock owns the exact data root before maintenance writes. */
+    public void requireHeld(Path dataRoot) throws IOException {
+        if (!lock.isValid() || !root.equals(dataRoot.toAbsolutePath().normalize()))
+            throw new IOException("Maintenance requires the held lock for this Forge data root");
+        requireSafePath(root);
+    }
+
+    static void requireSafePath(Path path) throws IOException {
+        for (var part = path.toAbsolutePath().normalize(); part != null; part = part.getParent()) {
+            if (Files.isSymbolicLink(part)) throw new IOException("Forge maintenance refuses symbolic links: " + part);
+            if (Files.exists(part, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    && !part.toRealPath().equals(part))
+                throw new IOException("Forge maintenance refuses redirected paths: " + part);
         }
     }
 

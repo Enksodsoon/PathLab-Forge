@@ -12,7 +12,9 @@ public final class DesktopStartup {
     private DesktopStartup() {}
 
     public static void failed(PrintStream pipe, String code) throws IOException {
-        if (!java.util.Set.of("DATA_LOCKED", "DATA_DENIED", "SERVICE_UNAVAILABLE").contains(code)) {
+        if (!java.util.Set.of("DATA_LOCKED", "DATA_DENIED", "SERVICE_UNAVAILABLE",
+                DataUpgradeRecovery.BACKUP_FAILED, DataUpgradeRecovery.DOWNGRADE_BLOCKED,
+                DataUpgradeRecovery.VERSION_REQUIRED, DataUpgradeRecovery.RECOVERY_REQUIRED).contains(code)) {
             throw new IllegalArgumentException("Unknown desktop startup failure");
         }
         pipe.println("PATHLAB_FORGE_FAILED " + new ObjectMapper().writeValueAsString(Map.of("protocol", 1, "code", code)));
