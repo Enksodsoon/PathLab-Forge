@@ -10,6 +10,8 @@ if (signatures.windowsSign) {
   const options = { ...signatures.windowsSign };
   signatures.windowsSign.hookFunction = async file => {
     if (/[\\/]resources[\\/]service(?:[\\/]|$)/i.test(file)) return; // Already signed and inventoried.
+    try { require('./native-signing.cjs').verifyWindows([file]); return; }
+    catch { /* Sign new Electron/Squirrel files; preserve already trusted final-app bytes. */ }
     const { sign } = await import('@electron/windows-sign');
     await sign({ ...options, files: [file] });
   };
