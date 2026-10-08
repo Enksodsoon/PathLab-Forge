@@ -5,6 +5,12 @@ const { readiness, startupFailure, localUrl, externalUrl, allowedPath, windowSta
 test('startup failures display fixed actionable messages without service details', () => {
   assert.equal(startupFailure('ordinary output'), null);
   assert.match(startupFailure('PATHLAB_FORGE_FAILED {"protocol":1,"code":"DATA_LOCKED","detail":"secret"}'), /Another Forge process/);
+  for (const [code, action] of [['DATA_UPGRADE_BACKUP_FAILED', 'Free disk space'], ['DATA_DOWNGRADE_BLOCKED', 'Reinstall'],
+    ['DATA_VERSION_REQUIRED', 'Preserve'], ['DATA_UPGRADE_RECOVERY_REQUIRED', 'Close all Forge processes']]) {
+    const message = startupFailure(`PATHLAB_FORGE_FAILED ${JSON.stringify({ protocol: 1, code, detail: 'secret exception text' })}`);
+    assert.ok(message.includes(action));
+    assert.ok(!message.includes('secret exception text'));
+  }
   assert.throws(() => startupFailure('PATHLAB_FORGE_FAILED {"protocol":1,"code":"secret"}'));
 });
 test('private readiness rejects remote, credentialed and mismatched origins', () => {

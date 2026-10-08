@@ -28,6 +28,10 @@ function startupFailure(line) {
   const messages = {
     DATA_LOCKED: 'Another Forge process owns this library. Close it, then reopen Forge. Do not delete the library lock or data.',
     DATA_DENIED: 'Forge cannot access its application-data folder. Restore read/write permission or free the drive, then reopen Forge.',
+    DATA_UPGRADE_BACKUP_FAILED: 'Forge could not create the required upgrade backup. Free disk space and restore write permission, then reopen Forge. Preserve the library and existing backups.',
+    DATA_DOWNGRADE_BLOCKED: 'This library requires a newer Forge version. Reinstall the matching newer version. A downgrade requires a separately restored compatible backup; preserve the current library.',
+    DATA_VERSION_REQUIRED: 'Forge cannot verify this library\'s data version. Preserve the library and backups, and use a release compatible with its recorded data version before upgrading.',
+    DATA_UPGRADE_RECOVERY_REQUIRED: 'An interrupted library upgrade requires recovery. Close all Forge processes and recover a complete compatible backup before reopening. Preserve the current library and backups.',
     SERVICE_UNAVAILABLE: 'The local service could not initialize. Verify the installed runtime and available disk space. Reinstall the matching Forge version while preserving application data.'
   };
   if (record.protocol !== 1 || !Object.hasOwn(messages, record.code)) throw new Error('Invalid private startup failure');
