@@ -30,10 +30,18 @@ it('serializes edits arriving during a pending autosave without losing the lates
   expect(screen.getByLabelText('Title')).toHaveValue('Latest')
 })
 
-it('requires successful slide readiness in addition to a render callback for faculty review', () => {
+it('requires actual matching loaded pixels and revokes review when the preview fails', () => {
   const callbacks = props(vi.fn())
-  const { rerender } = render(<StudyAuthoring {...callbacks} renderSlide={() => <div>Loading pixels</div>} />)
+  const association = { referenceId: 'slide', viewerSlideId: 'slide', datasetId: 'ca38d59a-08ce-44a2-aaf2-cb96bd147bdf',
+    artifactRevision: 'fcafc4bf-2350-470c-aa3a-ad5f5a0d9734', packageSha256: 'a'.repeat(64), outputWidth: 100, outputHeight: 100 }
+  const bound = { ...draft, associations: { teachingSlides: { slide: association } } }
+  const pixels = { previewChecksum: draft.previewChecksum, slideId: 'slide', datasetId: association.datasetId,
+    artifactRevision: association.artifactRevision, packageSha256: association.packageSha256 }
+  render(<StudyAuthoring {...callbacks} drafts={[bound]} canPreviewSlide={() => true}
+    renderSlide={(_slide, _location, loaded) => <><button onClick={() => loaded(pixels)}>Pixels completed</button><button onClick={() => loaded(null)}>Pixels failed</button></>} />)
   expect(screen.getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeDisabled()
-  rerender(<StudyAuthoring {...callbacks} renderSlide={() => <div>Exact pixels ready</div>} canPreviewSlide={() => true} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Pixels completed' }))
   expect(screen.getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeEnabled()
+  fireEvent.click(screen.getByRole('button', { name: 'Pixels failed' }))
+  expect(screen.getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeDisabled()
 })

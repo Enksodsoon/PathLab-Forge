@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { pixelsMatch, type TeachingPixels } from './teachingAssociations'
 
 export interface StudySource { title: string; url: string }
 export interface StudyTask {
@@ -23,15 +24,18 @@ export interface StudyAuthoringProps {
   onHistory: (id: string) => Promise<StudyDraftRecord[]>
   onRecover: (id: string, historicalRevision: number, expectedRevision: number) => Promise<StudyDraftRecord>
   onPreview: (id: string, revision: number) => Promise<StudyDraftRecord>
-  onReviewTask: (id: string, revision: number, checksum: string, taskId: string) => Promise<StudyDraftRecord>
+  onReviewTask: (id: string, revision: number, checksum: string, taskId: string, pixels: TeachingPixels) => Promise<StudyDraftRecord>
   onApprove: (id: string, revision: number, checksum: string) => Promise<StudyDraftRecord>
   onImport: (format: 'json' | 'csv', text: string) => Promise<StudyDraftRecord>
   onImportQuestions: (id: string, revision: number, format: string, text: string, slideId: string) => Promise<StudyDraftRecord>
   onExport: (id: string, format: 'json' | 'csv' | 'approved', checksum?: string) => void
   onPublish?: (checksum: string) => Promise<unknown>
+  teachingArtifacts?: Array<{ datasetId: string; artifactRevision: string; displayName: string }>
+  onAssociateTeachingSlide?: (id: string, revision: number, referenceId: string, datasetId: string, artifactRevision: string) => Promise<StudyDraftRecord>
   canPreviewSlide?: (slide: StudySlide | undefined) => boolean
-  renderSlide?: (slide: StudySlide | undefined, onLocation: (x: number, y: number) => void) => ReactNode
-  onCaptureSpatial?: () => Promise<{ targetX: number; targetY: number; targetWidth: number; targetHeight: number }>
+  renderSlide?: (slide: StudySlide | undefined, onLocation: (x: number, y: number) => void,
+    onPixelsLoaded: (pixels: TeachingPixels | null) => void, draft: StudyDraftRecord) => ReactNode
+  onCaptureSpatial?: (slide: StudySlide | undefined, draft: StudyDraftRecord) => Promise<{ targetX: number; targetY: number; targetWidth: number; targetHeight: number }>
 }
 const content = (draft: StudyDraftRecord) => JSON.stringify([draft.name, draft.definition, draft.associations])
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
@@ -46,6 +50,7 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
   const [notice, setNotice] = useState('Drafts stay on this computer. Faculty review and approval precede publication.')
   const [error, setError] = useState('')
   const [importFormat, setImportFormat] = useState('csv')
+  const [loadedPixels, setLoadedPixels] = useState<TeachingPixels | null>(null)
   const local = useRef(draft)
   const server = useRef(draft)
   const saving = useRef<Promise<void> | null>(null)
@@ -54,6 +59,7 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
   const contentKey = draft ? content(draft) : ''
 
   const adopt = (value: StudyDraftRecord) => {
+    setLoadedPixels(null)
     server.current = value; local.current = value; setDraft(value); setTaskIndex(0); setPreviewIndex(0); setHistory([])
   }
   useEffect(() => { if (!local.current && props.drafts[0]) adopt(props.drafts[0]) }, [props.drafts])
@@ -99,6 +105,7 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
     if (!draft) return
     const next = { ...draft, definition: { ...draft.definition, ...changes }, previewChecksum: '', reviewedTaskIds: [], approvedChecksum: '' }
     local.current = next; setDraft(next); setError('')
+    setLoadedPixels(null)
   }
   const editTask = (changes: Partial<StudyTask>) => {
     if (!draft) return
@@ -118,7 +125,8 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
   const task = draft?.definition.tasks[taskIndex]
   const previewTask = draft?.definition.tasks[previewIndex]
   const previewReady = Boolean(draft?.previewChecksum)
-  const previewSlideReady = Boolean(previewTask && props.canPreviewSlide?.(draft?.definition.slides.find((slide) => slide.viewerSlideId === previewTask.slideId)))
+  const previewSlide = draft?.definition.slides.find((slide) => slide.viewerSlideId === previewTask?.slideId)
+  const previewSlideReady = Boolean(draft && pixelsMatch(loadedPixels, draft.previewChecksum, previewSlide, draft.associations))
   return <section aria-label="Offline Study Pack authoring" className="forge-inspector-section">
     <h2>Study Pack authoring</h2>
     <p>Author questions, locations, hints and explanations manually. Drafts, imports and faculty previews work offline.</p>
@@ -144,7 +152,13 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
           const slide = props.slides?.find((value) => value.viewerSlideId === event.target.value)
           if (slide && !draft.definition.slides.some((value) => value.viewerSlideId === slide.viewerSlideId)) editDefinition({ slides: [...draft.definition.slides, slide] })
         }}><option value="">Choose an available slide</option>{props.slides?.map((slide) => <option key={slide.viewerSlideId} value={slide.viewerSlideId}>{slide.displayName}</option>)}</select></label>
-        {draft.definition.slides.map((slide) => <p key={slide.viewerSlideId}>{slide.displayName} · checksum {slide.sha256.slice(0, 12)}…</p>)}
+        {draft.definition.slides.map((slide) => <div key={slide.viewerSlideId}><p>{slide.displayName} · {slide.viewerSlideId.startsWith('local:') ? 'Local draft reference; awaiting Viewer delivery' : 'Viewer slide reference'} · {slide.sha256 ? `package checksum ${slide.sha256.slice(0, 12)}…` : 'Prepared package not associated yet'}</p>
+          {props.onAssociateTeachingSlide ? <label>Exact local teaching artifact for {slide.displayName} <select value="" onChange={(event) => {
+            const artifact = props.teachingArtifacts?.find((item) => `${item.datasetId}:${item.artifactRevision}` === event.target.value)
+            if (artifact) void action(async () => { await flush(); if (server.current) adopt(await props.onAssociateTeachingSlide!(server.current.id,
+              server.current.revision, slide.viewerSlideId, artifact.datasetId, artifact.artifactRevision)) })
+          }}><option value="">Choose a prepared artifact or resolve its delivery</option>{props.teachingArtifacts?.map((artifact) => <option key={`${artifact.datasetId}:${artifact.artifactRevision}`} value={`${artifact.datasetId}:${artifact.artifactRevision}`}>{artifact.displayName} · {artifact.artifactRevision.slice(0, 8)}</option>)}</select></label> : null}
+        </div>)}
         <button type="button" onClick={() => { void action(async () => { await flush(); if (server.current) adopt(await props.onDuplicate(server.current.id, `${server.current.name} copy`, false)) }) }}>Duplicate draft</button>
         <button type="button" onClick={() => { void action(async () => { await flush(); if (server.current) adopt(await props.onDuplicate(server.current.id, `${server.current.name} next version`, true)) }) }}>Start next version</button>
         <button type="button" onClick={() => { void action(async () => { await flush(); if (server.current) setHistory(await props.onHistory(server.current.id)) }) }}>Recovery history</button>
@@ -171,7 +185,7 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
           </> : null}
           {task.type === 'spatial' ? <>
             {(['targetX', 'targetY', 'targetWidth', 'targetHeight', 'tolerance'] as const).map((field) => <label key={field}>{field} (normalized 0–1) <input type="number" min="0" max={field === 'tolerance' ? '.5' : '1'} step=".001" value={task[field] ?? ''} onChange={(event) => editTask({ [field]: event.target.valueAsNumber })} /></label>)}
-            {props.onCaptureSpatial ? <button type="button" onClick={() => { void action(async () => editTask(await props.onCaptureSpatial!())) }}>Use selected ROI coordinates</button> : null}
+            {props.onCaptureSpatial ? <button type="button" onClick={() => { void action(async () => editTask(await props.onCaptureSpatial!(draft.definition.slides.find((slide) => slide.viewerSlideId === task.slideId), draft))) }}>Use selected ROI coordinates</button> : null}
           </> : null}
           <label>Hints (up to three, one per line) <textarea value={task.hints.join('\n')} onChange={(event) => editTask({ hints: event.target.value ? event.target.value.split('\n') : [] })} /></label>
           <label>Explanation <textarea value={task.explanation} onChange={(event) => editTask({ explanation: event.target.value })} /></label>
@@ -188,22 +202,23 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
       <button type="button" disabled={busy} onClick={() => { void action(async () => { await flush(); if (server.current) adopt(await props.onPreview(server.current.id, server.current.revision)) }) }}>Open exact faculty preview</button>
       <button type="button" disabled={busy} onClick={() => { void action(async () => { await flush(); if (server.current) props.onExport(server.current.id, 'json') }) }}>Export local draft JSON</button>
       <button type="button" disabled={busy} onClick={() => { void action(async () => { await flush(); if (server.current) props.onExport(server.current.id, 'csv') }) }}>Export authored CSV</button>
-      {previewReady && previewTask ? <FacultyPreview draft={draft} task={previewTask} index={previewIndex} onIndex={setPreviewIndex} renderSlide={props.renderSlide} busy={busy} slideReady={previewSlideReady}
-        onReviewed={() => { void action(async () => { if (server.current) { const next = await props.onReviewTask(server.current.id, server.current.revision, server.current.previewChecksum, previewTask.id); server.current = next; local.current = next; setDraft(next) } }) }} /> : null}
+      {previewReady && previewTask ? <FacultyPreview draft={draft} task={previewTask} index={previewIndex} onIndex={setPreviewIndex} renderSlide={props.renderSlide} busy={busy} slideReady={previewSlideReady} onPixelsLoaded={setLoadedPixels}
+        onReviewed={() => { void action(async () => { if (server.current && previewSlideReady && loadedPixels) { const next = await props.onReviewTask(server.current.id, server.current.revision, server.current.previewChecksum, previewTask.id, loadedPixels); server.current = next; local.current = next; setDraft(next) } }) }} /> : null}
       {previewReady ? <button type="button" disabled={busy || !previewSlideReady || draft.reviewedTaskIds.length !== draft.definition.tasks.length} onClick={() => { void action(async () => { if (server.current) { const next = await props.onApprove(server.current.id, server.current.revision, server.current.previewChecksum); server.current = next; local.current = next; setDraft(next); setNotice('Immutable faculty-approved export saved locally.') } }) }}>Approve this exact version</button> : null}
-      {draft.approvedChecksum ? <><button type="button" onClick={() => props.onExport(draft.id, 'approved', draft.approvedChecksum)}>Export approved Study Pack</button>
-        {props.onPublish ? <button type="button" disabled={busy} onClick={() => { void action(async () => { await props.onPublish!(draft.approvedChecksum); setNotice('Viewer publication request completed.') }) }}>Publish approved pack to Viewer</button> : <p>The approved export stays local until an authorized Viewer publication is available.</p>}</> : null}
+      {draft.approvedChecksum ? <><button type="button" onClick={() => props.onExport(draft.id, 'approved', draft.approvedChecksum)}>Export approved {draft.definition.slides.some((slide) => slide.viewerSlideId.startsWith('local:')) ? 'local draft' : 'Study Pack'}</button>
+        {draft.definition.slides.some((slide) => slide.viewerSlideId.startsWith('local:')) ? <p>Local approval stays offline. Resolve actual delivered Viewer identities and preview again before publication.</p>
+          : props.onPublish ? <button type="button" disabled={busy} onClick={() => { void action(async () => { await props.onPublish!(draft.approvedChecksum); setNotice('Viewer publication request completed.') }) }}>Publish approved pack to Viewer</button> : <p>The approved export stays local until an authorized Viewer publication is available.</p>}</> : null}
     </> : null}
   </section>
 }
 
-function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, busy, slideReady }: { draft: StudyDraftRecord; task: StudyTask; index: number; onIndex: (index: number) => void; renderSlide?: StudyAuthoringProps['renderSlide']; onReviewed: () => void; busy: boolean; slideReady: boolean }) {
+function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, busy, slideReady, onPixelsLoaded }: { draft: StudyDraftRecord; task: StudyTask; index: number; onIndex: (index: number) => void; renderSlide?: StudyAuthoringProps['renderSlide']; onReviewed: () => void; busy: boolean; slideReady: boolean; onPixelsLoaded: (pixels: TeachingPixels | null) => void }) {
   const [selectedOption, setSelectedOption] = useState('')
   const [location, setLocation] = useState({ x: .5, y: .5 })
   const [feedback, setFeedback] = useState('')
   useEffect(() => { setSelectedOption(''); setFeedback('') }, [task.id, draft.previewChecksum])
   return <article aria-label="Exact faculty preview"><h3>Faculty preview {index + 1} of {draft.definition.tasks.length}</h3><p>Checksum: {draft.previewChecksum}</p>
-    <p>{task.prompt}</p>{renderSlide?.(draft.definition.slides.find((slide) => slide.viewerSlideId === task.slideId), (x, y) => setLocation({ x, y }))}
+    <p>{task.prompt}</p>{renderSlide?.(draft.definition.slides.find((slide) => slide.viewerSlideId === task.slideId), (x, y) => setLocation({ x, y }), onPixelsLoaded, draft)}
     {task.type === 'multiple-choice' ? <fieldset><legend>Try the authored choices</legend>{task.options?.map((choice, at) => <label key={at}><input type="radio" name={`preview-${task.id}`} checked={selectedOption === choice} onChange={() => setSelectedOption(choice)} />{choice}</label>)}</fieldset>
       : <div><label>Preview x <input type="number" min="0" max="1" step=".001" value={location.x} onChange={(event) => setLocation({ ...location, x: event.target.valueAsNumber })} /></label><label>Preview y <input type="number" min="0" max="1" step=".001" value={location.y} onChange={(event) => setLocation({ ...location, y: event.target.valueAsNumber })} /></label></div>}
     <button type="button" onClick={() => { try { const score = scoreStudyTask(task, { selectedOption, ...location }); setFeedback(score.correct ? 'Matches the faculty key.' : 'Does not match the faculty key.') } catch (cause) { setFeedback(message(cause)) } }}>Check authored scoring</button>
