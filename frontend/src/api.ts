@@ -40,6 +40,7 @@ export const saveAnalysisReview = (id: string, review: DeterministicReview) => r
   method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(review) })
 
 export interface Dataset {
+  unscopedAnnotationCount?: number
   id: string
   displayName: string
   sourceBytes: number
@@ -307,6 +308,7 @@ export async function capabilities() {
     activeConversions?: number
     queuedConversions?: number
     queuePaused?: boolean
+    managedUsage?: { bytes: number; files: number; complete: boolean; measuredAt: number } | null
     usableBytes?: number
     effectiveCapacityBytes?: number
     maximumConcurrentConversions?: number

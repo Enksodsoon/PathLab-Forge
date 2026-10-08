@@ -314,6 +314,30 @@ final class ForgeServerTest {
         }
     }
 
+    @Test void legacyMeasurementsPreserveUnknownScopeAndEscapeWhitespaceFormulas() throws Exception {
+        var id = java.util.UUID.randomUUID().toString();
+        var source = java.nio.file.Files.write(temp.resolve("uninspected.tif"),new byte[] {1,2,3});
+        var repository = new PropertiesDatasetRepository(temp.resolve("library-0.properties"));
+        repository.save(new org.pathlab.forge.library.LocalDataset(id,"Legacy",source.toString(),3,
+            org.pathlab.forge.library.DatasetFormat.OME_TIFF,org.pathlab.forge.library.DatasetStatus.READY,"","",""));
+        var annotations = new org.pathlab.forge.annotation.AnnotationRepository(temp.resolve("managed-0"));
+        var mark = annotations.create(id,"rectangle","1,2;11,22","Legacy","#ff0000");
+        annotations.updateMetadata(id,mark.id(),"","  =SUM(1)",mark.revision());
+        try (var server = startEphemeral()) {
+            var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null,CookiePolicy.ACCEPT_ALL)).build();
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),HttpResponse.BodyHandlers.ofString());
+            var response = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/datasets/"+id+"/measurements.csv")).GET().build(),HttpResponse.BodyHandlers.ofString());
+            assertEquals(200,response.statusCode(),response.body());
+            assertTrue(response.body().contains("geometry")); assertTrue(response.body().contains("1,2;11,22"));
+            assertTrue(response.body().contains("'=SUM(1)"));
+            var csv = ForgeServer.class.getDeclaredMethod("csv",String.class); csv.setAccessible(true);
+            assertEquals("\"'  =SUM(1)\"",csv.invoke(null,"  =SUM(1)")); org.junit.jupiter.api.Assertions.assertFalse(response.body().contains("Um"));
+            assertTrue(response.body().contains("-1,-1,-1"));
+            var library = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/datasets")).GET().build(),HttpResponse.BodyHandlers.ofString());
+            assertTrue(library.body().contains("\"unscopedAnnotationCount\":1"));
+        }
+    }
+
     @Test void batchHttpJourneyRetainsFailureSnapshotExportsAndRestarts() throws Exception {
         var repository = new PropertiesDatasetRepository(temp.resolve("library-0.properties"));
         var datasetId = java.util.UUID.randomUUID().toString();

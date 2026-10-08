@@ -97,6 +97,7 @@ export function App() {
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
   const [analysisRuns, setAnalysisRuns] = useState<DeterministicRun[]>([])
   const [analysisHasMore, setAnalysisHasMore] = useState(false)
+  const [analysisNextOffset, setAnalysisNextOffset] = useState(0)
   const [analysisMask, setAnalysisMask] = useState<{ context: string; runId: string; channel: MaskChannel }>()
   const [exportRunId, setExportRunId] = useState('')
   const [analysisOverlay, setAnalysisOverlay] = useState<{ context: string; runId: string; shapes: AnalysisOverlayShape[] } | null>(null)
@@ -359,13 +360,13 @@ export function App() {
 
   const refreshAnalysis = useCallback(async () => {
     const context = analysisContext.current
-    if (selected?.id) { const runs = await api.analysisRuns(selected.id); if (context === analysisContext.current) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100) } }
+    if (selected?.id) { const runs = await api.analysisRuns(selected.id); if (context === analysisContext.current) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100); setAnalysisNextOffset(runs.length) } }
   }, [selected?.id])
   useEffect(() => {
     let cancelled = false
     setAnalysisRuns([])
     if (selected?.id) void api.analysisRuns(selected.id).then((runs) => {
-      if (!cancelled) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100) }
+      if (!cancelled) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100); setAnalysisNextOffset(runs.length) }
     }).catch((error) => { if (!cancelled) setError(message(error)) })
     return () => { cancelled = true }
   }, [selected?.id])
@@ -786,6 +787,7 @@ export function App() {
   }, [viewerUpload?.state])
 
   const storage = useMemo(() => ({
+    managedUsage: capabilities?.managedUsage,
     usableBytes: capabilities?.usableBytes ?? 0,
     effectiveCapacityBytes: capabilities?.effectiveCapacityBytes ?? 0,
   }), [capabilities])
@@ -1058,8 +1060,8 @@ export function App() {
                 }}
               />{analysisHasMore ? <button type="button" onClick={() => {
                 const context = analysisContext.current
-                void api.analysisHistory(selected.id, analysisRuns.length).then((page) => {
-                  if (context === analysisContext.current) { setAnalysisRuns((current) => [...current, ...page.runs.filter((run) => !current.some((item) => item.id === run.id))]); setAnalysisHasMore(page.hasMore) }
+                void api.analysisHistory(selected.id, analysisNextOffset).then((page) => {
+                  if (context === analysisContext.current) { setAnalysisRuns((current) => [...current, ...page.runs.filter((run) => !current.some((item) => item.id === run.id))]); setAnalysisHasMore(page.hasMore); setAnalysisNextOffset(page.nextOffset) }
                 }).catch((cause) => { if (context === analysisContext.current) setError(message(cause)) })
               }}>Load older analysis runs</button> : null}{exportRunId && window.forgeDesktop ? <NativeExport datasetId={selected.id} runId={exportRunId} /> : null}</> : null}
             />
@@ -1283,7 +1285,7 @@ function ForgeProductRail({
   expanded: boolean
   navigatorOpen: boolean
   navigatorButtonRef: Ref<HTMLButtonElement>
-  storage: { usableBytes: number; effectiveCapacityBytes: number }
+  storage: { usableBytes: number; effectiveCapacityBytes: number; managedUsage?: { bytes: number; files: number; complete: boolean; measuredAt: number } | null }
   mode: 'local' | 'viewer'
   theme: 'light' | 'dark'
   onToggleExpanded: () => void
@@ -1332,6 +1334,7 @@ function ForgeProductRail({
       <div className="library-rail-utilities" aria-label="Account actions">
         <section className="library-storage-meter" aria-label={`Storage, ${formatBytes(storage.usableBytes)} available`}>
           <div className="library-storage-copy"><span>Storage</span><strong>{formatBytes(storage.usableBytes)} available</strong></div>
+          <p>{storage.managedUsage ? `${storage.managedUsage.complete ? '' : 'At least '}${formatBytes(storage.managedUsage.bytes)} managed file data · ${storage.managedUsage.files} files · scanned ${new Date(storage.managedUsage.measuredAt).toLocaleTimeString()}` : 'Measuring managed file data…'}</p>
           <div className="library-storage-track" role="meter" aria-label="Usable storage remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}><span style={{ width: `${remaining}%` }} /></div>
         </section>
         <button type="button" aria-label={`${theme === 'dark' ? 'Dark' : 'Light'} theme. Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={onTheme}>
@@ -2350,6 +2353,7 @@ function Inspector({
         <section className="forge-inspector-section">
           <div className="forge-section-heading"><h3>Annotations</h3><span>Source coordinates</span></div>
           <AnnotationToolbar activeTool={activeTool} onTool={onTool} />
+          {(dataset.unscopedAnnotationCount || 0) > 0 ? <p role="status">{dataset.unscopedAnnotationCount} legacy annotations have unknown original series/Z/T. Their coordinates remain preserved in the measurement export; redraw on this verified view before editing or analysis. Calibration is unavailable for unscoped records.</p> : null}
           <div className="forge-layer-row">
             <span><i /> Layer 1</span>
             <small>{annotations.length ? `${annotations.length} saved locally` : 'Virtual until first mark'}</small>

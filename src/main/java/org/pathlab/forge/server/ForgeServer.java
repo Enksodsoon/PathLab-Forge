@@ -72,6 +72,17 @@ public final class ForgeServer implements AutoCloseable {
     private final java.util.Map<String, java.util.Map<Path, Long>> desktopSelections =
             new java.util.HashMap<>();
     private final URI baseUri;
+    private volatile org.pathlab.forge.runtime.ManagedStorageUsage managedUsage;
+    private java.util.concurrent.CompletableFuture<Void> managedUsageScan;
+    private long managedUsageScanStarted;
+
+    private synchronized void refreshManagedUsage() {
+        var now = System.currentTimeMillis();
+        if (managedUsageScan == null || (managedUsageScan.isDone() && now - managedUsageScanStarted > 60_000)) {
+            managedUsageScanStarted = now;
+            managedUsageScan = java.util.concurrent.CompletableFuture.runAsync(() -> managedUsage = org.pathlab.forge.runtime.ManagedStorageUsage.measure(dataRoot), executor);
+        }
+    }
     private final DatasetRepository repository;
     private final DatasetPicker picker;
     private final DatasetInspector inspector = new DatasetInspector();
@@ -1137,6 +1148,8 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         var storage = Files.getFileStore(dataRoot);
+        refreshManagedUsage();
+        var usage = managedUsage;
         respond(
                 exchange,
                 200,
@@ -1157,6 +1170,7 @@ public final class ForgeServer implements AutoCloseable {
                         + conversionService.maximumConcurrentConversions()
                         + ",\"usableBytes\":" + storage.getUsableSpace()
                         + ",\"effectiveCapacityBytes\":" + storage.getTotalSpace()
+                        + ",\"managedUsage\":" + (usage == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(usage))
                         + ",\"processContainment\":" + json(org.pathlab.forge.runtime.ChildProcessContainment.global().mode())
                         + ",\"projectFolderImport\":true,\"downsamples\":[1,1.5,2,4,8,16,32]}");
     }
@@ -2514,6 +2528,9 @@ public final class ForgeServer implements AutoCloseable {
     }
 
     private String datasetJson(LocalDataset dataset) {
+        long unscopedAnnotations = -1;
+        try { unscopedAnnotations = annotationRepository.list(dataset.id()).stream().filter(item -> item.series() < 0 || item.z() < 0 || item.t() < 0 || item.viewRevision().isBlank()).count(); }
+        catch (IOException ignored) { /* Unknown remains unknown; originals are not reassigned. */ }
         var progress = conversionService.progress(dataset.id());
         var estimate = dataset.cropWidth() > 0 && dataset.cropHeight() > 0
                 ? org.pathlab.forge.conversion.OutputSizeEstimator.compressedOmeTiff(
@@ -2524,6 +2541,7 @@ public final class ForgeServer implements AutoCloseable {
                         dataset.format().isSingleFileTiff())
                 : null;
         return "{\"id\":" + json(dataset.id())
+                + ",\"unscopedAnnotationCount\":" + unscopedAnnotations
                 + ",\"displayName\":" + json(dataset.displayName())
                 + ",\"sourceBytes\":" + dataset.sourceBytes()
                 + ",\"format\":" + json(dataset.format().name())
@@ -2948,12 +2966,12 @@ public final class ForgeServer implements AutoCloseable {
 
     private String measurementsCsv(String datasetId) throws IOException {
         if (repository.find(datasetId).isEmpty()) throw new IllegalArgumentException("Dataset was not found");
-        var rows = new StringBuilder("annotation_id,type,classification,metric,value,unit,series,z,t,view_revision\r\n");
+        var rows = new StringBuilder("annotation_id,type,geometry,classification,metric,value,unit,series,z,t,view_revision\r\n");
         for (var annotation : annotationRepository.list(datasetId)) {
             for (var value : measuredValues(datasetId, annotation).entrySet()) {
                 var unit = value.getKey().endsWith("Um2") ? "um2" : value.getKey().endsWith("Um") ? "um"
                         : value.getKey().endsWith("Px2") ? "px2" : value.getKey().endsWith("Px") ? "px" : "";
-                rows.append(csv(annotation.id())).append(',').append(csv(annotation.type())).append(',')
+                rows.append(csv(annotation.id())).append(',').append(csv(annotation.type())).append(',').append(csv(annotation.geometry())).append(',')
                         .append(csv(annotation.classification())).append(',').append(csv(value.getKey())).append(',')
                         .append(value.getValue()).append(',').append(csv(unit)).append(',')
                         .append(annotation.series()).append(',').append(annotation.z()).append(',').append(annotation.t())
@@ -2987,8 +3005,10 @@ public final class ForgeServer implements AutoCloseable {
     private java.util.Map<String, Double> measuredValues(String datasetId, AnnotationRecord annotation)
             throws IOException {
         var dataset = repository.find(datasetId).orElseThrow();
+        if (annotation.series() < 0 || annotation.z() < 0 || annotation.t() < 0 || annotation.viewRevision().isBlank())
+            return GeometryMeasurements.measure(annotation.type(), annotation.geometry());
         var info = conversionService.series(datasetId).stream()
-                .filter(item -> item.index() == (annotation.series() >= 0 ? annotation.series() : dataset.selectedSeries()))
+                .filter(item -> item.index() == annotation.series())
                 .findFirst().orElse(null);
         var multiplier = info == null ? 0 : switch (info.physicalUnit().toLowerCase(java.util.Locale.ROOT)) {
             case "µm", "μm", "um", "micrometer", "micrometre" -> 1.0;
@@ -3002,7 +3022,7 @@ public final class ForgeServer implements AutoCloseable {
     }
 
     private static String csv(String value) {
-        if (!value.isEmpty() && "=+-@\t\r".indexOf(value.charAt(0)) >= 0) value = "'" + value;
+        if (value.matches("(?s)^[\\s]*[=+@-].*") || value.startsWith("\t") || value.startsWith("\r")) value = "'" + value;
         return "\"" + value.replace("\"", "\"\"") + "\"";
     }
 
