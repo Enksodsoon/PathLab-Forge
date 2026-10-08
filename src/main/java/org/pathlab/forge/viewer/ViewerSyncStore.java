@@ -7,6 +7,10 @@ import java.util.Optional;
 import java.util.Set;
 
 public interface ViewerSyncStore extends AutoCloseable {
+    void bindConnection(String key) throws IOException;
+    void replaceSnapshot(List<ViewerRemoteSlide> slides, List<ViewerRemoteFolder> folders, long cursor) throws IOException;
+    void saveIntendedMetadata(String slideId, java.util.Map<String, String> values) throws IOException;
+    void downloadState(String slideId, String state, Path offlinePath, String detail) throws IOException;
     void upsertRemote(ViewerRemoteSlide slide) throws IOException;
     void replaceRemoteSlides(List<ViewerRemoteSlide> slides) throws IOException;
     Optional<ViewerSyncRecord> find(String slideId) throws IOException;

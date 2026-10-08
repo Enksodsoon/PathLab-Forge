@@ -94,6 +94,7 @@ final class ViewerSyncServiceTest {
 
     private record FakeTransport(Map<String, ViewerHttpResponse> responses)
             implements ViewerAuthorizedClient {
+        @Override public String connectionKey() { return "a".repeat(64); }
         @Override public ViewerHttpResponse request(String method, String path,
                 Map<String, String> headers, byte[] body) {
             var response = responses.get(method + " " + path);

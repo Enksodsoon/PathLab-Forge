@@ -10,12 +10,17 @@ public record ViewerSyncRecord(
         Path partialPath,
         long downloadBytes,
         long downloadOffset,
-        String downloadSha256) {
+        String downloadSha256,
+        java.util.Map<String, String> intendedValues,
+        String downloadState,
+        Path offlinePath,
+        String downloadDetail) {
     public ViewerSyncRecord {
         Objects.requireNonNull(remote);
         dirtyFields = Set.copyOf(dirtyFields);
         Objects.requireNonNull(partialPath);
         Objects.requireNonNull(downloadSha256);
+        intendedValues = java.util.Map.copyOf(intendedValues);
         if (downloadBytes < 0 || downloadOffset < 0 || downloadOffset > downloadBytes) {
             throw new IllegalArgumentException("Download counters are invalid");
         }

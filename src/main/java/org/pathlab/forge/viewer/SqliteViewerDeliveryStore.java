@@ -13,9 +13,12 @@ import java.util.List;
 import java.util.Optional;
 
 public final class SqliteViewerDeliveryStore implements ViewerDeliveryStore {
-    private final Connection connection;
+    private Connection connection;
+    private final Path databaseBase;
+    private String boundKey = "";
 
     public SqliteViewerDeliveryStore(Path database) throws IOException {
+        databaseBase = database.toAbsolutePath().normalize();
         try {
             var normalized = database.toAbsolutePath().normalize();
             Files.createDirectories(normalized.getParent());
@@ -50,6 +53,17 @@ public final class SqliteViewerDeliveryStore implements ViewerDeliveryStore {
         } catch (SQLException error) {
             throw new IOException("Unable to open Viewer delivery store", error);
         }
+    }
+
+    @Override
+    public synchronized void bindConnection(String key) throws IOException {
+        if (key == null || !key.matches("[0-9a-f]{64}")) throw new IOException("Viewer connection identity is unavailable");
+        if (key.equals(boundKey)) return;
+        var replacement = new SqliteViewerDeliveryStore(databaseBase.resolveSibling(databaseBase.getFileName() + "." + key + ".db"));
+        try { connection.close(); }
+        catch (SQLException error) { replacement.close(); throw new IOException("Unable to switch Viewer account store", error); }
+        connection = replacement.connection;
+        boundKey = key;
     }
 
     @Override
@@ -118,7 +132,7 @@ public final class SqliteViewerDeliveryStore implements ViewerDeliveryStore {
     public synchronized List<ViewerDeliveryJob> resumable() throws IOException {
         try (var statement = connection.prepareStatement("""
                 SELECT * FROM viewer_delivery_jobs
-                WHERE state IN ('QUEUED','UPLOADING_OME','VERIFYING_OME','IMAGE_READY','SYNCING_RESULTS','RETRYING')
+                WHERE state IN ('QUEUED','UPLOADING_OME','VERIFYING_OME','IMAGE_READY','SYNCING_RESULTS','RETRYING','PAUSED')
                 ORDER BY updated_at
                 """); var rows = statement.executeQuery()) {
             var jobs = new ArrayList<ViewerDeliveryJob>();
@@ -129,6 +143,13 @@ public final class SqliteViewerDeliveryStore implements ViewerDeliveryStore {
         } catch (SQLException error) {
             throw new IOException("Unable to list resumable Viewer deliveries", error);
         }
+    }
+
+    @Override public synchronized Optional<ViewerDeliveryJob> findLatestByArtifact(String revisionId) throws IOException {
+        try (var query = connection.prepareStatement("SELECT * FROM viewer_delivery_jobs WHERE artifact_revision_id=? ORDER BY updated_at DESC LIMIT 1")) {
+            query.setString(1, revisionId);
+            try (var rows = query.executeQuery()) { return rows.next() ? Optional.of(read(rows)) : Optional.empty(); }
+        } catch (SQLException error) { throw new IOException("Unable to read latest scoped delivery", error); }
     }
 
     private static ViewerDeliveryJob read(ResultSet row) throws SQLException {

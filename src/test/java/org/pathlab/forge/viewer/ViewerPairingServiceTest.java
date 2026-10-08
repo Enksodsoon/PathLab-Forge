@@ -53,7 +53,7 @@ final class ViewerPairingServiceTest {
             var connection = service.exchange();
             assertTrue(connection.connected());
             assertEquals(base, connection.viewerUrl());
-            assertTrue(store.read().orElseThrow().endsWith("\ndesktop-token"));
+            assertTrue(store.read().orElseThrow().contains("\"credentialId\":\"credential-one\""));
             assertTrue(service.status().connected());
 
             service.revoke();
@@ -72,6 +72,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential().replace("\"slides:private:read\"", "\"slides:private:read\",\"results:sync\"")); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/credential")) {
@@ -88,6 +91,7 @@ final class ViewerPairingServiceTest {
                 exchange.close();
             } else if (path.equals("/api/v1/desktop/ingests/one/content")) {
                 receivedPayload.set(exchange.getRequestBody().readAllBytes());
+                acknowledge(exchange, receivedPayload.get().length);
                 respond(exchange, 202, "{\"slideId\":null}");
             } else if (path.equals("/api/v1/desktop/ingests/one")) {
                 respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
@@ -100,8 +104,11 @@ final class ViewerPairingServiceTest {
                 exchange.getResponseHeaders().set("Upload-Offset", "0");
                 exchange.sendResponseHeaders(200, -1);
                 exchange.close();
+            } else if (path.endsWith("/result-deliveries/results-one")) {
+                respond(exchange, 200, "{\"status\":\"complete\"}");
             } else if (path.endsWith("/result-deliveries/results-one/content")) {
                 receivedResults.set(exchange.getRequestBody().readAllBytes());
+                acknowledge(exchange, receivedResults.get().length);
                 respond(exchange, 202, "{\"status\":\"complete\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
@@ -154,6 +161,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
@@ -173,6 +183,7 @@ final class ViewerPairingServiceTest {
                     assertEquals("3", exchange.getRequestHeaders().getFirst("Upload-Offset"));
                     resumedPayload.set(body);
                     resumeOffset.addAndGet(body.length);
+                    acknowledge(exchange, body.length);
                     respond(exchange, 202, "{\"slideId\":null}");
                 }
             } else if (path.equals("/api/v1/desktop/ingests/resume")) {
@@ -216,6 +227,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
@@ -313,8 +327,7 @@ final class ViewerPairingServiceTest {
             body = "";
         } else if (path.equals("/api/v1/desktop/credential")) {
             status = 200;
-            body = "{\"deviceName\":\"PathLab Forge on Windows\",\"scopes\":["
-                    + "\"desktop:ingest\",\"slides:private:read\",\"annotations:sync\"]}";
+            body = verifiedCredential();
         } else {
             status = 404;
             body = "{\"detail\":\"not found\"}";
@@ -346,6 +359,9 @@ final class ViewerPairingServiceTest {
             var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             viewer.createContext("/", exchange -> {
                 var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
                 if (path.equals("/api/v1/desktop/capabilities")) {
                     respond(exchange, 200, dynamicCapabilities());
                 } else if (path.equals("/api/v1/desktop/ome-ingests")) {
@@ -357,7 +373,7 @@ final class ViewerPairingServiceTest {
                     exchange.sendResponseHeaders(200, -1);
                     exchange.close();
                 } else if (path.endsWith("/content")) {
-                    exchange.getRequestBody().readAllBytes();
+                    acknowledge(exchange, exchange.getRequestBody().readAllBytes().length);
                     respond(exchange, 202, "{\"slideId\":null}");
                 } else if (path.equals("/api/v1/desktop/ingests/durable-one")) {
                     respond(exchange, 200, "{\"status\":\"ready_private\","
@@ -403,6 +419,9 @@ final class ViewerPairingServiceTest {
         var createCalls = new AtomicInteger();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
+            if (exchange.getRequestURI().getPath().equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (exchange.getRequestURI().getPath().equals("/api/v1/desktop/capabilities")) {
                 respond(
                         exchange,
@@ -443,6 +462,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/credential")) {
@@ -456,7 +478,7 @@ final class ViewerPairingServiceTest {
                 exchange.sendResponseHeaders(200, -1);
                 exchange.close();
             } else if (path.endsWith("/content")) {
-                exchange.getRequestBody().readAllBytes();
+                acknowledge(exchange, exchange.getRequestBody().readAllBytes().length);
                 respond(exchange, 202, "{\"slideId\":null}");
             } else if (path.equals("/api/v1/desktop/ingests/sha")) {
                 respond(exchange, 200, readyBody);
@@ -480,6 +502,60 @@ final class ViewerPairingServiceTest {
             }
         } finally {
             viewer.stop(0);
+        }
+    }
+
+    private static void acknowledge(HttpExchange exchange, int bytes) {
+        long start = Long.parseLong(exchange.getRequestHeaders().getFirst("Upload-Offset"));
+        exchange.getResponseHeaders().set("Upload-Offset", Long.toString(start + bytes));
+    }
+
+    private static String verifiedCredential() {
+        return "{\"organizationId\":\"org-one\",\"userId\":\"user-one\",\"credentialId\":\"credential-one\",\"deviceName\":\"Forge\",\"scopes\":[\"desktop:ingest\",\"slides:private:read\"]}";
+    }
+
+    @Test
+    void lostCreateAcknowledgementUsesStableNegotiatedKeyAndPausesOldServers() throws Exception {
+        for (boolean negotiated : List.of(false, true)) {
+            var creates = new AtomicInteger(); var firstKey = new AtomicReference<String>();
+            var expectedSha = new AtomicReference<String>();
+            var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+            viewer.createContext("/", exchange -> {
+                var path = exchange.getRequestURI().getPath();
+                if (path.endsWith("/credential")) {
+                    respond(exchange,200,verifiedCredential().replace(",\"results:sync\"", ""));
+                } else if (path.endsWith("/capabilities")) {
+                    respond(exchange,200,dynamicCapabilities().replaceFirst("\\{", "{\"ingestCreateIdempotency\":" + negotiated + ","));
+                } else if (path.endsWith("/ome-ingests")) {
+                    int count = creates.incrementAndGet();
+                    var key = exchange.getRequestHeaders().getFirst("Idempotency-Key");
+                    if (count == 1) { firstKey.set(key); respond(exchange,503,"{\"detail\":\"acknowledgement lost\"}"); }
+                    else {
+                        assertEquals(firstKey.get(),key);
+                        respond(exchange,201,"{\"id\":\"recover\",\"uploadUrl\":\"/api/v1/desktop/ingests/recover/content\"}");
+                    }
+                } else if (path.endsWith("/content") && exchange.getRequestMethod().equals("HEAD")) {
+                    exchange.getResponseHeaders().set("Upload-Offset","0"); exchange.sendResponseHeaders(200,-1); exchange.close();
+                } else if (path.endsWith("/content")) {
+                    acknowledge(exchange,exchange.getRequestBody().readAllBytes().length); respond(exchange,202,"{\"status\":\"verifying\"}");
+                } else if (path.endsWith("/recover")) {
+                    respond(exchange,200,"{\"status\": \"ready_private\",\"slideId\":\"recovered-slide\",\"slideSha256\":\"" + expectedSha.get() + "\"}");
+                } else respond(exchange,404,"{\"detail\":\"missing\"}");
+            });
+            viewer.start();
+            try {
+                var ome = Files.write(temporaryDirectory.resolve("create-" + negotiated + ".ome.tif"),new byte[]{'I','I',42,0,1,2,3});
+                var revision = revision(ome,sha256(ome)); writeOmeStamp(revision,ome); expectedSha.set(revision.omeSha256());
+                var credentials = new MemoryCredentialStore(); credentials.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
+                try (var service = new ViewerPairingService(credentials)) {
+                    service.startUpload("recover",revision,List.of(),0,0,100,50,1); awaitState(service,"PAUSED");
+                    assertEquals(1,creates.get());
+                    service.startUpload("recover",revision,List.of(),0,0,100,50,1);
+                    awaitState(service,negotiated ? "IMAGE_READY" : "PAUSED");
+                    assertEquals(negotiated ? 2 : 1,creates.get());
+                    if (negotiated) assertFalse(firstKey.get().isBlank());
+                }
+            } finally { viewer.stop(0); }
         }
     }
 
@@ -519,7 +595,7 @@ final class ViewerPairingServiceTest {
                 attempt++) {
             Thread.sleep(25);
         }
-        assertEquals(expected, service.uploadStatus().state());
+        assertEquals(expected, service.uploadStatus().state(), service.uploadStatus().detail());
     }
 
     private static final class MemoryCredentialStore implements CredentialStore {

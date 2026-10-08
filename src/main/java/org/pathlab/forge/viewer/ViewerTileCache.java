@@ -35,18 +35,23 @@ public final class ViewerTileCache {
         if (!remotePath.startsWith("/api/") || remotePath.contains("..")) {
             throw new IllegalArgumentException("Remote preview path is invalid");
         }
-        var key = digest(remotePath);
+        var account = client.connectionKey();
+        if (!account.matches("[0-9a-f]{64}")) throw new IOException("Viewer cache requires a bound connection");
+        var key = digest(account + "\n" + remotePath);
         var data = root.resolve(key + ".cache");
         var type = root.resolve(key + ".type");
-        if (Files.isRegularFile(data) && Files.isRegularFile(type)) {
+        if (Files.isRegularFile(data, java.nio.file.LinkOption.NOFOLLOW_LINKS) && Files.isRegularFile(type, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            if (!account.equals(client.connectionKey())) throw new IOException("Viewer account changed");
             touch(data);
             return new CachedViewerResource(data, Files.readString(type, StandardCharsets.UTF_8));
         }
         var partial = root.resolve(key + ".partial");
-        try (var response = client.request("GET", remotePath, Map.of(), new byte[0])) {
+        Files.deleteIfExists(partial);
+        if (Files.isSymbolicLink(type)) throw new IOException("Unsafe Viewer cache metadata");
+        try (var response = client.requestBound(account, "GET", remotePath, Map.of(), new byte[0])) {
             if (response.status() != 200) throw new IOException("Viewer preview failed (" + response.status() + ")");
             long total = 0;
-            try (var output = Files.newOutputStream(partial)) {
+            try (var output = Files.newOutputStream(partial, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE)) {
                 var buffer = new byte[1024 * 1024];
                 int count;
                 while ((count = response.body().read(buffer)) >= 0) {
@@ -56,6 +61,7 @@ public final class ViewerTileCache {
                     output.write(buffer, 0, count);
                 }
             }
+            if (!account.equals(client.connectionKey())) throw new IOException("Viewer account changed during preview download");
             Files.move(partial, data, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             Files.writeString(type, normalizedType(response.header("Content-Type")), StandardCharsets.UTF_8);
         } finally {
