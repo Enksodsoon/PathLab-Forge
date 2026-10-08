@@ -107,30 +107,42 @@ public final class ViewerSyncService implements AutoCloseable {
     }
 
     public CompletableFuture<Path> keepOfflineAsync(String slideId) {
-        cancelledDownloads.remove(slideId);
+        final String scope;
+        synchronized (this) {
+            try { requireAccount(); safeName(slideId); }
+            catch (IOException error) { return CompletableFuture.failedFuture(error); }
+            scope = scopeKey;
+            if (!slideId.equals(activeDownload)) cancelledDownloads.remove(slideId);
+        }
         return CompletableFuture.supplyAsync(() -> {
-            try { return keepOffline(slideId, false); }
+            try { return keepOffline(slideId, false, scope); }
             catch (IOException error) { throw new java.io.UncheckedIOException(error); }
         }, executor);
     }
 
-    public Path keepOffline(String slideId) throws IOException { return keepOffline(slideId, true); }
+    public Path keepOffline(String slideId) throws IOException { return keepOffline(slideId, true, client.connectionKey()); }
 
-    private synchronized Path keepOffline(String slideId, boolean clearCancellation) throws IOException {
-        requireAccount();
-        safeName(slideId);
-        if (clearCancellation) cancelledDownloads.remove(slideId);
-        activeDownload = slideId;
-        downloadThread = Thread.currentThread();
-        var scope = scopeKey;
+    private Path keepOffline(String slideId, boolean clearCancellation, String requestedScope) throws IOException {
+        final String scope;
+        final ViewerSyncRecord record;
+        synchronized (this) {
+            requireAccount();
+            safeName(slideId);
+            if (!scopeKey.equals(requestedScope)) throw new IOException("Viewer account changed before download");
+            if (!activeDownload.isEmpty()) throw new IOException("An offline download is already active");
+            record = store.find(slideId).orElseThrow(() -> new IOException("Unknown remote slide"));
+            if (clearCancellation) cancelledDownloads.remove(slideId);
+            activeDownload = slideId;
+            downloadThread = Thread.currentThread();
+            scope = scopeKey;
+        }
         var accountRoot = offlineRoot.resolve(scope);
-        Files.createDirectories(accountRoot);
-        if (!safeParents(accountRoot)) throw new IOException("Unsafe offline storage path");
         var partial = accountRoot.resolve(slideId + ".ome.tif.partial");
         var target = accountRoot.resolve(slideId + ".ome.tif");
         try {
+            Files.createDirectories(accountRoot);
+            if (!safeParents(accountRoot)) throw new IOException("Unsafe offline storage path");
             checkDownloadAccount(scope, slideId);
-            var record = store.find(slideId).orElseThrow(() -> new IOException("Unknown remote slide"));
             if ("remote_removed".equals(record.remote().status())) throw new IOException("Slide is no longer available in Viewer");
             var endpoint = "/api/v2/desktop/slides/" + slideId + "/content";
             long bytes;
@@ -149,12 +161,16 @@ public final class ViewerSyncService implements AutoCloseable {
             if (record.downloadBytes() == bytes && record.downloadSha256().equalsIgnoreCase(sha)
                     && physicalFile(partial) && Files.size(partial) <= bytes) offset = Files.size(partial);
             else Files.deleteIfExists(partial);
-            store.beginDownload(slideId, partial, bytes, sha);
-            store.advanceDownload(slideId, offset);
+            synchronized (this) {
+                checkDownloadAccount(scope, slideId);
+                store.beginDownload(slideId, partial, bytes, sha);
+                store.advanceDownload(slideId, offset);
+            }
             if (offset < bytes) {
                 var headers = offset == 0 ? Map.<String, String>of() : Map.of("Range", "bytes=" + offset + "-", "If-Match", "\"" + sha + "\"");
                 try (var response = client.requestBound(scope, "GET", endpoint, headers, new byte[0])) {
                     activeStream = response.body();
+                    checkDownloadAccount(scope, slideId);
                     requireStatus(response, offset == 0 ? 200 : 206);
                     if (offset > 0 && !response.header("Content-Range").equals("bytes " + offset + "-" + (bytes - 1) + "/" + bytes))
                         throw new IOException("Viewer returned a mismatched resume range");
@@ -166,28 +182,47 @@ public final class ViewerSyncService implements AutoCloseable {
                             if (count == 0) continue;
                             if (count > bytes - offset) throw new IOException("Viewer sent more content than declared");
                             output.write(buffer, 0, count); offset += count;
-                            store.advanceDownload(slideId, offset);
+                            synchronized (this) {
+                                checkDownloadAccount(scope, slideId);
+                                store.advanceDownload(slideId, offset);
+                            }
                         }
                     }
                 }
             }
-            checkDownloadAccount(scope, slideId);
-            store.downloadState(slideId, "VERIFYING", target, "Verifying length and SHA-256");
-            if (offset != bytes || !sha.equalsIgnoreCase(sha256(partial)))
-                throw new IOException("Offline slide failed length or SHA-256 verification");
-            checkDownloadAccount(scope, slideId);
-            Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            store.downloadState(slideId, "READY", target, "Verified local OME available offline");
-            cacheVerified(target, sha);
+            synchronized (this) {
+                checkDownloadAccount(scope, slideId);
+                store.downloadState(slideId, "VERIFYING", target, "Verifying length and SHA-256");
+            }
+            // A short network response may still resume; a complete corrupt body cannot.
+            if (offset != bytes) throw new IOException("Offline slide failed length verification");
+            if (!sha.equalsIgnoreCase(sha256(partial))) {
+                Files.deleteIfExists(partial);
+                synchronized (this) {
+                    checkDownloadAccount(scope, slideId);
+                    store.advanceDownload(slideId, 0);
+                }
+                throw new IOException("Offline slide failed SHA-256 verification");
+            }
+            synchronized (this) {
+                checkDownloadAccount(scope, slideId);
+                Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                store.downloadState(slideId, "READY", target, "Verified local OME available offline");
+                cacheVerified(target, sha);
+            }
             return target;
         } catch (IOException | RuntimeException error) {
-            if (store.find(slideId).isPresent()) store.downloadState(slideId,
-                    cancelledDownloads.contains(slideId) ? "CANCELLED" : "FAILED", Path.of(""),
-                    error.getMessage() == null ? "Download failed" : error.getMessage());
+            synchronized (this) {
+                if (scope.equals(scopeKey) && store.find(slideId).isPresent()) store.downloadState(slideId,
+                        cancelledDownloads.contains(slideId) ? "CANCELLED" : "FAILED", Path.of(""),
+                        error.getMessage() == null ? "Download failed" : error.getMessage());
+            }
             throw error;
         } finally {
-            activeStream = null; activeDownload = ""; downloadThread = null;
-            if (cancelledDownloads.remove(slideId)) Thread.interrupted();
+            synchronized (this) {
+                activeStream = null; activeDownload = ""; downloadThread = null;
+                if (cancelledDownloads.remove(slideId)) Thread.interrupted();
+            }
         }
     }
 
@@ -226,7 +261,7 @@ public final class ViewerSyncService implements AutoCloseable {
 
     private void checkDownloadAccount(String key, String slideId) throws IOException {
         if (cancelledDownloads.contains(slideId) || Thread.currentThread().isInterrupted()) throw new IOException("Offline download cancelled");
-        if (!key.equals(client.connectionKey())) throw new IOException("Viewer account changed during download");
+        if (!key.equals(scopeKey) || !key.equals(client.connectionKey())) throw new IOException("Viewer account changed during download");
     }
 
     private boolean bindAccount() throws IOException {
@@ -234,9 +269,9 @@ public final class ViewerSyncService implements AutoCloseable {
         if (key.isEmpty()) return false;
         if (!key.matches("[0-9a-f]{64}")) throw new IOException("Viewer connection identity is invalid");
         if (!key.equals(scopeKey)) {
-            if (!activeDownload.isEmpty()) throw new IOException("Viewer account changed; waiting for previous transfer to stop");
             synchronized (this) {
             if (key.equals(scopeKey)) return true;
+            if (!activeDownload.isEmpty()) cancelledDownloads.add(activeDownload);
             store.bindConnection(key);
             scopeKey = key;
             verifiedOffline.clear();
@@ -438,7 +473,10 @@ public final class ViewerSyncService implements AutoCloseable {
             try (var input = Files.newInputStream(path)) {
                 var buffer = new byte[BUFFER_BYTES];
                 int count;
-                while ((count = input.read(buffer)) >= 0) if (count > 0) digest.update(buffer, 0, count);
+                while ((count = input.read(buffer)) >= 0) {
+                    if (Thread.currentThread().isInterrupted()) throw new IOException("Offline verification cancelled");
+                    if (count > 0) digest.update(buffer, 0, count);
+                }
             }
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException impossible) {
