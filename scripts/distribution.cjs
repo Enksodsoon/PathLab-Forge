@@ -47,10 +47,14 @@ function collect(service, output, target) {
   }
   if (npm.length === 0) throw new Error('No installed dependency metadata discovered');
   write(path.join(output, 'npm-dependencies.json'), npm);
+  const legalFiles = ['java-notices', 'npm-notices'].flatMap(folder => {
+    const base = path.join(output, folder);
+    return fs.existsSync(base) && fs.readdirSync(base).length ? inventory(base).map(file => ({ ...file, path: `${folder}/${file.path}` })) : [];
+  });
   const receipt = { schema: 'pathlab.forge.inventory/1', distribution: 'NON_REDISTRIBUTABLE_PENDING_REVIEW',
     commit, version: require('../desktop/package.json').version, target,
     source: { file: source, sha256: sha256(path.join(output, source)) }, files, dependencyInputs,
-    javaDependenciesSha256: sha256(dependencyFile), npmDependenciesSha256: sha256(path.join(output, 'npm-dependencies.json')) };
+    javaDependenciesSha256: sha256(dependencyFile), npmDependenciesSha256: sha256(path.join(output, 'npm-dependencies.json')), legalFiles };
   write(path.join(output, 'inventory.json'), receipt);
   const notices = files.filter(file => /(^|\/)(legal|licenses?)(\/|$)|(^|\/)(notice|copying|copyright)/i.test(file.path));
   write(path.join(output, 'notice-inventory.json'), { schema: 'pathlab.forge.notice-inventory/1', commit, files: notices });

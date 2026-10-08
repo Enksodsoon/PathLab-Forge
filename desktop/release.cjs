@@ -55,10 +55,20 @@ function validateReview(review, receipt, directory) {
     requireThat(file.startsWith(path.resolve(directory) + path.sep) && sha256(file) === record.sha256, `Changed ${name}`);
   }
   requireThat(Array.isArray(review.components) && review.components.length > 0, 'Component reviews required');
-  for (const file of receipt.files.filter(file => file.sha256)) {
+  const dependencies = [
+    ...read(path.join(directory, 'java-dependencies.json')).map(item => ({ path: item.coordinate, sha256: item.sha256 })),
+    ...read(path.join(directory, 'npm-dependencies.json')).map(item => ({ path: `${item.project}/${item.name}@${item.version}`, sha256: item.packageJsonSha256 })),
+  ];
+  requireThat(dependencies.length > 0, 'Resolved dependency inventory required');
+  for (const file of [...receipt.files.filter(file => file.sha256), ...dependencies]) {
     requireThat(review.components.some(component => component.sha256 === file.sha256
       && component.decision === 'APPROVED' && typeof component.license === 'string'
       && !/pending|unknown|placeholder/i.test(component.license)), `Unreviewed file: ${file.path}`);
+  }
+  requireThat(Array.isArray(receipt.legalFiles), 'Legal input inventory required');
+  for (const record of receipt.legalFiles) {
+    const file = path.resolve(directory, record.path);
+    requireThat(file.startsWith(path.resolve(directory) + path.sep) && sha256(file) === record.sha256, 'Legal input changed');
   }
 }
 function preflight(serviceRoot, platform, arch, env = process.env) {

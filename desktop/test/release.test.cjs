@@ -50,10 +50,10 @@ test('review and catalog fail closed on incomplete or mismatched exact evidence'
   fs.writeFileSync(path.join(directory, 'source.tar'), 'synthetic');
   fs.writeFileSync(path.join(directory, 'installer.exe'), 'synthetic installer');
   const sourceHash = sha256(path.join(directory, 'source.tar'));
-  fs.writeFileSync(path.join(directory, 'java-dependencies.json'), '[]');
+  fs.writeFileSync(path.join(directory, 'java-dependencies.json'), JSON.stringify([{ coordinate: 'test:synthetic:1', sha256: 'b'.repeat(64) }]));
   fs.writeFileSync(path.join(directory, 'npm-dependencies.json'), '[]');
   const receipt = { schema: 'pathlab.forge.inventory/1', commit, target: 'win32-x64', version: '1.0.0-rc.1', source: { file: 'source.tar', sha256: sourceHash }, files: [{ path: 'app.jar', sha256: 'b'.repeat(64) }],
-    javaDependenciesSha256: sha256(path.join(directory, 'java-dependencies.json')), npmDependenciesSha256: sha256(path.join(directory, 'npm-dependencies.json')) };
+    javaDependenciesSha256: sha256(path.join(directory, 'java-dependencies.json')), npmDependenciesSha256: sha256(path.join(directory, 'npm-dependencies.json')), legalFiles: [] };
   fs.writeFileSync(path.join(directory, 'inventory.json'), JSON.stringify(receipt));
   const reviewed = { file: 'source.tar', sha256: sourceHash };
   const review = { schema: 'pathlab.forge.distribution-review/1', commit, target: receipt.target, inventorySha256: sha256(path.join(directory, 'inventory.json')),
