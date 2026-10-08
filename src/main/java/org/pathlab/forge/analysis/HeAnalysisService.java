@@ -66,8 +66,7 @@ public final class HeAnalysisService {
         var region = conversion.readRgbRegion(
                 datasetId, bounds.x(), bounds.y(), bounds.width(), bounds.height());
         var rgb = region.interleavedRgb();
-        var stride = Math.max(1, (int) Math.ceil(Math.sqrt(
-                (double) bounds.width() * bounds.height() / MAX_SAMPLED_PIXELS)));
+        var stride = samplingStride(bounds.width(), bounds.height());
         var maxSamples = Math.toIntExact(((long) bounds.width() + stride - 1) / stride
                 * (((long) bounds.height() + stride - 1) / stride));
         var hematoxylin = new double[maxSamples];
@@ -151,6 +150,12 @@ public final class HeAnalysisService {
         return Double.isFinite(value) && value >= 0 && value <= 3;
     }
 
+    static int samplingStride(int width, int height) {
+        var stride = Math.max(1, (int) Math.ceil(Math.sqrt((double) width * height / MAX_SAMPLED_PIXELS)));
+        while (((long) width + stride - 1) / stride * (((long) height + stride - 1) / stride) > MAX_SAMPLED_PIXELS) stride++;
+        return stride;
+    }
+
     private static double opticalDensity(int value) {
         return -Math.log((value + 1.0) / 256.0);
     }
@@ -192,7 +197,7 @@ public final class HeAnalysisService {
     }
 
     private static boolean inside(String type, List<Point> points, double x, double y) {
-        if ("rectangle".equals(type) || "brush_add".equals(type) || "brush_subtract".equals(type)) {
+        if ("rectangle".equals(type)) {
             return true;
         }
         if ("ellipse".equals(type) && points.size() >= 2) {

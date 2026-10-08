@@ -6,6 +6,10 @@ public final class ClassicalAnalysis {
     private ClassicalAnalysis() {}
 
     public static QcResult qualityControl(RgbRegion region) {
+        return qualityControl(region, null);
+    }
+
+    public static QcResult qualityControl(RgbRegion region, boolean[] mask) {
         var rgb = region.interleavedRgb();
         var pixels = region.width() * region.height();
         double sum = 0;
@@ -14,7 +18,12 @@ public final class ClassicalAnalysis {
         int tissue = 0;
         int pen = 0;
         int dark = 0;
+        int included = 0;
+        int edges = 0;
         for (var index = 0; index < pixels; index++) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
+            if (mask != null && !mask[index]) continue;
+            included++;
             var red = rgb[index * 3] & 0xff;
             var green = rgb[index * 3 + 1] & 0xff;
             var blue = rgb[index * 3 + 2] & 0xff;
@@ -24,25 +33,31 @@ public final class ClassicalAnalysis {
             if (luminance < 0.88) tissue++;
             if (blue > red * 1.35 && blue > green * 1.15 && blue > 100) pen++;
             if (luminance < 0.12) dark++;
-            if (index % region.width() != 0) {
+            if (index % region.width() != 0 && (mask == null || mask[index - 1])) {
+                edges++;
                 var previous = (0.2126 * (rgb[(index - 1) * 3] & 0xff)
                         + 0.7152 * (rgb[(index - 1) * 3 + 1] & 0xff)
                         + 0.0722 * (rgb[(index - 1) * 3 + 2] & 0xff)) / 255.0;
                 gradient += Math.abs(luminance - previous);
             }
         }
-        var mean = sum / pixels;
+        if (included == 0) throw new IllegalArgumentException("ROI contains no pixels");
+        var mean = sum / included;
         return new QcResult(
                 mean,
-                Math.sqrt(Math.max(0, squared / pixels - mean * mean)),
-                gradient / Math.max(1, pixels - region.height()),
-                (double) tissue / pixels,
-                (double) pen / pixels,
-                (double) dark / pixels,
-                pixels);
+                Math.sqrt(Math.max(0, squared / included - mean * mean)),
+                gradient / Math.max(1, edges),
+                (double) tissue / included,
+                (double) pen / included,
+                (double) dark / included,
+                included);
     }
 
     public static TissueResult detectTissue(RgbRegion region, double luminanceThreshold) {
+        return detectTissue(region, luminanceThreshold, null);
+    }
+
+    public static TissueResult detectTissue(RgbRegion region, double luminanceThreshold, boolean[] mask) {
         if (!Double.isFinite(luminanceThreshold) || luminanceThreshold <= 0 || luminanceThreshold >= 1) {
             throw new IllegalArgumentException("Tissue threshold must be between zero and one");
         }
@@ -52,8 +67,12 @@ public final class ClassicalAnalysis {
         var maxX = -1;
         var maxY = -1;
         var count = 0;
+        var included = 0;
         for (var y = 0; y < region.height(); y++) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
             for (var x = 0; x < region.width(); x++) {
+                if (mask != null && !mask[y * region.width() + x]) continue;
+                included++;
                 var index = (y * region.width() + x) * 3;
                 var luminance = (0.2126 * (rgb[index] & 0xff)
                         + 0.7152 * (rgb[index + 1] & 0xff)
@@ -69,7 +88,7 @@ public final class ClassicalAnalysis {
         }
         return new TissueResult(
                 count,
-                (double) count / (region.width() * region.height()),
+                (double) count / Math.max(1, included),
                 count == 0 ? 0 : region.x() + minX,
                 count == 0 ? 0 : region.y() + minY,
                 count == 0 ? 0 : maxX - minX + 1,
@@ -77,22 +96,31 @@ public final class ClassicalAnalysis {
     }
 
     public static int countNucleusCandidates(RgbRegion region, int darknessThreshold) {
+        return nucleusCandidates(region, darknessThreshold, null).size();
+    }
+
+    public static java.util.List<String> nucleusCandidates(RgbRegion region, int darknessThreshold, boolean[] mask) {
         if (darknessThreshold < 1 || darknessThreshold > 254) {
             throw new IllegalArgumentException("Nucleus threshold must be from 1 to 254");
         }
         var rgb = region.interleavedRgb();
-        var count = 0;
+        var candidates = new java.util.ArrayList<String>();
         for (var y = 1; y < region.height() - 1; y += 2) {
+            if (Thread.currentThread().isInterrupted()) throw new java.util.concurrent.CancellationException();
             for (var x = 1; x < region.width() - 1; x += 2) {
+                if (mask != null && (!mask[y * region.width() + x] || !mask[y * region.width() + x - 1] || !mask[y * region.width() + x + 1])) continue;
                 var index = (y * region.width() + x) * 3;
                 var value = ((rgb[index] & 0xff) + (rgb[index + 1] & 0xff) + (rgb[index + 2] & 0xff)) / 3;
                 if (value >= darknessThreshold) continue;
                 var left = ((rgb[index - 3] & 0xff) + (rgb[index - 2] & 0xff) + (rgb[index - 1] & 0xff)) / 3;
                 var right = ((rgb[index + 3] & 0xff) + (rgb[index + 4] & 0xff) + (rgb[index + 5] & 0xff)) / 3;
-                if (value <= left && value <= right) count++;
+                if (value <= left && value <= right) {
+                    if (candidates.size() >= 10_000) throw new IllegalArgumentException("More than 10,000 candidates; use a smaller ROI or stricter threshold");
+                    candidates.add((region.x() + x) + "," + (region.y() + y));
+                }
             }
         }
-        return count;
+        return java.util.List.copyOf(candidates);
     }
 
     public static boolean classifyPixel(int red, int green, int blue, double positiveLuminance, double negativeLuminance) {
@@ -109,11 +137,19 @@ public final class ClassicalAnalysis {
         if (source.length != 3 || target.length != 3) {
             throw new IllegalArgumentException("Affine registration requires exactly three landmark pairs");
         }
+        for (var points : java.util.List.of(source, target)) {
+            for (var point : points) {
+                if (point == null || point.length != 2 || !Double.isFinite(point[0]) || !Double.isFinite(point[1])) {
+                    throw new IllegalArgumentException("Registration landmarks must be finite coordinate pairs");
+                }
+            }
+        }
         var matrix = new double[][] {
             {source[0][0], source[0][1], 1},
             {source[1][0], source[1][1], 1},
             {source[2][0], source[2][1], 1}
         };
+        invert3(new double[][] {{target[0][0], target[0][1], 1}, {target[1][0], target[1][1], 1}, {target[2][0], target[2][1], 1}});
         var inverse = invert3(matrix);
         var x = multiply(inverse, new double[] {target[0][0], target[1][0], target[2][0]});
         var y = multiply(inverse, new double[] {target[0][1], target[1][1], target[2][1]});
