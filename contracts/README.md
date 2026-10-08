@@ -1,27 +1,17 @@
-# Prepared-Slide Contract
+# Forge / Viewer release contracts
 
-Do not invent or privately fork the final JSON Schema before the public Viewer contract exists.
+The approved non-AI release brief is `docs/plans/active/current.md`. Normal delivery is negotiated direct OME (`ome-dynamic-v1`), with structured private results transferred separately. Explicit Teaching delivery uses the existing prepared static-DZI ingest contract. These artifact identities must remain separate.
 
-The canonical server acceptance contract will be:
+Reuse the existing Viewer acceptance implementations and exact fixtures. Do not privately invent a replacement schema or infer support from a filename. Changes require matching producer/consumer checks and a recorded Viewer commit.
 
-```text
-PathLab-Viewer/contracts/prepared-slide-v1.schema.json
-```
+Current Forge contract checks and fixtures:
 
-After Viewer V1 is merged:
+- `src/test/java/org/pathlab/forge/viewer/ViewerCapabilitiesTest.java`: negotiated formats, profiles, limits and ingest-creation idempotency.
+- `src/test/resources/viewer-sync-v1`: snapshot, change, mutation, conflict and retained-content fixtures.
+- `src/test/resources/study/viewer-v1.json` and `viewer-v1.checksum`: `pathlab.study-pack/1` canonical content and checksum.
+- `src/test/resources/study/canonical-numbers.json` and `canonical-numbers.txt`: cross-language numeric canonicalization.
+- `PrivateResultsBundleBuilderTest`: immutable original run/ROI/review identity, geometry transforms and exact result hashes.
 
-1. copy the exact schema into this directory;
-2. record its schema version and source commit in a small machine-readable lock file;
-3. add compatibility tests against the same canonical valid and invalid manifest fixtures;
-4. fail the Forge build when its producer model no longer satisfies the pinned schema.
+Viewer baseline is `fac6476249ed287bb2afe8def1b0bcc9558104d7`. The scoped compatibility release must be repinned after its reviewed commit and isolation checks. Its deployed commit remains unverified. New publication and private-download routes stay gated until matching scoped Viewer contracts and actual authenticated journeys pass.
 
-Package v1 is derivative-only:
-
-```text
-manifest.json
-derivative/slide.dzi
-derivative/slide_files/<level>/<column>_<row>.jpg
-derivative/thumbnail.jpg
-```
-
-The standardized OME-TIFF remains local. Breaking changes create a new schema version; never silently redefine version 1.
+The earlier derivative-only package description is historical. It does not change the normal OME release default. Breaking wire changes use a new version; never silently redefine an existing version.
