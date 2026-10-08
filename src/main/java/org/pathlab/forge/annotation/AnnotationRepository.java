@@ -77,12 +77,7 @@ public final class AnnotationRepository {
         if (!TYPES.contains(type)) {
             throw new IllegalArgumentException("Unsupported annotation tool");
         }
-        if (geometry == null
-                || geometry.isBlank()
-                || geometry.length() > 65_536
-                || !geometry.matches("-?\\d+(?:\\.\\d+)?,-?\\d+(?:\\.\\d+)?(?:;-?\\d+(?:\\.\\d+)?,-?\\d+(?:\\.\\d+)?)*")) {
-            throw new IllegalArgumentException("Annotation geometry is invalid");
-        }
+        org.pathlab.forge.analysis.GeometryMeasurements.validate(type, geometry);
         if (label == null || label.length() > 240) {
             throw new IllegalArgumentException("Annotation label is too long");
         }
@@ -151,8 +146,21 @@ public final class AnnotationRepository {
         if (!parentId.isBlank() && parentId.equals(annotationId)) {
             throw new IllegalArgumentException("Annotation cannot be its own parent");
         }
-        if (!parentId.isBlank() && list(datasetId).stream().noneMatch(item -> item.id().equals(parentId))) {
-            throw new IllegalArgumentException("Annotation parent was not found");
+        var records = list(datasetId);
+        var visited = new java.util.HashSet<String>();
+        var ancestorId = parentId;
+        while (!ancestorId.isBlank()) {
+            if (ancestorId.equals(annotationId) || !visited.add(ancestorId)) {
+                throw new IllegalArgumentException("Annotation parent creates a cycle");
+            }
+            var nextId = ancestorId;
+            var ancestor = records.stream().filter(item -> item.id().equals(nextId)).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Annotation parent was not found"));
+            if (ancestor.series() != current.series() || ancestor.z() != current.z()
+                    || ancestor.t() != current.t() || !ancestor.viewRevision().equals(current.viewRevision())) {
+                throw new IllegalArgumentException("Annotation parent belongs to another view");
+            }
+            ancestorId = ancestor.parentId();
         }
         var updated = new AnnotationRecord(
                 current.id(), current.type(), current.geometry(), current.label(), current.color(),
@@ -177,6 +185,26 @@ public final class AnnotationRepository {
         properties.setProperty(prefix + "viewRevision", record.viewRevision());
     }
 
+    public synchronized AnnotationRecord updateGeometry(
+            String datasetId, String annotationId, String geometry, String label, String color,
+            long expectedRevision) throws IOException {
+        var current = list(datasetId).stream().filter(item -> item.id().equals(annotationId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Annotation was not found"));
+        if (current.revision() != expectedRevision) throw new IllegalStateException("Annotation revision changed");
+        org.pathlab.forge.analysis.GeometryMeasurements.validate(current.type(), geometry);
+        if (label == null || label.length() > 240) throw new IllegalArgumentException("Annotation label is too long");
+        if (color == null || !color.matches("#[0-9a-fA-F]{6}")) throw new IllegalArgumentException("Annotation color is invalid");
+        var properties = read(datasetId);
+        var prefix = "annotation." + annotationId + ".";
+        properties.setProperty(prefix + "geometry", geometry);
+        properties.setProperty(prefix + "label", label);
+        properties.setProperty(prefix + "color", color.toLowerCase(java.util.Locale.ROOT));
+        properties.setProperty(prefix + "updatedAt", Long.toString(System.currentTimeMillis()));
+        properties.setProperty(prefix + "revision", Long.toString(current.revision() + 1));
+        write(datasetId, properties);
+        return list(datasetId).stream().filter(item -> item.id().equals(annotationId)).findFirst().orElseThrow();
+    }
+
     public synchronized boolean delete(String datasetId, String annotationId) throws IOException {
         var properties = read(datasetId);
         var prefix = "annotation." + annotationId + ".";
@@ -186,6 +214,15 @@ public final class AnnotationRepository {
         keys.forEach(properties::remove);
         var changed = !keys.isEmpty();
         if (changed) {
+            // Preserve descendants, reparenting direct children to the deleted object's parent.
+            var deleted = list(datasetId).stream().filter(item -> item.id().equals(annotationId)).findFirst().orElseThrow();
+            for (var child : list(datasetId)) {
+                if (!child.parentId().equals(annotationId)) continue;
+                var childPrefix = "annotation." + child.id() + ".";
+                properties.setProperty(childPrefix + "parentId", deleted.parentId());
+                properties.setProperty(childPrefix + "revision", Long.toString(child.revision() + 1));
+                properties.setProperty(childPrefix + "updatedAt", Long.toString(System.currentTimeMillis()));
+            }
             write(datasetId, properties);
         }
         return changed;
