@@ -241,7 +241,8 @@ public final class DeterministicAnalysisService implements AutoCloseable {
     private static Map<String, Object> he(Request request, RgbRegion region, boolean[] mask) {
         var rgb = region.interleavedRgb();
         var stride = HeAnalysisService.samplingStride(region.width(), region.height());
-        var h = new double[1_048_576]; var e = new double[1_048_576];
+        var maximumSamples = Math.toIntExact(((long) region.width() + stride - 1) / stride * (((long) region.height() + stride - 1) / stride));
+        var h = new double[maximumSamples]; var e = new double[maximumSamples];
         int count = 0, hAbove = 0, eAbove = 0;
         double hSum = 0, eSum = 0;
         for (var y = 0; y < region.height(); y += stride) {

@@ -68,11 +68,18 @@ final class DeterministicAnalysisServiceTest {
                     assertEquals(1.0/3,service.review(next.id()).stainVector().get(0),.0001);
                 }
             }
+            var registration = service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"registration",Map.of(),datasetId,roi.id(),"0,0;1,0;0,1","1,1;2,1;1,2"));
+            var matched = awaitTerminal(service,registration.id());
+            assertEquals("SUCCEEDED",matched.status());
+            assertEquals(true,matched.outputs().get("approximate"));
+            assertEquals(view.revision(),matched.provenance().secondaryInputs().get("targetViewRevision"));
             wait.set(true);
             var cancelled = service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"qc",Map.of()));
             assertTrue(entered.await(5, TimeUnit.SECONDS));
             assertEquals("CANCELLED", service.cancel(cancelled.id()).status()); release.countDown();
             assertEquals("CANCELLED", awaitTerminal(service,cancelled.id()).status());
+            Files.write(source,new byte[] {1,2,3,4});
+            assertTrue(service.get(completedId).stale(),"External source change must invalidate an unchanged stored fingerprint");
             annotations.updateGeometry(datasetId,roi.id(),"0,0;6,0;0,6","","#ffaa22",1);
             assertTrue(service.get(completedId).stale());
         }
