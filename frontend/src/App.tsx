@@ -1178,7 +1178,10 @@ export function App() {
           {selected ? <div><p>Teaching delivery creates a separate static-DZI artifact. Existing OME artifacts and original pixels are retained; Viewer privacy review remains required.</p>
             <button type="button" disabled={!QUEUEABLE_STATUSES.has(selected.status) || selected.selectedSeries < 0} onClick={() => {
               void api.generateTeachingArtifact(selected.id).then(async () => { await refresh(); setNotice('Teaching DZI generation queued; inspect and approve its independent artifact before delivery') }).catch((cause) => setStudyError(message(cause)))
-            }}>Generate Teaching DZI for {selected.displayName}</button></div> : null}
+            }}>Generate Teaching DZI for {selected.displayName}</button>
+            <button type="button" disabled={!connection?.connected || currentRevision?.format !== 'PREPARED_DZI_V2' || currentRevision?.status !== 'APPROVED' || currentRevision?.id !== selected.approvedArtifactRevision} onClick={() => {
+              void api.uploadTeachingArtifact(selected.id).then((next) => { setViewerUpload(next); setNotice(next.detail) }).catch((cause) => setStudyError(message(cause)))
+            }}>Deliver approved Teaching DZI to Viewer</button></div> : null}
           {studyError ? <p role="alert">{studyError}</p> : null}
           {connection?.scopes.includes('study-packs:write') ? <button type="button" onClick={() => {
             const epoch = remoteEpoch.current

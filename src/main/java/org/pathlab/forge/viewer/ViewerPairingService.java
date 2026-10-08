@@ -221,6 +221,18 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             int cropHeight,
             double downsample)
             throws IOException {
+        return startUpload(displayName, revision, annotations, cropX, cropY, cropWidth, cropHeight, downsample, false);
+    }
+
+    public synchronized ViewerUploadStatus startTeachingUpload(String displayName, ArtifactRevision revision,
+            List<AnnotationRecord> annotations, int cropX, int cropY, int cropWidth, int cropHeight,
+            double downsample) throws IOException {
+        return startUpload(displayName, revision, annotations, cropX, cropY, cropWidth, cropHeight, downsample, true);
+    }
+
+    private ViewerUploadStatus startUpload(String displayName, ArtifactRevision revision,
+            List<AnnotationRecord> annotations, int cropX, int cropY, int cropWidth, int cropHeight,
+            double downsample, boolean teaching) throws IOException {
         if (Set.of("UPLOADING", "VERIFYING_OME", "SYNCING_RESULTS", "RETRYING")
                 .contains(uploadStatus.state())) {
             throw new IllegalStateException("A Viewer upload is already active");
@@ -234,7 +246,9 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (connectionKey().isEmpty()) throw new IOException("Viewer must provide verified organization, user and credential identity before delivery");
         uploadScopeKey = connectionKey();
         var capabilities = viewerCapabilities(credential);
-        var dynamic = capabilities.supportsDynamicOme()
+        if (revision.status() != org.pathlab.forge.conversion.ArtifactRevisionStatus.APPROVED)
+            throw new IllegalStateException("Approve the exact verified artifact before delivery");
+        var dynamic = !teaching && capabilities.supportsDynamicOme()
                 && "ome-dynamic-v1".equals(revision.omeProfile())
                 && revision.format()
                         == org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
@@ -242,25 +256,30 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 && Files.isRegularFile(Path.of(revision.omePath()))
                 && ArtifactIntegrityStamp.matchesOme(revision)
                 && capabilities.accepts(Files.size(Path.of(revision.omePath())));
-        if (!dynamic) {
+        var prepared = teaching && capabilities.ingestModes().contains("prepared-v2")
+                && revision.format() == org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2
+                && ArtifactIntegrityStamp.matches(revision)
+                && capabilities.accepts(Files.size(Path.of(revision.packagePath())));
+        if (!dynamic && !prepared) {
             throw new IllegalStateException(
-                    "Viewer delivery requires the verified ome-dynamic-v1 artifact");
+                    teaching ? "Teaching delivery requires an approved verified prepared-v2 artifact"
+                        : "Viewer delivery requires the verified ome-dynamic-v1 artifact");
         }
-        var artifactPath = Path.of(revision.omePath());
-        var integrityMatches = ArtifactIntegrityStamp.matchesOme(revision);
+        var artifactPath = Path.of(dynamic ? revision.omePath() : revision.packagePath());
+        var integrityMatches = dynamic ? ArtifactIntegrityStamp.matchesOme(revision) : ArtifactIntegrityStamp.matches(revision);
         if (!Files.isRegularFile(artifactPath) || !integrityMatches) {
             throw new IllegalStateException(dynamic
                     ? "Approved OME-TIFF hash no longer matches"
                     : "Approved package hash no longer matches");
         }
         var total = Files.size(artifactPath);
-        var manifestSha256 = "";
-        var uploadMode = "OME_DYNAMIC";
+        var manifestSha256 = dynamic ? "" : sha256Text(tarText(artifactPath, "manifest.json", 16 * 1024 * 1024));
+        var uploadMode = dynamic ? "OME_DYNAMIC" : "PREPARED_V2";
         var latest = deliveryStore.findLatestByArtifact(revision.id());
         if (latest.isPresent() && latest.get().state() == ViewerDeliveryState.COMPLETE) {
             var completed = latest.get();
             uploadStatus = new ViewerUploadStatus("COMPLETE",revision.id(),completed.resultBytes(),completed.resultBytes(),
-                    completed.remoteSlideId(),completed.artifactSha256(),"OME_DYNAMIC","This exact artifact delivery is already complete");
+                    completed.remoteSlideId(),completed.artifactSha256(),uploadMode,"This exact artifact delivery is already complete");
             return uploadStatus;
         }
         activeUpload = null;
@@ -271,7 +290,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         ViewerDeliveryJob job;
         if (existingJob.isPresent()) {
             job = existingJob.get();
-            if (!job.artifactSha256().equalsIgnoreCase(revision.omeSha256())
+            if (!job.artifactSha256().equalsIgnoreCase(revision.viewerSlideSha256())
                     || job.artifactBytes() != total) {
                 throw new IllegalStateException("Persisted delivery artifact no longer matches");
             }
@@ -283,7 +302,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         } else {
             job = ViewerDeliveryJob.queued(
                     UUID.randomUUID().toString(), revision.datasetId(), revision.id(),
-                    revision.omeSha256(), total, credential.base().toString(), Instant.now());
+                    revision.viewerSlideSha256(), total, credential.base().toString(), Instant.now());
             deliveryStore.save(job);
         }
         uploadStatus = new ViewerUploadStatus(
@@ -359,7 +378,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         activeUpload = null;
         uploadStatus = new ViewerUploadStatus(
                 "CANCELLED", job.artifactRevisionId(), job.confirmedOffset(), job.artifactBytes(),
-                "", "", "OME_DYNAMIC", "Private delivery cancelled; local artifact retained");
+                "", "", session.uploadMode(), "Private delivery cancelled; local artifact retained");
         return uploadStatus;
     }
 
@@ -388,8 +407,10 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             double downsample) {
         try {
             var length = Files.size(artifactPath);
+            capabilities = viewerCapabilities(credential);
+            if (!dynamic && (!capabilities.ingestModes().contains("prepared-v2") || !capabilities.accepts(length)))
+                throw new IOException("Viewer prepared ingest capability changed before upload creation");
             if (dynamic) {
-                capabilities = viewerCapabilities(credential);
                 if (!capabilities.supportsDynamicOme() || !capabilities.accepts(length)) {
                     throw new IOException(
                             "Viewer direct OME capability changed before upload creation");
@@ -607,7 +628,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         uploadStatus = new ViewerUploadStatus(
                                 "RETRYING", revision.id(), uploadStatus.uploadedBytes(),
                                 uploadStatus.totalBytes(), uploadStatus.viewerSlideId(),
-                                uploadStatus.viewerSlideSha256(), "OME_DYNAMIC",
+                                uploadStatus.viewerSlideSha256(), uploadStatus.uploadMode(),
                                 "Connection interrupted; resuming from Viewer offset");
                         Thread.sleep(waitMillis);
                         upload(credential, capabilities, displayName, revision, artifactPath,
@@ -675,6 +696,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             int cropWidth,
             int cropHeight,
             double downsample) throws IOException {
+        var uploadMode = revision.format() == org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2 ? "PREPARED_V2" : "OME_DYNAMIC";
         var credentialRequest = HttpRequest.newBuilder(
                         credential.base().resolve("/api/v1/desktop/credential"))
                 .timeout(Duration.ofSeconds(30))
@@ -686,7 +708,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 || !strings(credentialResponse.body(), "scopes").contains("results:sync")) {
             uploadStatus = new ViewerUploadStatus(
                     "IMAGE_READY", revision.id(), readyJob.artifactBytes(), readyJob.artifactBytes(),
-                    readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                    readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                     "Private image is ready; reconnect once to enable structured result sync");
             return;
         }
@@ -710,7 +732,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 credential.base().resolve("/api/v2/desktop/slides/"
                         + readyJob.remoteSlideId() + "/result-deliveries"),
                 "{\"artifactRevisionId\":\"" + escape(revision.id())
-                        + "\",\"slideSha256\":\"" + revision.omeSha256()
+                        + "\",\"slideSha256\":\"" + revision.viewerSlideSha256()
                         + "\",\"payloadLength\":" + bundle.bytes()
                         + ",\"payloadSha256\":\"" + bundle.sha256()
                         + "\",\"schema\":\"pathlab-private-results/v1\"}",
@@ -724,7 +746,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         deliveryStore.save(syncing);
         uploadStatus = new ViewerUploadStatus(
                 "SYNCING_RESULTS", revision.id(), 0, bundle.bytes(),
-                readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                 "Private view ready; syncing structured results");
         var transport = new ResumableUploadSession(
                 this::send, uploadUri, credential.token(), capabilities.uploadChunkBytes());
@@ -740,7 +762,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             offset = acknowledgedOffset(response, transport, offset + length);
             uploadStatus = new ViewerUploadStatus(
                     "SYNCING_RESULTS", revision.id(), offset, bundle.bytes(),
-                    readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                    readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                     "Private view ready; syncing structured results");
         }
         var statusRequest = HttpRequest.newBuilder(credential.base().resolve("/api/v2/desktop/slides/"
@@ -754,7 +776,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 ViewerDeliveryState.COMPLETE, "Private image and results are complete", Instant.now()));
         uploadStatus = new ViewerUploadStatus(
                 "COMPLETE", revision.id(), bundle.bytes(), bundle.bytes(),
-                readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                 "Private image and structured results are complete");
     }
 
@@ -1078,19 +1100,24 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         .replace("\0", "")
                         .trim();
                 var size = Long.parseLong(sizeText, 8);
-                if (size > Integer.MAX_VALUE) {
-                    throw new IOException("Prepared package control entry is too large");
-                }
-                var bytes = input.readNBytes((int) size);
-                input.skipNBytes((512 - size % 512) % 512);
+                if (size < 0) throw new IOException("Prepared package control entry has invalid size");
                 if (name.equals(expected)) {
-                    if (bytes.length > maximum) {
+                    if (size > maximum) {
                         throw new IOException("Prepared package control entry is too large");
                     }
-                    return new String(bytes, StandardCharsets.US_ASCII);
+                    var bytes = input.readNBytes((int) size);
+                    if (bytes.length != size) throw new IOException("Prepared package control entry is truncated");
+                    return new String(bytes, StandardCharsets.UTF_8);
                 }
+                input.skipNBytes(size);
+                input.skipNBytes((512 - size % 512) % 512);
             }
         }
+    }
+
+    private static String sha256Text(String text) throws IOException {
+        try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8))); }
+        catch (java.security.NoSuchAlgorithmException impossible) { throw new IOException(impossible); }
     }
 
     private ViewerCapabilities viewerCapabilities(StoredCredential credential) throws IOException {

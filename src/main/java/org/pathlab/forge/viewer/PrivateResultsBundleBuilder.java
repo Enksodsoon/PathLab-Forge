@@ -47,7 +47,7 @@ public final class PrivateResultsBundleBuilder {
                         annotation.label(), annotation.color(), annotation.createdAt(), annotation.parentId(),
                         annotation.classification(), annotation.updatedAt(), annotation.revision())))
                 .flatMap(java.util.Optional::stream).toList();
-        return buildContents(output, revision.id(), revision.omeSha256(), transformed, accepted, revision,
+        return buildContents(output, revision.id(), revision.viewerSlideSha256(), transformed, accepted, revision,
                 annotations, cropX, cropY, cropWidth, cropHeight, downsample);
     }
 

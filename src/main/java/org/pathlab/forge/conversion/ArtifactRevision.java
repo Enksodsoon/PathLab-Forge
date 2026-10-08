@@ -56,6 +56,11 @@ public record ArtifactRevision(
                 "");
     }
 
+    /** Viewer identifies static-DZI slides by their prepared package, direct slides by OME. */
+    public String viewerSlideSha256() {
+        return format == ArtifactRevisionFormat.PREPARED_DZI_V2 ? packageSha256 : omeSha256;
+    }
+
     public ArtifactRevision approved(long time) {
         if (status != ArtifactRevisionStatus.READY) {
             throw new IllegalStateException("Only a validated artifact can be approved");

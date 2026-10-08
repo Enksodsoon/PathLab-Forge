@@ -309,15 +309,20 @@ public final class ForgeServer implements AutoCloseable {
                 if (!viewerPairingService.hasResumableDelivery(revision.id())) {
                     continue;
                 }
-                viewerPairingService.startUpload(
-                        dataset.displayName(), revision, annotationsForCurrentView(dataset),
-                        dataset.cropX(), dataset.cropY(), dataset.cropWidth(), dataset.cropHeight(),
-                        dataset.downsample());
+                startArtifactUpload(dataset, revision, revision.format() == org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2);
                 return;
             } catch (IOException | IllegalStateException ignored) {
                 // Persisted state remains resumable; the UI exposes the paused reason.
             }
         }
+    }
+
+    private ViewerUploadStatus startArtifactUpload(LocalDataset dataset, org.pathlab.forge.conversion.ArtifactRevision revision, boolean teaching) throws IOException {
+        if (teaching) return viewerPairingService.startTeachingUpload(dataset.displayName(), revision, annotationsForCurrentView(dataset), dataset.cropX(), dataset.cropY(), dataset.cropWidth(), dataset.cropHeight(), dataset.downsample());
+        return viewerPairingService.startUpload(
+                        dataset.displayName(), revision, annotationsForCurrentView(dataset),
+                        dataset.cropX(), dataset.cropY(), dataset.cropWidth(), dataset.cropHeight(),
+                        dataset.downsample());
     }
 
     static int recommendedHttpWorkers(int logicalProcessors) {
@@ -580,12 +585,14 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/package".length()));
+            } else if (path.matches("/api/datasets/[^/]+/teaching-upload") && "POST".equals(exchange.getRequestMethod())) {
+                uploadApprovedArtifact(exchange, path.substring("/api/datasets/".length(), path.length() - "/teaching-upload".length()), true);
             } else if (path.matches("/api/datasets/[^/]+/upload")
                     && "POST".equals(exchange.getRequestMethod())) {
                 uploadApprovedArtifact(
                         exchange,
                         path.substring(
-                                "/api/datasets/".length(), path.length() - "/upload".length()));
+                                "/api/datasets/".length(), path.length() - "/upload".length()), false);
             } else if (path.matches("/api/datasets/[^/]+/annotations")
                     && "GET".equals(exchange.getRequestMethod())) {
                 listAnnotations(
@@ -1071,7 +1078,7 @@ public final class ForgeServer implements AutoCloseable {
                 viewerUploadJson(viewerPairingService.uploadStatus()));
     }
 
-    private void uploadApprovedArtifact(HttpExchange exchange, String id)
+    private void uploadApprovedArtifact(HttpExchange exchange, String id, boolean teaching)
             throws IOException {
         if (!requireWrite(exchange)) {
             return;
@@ -1085,15 +1092,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     202,
                     "application/json",
-                    viewerUploadJson(viewerPairingService.startUpload(
-                            dataset.displayName(),
-                            revision,
-                            annotationsForCurrentView(dataset),
-                            dataset.cropX(),
-                            dataset.cropY(),
-                            dataset.cropWidth(),
-                            dataset.cropHeight(),
-                            dataset.downsample())));
+                    viewerUploadJson(startArtifactUpload(dataset, revision, teaching)));
         } catch (IOException | IllegalStateException | IllegalArgumentException error) {
             respond(
                     exchange,

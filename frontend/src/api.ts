@@ -200,7 +200,7 @@ export interface ViewerUpload {
   totalBytes: number
   viewerSlideId: string
   viewerSlideSha256: string
-  uploadMode: 'OME_DYNAMIC' | ''
+  uploadMode: 'OME_DYNAMIC' | 'PREPARED_V2' | ''
   detail: string
 }
 
@@ -672,3 +672,5 @@ export const exportStudy = (draftId: string, format: 'json' | 'csv' | 'approved'
   studyWrite<ExportState>('/api/exports', { kind: 'study', draftId, format, checksum, destination })
 
 export const cancelViewerOfflineDownload = (id: string) => request<void>(`/api/viewer/slides/${encodeURIComponent(id)}/offline/cancel`, { method: 'POST' })
+
+export const uploadTeachingArtifact = (id: string) => request<ViewerUpload>(`/api/datasets/${encodeURIComponent(id)}/teaching-upload`, { method: 'POST' })

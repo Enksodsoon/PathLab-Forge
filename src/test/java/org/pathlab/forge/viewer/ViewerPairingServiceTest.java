@@ -91,11 +91,17 @@ final class ViewerPairingServiceTest {
     }
 
     @Test
-    void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception {
+    void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception { exerciseApprovedDelivery(false); }
+
+    @Test
+    void teachingUploadsOnlyExplicitPreparedArtifactAndBindsResultsToPackageHash() throws Exception { exerciseApprovedDelivery(true); }
+
+    private void exerciseApprovedDelivery(boolean teaching) throws Exception {
         var receivedCreateBody = new AtomicReference<String>();
         var createRequests = new AtomicInteger();
         var receivedPayload = new AtomicReference<byte[]>();
         var receivedResults = new AtomicReference<byte[]>();
+        var receivedResultsCreateBody = new AtomicReference<String>();
         var expectedSha = new AtomicReference<String>();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
@@ -108,7 +114,7 @@ final class ViewerPairingServiceTest {
             } else if (path.equals("/api/v1/desktop/credential")) {
                 respond(exchange, 200, "{\"deviceName\":\"Forge\",\"scopes\":["
                         + "\"desktop:ingest\",\"slides:private:read\",\"results:sync\"]}");
-            } else if (path.equals("/api/v1/desktop/ome-ingests")) {
+            } else if (path.equals(teaching ? "/api/v1/desktop/ingests" : "/api/v1/desktop/ome-ingests")) {
                 createRequests.incrementAndGet();
                 receivedCreateBody.set(new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
@@ -126,6 +132,7 @@ final class ViewerPairingServiceTest {
                 respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
                         + "\"slideSha256\":\"" + expectedSha.get() + "\"}");
             } else if (path.equals("/api/v2/desktop/slides/slide-one/result-deliveries")) {
+                receivedResultsCreateBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 respond(exchange, 201, "{\"id\":\"results-one\",\"uploadUrl\":"
                         + "\"/api/v2/desktop/slides/slide-one/result-deliveries/results-one/content\"}");
             } else if (path.endsWith("/result-deliveries/results-one/content")
@@ -151,29 +158,45 @@ final class ViewerPairingServiceTest {
             var sha = sha256(ome);
             expectedSha.set(sha);
             var revision = revision(ome, sha);
-            writeOmeStamp(revision, ome);
+            if (teaching) {
+                var derivative = Files.createDirectory(temporaryDirectory.resolve("teaching-dzi"));
+                Files.writeString(derivative.resolve("slide.dzi"), "<Image/>");
+                Files.write(derivative.resolve("thumbnail.jpg"), new byte[] {1,2,3});
+                Files.createDirectories(derivative.resolve("slide_files/7"));
+                Files.write(derivative.resolve("slide_files/7/0_0.jpg"),new byte[] {4,5,6});
+                var prepared = org.pathlab.forge.packageformat.PreparedPackageBuilder.build(derivative,100,50,
+                    new org.pathlab.forge.packageformat.PackageMetadata(revision.id(),revision.configurationRevision(),revision.sourceFingerprint(),0,0,0,150,75,1.5,0,0,"","actual-staging-ome","1.0.0-rc.1"), temporaryDirectory.resolve("teaching.plslide"));
+                revision = new ArtifactRevision(revision.id(),revision.datasetId(),revision.configurationRevision(),revision.sourceFingerprint(),revision.createdAt(),ArtifactRevisionStatus.APPROVED,ArtifactRevisionFormat.PREPARED_DZI_V2,revision.omePath(),derivative.toString(),prepared.path().toString(),sha,prepared.sha256(),100,50,"",0,revision.approvedAt(),"Teaching","");
+                var writer = org.pathlab.forge.conversion.ArtifactIntegrityStamp.class.getDeclaredMethod("write",ArtifactRevision.class);
+                writer.setAccessible(true); writer.invoke(null,revision);
+                expectedSha.set(prepared.sha256());
+            } else writeOmeStamp(revision, ome);
             var store = new MemoryCredentialStore();
             var base = "http://127.0.0.1:" + viewer.getAddress().getPort();
             store.write(base + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
-                var started = service.startUpload(
-                        "case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5);
-                assertEquals("OME_DYNAMIC", started.uploadMode());
+                if (teaching) {
+                    var exactRevision = revision;
+                    org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.startUpload("Teaching",exactRevision,List.of(),0,0,150,75,1.5));
+                }
+                var started = teaching ? service.startTeachingUpload("Teaching",revision,List.of(),0,0,150,75,1.5)
+                    : service.startUpload("case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5);
+                assertEquals(teaching ? "PREPARED_V2" : "OME_DYNAMIC", started.uploadMode());
                 for (var attempt = 0;
                         attempt < 100 && !"COMPLETE".equals(service.uploadStatus().state());
                         attempt++) {
                     Thread.sleep(25);
                 }
                 assertEquals("COMPLETE", service.uploadStatus().state());
-                assertEquals("OME_DYNAMIC", service.uploadStatus().uploadMode());
-                assertTrue(receivedCreateBody.get().contains("\"profile\":\"ome-dynamic-v1\""));
-                assertTrue(receivedCreateBody.get().contains("\"jpegQuality\":75"));
-                assertTrue(receivedCreateBody.get().contains("\"omeSha256\":\"" + sha + "\""));
-                assertEquals(
-                        HexFormat.of().formatHex(Files.readAllBytes(ome)),
-                        HexFormat.of().formatHex(receivedPayload.get()));
+                assertEquals(teaching ? "PREPARED_V2" : "OME_DYNAMIC", service.uploadStatus().uploadMode());
+                assertTrue(receivedCreateBody.get().contains(teaching ? "\"packageSha256\":\"" + expectedSha.get() + "\"" : "\"omeSha256\":\"" + sha + "\""));
+                assertTrue(receivedResultsCreateBody.get().contains("\"slideSha256\":\"" + expectedSha.get() + "\""));
+                assertEquals(HexFormat.of().formatHex(Files.readAllBytes(Path.of(teaching ? revision.packagePath() : revision.omePath()))), HexFormat.of().formatHex(receivedPayload.get()));
                 assertTrue(receivedResults.get().length > 0);
-                assertEquals("COMPLETE", service.startUpload("case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5).state());
+                try (var gzip = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(receivedResults.get()))) {
+                    assertTrue(new String(gzip.readAllBytes(),StandardCharsets.UTF_8).contains("\"slideSha256\":\"" + expectedSha.get() + "\""));
+                }
+                assertEquals("COMPLETE", (teaching ? service.startTeachingUpload("Teaching",revision,List.of(),0,0,150,75,1.5) : service.startUpload("case-1.5x",revision,List.of(),0,0,150,75,1.5)).state());
                 assertEquals(1,createRequests.get());
             }
         } finally {
