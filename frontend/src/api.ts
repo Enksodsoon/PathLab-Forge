@@ -3,7 +3,7 @@ import type { DeterministicRun, DeterministicRequest, DeterministicReview } from
 
 export interface ExportState { id: string; status: string; completedBytes: number; totalBytes: number; destination: string; detail: string }
 export const exportState = () => request<ExportState>('/api/exports')
-export const cancelExport = () => request<ExportState>('/api/exports/cancel', { method: 'POST' })
+export const cancelExport = (expectedId: string) => request<ExportState>(`/api/exports/cancel?id=${encodeURIComponent(expectedId)}`, { method: 'POST' })
 export const exportArtifact = (datasetId: string, revisionId: string, kind: 'ome' | 'package', destination: string) =>
   request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ datasetId, revisionId, kind, destination }) })
@@ -158,6 +158,7 @@ export interface ViewerConnection {
   viewerUrl: string
   deviceName: string
   scopes: string[]
+  connectionRevision?: string
   conversionMode?: 'OME_DYNAMIC_V1' | 'PREPARED_DZI_V2'
 }
 
@@ -210,6 +211,8 @@ export interface ViewerRemoteItem {
   tileSourceUrl: string
   offlineBytes: number
   offlineComplete: boolean
+  downloadState?: 'NONE' | 'DOWNLOADING' | 'VERIFYING' | 'READY' | 'FAILED' | 'CANCELLED'
+  downloadDetail?: string
   visibility?: 'private' | 'published'
   annotationRevision?: number
   metadataRevision?: number
@@ -220,7 +223,7 @@ export interface ViewerRemoteItem {
 export interface ViewerRemoteLibrary {
   items: ViewerRemoteItem[]
   folders: Array<{ id: string; name: string; parentId: string }>
-  conflicts: Array<{ slideId: string; field: string }>
+  conflicts: Array<{ slideId: string; field: string; localValue?: unknown; remoteValue?: unknown; baseRevision?: number; remoteRevision?: number }>
 }
 
 export interface FeaturePack {
@@ -645,3 +648,5 @@ export const importStudyQuestions = (id: string, revision: number, format: strin
 export const studyExportUrl = (id: string, format: 'json' | 'csv' | 'approved', checksum = '') => `${studyPath(id)}/export?${new URLSearchParams({ format, checksum })}`
 export const exportStudy = (draftId: string, format: 'json' | 'csv' | 'approved', checksum: string, destination: string) =>
   studyWrite<ExportState>('/api/exports', { kind: 'study', draftId, format, checksum, destination })
+
+export const cancelViewerOfflineDownload = (id: string) => request<void>(`/api/viewer/slides/${encodeURIComponent(id)}/offline/cancel`, { method: 'POST' })

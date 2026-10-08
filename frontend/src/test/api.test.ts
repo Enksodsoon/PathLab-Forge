@@ -82,3 +82,19 @@ test('sends Study revision, immutable checksum and native grant destination with
   expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ revision: 9, checksum: 'exact-checksum', taskId: 'task-1' })
   expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ kind: 'study', draftId: 'draft 1', format: 'approved', checksum: 'exact-checksum', destination: 'C:\\exports\\pack.json' })
 })
+
+test('cancels only the selected Viewer offline download through its exact local route', async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+  vi.stubGlobal('fetch', fetch)
+  await api.cancelViewerOfflineDownload('slide 1')
+  expect(fetch.mock.calls[0][0]).toBe('/api/viewer/slides/slide%201/offline/cancel')
+  expect(fetch.mock.calls[0][1].method).toBe('POST')
+})
+
+test('binds export cancellation to the captured accepted job ID', async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response('{}', { headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetch)
+  await api.cancelExport('mine 1')
+  expect(fetch.mock.calls[0][0]).toBe('/api/exports/cancel?id=mine%201')
+  expect(fetch.mock.calls[0][1].method).toBe('POST')
+})

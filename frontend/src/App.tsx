@@ -138,7 +138,29 @@ export function App() {
   const [batchRemoveIds, setBatchRemoveIds] = useState<string[]>([])
   const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
+  const remoteEpoch = useRef(0)
+  const connectionIdentity = useRef('')
 
+  const clearRemote = () => {
+    remoteEpoch.current++
+    setRemoteLibrary({ items: [], folders: [], conflicts: [] }); setSelectedRemoteId(''); setRemoteRename(undefined)
+    setRemoteSyncReady(false); setRemoteLastChecked(undefined); setViewer(null)
+  }
+  const adoptConnection = (next: ViewerConnection | undefined) => {
+    const identity = next?.connected ? JSON.stringify([next.viewerUrl, next.deviceName, next.connectionRevision || '']) : ''
+    if (identity !== connectionIdentity.current) { clearRemote(); connectionIdentity.current = identity }
+    setConnection(next)
+  }
+  const remoteAction = async (operation: () => Promise<unknown>, synchronize = false, successNotice = '') => {
+    const epoch = remoteEpoch.current
+    setError('')
+    try {
+      await operation()
+      if (epoch !== remoteEpoch.current) return
+      const library = await (synchronize ? api.syncViewerLibrary() : api.viewerLibrary())
+      if (epoch === remoteEpoch.current) { setRemoteLibrary(library); if (successNotice) setNotice(successNotice) }
+    } catch (cause) { if (epoch === remoteEpoch.current) setError(viewerConnectionMessage(cause)) }
+  }
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
   const selectedRemote = remoteLibrary.items.find((item) => item.id === selectedRemoteId)
     ?? remoteLibrary.items[0]
@@ -221,6 +243,7 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    const bootstrapEpoch = remoteEpoch.current
     void api.bootstrap()
       .then(([initialDatasets, initialCapabilities]) => {
         setDatasets(initialDatasets)
@@ -229,7 +252,8 @@ export function App() {
         setNotice(initialDatasets.length ? 'Local workspace restored' : 'Choose a slide to begin')
         void api.features().then((result) => setFeatures(result.features)).catch(() => undefined)
         void api.getViewerConnection().then((next) => {
-          setConnection(next)
+          if (bootstrapEpoch !== remoteEpoch.current) return
+          adoptConnection(next)
           if (next.viewerUrl) setViewerUrl(next.viewerUrl)
         }).catch(() => undefined)
         void refresh()
@@ -464,42 +488,46 @@ export function App() {
   }
 
   const syncViewer = async (revealLibrary = true) => {
-    if (revealLibrary) {
-      setLibraryMode('viewer')
-      setNavigatorOpen(true)
-      if (isCompactWorkspace()) setInspectorOpen(false)
-    }
+    let epoch = remoteEpoch.current
+    if (revealLibrary) { setLibraryMode('viewer'); setNavigatorOpen(true); if (isCompactWorkspace()) setInspectorOpen(false) }
     try {
       const next = await api.getViewerConnection()
-      setConnection(next)
+      if (epoch !== remoteEpoch.current) return
+      adoptConnection(next)
+      epoch = remoteEpoch.current
+      const libraryEpoch = remoteEpoch.current
       if (next.connected) {
-        setRemoteLibrary(await api.syncViewerLibrary())
-        setRemoteSyncReady(true)
-        setRemoteLastChecked(Date.now())
-      } else {
-        setRemoteSyncReady(false)
-      }
-      setNotice(next.connected
-        ? 'Viewer library synchronized'
-        : 'Connect to PathLab Viewer before opening its private library')
-      if (!next.connected) connect()
+        const library = await api.syncViewerLibrary()
+        if (libraryEpoch !== remoteEpoch.current) return
+        setRemoteLibrary(library); setRemoteSyncReady(true); setRemoteLastChecked(Date.now())
+      } else { clearRemote(); connect() }
+      setNotice(next.connected ? 'Viewer library synchronized' : 'Connect to PathLab Viewer before opening its private library')
     } catch (nextError) {
-      setRemoteSyncReady(false)
-      setError(viewerConnectionMessage(nextError))
+      if (epoch !== remoteEpoch.current) return
+      setRemoteSyncReady(false); setError(viewerConnectionMessage(nextError))
     }
   }
-
   useEffect(() => {
     if (libraryMode !== 'viewer' || !connection?.connected) return
+    let epoch = remoteEpoch.current
+    let stopped = false, pending = false
     const timer = window.setInterval(() => {
-      void api.syncViewerLibrary().then((next) => {
-        setRemoteLibrary(next)
-        setRemoteSyncReady(true)
-        setRemoteLastChecked(Date.now())
-      }).catch(() => setRemoteSyncReady(false))
+      if (pending || stopped) return
+      pending = true
+      void (async () => {
+        const currentConnection = await api.getViewerConnection()
+        if (stopped || epoch !== remoteEpoch.current) return undefined
+        adoptConnection(currentConnection); epoch = remoteEpoch.current
+        if (!currentConnection.connected) return undefined
+        return api.syncViewerLibrary()
+      })().then((next) => {
+        if (!next || stopped || epoch !== remoteEpoch.current) return
+        setRemoteLibrary(next); setRemoteSyncReady(true); setRemoteLastChecked(Date.now())
+      }).catch(() => { if (!stopped && epoch === remoteEpoch.current) setRemoteSyncReady(false) }).finally(() => { pending = false })
     }, 5_000)
-    return () => window.clearInterval(timer)
-  }, [libraryMode, connection?.connected])
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [libraryMode, connection?.connected, connection?.viewerUrl, connection?.deviceName, connection?.connectionRevision])
+  useEffect(() => { setExportRunId('') }, [selected?.id, selected?.viewRevision, selected?.configurationRevision])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -572,33 +600,37 @@ export function App() {
   const connect = () => setPairingOpen(true)
 
   const beginPairing = async () => {
+    clearRemote(); connectionIdentity.current = ''; setConnection(undefined)
+    const epoch = remoteEpoch.current
     try {
       setError('')
       const next = await api.startViewerPairing(viewerUrl)
+      if (epoch !== remoteEpoch.current) return
       setPairing(next)
       setNotice(`Waiting for Viewer approval of ${next.userCode}`)
     } catch (nextError) {
-      setError(viewerConnectionMessage(nextError))
+      if (epoch === remoteEpoch.current) setError(viewerConnectionMessage(nextError))
     }
   }
 
   useEffect(() => {
     if (!pairing) return undefined
     let stopped = false
+    const epoch = remoteEpoch.current
     let busy = false
     const poll = async () => {
       if (busy || stopped) return
       busy = true
       try {
         const next = await api.exchangeViewerPairing()
-        if (stopped) return
-        setConnection(next)
+        if (stopped || epoch !== remoteEpoch.current) return
+        adoptConnection(next)
         setViewerUrl(next.viewerUrl)
         setPairing(undefined)
         setPairingOpen(false)
         setNotice('PathLab Viewer connected with a revocable desktop credential')
       } catch (nextError) {
-        if (stopped) return
+        if (stopped || epoch !== remoteEpoch.current) return
         const normalized = message(nextError).toLowerCase()
         if (!normalized.includes('pairing_pending') && !normalized.includes('not approved yet')) {
           setError(viewerConnectionMessage(nextError))
@@ -619,9 +651,10 @@ export function App() {
   }, [pairing])
 
   const disconnectViewer = async () => {
+    clearRemote(); connectionIdentity.current = ''; setConnection(undefined); setPairing(undefined); setViewerUpload(undefined)
     try {
       await api.revokeViewerConnection()
-      setConnection(undefined)
+      adoptConnection(undefined)
       setPairing(undefined)
       setViewerUpload(undefined)
       setPairingOpen(false)
@@ -771,8 +804,9 @@ export function App() {
   }
   useEffect(() => {
     if (!studyExport || !['COPYING', 'VERIFYING'].includes(studyExport.status)) return
-    const timer = window.setTimeout(() => { void api.exportState().then(setStudyExport).catch((cause) => setStudyError(message(cause))) }, 500)
-    return () => window.clearTimeout(timer)
+    let stopped = false
+    const timer = window.setTimeout(() => { void api.exportState().then((next) => { if (stopped) return; if (next.id === studyExport.id) setStudyExport(next); else setStudyError('This export status was replaced by another job.') }).catch((cause) => setStudyError(message(cause))) }, 500)
+    return () => { stopped = true; window.clearTimeout(timer) }
   }, [studyExport])
 
   const rail = (
@@ -843,20 +877,15 @@ export function App() {
               onImport={() => { setImportError(''); setImportOpen(true) }}
               onConnect={connect}
               onSync={() => void syncViewer(false)}
-              onKeepOffline={(id) => void api.keepViewerSlideOffline(id).then(() => {
-                setNotice('Offline download started; verified activation will happen in the background')
-              }).catch((nextError) => setError(message(nextError)))}
-              onRemoveOffline={(id) => void api.removeViewerSlideOffline(id)
-                .then(() => api.viewerLibrary()).then(setRemoteLibrary)
-                .catch((nextError) => setError(message(nextError)))}
+              onKeepOffline={(id) => void remoteAction(() => api.keepViewerSlideOffline(id), false, 'Offline download started; verified activation will happen in the background')}
+              onCancelOffline={(id) => void remoteAction(() => api.cancelViewerOfflineDownload(id))}
+              onRemoveOffline={(id) => void remoteAction(() => api.removeViewerSlideOffline(id))}
               onRenameRemote={(id, current) => setRemoteRename({ id, current, value: current })}
               selectedRemoteId={selectedRemote?.id || ''}
               onSelectRemote={(id) => {
                 setSelectedRemoteId(id)
               }}
-              onResolveConflict={(id, field, resolution) => void api.resolveViewerConflict(id, field, resolution)
-                .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
-                .catch((nextError) => setError(message(nextError)))}
+              onResolveConflict={(id, field, resolution) => void remoteAction(() => api.resolveViewerConflict(id, field, resolution), true)}
               onCollapse={() => {
                 setNavigatorOpen(false)
                 window.requestAnimationFrame(() => navigatorButtonRef.current?.focus())
@@ -896,12 +925,10 @@ export function App() {
               slide={selectedRemote}
               folders={remoteLibrary.folders}
               onCollapse={() => setInspectorOpen(false)}
-              onKeepOffline={(id) => void api.keepViewerSlideOffline(id)}
-              onRemoveOffline={(id) => void api.removeViewerSlideOffline(id)
-                .then(() => api.viewerLibrary()).then(setRemoteLibrary)}
-              onMove={(id, folderId) => void api.updateViewerSlideMetadata(id, { folderId })
-                .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
-                .catch((nextError) => setError(message(nextError)))}
+              onKeepOffline={(id) => void remoteAction(() => api.keepViewerSlideOffline(id))}
+              onCancelOffline={(id) => void remoteAction(() => api.cancelViewerOfflineDownload(id))}
+              onRemoveOffline={(id) => void remoteAction(() => api.removeViewerSlideOffline(id))}
+              onMove={(id, folderId) => void remoteAction(() => api.updateViewerSlideMetadata(id, { folderId }), true)}
             />
           ) : (
             <Inspector
@@ -979,14 +1006,12 @@ export function App() {
       </div>
       {connection?.connected && viewerUpload?.viewerSlideId
         && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (
-        <a
+        <ExternalViewerLink
           className="forge-viewer-sync-launcher"
           href={`${connection.viewerUrl.replace(/\/$/, '')}/admin/preview/${encodeURIComponent(viewerUpload.viewerSlideId)}`}
-          target="_blank"
-          rel="noreferrer"
         >
           Open private slide in Viewer
-        </a>
+        </ExternalViewerLink>
       ) : null}
       {viewerUpload && ['UPLOADING', 'VERIFYING_OME', 'RETRYING'].includes(viewerUpload.state) ? (
         <button
@@ -1044,14 +1069,9 @@ export function App() {
               setRemoteRename(undefined)
               return
             }
-            void api.updateViewerSlideMetadata(remoteRename.id, { displayName })
-              .then(() => api.syncViewerLibrary())
-              .then((next) => {
-                setRemoteLibrary(next)
-                setRemoteRename(undefined)
-                setNotice('Viewer slide name synchronized')
-              })
-              .catch((nextError) => setError(message(nextError)))
+            const id = remoteRename.id
+            void remoteAction(() => api.updateViewerSlideMetadata(id, { displayName }), true, 'Viewer slide name synchronized')
+            setRemoteRename(undefined)
           }}
           onClose={() => setRemoteRename(undefined)}
         />
@@ -1080,7 +1100,7 @@ export function App() {
             onImportQuestions={(id, revision, format, text, slideId) => rememberStudy(api.importStudyQuestions(id, revision, format, text, slideId))}
             onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }} canPreviewSlide={() => false} />}
           {studyExport ? <div aria-label="Study native export"><p role="status">{studyExport.detail}</p>
-            {['COPYING', 'VERIFYING'].includes(studyExport.status) ? <button type="button" onClick={() => void api.cancelExport().then(setStudyExport).catch((cause) => setStudyError(message(cause)))}>Cancel Study export</button> : null}
+            {['COPYING', 'VERIFYING'].includes(studyExport.status) ? <button type="button" onClick={() => void api.cancelExport(studyExport.id).then((next) => { if (next.id === studyExport.id) setStudyExport(next) }).catch((cause) => setStudyError(message(cause)))}>Cancel Study export</button> : null}
             {studyExport.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(studyExport.destination)}>Reveal Study export</button> : null}</div> : null}
         </section>
       </div> : null}
@@ -1577,9 +1597,9 @@ function ViewerPairingDialog({
               data-value={pairing.verificationUrlComplete}
               dangerouslySetInnerHTML={{ __html: qr }}
             />
-            <a className="forge-primary" href={pairing.verificationUrlComplete} target="_blank" rel="noreferrer">
+            <ExternalViewerLink className="forge-primary" href={pairing.verificationUrlComplete}>
               Open Viewer approval
-            </a>
+            </ExternalViewerLink>
             <small>Waiting for approval · expires {new Date(pairing.expiresAt).toLocaleTimeString()}</small>
           </>
         )}
@@ -1610,6 +1630,7 @@ function SlideNavigator({
   onConnect,
   onSync,
   onKeepOffline,
+  onCancelOffline,
   onRemoveOffline,
   onRenameRemote,
   selectedRemoteId,
@@ -1637,6 +1658,7 @@ function SlideNavigator({
   onConnect: () => void
   onSync: () => void
   onKeepOffline: (id: string) => void
+  onCancelOffline: (id: string) => void
   onRemoveOffline: (id: string) => void
   onRenameRemote: (id: string, current: string) => void
   selectedRemoteId: string
@@ -1671,13 +1693,13 @@ function SlideNavigator({
     return next
   })
   const renderRemoteSlide = (item: api.ViewerRemoteItem) => (
-    <article key={item.id} className={`forge-remote-slide ${selectedRemoteId === item.id ? 'active' : ''}`}>
+    <article key={item.id} role="treeitem" aria-selected={selectedRemoteId === item.id} aria-label={item.displayName} className={`forge-remote-slide ${selectedRemoteId === item.id ? 'active' : ''}`}>
       <button className="forge-remote-slide-main" type="button" onClick={() => onSelectRemote(item.id)}>
         <span className="forge-remote-thumbnail"><CloudArrowUp aria-hidden="true" /><img src={item.thumbnailUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} /></span>
-        <span className="forge-remote-slide-copy"><strong>{item.displayName}</strong><small>{item.offlineComplete ? 'Available offline' : item.contentBytes > 0 ? formatBytes(item.contentBytes) : 'Viewer-only legacy slide'}</small></span>
+        <span className="forge-remote-slide-copy"><strong>{item.displayName}</strong><small>{offlineReady(item) ? 'Verified offline OME' : ['DOWNLOADING', 'VERIFYING'].includes(item.downloadState || '') ? `Offline ${item.downloadState!.toLowerCase()}` : item.contentBytes > 0 ? formatBytes(item.contentBytes) : 'Viewer-only legacy slide'}</small></span>
       </button>
       <div className="forge-remote-slide-actions">
-        {item.offlineComplete || item.contentBytes > 0 ? <button type="button" aria-label={item.offlineComplete ? 'Remove offline copy' : 'Keep offline'} title={item.offlineComplete ? 'Remove offline copy' : 'Keep offline'} onClick={() => item.offlineComplete ? onRemoveOffline(item.id) : onKeepOffline(item.id)}><CloudArrowDown /><span>{item.offlineComplete ? 'Remove local' : 'Keep offline'}</span></button> : <button className="forge-cloud-only" type="button" aria-label="Offline unavailable" title="Cloud only: this Viewer slide has no downloadable OME content" disabled><CloudArrowUp /><span>Cloud only</span></button>}
+        <OfflineActions slide={item} onKeep={onKeepOffline} onRemove={onRemoveOffline} onCancel={onCancelOffline} />
         <button type="button" aria-label="Rename" title="Rename" onClick={() => onRenameRemote(item.id, item.displayName)}><PencilSimple /><span>Rename</span></button>
       </div>
     </article>
@@ -1690,7 +1712,7 @@ function SlideNavigator({
       .reduce((total, candidate) => total + candidate.items.length + descendantSlideCount(candidate.id), 0)
     const total = group.items.length + descendantSlideCount(group.id)
     return <div className="forge-remote-folder" role="treeitem" aria-expanded={expanded} data-depth={depth} key={group.id}>
-      <button className="forge-remote-folder-toggle" type="button" aria-expanded={expanded} onClick={() => toggleRemoteFolder(group.id)}>
+      <button className="forge-remote-folder-toggle" type="button" aria-expanded={expanded} onKeyDown={(event) => { if (event.key === 'ArrowRight' && !expanded || event.key === 'ArrowLeft' && expanded) { event.preventDefault(); toggleRemoteFolder(group.id) } }} onClick={() => toggleRemoteFolder(group.id)}>
         {expanded ? <CaretDown /> : <CaretRight />}<Folder /><span><strong>{group.name}</strong><small>{total} {total === 1 ? 'slide' : 'slides'}</small></span>
       </button>
       {expanded ? <div className="forge-remote-folder-children" role="group">
@@ -1717,12 +1739,19 @@ function SlideNavigator({
           <span className="visually-hidden">{connection?.connected ? 'Sync changes' : 'Connect to Viewer'}</span>
         </button>
         {connection?.connected && !remoteSyncReady ? <div className="forge-viewer-sync-boundary" role="status"><strong>Viewer unavailable</strong><span>Check the Viewer server, then choose Sync changes.</span></div> : null}
-        <section className="forge-remote-slides" role="tree" aria-label="Synchronized Viewer slides">
+        <section className="forge-remote-slides" role="tree" aria-label="Synchronized Viewer slides" onKeyDown={(event) => {
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+          const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('.forge-remote-folder-toggle, .forge-remote-slide-main'))
+          const index = buttons.indexOf(event.target as HTMLButtonElement)
+          if (index < 0) return
+          event.preventDefault()
+          buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus()
+        }}>
           <header className="forge-remote-tree-heading"><span>Private files</span><strong>{remoteLibrary.items.length} files</strong></header>
           {remoteGroups.filter((group) => !group.parentId).map((group) => renderRemoteFolder(group))}
           {connection?.connected && remoteLibrary.items.length === 0 ? <p>No private Viewer slides.</p> : null}
         </section>
-        {remoteLibrary.conflicts.map((conflict) => <div className="forge-viewer-sync-boundary forge-conflict" key={`${conflict.slideId}:${conflict.field}`}><strong>Resolve {conflict.field}</strong><span>Both versions are preserved.</span><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'local')}>Keep local</button><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'viewer')}>Keep Viewer</button></div>)}
+        {remoteLibrary.conflicts.map((conflict) => <div className="forge-viewer-sync-boundary forge-conflict" key={`${conflict.slideId}:${conflict.field}`}><strong>Resolve {conflict.field}</strong><dl><dt>Local value</dt><dd>{metadataText(conflict.localValue) || 'Empty'}</dd><dt>Viewer value</dt><dd>{metadataText(conflict.remoteValue) || 'Empty'}</dd><dt>Base revision</dt><dd>{conflict.baseRevision ?? 'Not reported'}</dd><dt>Viewer revision</dt><dd>{conflict.remoteRevision ?? 'Not reported'}</dd></dl><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'local')}>Keep local</button><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'viewer')}>Keep Viewer</button></div>)}
       </div>
     )
   }
@@ -1821,7 +1850,7 @@ function RemoteViewerStage({ slide, viewer, onViewer, inspectorOpen, onInspector
   return (
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
       <header className="forge-viewer-header">
-        <div><strong>{slide?.displayName || 'Viewer library'}</strong><span>{slide ? `${viewerVisibility(slide)} Viewer slide · authenticated tile cache` : 'Choose a synchronized slide'}</span></div>
+        <div><strong>{slide?.displayName || 'Viewer library'}</strong><span>{slide ? `${viewerVisibility(slide)} Viewer slide · ${offlineReady(slide) ? 'verified local OME' : 'authenticated tile cache'}` : 'Choose a synchronized slide'}</span></div>
         <button type="button" aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} aria-controls="forge-slide-inspector" aria-expanded={inspectorOpen} title={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} onClick={onInspector}><SidebarSimple /></button>
       </header>
       {slide ? <SlideViewer tileSource={slide.tileSourceUrl} sourceWidth={slide.width} sourceHeight={slide.height} onReady={onViewer} /> : (
@@ -1837,11 +1866,12 @@ function RemoteViewerStage({ slide, viewer, onViewer, inspectorOpen, onInspector
   )
 }
 
-function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOffline, onMove }: {
+function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onCancelOffline, onRemoveOffline, onMove }: {
   slide?: api.ViewerRemoteItem
   folders: api.ViewerRemoteLibrary['folders']
   onCollapse: () => void
   onKeepOffline: (id: string) => void
+  onCancelOffline: (id: string) => void
   onRemoveOffline: (id: string) => void
   onMove: (id: string, folderId: string) => void
 }) {
@@ -1852,7 +1882,7 @@ function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOf
         <div className="forge-remote-inspector-state"><span className="connected" /><strong>{viewerVisibility(slide)} slide</strong><small>{slide.state.replaceAll('_', ' ')}</small></div>
         <dl className="forge-remote-metadata">
           <div><dt><LockKey aria-hidden="true" />Visibility</dt><dd>{viewerVisibility(slide)}</dd></div>
-          <div><dt><Database aria-hidden="true" />Storage</dt><dd>{slide.offlineComplete ? 'Viewer + device' : 'Viewer'}</dd></div>
+          <div><dt><Database aria-hidden="true" />Storage</dt><dd>{offlineReady(slide) ? 'Viewer + verified device OME' : 'Viewer'}</dd></div>
           <div><dt><FileText aria-hidden="true" />File</dt><dd>{slide.contentBytes > 0 ? formatBytes(slide.contentBytes) : 'Legacy format'}</dd></div>
           <div><dt><Ruler aria-hidden="true" />Dimensions</dt><dd>{slide.width > 0 && slide.height > 0 ? `${slide.width.toLocaleString()} × ${slide.height.toLocaleString()} px` : 'Not reported'}</dd></div>
         </dl>
@@ -1863,7 +1893,7 @@ function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOf
         {metadataText(slide.metadata?.tags) ? <div className="forge-remote-tags"><Tag aria-hidden="true" /><span>{metadataText(slide.metadata?.tags)}</span></div> : null}
         {metadataText(slide.metadata?.caseId) || metadataText(slide.metadata?.organSite) || metadataText(slide.metadata?.stain) ? <div className="forge-remote-context"><Globe aria-hidden="true" /><span>{[slide.metadata?.caseId, slide.metadata?.organSite, slide.metadata?.stain].map(metadataText).filter(Boolean).join(' · ')}</span></div> : null}
         <label className="forge-remote-folder-field"><span>Viewer folder</span><select value={slide.folderId} onChange={(event) => onMove(slide.id, event.target.value)}><option value="">Unfiled</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>
-        {slide.offlineComplete || slide.contentBytes > 0 ? <button className="forge-remote-storage-action" type="button" onClick={() => slide.offlineComplete ? onRemoveOffline(slide.id) : onKeepOffline(slide.id)}>{slide.offlineComplete ? 'Remove offline copy' : 'Keep verified OME offline'}</button> : <div className="forge-remote-legacy-note"><CloudArrowUp /><span><strong>Cloud only</strong><small>This older Viewer slide remains viewable online but has no downloadable OME file.</small></span></div>}
+        <OfflineActions slide={slide} onKeep={onKeepOffline} onRemove={onRemoveOffline} onCancel={onCancelOffline} />
       </section> : null}
     </aside>
   )
@@ -2537,26 +2567,34 @@ function MultidimensionalViewControls({ dataset, image, onUpdate }: {
   </fieldset>
 }
 
-function NativeExport({ datasetId, revision, runId }: { datasetId: string; revision?: ArtifactRevision; runId?: string }) {
+export function NativeExport({ datasetId, revision, runId }: { datasetId: string; revision?: ArtifactRevision; runId?: string }) {
   const [state, setState] = useState<api.ExportState>()
   const [error, setError] = useState('')
+  const selection = `${datasetId}:${revision?.id || ''}:${runId || ''}`
+  const selectionRef = useRef(selection); selectionRef.current = selection
+  useEffect(() => { setState(undefined); setError('') }, [datasetId, revision?.id, runId])
   const active = state && ['COPYING', 'VERIFYING'].includes(state.status)
   useEffect(() => {
     if (!active) return
+    let stopped = false
     const timer = window.setTimeout(() => {
-      void api.exportState().then(setState).catch((error) => setError(message(error)))
+      void api.exportState().then((next) => { if (stopped) return; if (next.id === state.id) setState(next); else setError('This export status was replaced by another job. Inspect the destination before retrying.') }).catch((error) => setError(message(error)))
     }, 500)
-    return () => window.clearTimeout(timer)
+    return () => { stopped = true; window.clearTimeout(timer) }
   }, [active, state])
   const save = async (kind: 'ome' | 'package' | 'analysis' | 'measurements') => {
     setError('')
+    const capturedSelection = selectionRef.current
     try {
       const name = (revision?.name || runId || 'measurements').replace(/[\x00-\x1f/\\:]/g, '_')
       const extension = kind === 'ome' ? '.ome.tif' : kind === 'package' ? '.plslide' : kind === 'analysis' ? '.json' : '.csv'
       const destination = await window.forgeDesktop?.selectExportDestination(`${name}${extension}`)
-      if (destination) setState(await (kind === 'ome' || kind === 'package'
+      if (capturedSelection !== selectionRef.current) return
+      if (destination) { const accepted = await (kind === 'ome' || kind === 'package'
         ? api.exportArtifact(datasetId, revision!.id, kind, destination)
-        : api.exportResult(kind, datasetId, runId || '', destination)))
+        : api.exportResult(kind, datasetId, runId || '', destination))
+        if (capturedSelection === selectionRef.current) setState(accepted)
+      }
     } catch (error) { setError(message(error)) }
   }
   return <div aria-label="Native export">
@@ -2564,7 +2602,7 @@ function NativeExport({ datasetId, revision, runId }: { datasetId: string; revis
       {revision ? 'Save verified OME as…' : runId ? 'Save selected result as…' : 'Save measurements CSV as…'}</button>
     {revision && revision.format !== 'OME_DYNAMIC_V1' ? <button type="button" disabled={Boolean(active)} onClick={() => void save('package')}>Save package as…</button> : null}
     {state ? <p role="status">{state.detail} · {formatBytes(state.completedBytes)} / {formatBytes(state.totalBytes)}</p> : null}
-    {active ? <button type="button" onClick={() => void api.cancelExport().then(setState)}>Cancel export</button> : null}
+    {active ? <button type="button" onClick={() => void api.cancelExport(state!.id).then((next) => { if (next.id === state!.id) setState(next) }).catch((cause) => setError(message(cause)))}>Cancel export</button> : null}
     {state?.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(state.destination)}>Reveal exported file</button> : null}
     {error ? <p role="alert">{error}</p> : null}
   </div>
@@ -3500,4 +3538,25 @@ function viewerConnectionMessage(error: unknown) {
     return 'Viewer is unreachable. Start Viewer and confirm its web address, then retry.'
   }
   return detail
+}
+
+function offlineReady(slide: api.ViewerRemoteItem) { return slide.offlineComplete && slide.downloadState === 'READY' }
+function OfflineActions({ slide, onKeep, onRemove, onCancel }: { slide: api.ViewerRemoteItem; onKeep: (id: string) => void; onRemove: (id: string) => void; onCancel: (id: string) => void }) {
+  const pending = ['DOWNLOADING', 'VERIFYING'].includes(slide.downloadState || '')
+  const retry = ['FAILED', 'CANCELLED'].includes(slide.downloadState || '')
+  return <div aria-label={`Offline status for ${slide.displayName}`}>
+    {slide.downloadDetail ? <p role="status">{slide.downloadDetail}</p> : null}
+    {pending ? <><p role="status">Offline {slide.downloadState!.toLowerCase()}; verification must finish before this is an offline copy.</p><button type="button" onClick={() => onCancel(slide.id)}>Cancel offline download</button></>
+      : offlineReady(slide) ? <button type="button" aria-label="Remove offline copy" onClick={() => onRemove(slide.id)}><CloudArrowDown aria-hidden="true" /><span>Remove local</span></button>
+      : slide.contentBytes > 0 ? <button type="button" aria-label={retry ? 'Retry offline download' : 'Keep offline'} onClick={() => onKeep(slide.id)}><CloudArrowDown aria-hidden="true" /><span>{retry ? 'Retry offline download' : 'Keep offline'}</span></button>
+      : <button type="button" aria-label="Offline unavailable" disabled><CloudArrowUp aria-hidden="true" /><span>Cloud only</span></button>}
+  </div>
+}
+
+function ExternalViewerLink({ href, className, children }: { href: string; className: string; children: ReactNode }) {
+  const [error, setError] = useState('')
+  if (!window.forgeDesktop) return <a className={className} href={href} target="_blank" rel="noreferrer">{children}</a>
+  return <><button className={className} type="button" onClick={() => {
+    setError(''); void window.forgeDesktop!.openExternal(href).catch((cause) => setError(message(cause)))
+  }}>{children}</button>{error ? <p role="alert">{error}</p> : null}</>
 }

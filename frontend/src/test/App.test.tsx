@@ -149,6 +149,7 @@ vi.mock('../api', () => ({
   uploadApprovedArtifact: vi.fn(),
   getViewerUpload: vi.fn(),
   cancelViewerUpload: vi.fn(),
+  cancelViewerOfflineDownload: vi.fn(async () => undefined),
   viewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
   syncViewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
   keepViewerSlideOffline: vi.fn(async () => ({ state: 'DOWNLOADING' })),
@@ -466,8 +467,11 @@ test('organizes synchronized Viewer slides inside expandable folders', async () 
   fireEvent.click(cases)
   expect(within(slides).queryByText('Case slide')).not.toBeInTheDocument()
   expect(within(slides).getByText('Unfiled slide')).toBeVisible()
-  fireEvent.click(cases)
+  fireEvent.keyDown(cases, { key: 'ArrowRight' })
   expect(within(slides).getByText('Case slide')).toBeVisible()
+  cases.focus()
+  fireEvent.keyDown(cases, { key: 'ArrowDown' })
+  expect(document.activeElement).toHaveClass('forge-remote-slide-main')
 })
 
 test('labels legacy Viewer slides without presenting zero bytes as downloadable content', async () => {
@@ -570,7 +574,8 @@ test('shows connected account details and revokes only after confirmation', asyn
   expect(api.revokeViewerConnection).not.toHaveBeenCalled()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm disconnect' }))
   expect(api.revokeViewerConnection).toHaveBeenCalledTimes(1)
-  expect(within(dialog).getByText('PathLab Forge on Windows')).toBeVisible()
+  expect(within(dialog).queryByText('PathLab Forge on Windows')).not.toBeInTheDocument()
+  expect(within(dialog).getByRole('heading', { name: 'Connect to Viewer' })).toBeVisible()
 
   finishRevoke()
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Viewer connection' }))
@@ -1852,4 +1857,72 @@ it('opens offline Study authoring from navigation, saves a named draft and keeps
   await waitFor(() => expect(api.saveStudyDraft).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ title: 'Offline correction' }), previewChecksum: '' }), 1))
   expect(screen.queryByRole('dialog', { name: 'Study authoring workspace' })).not.toBeInTheDocument()
   expect(api.approveStudyDraft).not.toHaveBeenCalled()
+})
+
+it('shows download verification, cancel and conflict values before choosing a resolution', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({ connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Viewer', scopes: ['library:read'], connectionRevision: 'owner-a' })
+  vi.mocked(api.syncViewerLibrary).mockResolvedValue({ items: [{ id: 'pending', displayName: 'Pending verified OME', folderId: '', state: 'ready_private', contentBytes: 100, width: 10, height: 10, thumbnailUrl: '/thumb', tileSourceUrl: '/preview', offlineBytes: 100, offlineComplete: false, downloadState: 'VERIFYING', downloadDetail: 'Checking SHA256' }], folders: [], conflicts: [{ slideId: 'pending', field: 'displayName', localValue: 'Faculty local title', remoteValue: 'Viewer remote title', baseRevision: 3, remoteRevision: 8 }] })
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
+  await screen.findByText('Faculty local title')
+  expect(screen.getByText('Viewer remote title')).toBeVisible()
+  expect(screen.getByText('Base revision')).toBeVisible()
+  expect(screen.queryByText('Verified offline OME')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Keep Viewer' }))
+  await waitFor(() => expect(api.resolveViewerConflict).toHaveBeenCalledWith('pending', 'displayName', 'viewer'))
+  fireEvent.click(screen.getAllByRole('button', { name: 'Cancel offline download' })[0])
+  await waitFor(() => expect(api.cancelViewerOfflineDownload).toHaveBeenCalledWith('pending'))
+})
+it('clears old account pixels and ignores a pending library response after disconnect', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({ connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Same device', scopes: ['library:read'], connectionRevision: 'owner-old' })
+  let finish!: (library: api.ViewerRemoteLibrary) => void
+  vi.mocked(api.syncViewerLibrary).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+  vi.mocked(api.revokeViewerConnection).mockResolvedValue(undefined)
+  render(<App />)
+  await screen.findByRole('button', { name: 'Same device' })
+  fireEvent.click(screen.getByRole('button', { name: 'Viewer library' }))
+  await waitFor(() => expect(finish).toBeDefined())
+  fireEvent.click(screen.getByRole('button', { name: 'Same device' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Disconnect this device' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm disconnect' }))
+  finish({ items: [{ id: 'old', displayName: 'Old private slide', folderId: '', state: 'ready_private', contentBytes: 100, width: 10, height: 10, thumbnailUrl: '/old', tileSourceUrl: '/old.dzi', offlineBytes: 0, offlineComplete: false }], folders: [], conflicts: [] })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Viewer account' })).toBeVisible())
+  expect(screen.queryByText('Old private slide')).not.toBeInTheDocument()
+  expect(document.querySelector('[data-tile-source="/old.dzi"]')).toBeNull()
+})
+
+it('opens Viewer approval through the native approved-origin handler and surfaces rejection', async () => {
+  const previous = window.forgeDesktop
+  const openExternal = vi.fn().mockRejectedValue(new Error('Viewer origin is not approved'))
+  window.forgeDesktop = { selectSources: vi.fn(), selectDirectory: vi.fn(), selectExportDestination: vi.fn(), revealPath: vi.fn(), openExternal, onCommand: vi.fn(() => () => {}) }
+  vi.mocked(api.exchangeViewerPairing).mockReset().mockRejectedValue(new Error('pairing_pending'))
+  try {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Viewer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
+    const open = await screen.findByRole('button', { name: 'Open Viewer approval' })
+    fireEvent.click(open)
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH'))
+    expect(await screen.findByText('Viewer origin is not approved')).toHaveAttribute('role', 'alert')
+    expect(screen.queryByRole('link', { name: 'Open Viewer approval' })).not.toBeInTheDocument()
+  } finally { window.forgeDesktop = previous }
+})
+
+it('clears the library on an opaque account revision change at the same Viewer origin and device name', async () => {
+  const connection = { connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Same device', scopes: ['library:read'], connectionRevision: 'owner-a' }
+  vi.mocked(api.getViewerConnection).mockResolvedValue(connection)
+  vi.mocked(api.syncViewerLibrary).mockResolvedValue({ items: [{ id: 'a', displayName: 'Owner A private slide', folderId: '', state: 'ready_private', contentBytes: 100, width: 10, height: 10, thumbnailUrl: '/a', tileSourceUrl: '/a.dzi', offlineBytes: 0, offlineComplete: false }], folders: [], conflicts: [] })
+  render(<App />)
+  await screen.findByRole('button', { name: 'Same device' })
+  fireEvent.click(screen.getByRole('button', { name: 'Viewer library' }))
+  await screen.findByRole('treeitem', { name: 'Owner A private slide' })
+  vi.mocked(api.getViewerConnection).mockResolvedValue({ ...connection, connectionRevision: 'owner-b' })
+  let finish!: (value: api.ViewerRemoteLibrary) => void
+  vi.mocked(api.syncViewerLibrary).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh Viewer connection' }))
+  await waitFor(() => expect(finish).toBeDefined())
+  expect(screen.queryByText('Owner A private slide')).not.toBeInTheDocument()
+  expect(document.querySelector('[data-tile-source="/a.dzi"]')).toBeNull()
+  finish({ items: [], folders: [], conflicts: [] })
+  await screen.findByText('No private Viewer slides.')
 })
