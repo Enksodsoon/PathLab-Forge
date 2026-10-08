@@ -69,6 +69,13 @@ public final class DeterministicAnalysisService implements AutoCloseable {
             requireNativeView(targetDataset, target);
             if (target.series() < 0 || target.z() < 0 || target.t() < 0 || target.viewRevision().isBlank()) throw new IllegalArgumentException("Target must have an exact plane scope");
             ClassicalAnalysis.affine(landmarks(request.sourceLandmarks()), landmarks(request.targetLandmarks()));
+            registrationChecks(request);
+            var sourceBounds = new RoiMask(roi.type(), roi.geometry()).bounds();
+            var targetBounds = new RoiMask(target.type(), target.geometry()).bounds();
+            requireInside(landmarks(request.sourceLandmarks()), sourceBounds);
+            requireInside(landmarks(request.targetLandmarks()), targetBounds);
+            requireInside(checkPoints(request.independentSourceLandmarks()), sourceBounds);
+            requireInside(checkPoints(request.independentTargetLandmarks()), targetBounds);
             secondary.put("targetDatasetId", request.targetDatasetId()); secondary.put("targetAnnotationId", target.id());
             secondary.put("targetAnnotationRevision", Long.toString(target.revision()));
             secondary.put("targetSourceFingerprint", targetDataset.sourceFingerprint());
@@ -76,6 +83,8 @@ public final class DeterministicAnalysisService implements AutoCloseable {
             secondary.put("targetSeries", Integer.toString(target.series())); secondary.put("targetZ", Integer.toString(target.z()));
             secondary.put("targetT", Integer.toString(target.t())); secondary.put("targetViewRevision", target.viewRevision());
             secondary.put("sourceLandmarks", request.sourceLandmarks()); secondary.put("targetLandmarks", request.targetLandmarks());
+            secondary.put("independentSourceLandmarks", request.independentSourceLandmarks());
+            secondary.put("independentTargetLandmarks", request.independentTargetLandmarks());
         }
         var provenance = new AnalysisRun.Provenance(dataset.sourceFingerprint(), hash(dataset.sourceInventory()),
                 dataset.readerEngine(), dataset.runtimeFingerprint(), roi.geometry(), roi.type(), roi.revision(),
@@ -273,14 +282,82 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         if (target.series() < 0 || target.z() < 0 || target.t() < 0) throw new IllegalArgumentException("Target landmarks require exact plane scope");
         var sourcePoints = landmarks(request.sourceLandmarks()); var targetPoints = landmarks(request.targetLandmarks());
         var transform = ClassicalAnalysis.affine(sourcePoints, targetPoints);
-        return Map.of("transform", transform, "sourceLandmarks", sourcePoints, "targetLandmarks", targetPoints,
-                "targetSourceFingerprint", targetDataset.sourceFingerprint(), "targetAnnotation", target,
-                "approximate", true, "method", "Three manually matched landmark pairs; affine fit is not independent accuracy validation");
+        var outputs = new TreeMap<String, Object>();
+        outputs.put("transform", transform); outputs.put("sourceLandmarks", sourcePoints); outputs.put("targetLandmarks", targetPoints);
+        outputs.put("targetSourceFingerprint", targetDataset.sourceFingerprint()); outputs.put("targetAnnotation", target);
+        outputs.put("approximate", true);
+        outputs.put("method", "Three manually matched landmark pairs; independent checks are held out of the fit; original pixels preserved");
+        var checks = registrationChecks(request); var residuals = new java.util.ArrayList<Double>();
+        for (var index = 0; index < checks[0].length; index++) {
+            var predicted = transform.apply(checks[0][index][0], checks[0][index][1]);
+            residuals.add(Math.hypot(predicted[0] - checks[1][index][0], predicted[1] - checks[1][index][1]));
+        }
+        outputs.put("independentSourceLandmarks", checks[0]); outputs.put("independentTargetLandmarks", checks[1]);
+        outputs.put("independentResidualsTargetPixels", residuals);
+        outputs.put("independentValidation", residuals.isEmpty() ? "NOT_PROVIDED" : "MANUAL_HELD_OUT_CHECKS");
+        if (!residuals.isEmpty()) outputs.put("independentRmsTargetPixels", Math.sqrt(residuals.stream().mapToDouble(value -> value * value).average().orElseThrow()));
+        var source = annotation(request.datasetId(), request.annotationId());
+        var sourceBounds = new RoiMask(source.type(), source.geometry()).bounds();
+        var targetBounds = new RoiMask(target.type(), target.geometry()).bounds();
+        var sourceRegion = loader.load(request.datasetId(), source.series(), source.z(), source.t(), sourceBounds.x(), sourceBounds.y(), sourceBounds.width(), sourceBounds.height());
+        checkCancelled();
+        var targetRegion = loader.load(request.targetDatasetId(), target.series(), target.z(), target.t(), targetBounds.x(), targetBounds.y(), targetBounds.width(), targetBounds.height());
+        var targetRgb = targetRegion.interleavedRgb();
+        requireRegion(sourceRegion, sourceBounds); requireRegion(targetRegion, targetBounds);
+        var scale = Math.max(1, Math.max(sourceRegion.width(), sourceRegion.height()) / 512.0);
+        var width = Math.max(1, (int) (sourceRegion.width() / scale)); var height = Math.max(1, (int) (sourceRegion.height() / scale));
+        var overlay = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB); var covered = 0;
+        for (var y = 0; y < height; y++) {
+            checkCancelled();
+            for (var x = 0; x < width; x++) {
+                var targetPoint = transform.apply(sourceRegion.x() + (int) (x * scale), sourceRegion.y() + (int) (y * scale));
+                var tx = (long) Math.floor(targetPoint[0]) - targetRegion.x(); var ty = (long) Math.floor(targetPoint[1]) - targetRegion.y();
+                if (tx < 0 || ty < 0 || tx >= targetRegion.width() || ty >= targetRegion.height()) continue;
+                var index = Math.toIntExact((ty * targetRegion.width() + tx) * 3);
+                overlay.setRGB(x, y, 0xff000000 | ((targetRgb[index] & 255) << 16) | ((targetRgb[index + 1] & 255) << 8) | (targetRgb[index + 2] & 255)); covered++;
+            }
+        }
+        var bytes = new ByteArrayOutputStream(); ImageIO.write(overlay, "png", bytes);
+        outputs.put("previewDataUrl", preview(sourceRegion));
+        outputs.put("registrationOverlayDataUrl", "data:image/png;base64," + Base64.getEncoder().encodeToString(bytes.toByteArray()));
+        outputs.put("overlaySourceX", sourceRegion.x()); outputs.put("overlaySourceY", sourceRegion.y());
+        outputs.put("overlaySourceWidth", sourceRegion.width()); outputs.put("overlaySourceHeight", sourceRegion.height());
+        outputs.put("overlayCoverageFraction", (double) covered / (width * height));
+        return outputs;
+    }
+    private static void requireRegion(RgbRegion region, RoiMask.Bounds bounds) throws IOException {
+        if (region.x() != bounds.x() || region.y() != bounds.y() || region.width() != bounds.width() || region.height() != bounds.height()) throw new IOException("Registration reader returned another ROI");
+    }
+    private static void requireInside(double[][] points, RoiMask.Bounds bounds) {
+        for (var point : points) if (point[0] < bounds.x() || point[1] < bounds.y() || point[0] >= (long) bounds.x() + bounds.width() || point[1] >= (long) bounds.y() + bounds.height()) throw new IllegalArgumentException("Registration landmarks must be inside their saved ROI bounds");
+    }
+    private static double[][][] registrationChecks(Request request) {
+        var source = checkPoints(request.independentSourceLandmarks()); var target = checkPoints(request.independentTargetLandmarks());
+        if (source.length != target.length) throw new IllegalArgumentException("Independent check points require matching source and target pairs");
+        var fitSource = landmarks(request.sourceLandmarks()); var fitTarget = landmarks(request.targetLandmarks());
+        for (var index = 0; index < source.length; index++) {
+            for (var fit : fitSource) if (Arrays.equals(source[index], fit)) throw new IllegalArgumentException("Independent source check points must not reuse fitted landmarks");
+            for (var fit : fitTarget) if (Arrays.equals(target[index], fit)) throw new IllegalArgumentException("Independent target check points must not reuse fitted landmarks");
+        }
+        return new double[][][] {source, target};
+    }
+    private static double[][] checkPoints(String geometry) {
+        if (geometry == null || geometry.isBlank()) return new double[0][];
+        if (geometry.length() > 4096) throw new IllegalArgumentException("Too many landmark coordinates");
+        var points = geometry.split(";", -1);
+        if (points.length > 32) throw new IllegalArgumentException("At most 32 independent landmark pairs are supported");
+        return Arrays.stream(points).map(point -> {
+            var coordinates = point.split(",", -1);
+            if (coordinates.length != 2) throw new IllegalArgumentException("Landmarks require x,y coordinate pairs");
+            var result = Arrays.stream(coordinates).mapToDouble(Double::parseDouble).toArray();
+            if (!Double.isFinite(result[0]) || !Double.isFinite(result[1])) throw new IllegalArgumentException("Landmarks must be finite");
+            return result;
+        }).toArray(double[][]::new);
     }
     private static double[][] landmarks(String geometry) {
         var points = geometry == null ? new String[0] : geometry.split(";");
         if (points.length != 3) throw new IllegalArgumentException("Registration requires three manual source and target landmarks");
-        return Arrays.stream(points).map(point -> Arrays.stream(point.split(",")).mapToDouble(Double::parseDouble).toArray()).toArray(double[][]::new);
+        return checkPoints(geometry);
     }
     private static String preview(RgbRegion region) throws IOException {
         var scale = Math.max(1, Math.max(region.width(), region.height()) / 512.0);
@@ -388,7 +465,8 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         executor.shutdownNow();
     }
     public record Request(String datasetId, String annotationId, String tool, Map<String, Double> configuration,
-                          String targetDatasetId, String targetAnnotationId, String sourceLandmarks, String targetLandmarks) {
+                          String targetDatasetId, String targetAnnotationId, String sourceLandmarks, String targetLandmarks,
+                          String independentSourceLandmarks, String independentTargetLandmarks) {
         public Request {
             if (datasetId == null || datasetId.isBlank() || annotationId == null || annotationId.isBlank()
                     || tool == null || !TOOLS.contains(tool)) throw new IllegalArgumentException("Analysis request identity/tool is invalid");
@@ -403,6 +481,12 @@ public final class DeterministicAnalysisService implements AutoCloseable {
             }
             if (configuration != null) effective.putAll(configuration);
             configuration = Map.copyOf(effective);
+            independentSourceLandmarks = independentSourceLandmarks == null ? "" : independentSourceLandmarks;
+            independentTargetLandmarks = independentTargetLandmarks == null ? "" : independentTargetLandmarks;
+        }
+        public Request(String datasetId, String annotationId, String tool, Map<String, Double> configuration,
+                       String targetDatasetId, String targetAnnotationId, String sourceLandmarks, String targetLandmarks) {
+            this(datasetId, annotationId, tool, configuration, targetDatasetId, targetAnnotationId, sourceLandmarks, targetLandmarks, "", "");
         }
         public Request(String datasetId, String annotationId, String tool, Map<String, Double> configuration) {
             this(datasetId, annotationId, tool, configuration, "", "", "", "");

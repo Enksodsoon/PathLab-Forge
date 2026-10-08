@@ -153,6 +153,9 @@ public final class ClassicalAnalysis {
         var inverse = invert3(matrix);
         var x = multiply(inverse, new double[] {target[0][0], target[1][0], target[2][0]});
         var y = multiply(inverse, new double[] {target[0][1], target[1][1], target[2][1]});
+        for (var coefficients : java.util.List.of(x, y)) for (var coefficient : coefficients) {
+            if (!Double.isFinite(coefficient)) throw new IllegalArgumentException("Registration transform is not finite");
+        }
         return new AffineTransform(x[0], x[1], x[2], y[0], y[1], y[2]);
     }
 
@@ -168,7 +171,7 @@ public final class ClassicalAnalysis {
         var d = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
                 - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
                 + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-        if (Math.abs(d) < 1e-12) throw new IllegalArgumentException("Registration landmarks are collinear");
+        if (!Double.isFinite(d) || Math.abs(d) < 1e-12) throw new IllegalArgumentException("Registration landmarks are degenerate or exceed numeric limits");
         return new double[][] {
             {(m[1][1] * m[2][2] - m[1][2] * m[2][1]) / d, (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / d, (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / d},
             {(m[1][2] * m[2][0] - m[1][0] * m[2][2]) / d, (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / d, (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / d},

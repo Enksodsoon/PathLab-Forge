@@ -14,6 +14,7 @@ export interface DeterministicRun {
 export interface DeterministicRequest {
   datasetId: string; annotationId: string; tool: string; configuration: Record<string, number>
   targetDatasetId?: string; targetAnnotationId?: string; sourceLandmarks?: string; targetLandmarks?: string
+  independentSourceLandmarks?: string; independentTargetLandmarks?: string
 }
 export interface ReviewedObject {
   id: string; datasetId: string; parentId: string; kind: string; geometry: string; classification: string
@@ -57,6 +58,9 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
   const [targetAnnotationId, setTargetAnnotationId] = useState('')
   const [sourceLandmarks, setSourceLandmarks] = useState('')
   const [targetLandmarks, setTargetLandmarks] = useState('')
+  const [independentSourceLandmarks, setIndependentSourceLandmarks] = useState('')
+  const [independentTargetLandmarks, setIndependentTargetLandmarks] = useState('')
+  const [overlayOpacity, setOverlayOpacity] = useState(.5)
   const [targetAnnotations, setTargetAnnotations] = useState<AnnotationRecord[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -88,7 +92,7 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
     const effective = Object.fromEntries((parameters[tool] || []).map(([key, , fallback]) => [key, configuration[key] ?? fallback]))
     try {
       await onSubmit({ datasetId, annotationId: chosenRoi.id, tool, configuration: effective,
-        targetDatasetId, targetAnnotationId, sourceLandmarks, targetLandmarks })
+        targetDatasetId, targetAnnotationId, sourceLandmarks, targetLandmarks, independentSourceLandmarks, independentTargetLandmarks })
       await onRefresh()
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     finally { setBusy(false) }
@@ -114,10 +118,18 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
           {targetAnnotations.map((annotation, index) => <option key={annotation.id} value={annotation.id}>{annotation.label || `${annotation.type} ${index + 1}`} · series {annotation.series} Z{annotation.z} T{annotation.t}</option>)}</select></label>
         <label>Source landmark coordinates <input required placeholder="x,y;x,y;x,y" value={sourceLandmarks} onChange={(event) => setSourceLandmarks(event.target.value)} /></label>
         <label>Target landmark coordinates <input required placeholder="x,y;x,y;x,y" value={targetLandmarks} onChange={(event) => setTargetLandmarks(event.target.value)} /></label>
+        <p>Place or correct landmarks with the slide's polyline tool, then use its saved vertices here in matching order.</p>
+        <SavedLandmarks label="Use saved source fit landmarks" annotations={scoped} plane={chosenRoi} fit onChoose={setSourceLandmarks} />
+        <SavedLandmarks label="Use saved target fit landmarks" annotations={targetAnnotations} plane={targetAnnotations.find((item) => item.id === targetAnnotationId)} fit onChoose={setTargetLandmarks} />
+        <p>Choose closed source and target ROIs for the bounded overlay. Optional independent check points must differ from fitted landmarks. Residuals use target pixels, not physical units.</p>
+        <label>Independent source check coordinates <input placeholder="x,y;x,y" value={independentSourceLandmarks} onChange={(event) => setIndependentSourceLandmarks(event.target.value)} /></label>
+        <label>Independent target check coordinates <input placeholder="x,y;x,y" value={independentTargetLandmarks} onChange={(event) => setIndependentTargetLandmarks(event.target.value)} /></label>
+        <SavedLandmarks label="Use saved source independent checks" annotations={scoped} plane={chosenRoi} onChoose={setIndependentSourceLandmarks} />
+        <SavedLandmarks label="Use saved target independent checks" annotations={targetAnnotations} plane={targetAnnotations.find((item) => item.id === targetAnnotationId)} onChoose={setIndependentTargetLandmarks} />
       </fieldset> : null}
       {!enabledTools.includes(tool) ? <p>Install and enable the verified feature pack to run this tool. Saved results remain available.</p> : null}
-      {chosenRoi && !closed && tool !== 'registration' ? <p>Select a closed rectangle, ellipse or path ROI.</p> : null}
-      <button type="submit" disabled={busy || !chosenRoi || (!closed && tool !== 'registration') || !enabledTools.includes(tool)}>{busy ? 'Submitting…' : 'Run locally'}</button>
+      {chosenRoi && !closed ? <p>Select a closed rectangle, ellipse or path ROI.</p> : null}
+      <button type="submit" disabled={busy || !chosenRoi || !closed || !enabledTools.includes(tool)}>{busy ? 'Submitting…' : 'Run locally'}</button>
     </form>
     {error ? <p role="alert">{error}</p> : null}
     <div aria-label="Saved analysis runs">
@@ -133,10 +145,14 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
       {selectedRun.stale ? <p role="alert">The source, ROI or reader has changed. This stored result is stale; rerun before using it.</p> : null}
       <p>Series {selectedRun.provenance.series} · Z{selectedRun.provenance.z} · T{selectedRun.provenance.t} · ROI revision {selectedRun.provenance.annotationRevision}</p>
       <p>{selectedRun.provenance.algorithm} · {selectedRun.provenance.units}</p>
-      {typeof selectedRun.outputs.previewDataUrl === 'string' ? <img src={selectedRun.outputs.previewDataUrl} alt="Derived normalization preview; original image preserved" style={{ maxWidth: '100%' }} /> : null}
+      {typeof selectedRun.outputs.previewDataUrl === 'string' ? <div style={{ position: 'relative', width: 'fit-content', maxWidth: '100%' }}>
+        <img src={selectedRun.outputs.previewDataUrl} alt={selectedRun.tool === 'registration' ? 'Source ROI for approximate registration' : 'Derived normalization preview; original image preserved'} style={{ display: 'block', maxWidth: '100%' }} />
+        {typeof selectedRun.outputs.registrationOverlayDataUrl === 'string' ? <img src={selectedRun.outputs.registrationOverlayDataUrl} alt="Transformed target ROI; transparent outside target coverage" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: overlayOpacity }} /> : null}
+      </div> : null}
+      {typeof selectedRun.outputs.registrationOverlayDataUrl === 'string' ? <label>Target overlay opacity <input type="range" min="0" max="1" step="0.05" value={overlayOpacity} onChange={(event) => setOverlayOpacity(event.target.valueAsNumber)} /></label> : null}
       {typeof selectedRun.outputs.maskBitsetBase64 === 'string' ? <TissueMaskPreview outputs={selectedRun.outputs} /> : null}
       <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{JSON.stringify({ configuration: selectedRun.configuration,
-        outputs: Object.fromEntries(Object.entries(selectedRun.outputs).filter(([key]) => !['previewDataUrl', 'maskBitsetBase64'].includes(key))
+        outputs: Object.fromEntries(Object.entries(selectedRun.outputs).filter(([key]) => !['previewDataUrl', 'registrationOverlayDataUrl', 'maskBitsetBase64'].includes(key))
           .map(([key, value]) => [key, Array.isArray(value) && value.length > 20 ? { count: value.length, first20: value.slice(0, 20) } : value])) }, null, 2)}</pre>
       <button type="button" onClick={() => onExport(selectedRun.id)}>Export result and provenance</button>
       {onShowObjects && selectedRun.status === 'SUCCEEDED' && !selectedRun.stale && (selectedRun.outputs.objects || selectedRun.outputs.cores) ? <button type="button" onClick={() => onShowObjects(selectedRun)}>Inspect objects in viewer</button> : null}
@@ -144,6 +160,15 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
         ? <ReviewEditor key={selectedRun.id} run={selectedRun} onLoad={onLoadReview} onSave={onSaveReview} /> : null}
     </article> : <p>No saved analysis runs for this dataset.</p>}
   </section>
+}
+
+function SavedLandmarks({ label, annotations, plane, fit, onChoose }: { label: string; annotations: AnnotationRecord[]; plane?: AnnotationRecord; fit?: boolean; onChoose: (geometry: string) => void }) {
+  const choices = annotations.filter((item) => plane && item.series === plane.series && item.z === plane.z && item.t === plane.t && item.viewRevision === plane.viewRevision
+    && ['point', 'polyline'].includes(item.type) && (fit ? item.geometry.split(';').length === 3 : item.geometry.split(';').length <= 32))
+  return <label>{label} <select value="" onChange={(event) => { const selected = choices.find((item) => item.id === event.target.value); if (selected) onChoose(selected.geometry) }}>
+    <option value="">Choose saved points from the exact plane</option>
+    {choices.map((item) => <option key={item.id} value={item.id}>{item.label || item.type} · {item.geometry.split(';').length} points</option>)}
+  </select></label>
 }
 
 function ReviewEditor({ run, onLoad, onSave }: { run: DeterministicRun; onLoad: (id: string) => Promise<DeterministicReview>; onSave: (id: string, review: DeterministicReview) => Promise<DeterministicReview> }) {

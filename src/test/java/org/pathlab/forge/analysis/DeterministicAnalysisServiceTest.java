@@ -73,6 +73,20 @@ final class DeterministicAnalysisServiceTest {
             assertEquals("SUCCEEDED",matched.status());
             assertEquals(true,matched.outputs().get("approximate"));
             assertEquals(view.revision(),matched.provenance().secondaryInputs().get("targetViewRevision"));
+            assertEquals("NOT_PROVIDED", matched.outputs().get("independentValidation"));
+            assertTrue(matched.outputs().get("registrationOverlayDataUrl").toString().startsWith("data:image/png;base64,"));
+            var checked = service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"registration",Map.of(),datasetId,roi.id(),
+                    "0,0;1,0;0,1","1,1;2,1;1,2", "3,3;4,4", "4,4;5,6"));
+            var checkedResult = awaitTerminal(service,checked.id());
+            assertEquals("SUCCEEDED", checkedResult.status());
+            assertEquals(Math.sqrt(.5), ((Number) checkedResult.outputs().get("independentRmsTargetPixels")).doubleValue(), 1e-9);
+            assertEquals("3,3;4,4", checkedResult.provenance().secondaryInputs().get("independentSourceLandmarks"));
+            assertThrows(IllegalArgumentException.class, () -> service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"registration",Map.of(),datasetId,roi.id(),
+                    "0,0;1,0;0,1","1,1;2,1;1,2", "0,0", "3,3")), "Fitted landmarks cannot validate their own fit");
+            assertThrows(IllegalArgumentException.class, () -> service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"registration",Map.of(),datasetId,roi.id(),
+                    "0,0;1,0;0,1","1,1;2,1;1,2", "3,3", "")));
+            assertThrows(IllegalArgumentException.class, () -> service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"registration",Map.of(),datasetId,roi.id(),
+                    "0,0;1,0;0,1","1,1;2,1;1,2", "NaN,3", "4,4")));
             wait.set(true);
             var cancelled = service.submit(new DeterministicAnalysisService.Request(datasetId,roi.id(),"qc",Map.of()));
             assertTrue(entered.await(5, TimeUnit.SECONDS));

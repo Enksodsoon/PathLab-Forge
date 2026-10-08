@@ -3,6 +3,25 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { DeterministicTools, type DeterministicRun } from '../DeterministicTools'
 
 afterEach(cleanup)
+it('keeps independent registration checks separate and exposes overlay inspection', async () => {
+  const onSubmit = vi.fn().mockResolvedValue(undefined)
+  const registration = { ...run, tool: 'registration', outputs: { previewDataUrl: 'data:image/png;base64,source', registrationOverlayDataUrl: 'data:image/png;base64,target', independentValidation: 'NOT_PROVIDED' } }
+  render(<DeterministicTools datasetId="dataset" annotations={annotations} runs={[registration]} enabledTools={['registration']}
+    onSubmit={onSubmit} onCancel={vi.fn()} onRefresh={vi.fn().mockResolvedValue(undefined)} onExport={vi.fn()}
+    datasets={[{ id: 'target', displayName: 'Target slide' }]} onLoadTargetAnnotations={vi.fn().mockResolvedValue(annotations)} />)
+  fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'registration' } })
+  fireEvent.change(screen.getByLabelText('Target slide'), { target: { value: 'target' } })
+  await waitFor(() => expect(screen.getByLabelText('Target ROI').querySelectorAll('option')).toHaveLength(2))
+  fireEvent.change(screen.getByLabelText('Target ROI'), { target: { value: 'roi' } })
+  fireEvent.change(screen.getByLabelText('Source landmark coordinates'), { target: { value: '0,0;1,0;0,1' } })
+  fireEvent.change(screen.getByLabelText('Target landmark coordinates'), { target: { value: '1,1;2,1;1,2' } })
+  fireEvent.change(screen.getByLabelText('Independent source check coordinates'), { target: { value: '3,3' } })
+  fireEvent.change(screen.getByLabelText('Independent target check coordinates'), { target: { value: '4,4' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Run locally' }))
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ independentSourceLandmarks: '3,3', independentTargetLandmarks: '4,4' })))
+  fireEvent.change(screen.getByLabelText('Target overlay opacity'), { target: { value: '0.8' } })
+  expect(screen.getByAltText('Transformed target ROI; transparent outside target coverage')).toHaveStyle({ opacity: '0.8' })
+})
 const annotations = [{ id: 'roi', type: 'rectangle', geometry: '0,0;10,10', label: 'Saved region', color: '#ffaa22',
   parentId: '', classification: '', createdAt: 1, updatedAt: 1, revision: 1, series: 2, z: 3, t: 4, viewRevision: 'view' }]
 const run: DeterministicRun = { id: 'run', datasetId: 'dataset', annotationId: 'roi', tool: 'tma', status: 'SUCCEEDED',
