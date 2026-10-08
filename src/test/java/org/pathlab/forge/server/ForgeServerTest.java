@@ -20,6 +20,56 @@ final class ForgeServerTest {
     @TempDir
     Path temp;
 
+    @Test void studyRoutesPreserveOfflineDraftsAndRejectStaleWritesAfterRestart() throws Exception {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String id;
+        try (var server = startEphemeral()) {
+            var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
+            assertEquals(401, HttpClient.newHttpClient().send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(), HttpResponse.BodyHandlers.ofString());
+            var csrf = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(), HttpResponse.BodyHandlers.ofString()).headers().firstValue("X-Forge-CSRF").orElseThrow();
+            var created = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts"))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"Offline draft\"}")).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, created.statusCode(), created.body());
+            var draft = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(created.body());
+            id = draft.path("id").asText();
+            draft.put("name", "Saved offline");
+            var save = HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts/" + id))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                    .PUT(HttpRequest.BodyPublishers.ofString(draft.toString())).build();
+            assertEquals(200, client.send(save, HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(409, client.send(save, HttpResponse.BodyHandlers.ofString()).statusCode());
+            var export = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts/" + id + "/export?format=json")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, export.statusCode());
+            assertTrue(export.body().contains("Saved offline"));
+            var destination = temp.resolve("native-study.json");
+            var nativePayload = mapper.writeValueAsString(java.util.Map.of("kind", "study", "draftId", id,
+                    "format", "json", "checksum", "", "destination", destination.toString()));
+            var nativeExport = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/exports"))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                    .POST(HttpRequest.BodyPublishers.ofString(nativePayload)).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, nativeExport.statusCode(), nativeExport.body());
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (!java.nio.file.Files.exists(destination) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertTrue(java.nio.file.Files.readString(destination).contains("Saved offline"));
+            var staleCancel = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/exports/cancel?id=another-job"))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                    .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(409, staleCancel.statusCode());
+            assertEquals(409, client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts/" + id + "/export?format=approved&checksum=unapproved")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+            assertEquals(405, client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/import")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+        }
+        try (var server = startEphemeral()) {
+            var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(), HttpResponse.BodyHandlers.ofString());
+            var loaded = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts/" + id)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, loaded.statusCode());
+            assertEquals("Saved offline", mapper.readTree(loaded.body()).path("name").asText());
+            assertEquals(2, mapper.readTree(loaded.body()).path("revision").asLong());
+        }
+    }
+
     @Test
     void desktopPathsRequireMainProcessGrantAndAppCannotMintItsOwnSession() throws Exception {
         var previous = System.getProperty("pathlab.forge.desktop");

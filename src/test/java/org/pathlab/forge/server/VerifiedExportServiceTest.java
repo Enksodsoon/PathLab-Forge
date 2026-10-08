@@ -17,6 +17,8 @@ class VerifiedExportServiceTest {
             service.submitBytes("{\"schema\":\"pathlab.study-pack/1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8), target);
             await(service);
             assertEquals("COMPLETE", service.state().status());
+            assertThrows(IllegalStateException.class, () -> service.cancel("another job"));
+            assertEquals("COMPLETE", service.cancel(service.state().id()).status());
             assertEquals("{\"schema\":\"pathlab.study-pack/1\"}", Files.readString(target));
             assertThrows(java.io.IOException.class, () -> service.submitBytes(new byte[16 * 1024 * 1024 + 1], target));
             assertEquals("{\"schema\":\"pathlab.study-pack/1\"}", Files.readString(target));

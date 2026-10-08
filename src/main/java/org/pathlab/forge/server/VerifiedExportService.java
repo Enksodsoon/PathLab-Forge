@@ -53,7 +53,11 @@ final class VerifiedExportService implements AutoCloseable {
     }
     State state() { return state; }
     boolean active() { return state.status().equals("COPYING") || state.status().equals("VERIFYING"); }
-    synchronized State cancel() { if (active()) cancelled = true; return state; }
+    synchronized State cancel(String expectedId) {
+        if (expectedId.isBlank() || !expectedId.equals(state.id())) throw new IllegalStateException("Export changed; refresh before cancelling");
+        if (active()) cancelled = true;
+        return state;
+    }
     private synchronized void checkCancelled() throws IOException {
         if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("Export cancelled");
     }

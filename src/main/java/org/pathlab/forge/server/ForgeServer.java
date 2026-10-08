@@ -133,6 +133,7 @@ public final class ForgeServer implements AutoCloseable {
                 CredentialStore.platformDefault(),
                 new SqliteViewerDeliveryStore(
                         managedRoot.toAbsolutePath().normalize().getParent().resolve("forge.db")));
+        featurePackManager.setViewerTransport(viewerPairingService);
         viewerPairingService.setAcceptedAnalysisProvider(revision -> {
             var dataset = repository.find(revision.datasetId()).orElseThrow(() -> new IOException("Analysis source is unavailable"));
             if (!dataset.configurationRevision().equals(revision.configurationRevision())
@@ -713,7 +714,7 @@ public final class ForgeServer implements AutoCloseable {
             return;
         }
         if ("GET".equals(method)) { if (!requireAuthenticated(exchange)) return; }
-        else if (!requireWrite(exchange)) return;
+        else if (!requireWriteHeaders(exchange)) return;
         var mapper = org.pathlab.forge.study.StudyPackCanonicalJson.mapper();
         var parts = path.split("/");
         try {
@@ -780,7 +781,7 @@ public final class ForgeServer implements AutoCloseable {
     private void analysisRuns(HttpExchange exchange, String path) throws IOException {
         var method = exchange.getRequestMethod();
         if ("GET".equals(method)) { if (!requireAuthenticated(exchange)) return; }
-        else if (!requireWrite(exchange)) return;
+        else if (!requireWriteHeaders(exchange)) return;
         var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
         var parts = path.split("/");
         try {
@@ -1126,11 +1127,11 @@ public final class ForgeServer implements AutoCloseable {
     private void nativeExport(HttpExchange exchange, String path) throws IOException {
         var method = exchange.getRequestMethod();
         if ("GET".equals(method)) { if (!requireAuthenticated(exchange)) return; }
-        else if (!requireWrite(exchange)) return;
+        else if (!requireWriteHeaders(exchange)) return;
         var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
         try {
             Object result;
-            if ("/api/exports/cancel".equals(path) && "POST".equals(method)) result = exportService.cancel();
+            if ("/api/exports/cancel".equals(path) && "POST".equals(method)) result = exportService.cancel(queryValue(exchange, "id", ""));
             else if ("GET".equals(method) && "/api/exports".equals(path)) result = exportService.state();
             else if ("POST".equals(method) && "/api/exports".equals(path)) {
                 var body = mapper.readTree(boundedAnalysisBody(exchange));
