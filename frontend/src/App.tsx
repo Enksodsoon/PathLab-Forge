@@ -823,6 +823,20 @@ export function App() {
     void loadFeatures()
   }
 
+  const importFeature = async () => {
+    setFeatureLoading(true)
+    try {
+      const files = await window.forgeDesktop?.selectFeatureFiles()
+      if (!files) return
+      await api.importFeature(files)
+      setFeatures((await api.features()).features)
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setFeatureLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!featureOpen || !featureLoading) return
     const timer = window.setInterval(() => {
@@ -1101,7 +1115,7 @@ export function App() {
           )}
         />
       </div>
-      <button type="button" className="forge-viewer-sync-launcher forge-dialog-close" onClick={() => void openBatchReports()}>Saved batch reports</button>
+      <button type="button" className="forge-viewer-sync-launcher forge-download" onClick={() => void openBatchReports()}>Saved batch reports</button>
       {batchReportsOpen ? <div className="forge-dialog-backdrop" role="presentation"><section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Saved batch workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setBatchReportsOpen(false) } }}>
         <button type="button" aria-label="Close batch reports" onClick={() => setBatchReportsOpen(false)}><X aria-hidden="true" /></button>
         <BatchReports batches={savedBatches} onLoadOlder={batchHasOlder ? loadOlderBatches : undefined} onReport={readBatchReport} onRetry={api.retryBatchItem} onCancel={api.cancelBatch} onExport={(id, format) => {
@@ -1243,6 +1257,7 @@ export function App() {
           features={features}
           loading={featureLoading}
           onRefresh={() => void loadFeatures(true)}
+          onImport={window.forgeDesktop?.selectFeatureFiles ? () => void importFeature() : undefined}
           onChange={(feature, action, version) => void changeFeature(feature, action, version)}
           progress={featureProgress}
           onCancel={() => featureProgress?.id && void api.featureAction(featureProgress.id, 'cancel').catch((error) => setError(message(error)))}
@@ -1380,6 +1395,7 @@ function FeatureCenter({
   features,
   loading,
   onRefresh,
+  onImport,
   onChange,
   onClose,
 }: {
@@ -1388,6 +1404,7 @@ function FeatureCenter({
   progress?: api.FeatureProgress
   onCancel: () => void
   onRefresh: () => void
+  onImport?: () => void
   onChange: (feature: api.FeaturePack, action: api.FeatureAction, version?: string) => void
   onClose: () => void
 }) {
@@ -1431,6 +1448,7 @@ function FeatureCenter({
           {!features.length ? <p role="status">{loading ? 'Checking installed features…' : 'No features are published.'}</p> : null}
         </div>
         <button type="button" disabled={loading} onClick={onRefresh}>Refresh signed catalog</button>
+        {onImport ? <button type="button" disabled={loading} onClick={onImport}>Import signed feature pack</button> : null}
         {progress ? <p role="status">{progress.phase} · {progress.detail} · {formatBytes(progress.completedBytes)} / {formatBytes(progress.totalBytes)}</p> : null}
         {progress && !['IDLE', 'COMPLETE', 'FAILED', 'CANCELLED'].includes(progress.phase) ? <button type="button" onClick={onCancel}>Cancel install</button> : null}
         <small>Startup reads verified local metadata. Remote refresh and installation happen only when requested.</small>

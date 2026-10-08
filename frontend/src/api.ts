@@ -615,6 +615,9 @@ export async function installFeature(id: string) {
   return request<FeaturePack>(`/api/features/${encodeURIComponent(id)}/install`, { method: 'POST' })
 }
 
+export const importFeature = (files: { catalogPath: string; archivePath: string }) =>
+  request<FeaturePack>('/api/features/import', { method: 'POST', body: JSON.stringify(files) })
+
 export async function disableFeature(id: string) {
   return request<void>(`/api/features/${encodeURIComponent(id)}/disable`, { method: 'POST' })
 }

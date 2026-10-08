@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('forgeDesktop', Object.freeze({
   selectSources: () => ipcRenderer.invoke('forge:select-sources'),
+  selectFeatureFiles: () => ipcRenderer.invoke('forge:select-feature-files'),
   selectDirectory: () => ipcRenderer.invoke('forge:select-directory'),
   selectExportDestination: name => ipcRenderer.invoke('forge:export-destination', name),
   revealPath: path => ipcRenderer.invoke('forge:reveal', path),

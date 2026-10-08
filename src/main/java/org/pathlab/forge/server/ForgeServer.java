@@ -402,6 +402,8 @@ public final class ForgeServer implements AutoCloseable {
                 nativeExport(exchange, path);
             } else if ("/api/features".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 features(exchange);
+            } else if ("/api/features/import".equals(path) && "POST".equals(exchange.getRequestMethod())) {
+                importFeature(exchange);
             } else if ("/api/features/progress".equals(path) && "GET".equals(exchange.getRequestMethod())) {
                 if (requireAuthenticated(exchange)) respond(exchange, 200, "application/json",
                         new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(featurePackManager.progress()));
@@ -681,6 +683,29 @@ public final class ForgeServer implements AutoCloseable {
                     "{\"error\":\"feature_catalog_unavailable\",\"detail\":"
                             + json(error.getMessage()) + ",\"features\":"
                             + featuresJson(featurePackManager.list()) + "}");
+        }
+    }
+
+    private void importFeature(HttpExchange exchange) throws IOException {
+        if (!requireWriteHeaders(exchange)) return;
+        var bytes = exchange.getRequestBody().readNBytes(MAX_WRITE_BYTES + 1);
+        if (bytes.length > MAX_WRITE_BYTES) {
+            respond(exchange, 413, "application/json", "{\"error\":\"request_too_large\"}");
+            return;
+        }
+        try {
+            var body = new com.fasterxml.jackson.databind.ObjectMapper().readTree(bytes);
+            if (body == null || !body.isObject() || body.size() != 2
+                    || !body.path("catalogPath").isTextual() || body.path("catalogPath").asText().isBlank()
+                    || !body.path("archivePath").isTextual() || body.path("archivePath").asText().isBlank())
+                throw new IllegalArgumentException("Choose a signed catalog and feature archive");
+            var catalog = Path.of(body.path("catalogPath").asText()).toAbsolutePath().normalize();
+            var archive = Path.of(body.path("archivePath").asText()).toAbsolutePath().normalize();
+            requireDesktopSelection(catalog, "feature");
+            requireDesktopSelection(archive, "feature");
+            respond(exchange, 200, "application/json", featureJson(featurePackManager.importPack(catalog, archive)));
+        } catch (IOException | IllegalArgumentException | IllegalStateException error) {
+            respond(exchange, 409, "application/json", "{\"error\":\"feature_import_failed\",\"detail\":" + json(error.getMessage()) + "}");
         }
     }
 
@@ -1340,7 +1365,7 @@ public final class ForgeServer implements AutoCloseable {
             var body = new com.fasterxml.jackson.databind.ObjectMapper().readTree(bytes);
             var purpose = body.path("purpose").asText();
             var paths = body.path("paths");
-            if (!List.of("import", "directory", "export").contains(purpose)
+            if (!List.of("import", "directory", "export", "feature").contains(purpose)
                     || !paths.isArray() || paths.isEmpty() || paths.size() > 256) {
                 throw new IllegalArgumentException("Invalid native selection");
             }

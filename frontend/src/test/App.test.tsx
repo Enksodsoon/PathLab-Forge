@@ -140,6 +140,7 @@ vi.mock('../api', () => ({
     },
   ] })),
   installFeature: vi.fn(),
+  importFeature: vi.fn(),
   featureAction: vi.fn(),
   featureProgress: vi.fn(async () => ({ id: '', phase: 'IDLE', completedBytes: 0, totalBytes: 0, detail: '' })),
   disableFeature: vi.fn(),
@@ -205,6 +206,26 @@ test('reads cached feature metadata without refreshing the remote catalog', asyn
   expect(await screen.findByRole('heading', { name: 'Feature Center' })).toBeVisible()
   expect(api.features).toHaveBeenCalledWith(false)
   expect(screen.getByText('Pathology Tools')).toBeVisible()
+})
+
+test('imports signed native-selected feature files without Viewer pairing and keeps cancellation local', async () => {
+  const previous = window.forgeDesktop
+  const files = { catalogPath: 'C:\\approved\\catalog.json', archivePath: 'C:\\approved\\tools.zip' }
+  const selectFeatureFiles = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(files)
+  window.forgeDesktop = { selectSources: vi.fn(), selectFeatureFiles, selectDirectory: vi.fn(), selectExportDestination: vi.fn(), revealPath: vi.fn(), openExternal: vi.fn(), onCommand: vi.fn(() => () => {}) }
+  vi.mocked(api.importFeature).mockClear()
+  try {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Feature Center' }))
+    const button = await screen.findByRole('button', { name: 'Import signed feature pack' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(api.importFeature).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    await waitFor(() => expect(api.importFeature).toHaveBeenCalledWith(files))
+    expect(api.features).not.toHaveBeenCalledWith(true)
+  } finally { window.forgeDesktop = previous }
 })
 
 test('disables an installed feature without uninstalling its files', async () => {
@@ -1257,7 +1278,7 @@ test('uses direct OME stages instead of DZI packaging stages during conversion',
     '/api/datasets/direct-converting/series/0/thumbnail?v=direct-converting-source',
   )
   expect(screen.getByRole('progressbar', { name: 'Direct converting.vsi library conversion progress' })).toHaveValue(33)
-  expect(screen.getByRole('region', { name: 'Conversion workflow' })).toBeVisible()
+  expect(await screen.findByRole('region', { name: 'Conversion workflow' })).toBeVisible()
 })
 
 test('opens a thumbnail queue list before starting ready conversions', async () => {
@@ -1911,7 +1932,7 @@ it('clears old account pixels and ignores a pending library response after disco
 it('opens Viewer approval through the native approved-origin handler and surfaces rejection', async () => {
   const previous = window.forgeDesktop
   const openExternal = vi.fn().mockRejectedValue(new Error('Viewer origin is not approved'))
-  window.forgeDesktop = { selectSources: vi.fn(), selectDirectory: vi.fn(), selectExportDestination: vi.fn(), revealPath: vi.fn(), openExternal, onCommand: vi.fn(() => () => {}) }
+  window.forgeDesktop = { selectSources: vi.fn(), selectFeatureFiles: vi.fn(), selectDirectory: vi.fn(), selectExportDestination: vi.fn(), revealPath: vi.fn(), openExternal, onCommand: vi.fn(() => () => {}) }
   vi.mocked(api.exchangeViewerPairing).mockReset().mockRejectedValue(new Error('pairing_pending'))
   try {
     render(<App />)

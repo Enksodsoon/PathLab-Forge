@@ -90,6 +90,14 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
     const result = await dialog.showOpenDialog(window, { title: 'Open slide sources', properties: ['openFile', 'multiSelections'] });
     return result.canceled ? [] : remember(result.filePaths, 'import');
   });
+  handle('forge:select-feature-files', async () => {
+    const catalog = await dialog.showOpenDialog(window, { title: 'Open signed feature catalog', properties: ['openFile'], filters: [{ name: 'Signed catalog', extensions: ['json'] }] });
+    if (catalog.canceled || catalog.filePaths.length !== 1) return null;
+    const archive = await dialog.showOpenDialog(window, { title: 'Open feature pack', properties: ['openFile'], filters: [{ name: 'Feature pack', extensions: ['zip'] }] });
+    if (archive.canceled || archive.filePaths.length !== 1) return null;
+    const paths = await remember([catalog.filePaths[0], archive.filePaths[0]], 'feature');
+    return { catalogPath: paths[0], archivePath: paths[1] };
+  });
   handle('forge:select-directory', async () => {
     const result = await dialog.showOpenDialog(window, { title: 'Open slide folder', properties: ['openDirectory'] });
     return result.canceled ? null : (await remember(result.filePaths, 'directory'))[0];
