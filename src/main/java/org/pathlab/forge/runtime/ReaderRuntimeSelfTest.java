@@ -94,9 +94,14 @@ public final class ReaderRuntimeSelfTest {
         var packaged = inventory.stream().filter(item -> item.source().equals("PACKAGED"))
                 .map(ReaderRuntimeInventory.Status::fingerprint).filter(value -> !value.isBlank())
                 .findFirst().orElse("");
+        var rss = ProcessTreeMemory.snapshot();
         return "{\"status\":\"PASS\",\"platform\":" + quote(ReaderRuntimeManifest.currentPlatform())
                 + ",\"runtimeFingerprint\":" + quote(packaged)
-                + ",\"containedProcesses\":true,\"scientificFormats\":" + scientificFormats
+                + ",\"containedProcesses\":" + (ChildProcessContainment.global().mode().equals("WINDOWS_JOB_MEMORY_LIMIT") && rss.complete())
+                + ",\"containmentMode\":" + quote(ChildProcessContainment.global().mode())
+                + ",\"rssMeasuredProcesses\":" + rss.measuredProcesses()
+                + ",\"rssTotalProcesses\":" + rss.totalProcesses()
+                + ",\"scientificFormats\":" + scientificFormats
                 + ",\"ordinaryFormats\":" + ordinaryFormats + ",\"sources\":["
                 + results.stream().map(Result::json).collect(java.util.stream.Collectors.joining(","))
                 + "]}";

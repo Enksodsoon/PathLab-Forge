@@ -314,6 +314,8 @@ tasks.register<Sync>("stageElectronService") {
     val serviceWindows = hostWindows
     val serviceArchitecture = hostArchitecture
     val serviceOrigin = viewerOrigin.orNull
+    val serviceChannel = providers.gradleProperty("pathlab.forge.distributionChannel").orNull
+    if (serviceChannel == "PRODUCTION") dependsOn("verifyReaderRuntimeBundle")
     into(layout.projectDirectory.dir("desktop/resources/service"))
     from(layout.buildDirectory.dir("install/${project.name}/lib")) { into("lib") }
     from(System.getProperty("java.home")) { into("runtime") }
@@ -322,11 +324,17 @@ tasks.register<Sync>("stageElectronService") {
             "Unsupported packaged service platform: $servicePlatform"
         }
         require(JavaVersion.current() == JavaVersion.VERSION_17) { "Package service with Java 17" }
+        require(serviceChannel in listOf("INTERNAL", "PRODUCTION")) {
+            "Explicit pathlab.forge.distributionChannel=INTERNAL or PRODUCTION is required"
+        }
     }
     doLast {
-        val manifest = mutableMapOf<String, String>(
+        val manifest = mutableMapOf<String, Any>(
             "platform" to if (serviceWindows) "win32" else "darwin",
-            "arch" to if (serviceArchitecture == "arm64") "arm64" else "x64")
+            "arch" to if (serviceArchitecture == "arm64") "arm64" else "x64",
+            "internalValidation" to (serviceChannel == "INTERNAL"),
+            "distribution" to if (serviceChannel == "INTERNAL") "INTERNAL_NON_REDISTRIBUTABLE" else "PRODUCTION",
+            "requireProductionRuntime" to (serviceChannel == "PRODUCTION"))
         serviceOrigin?.let { origin ->
             val uri = URI(origin)
             require(uri.scheme == "https" && uri.host != null && uri.userInfo == null) {
