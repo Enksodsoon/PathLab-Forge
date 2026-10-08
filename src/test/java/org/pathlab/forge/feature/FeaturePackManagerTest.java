@@ -71,6 +71,27 @@ final class FeaturePackManagerTest {
         assertThrows(IOException.class, restarted::refresh, "Offline import grants no Viewer credentials or network privileges");
     }
 
+    @Test void offlineImportNeverDeletesSelectedInputsInItsManagedCleanupPaths() throws Exception {
+        var zip = archive(false, null);
+        var signed = envelope(List.of(descriptor("1.0.0", zip)));
+        for (var collision : List.of("partial-archive", "staging-archive", "staging-catalog")) {
+            var dataRoot = temp.resolve(collision);
+            var root = dataRoot.resolve("feature-packs");
+            var staging = root.resolve(".pathology-tools-1.0.0.staging");
+            Files.createDirectories(staging);
+            var catalog = collision.equals("staging-catalog") ? staging.resolve("catalog.json") : dataRoot.resolve("catalog.json");
+            var selected = collision.equals("partial-archive") ? root.resolve("pathology-tools.download.partial")
+                    : collision.equals("staging-archive") ? staging.resolve("pack.zip") : dataRoot.resolve("pack.zip");
+            Files.write(catalog, signed); Files.write(selected, zip);
+            var manager = new FeaturePackManager(dataRoot);
+            var error = assertThrows(IOException.class, () -> manager.importPack(catalog, selected), collision);
+            assertTrue(error.getMessage().contains("outside Forge's managed feature directory"), collision);
+            assertArrayEquals(signed, Files.readAllBytes(catalog), collision);
+            assertArrayEquals(zip, Files.readAllBytes(selected), collision);
+            assertTrue(manager.activeVersion("pathology-tools").isEmpty(), collision);
+        }
+    }
+
     @Test void offlineImportRejectsUntrustedAndUnsafeFilesWithoutChangingActiveVersion() throws Exception {
         var good = archive(false, null); var catalogFile = temp.resolve("catalog.json"); var archiveFile = temp.resolve("pack.zip");
         Files.write(archiveFile, good); Files.write(catalogFile, envelope(List.of(descriptor("1.0.0", good))));

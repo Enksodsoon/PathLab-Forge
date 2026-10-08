@@ -163,7 +163,18 @@ public final class FeaturePackManager {
     /** Native selected files; the signed catalog and actual ZIP bytes determine the pack identity. */
     public FeaturePackDescriptor importPack(Path signedCatalog, Path selectedArchive) throws IOException {
         if (signedCatalog == null || selectedArchive == null) throw new IOException("Select a signed catalog and its approved pack archive");
+        requireExternalImportFile(signedCatalog);
+        requireExternalImportFile(selectedArchive);
         return install("offline-import", signedCatalog, selectedArchive);
+    }
+
+    private void requireExternalImportFile(Path selected) throws IOException {
+        org.pathlab.forge.runtime.DataRootLock.requireSafePath(root);
+        org.pathlab.forge.runtime.DataRootLock.requireSafePath(selected);
+        var normalized = selected.toAbsolutePath().normalize();
+        var managed = Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS) ? root.toRealPath() : root;
+        if (normalized.startsWith(root) || normalized.toRealPath().startsWith(managed))
+            throw new IOException("Select feature files outside Forge's managed feature directory");
     }
 
     private FeaturePackDescriptor install(String id, Path signedCatalog, Path selectedArchive) throws IOException {
