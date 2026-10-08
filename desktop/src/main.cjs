@@ -116,6 +116,11 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
     const args = ['-Xmx512m', '--enable-native-access=ALL-UNNAMED',
       `-Dpathlab.forge.runtime.requireProduction=${manifest.internalValidation !== true}`,
       `-Dpathlab.forge.readerDataRoot=${path.join(root, 'reader-data')}`];
+    if (manifest.featureCatalogPublicKey) {
+      const key = require('node:crypto').createPublicKey({ key: Buffer.from(manifest.featureCatalogPublicKey, 'base64'), format: 'der', type: 'spki' });
+      if (key.asymmetricKeyType !== 'ed25519') throw new Error('Installed feature catalog trust key is invalid');
+      args.push(`-Dpathlab.forge.featureCatalogPublicKey=${manifest.featureCatalogPublicKey}`);
+    } else if (manifest.internalValidation !== true) throw new Error('Production Forge is missing its approved feature catalog trust key. Reinstall the matching release.');
     if (manifest.viewerOrigin) {
       const viewer = new URL(manifest.viewerOrigin);
       if (viewer.protocol !== 'https:' || viewer.username || viewer.password || viewer.origin !== manifest.viewerOrigin) throw new Error('Invalid Viewer origin');
