@@ -74,7 +74,7 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
   const selectedRun = runs.find((run) => run.id === selectedRunId) || runs[0]
   const scoped = annotations.filter((annotation) => (annotation.series ?? -1) >= 0 && (annotation.z ?? -1) >= 0 && (annotation.t ?? -1) >= 0)
   const chosenRoi = scoped.find((annotation) => annotation.id === roi) || scoped.find((annotation) => annotation.id === selectedAnnotationId) || scoped[0]
-  const closed = chosenRoi && ['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'brush_subtract'].includes(chosenRoi.type)
+  const closed = chosenRoi && ['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'roi_mask'].includes(chosenRoi.type)
   const active = runs.some((run) => ['QUEUED', 'RUNNING'].includes(run.status))
   useEffect(() => { setRoi(selectedAnnotationId || ''); setSelectedRunId('') }, [datasetId, selectedAnnotationId])
   useEffect(() => {

@@ -931,6 +931,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
 
     private static String geometryJson(
             String type, String geometry, String label, int width, int height) {
+        if ("roi_mask".equals(type)) throw new IllegalArgumentException("Contour masks require private result delivery; legacy Viewer annotation sync cannot preserve holes");
         var points = Arrays.stream(geometry.split(";"))
                 .map(value -> value.split(",", -1))
                 .map(value -> new double[] {

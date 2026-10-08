@@ -590,6 +590,12 @@ export async function deleteAnnotation(id: string, annotationId: string) {
   )
 }
 
+export async function composeBrush(id: string, parentId: string, operation: 'brush_add' | 'brush_subtract', geometry: string, revision: number, configurationRevision: string) {
+  return request<AnnotationRecord>(`/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(parentId)}/brush`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation, geometry, revision, configurationRevision }),
+  })
+}
+
 export async function updateAnnotation(id: string, annotation: AnnotationRecord,
   values: { geometry?: string; label?: string; color?: string }) {
   const query = new URLSearchParams({ geometry: values.geometry ?? annotation.geometry,

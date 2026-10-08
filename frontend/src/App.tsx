@@ -777,6 +777,14 @@ export function App() {
     } catch (failure) { setError(message(failure)) }
   }
 
+  const composeLocalBrush = async (parentId: string, operation: 'brush_add' | 'brush_subtract', geometry: string, revision: number) => {
+    if (!selected) return
+    try {
+      const updated = await api.composeBrush(selected.id, parentId, operation, geometry, revision, selected.configurationRevision)
+      setAnnotationsByDataset((current) => ({ ...current, [selected.id]: (current[selected.id] || []).map((item) => item.id === parentId ? updated : item) }))
+    } catch (failure) { setError(message(failure)) }
+  }
+
   useEffect(() => {
     if (!viewerUpload || !['UPLOADING', 'VERIFYING_OME', 'SYNCING_RESULTS', 'RETRYING']
       .includes(viewerUpload.state)) return
@@ -971,6 +979,7 @@ export function App() {
               viewer={viewer}
               onViewer={setViewer}
               onCreateAnnotation={createLocalAnnotation}
+              onComposeBrush={composeLocalBrush}
               selectedAnnotationId={selectedAnnotationId}
               onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
               onUpdateAnnotation={(id, geometry) => void updateLocalAnnotation(id, { geometry })}
@@ -2038,6 +2047,7 @@ function ViewerStage({
   viewer,
   onViewer,
   onCreateAnnotation,
+  onComposeBrush,
   selectedAnnotationId,
   onSelectAnnotation,
   onUpdateAnnotation,
@@ -2060,6 +2070,7 @@ function ViewerStage({
   viewer: OpenSeadragon.Viewer | null
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
   onCreateAnnotation: (geometry: string) => void
+  onComposeBrush?: (parentId: string, operation: 'brush_add' | 'brush_subtract', geometry: string, revision: number) => void
   selectedAnnotationId: string
   onSelectAnnotation: (id: string) => void
   onUpdateAnnotation: (id: string, geometry: string) => void
@@ -2144,6 +2155,7 @@ function ViewerStage({
             ? revision.downsample ?? dataset?.downsample ?? 1
             : 0}
           onCreate={onCreateAnnotation}
+          onComposeBrush={onComposeBrush}
           selectedAnnotationId={selectedAnnotationId}
           onSelect={onSelectAnnotation}
           onUpdate={onUpdateAnnotation}

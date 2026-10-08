@@ -626,6 +626,9 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/measurements.csv")
                     && "GET".equals(exchange.getRequestMethod())) {
                 annotationMeasurementsCsv(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+/brush")
+                    && "POST".equals(exchange.getRequestMethod())) {
+                composeBrush(exchange, path);
             } else if (path.matches("/api/datasets/[^/]+/annotations/[^/]+")
                     && "PATCH".equals(exchange.getRequestMethod())) {
                 updateAnnotation(exchange, path);
@@ -2951,6 +2954,34 @@ public final class ForgeServer implements AutoCloseable {
                     "application/json",
                     "{\"error\":\"ome_preview_not_ready\",\"detail\":"
                             + json(error.getMessage()) + "}");
+        }
+    }
+
+    private void composeBrush(HttpExchange exchange, String path) throws IOException {
+        if (!requireWriteHeaders(exchange)) return;
+        var identifiers = annotationIdentifiers(path, "/brush");
+        try {
+            var body = org.pathlab.forge.study.StudyPackCanonicalJson.mapper().readTree(boundedAnalysisBody(exchange));
+            var dataset = repository.find(identifiers[0]).orElseThrow(() -> new IllegalArgumentException("Dataset was not found"));
+            if (!dataset.configurationRevision().equals(body.path("configurationRevision").asText()))
+                throw new IllegalStateException("The source view changed during the brush gesture");
+            var scope = annotationScope(dataset);
+            var series = conversionService.series(dataset.id()).stream().filter(item -> item.index() == scope.series()).findFirst().orElseThrow();
+            var parent = annotationRepository.list(dataset.id()).stream().filter(item -> item.id().equals(identifiers[1])).findFirst().orElseThrow();
+            var bounds = org.pathlab.forge.analysis.MaskContours.shape(parent.type(), parent.geometry()).getBounds2D();
+            if (bounds.getMinX() < 0 || bounds.getMinY() < 0 || bounds.getMaxX() > series.width() || bounds.getMaxY() > series.height())
+                throw new IllegalArgumentException("Selected ROI is outside this source series");
+            var stroke = body.path("geometry").asText();
+            for (var point : org.pathlab.forge.analysis.MaskContours.coordinates(stroke))
+                if (point.x() < 0 || point.y() < 0 || point.x() > series.width() || point.y() > series.height())
+                    throw new IllegalArgumentException("Brush stroke is outside this source series");
+            var updated = annotationRepository.composeBrush(dataset.id(), parent.id(), body.path("revision").asLong(-1),
+                    body.path("operation").asText(), stroke, scope.series(), scope.z(), scope.t(), scope.viewRevision());
+            respond(exchange, 200, "application/json", annotationJson(updated));
+        } catch (IllegalArgumentException error) {
+            respond(exchange, 422, "application/json", "{\"error\":\"invalid_brush\",\"detail\":" + json(error.getMessage()) + "}");
+        } catch (IllegalStateException | IOException | java.util.NoSuchElementException error) {
+            respond(exchange, 409, "application/json", "{\"error\":\"brush_conflict\",\"detail\":" + json(error.getMessage()) + "}");
         }
     }
 
