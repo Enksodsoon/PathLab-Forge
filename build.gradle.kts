@@ -322,10 +322,12 @@ tasks.register<Sync>("stageElectronService") {
     val serviceArchitecture = hostArchitecture
     val serviceOrigin = viewerOrigin.orNull
     val serviceChannel = providers.gradleProperty("pathlab.forge.distributionChannel").orNull
+    val serviceVersion = project.version.toString()
+    val desktopMetadata = layout.projectDirectory.file("desktop/package.json").asFile
     inputs.property("distributionChannel", serviceChannel ?: "MISSING")
     inputs.property("viewerOrigin", serviceOrigin ?: "MISSING")
     inputs.property("featureCatalogPublicKey", featureCatalogPublicKey.orNull ?: "MISSING")
-    inputs.property("serviceVersion", project.version.toString())
+    inputs.property("serviceVersion", serviceVersion)
     inputs.property("servicePlatform", servicePlatform)
     if (serviceChannel == "PRODUCTION") dependsOn("verifyReaderRuntimeBundle")
     into(layout.projectDirectory.dir("desktop/resources/service"))
@@ -336,8 +338,8 @@ tasks.register<Sync>("stageElectronService") {
             "Unsupported packaged service platform: $servicePlatform"
         }
         require(JavaVersion.current() == JavaVersion.VERSION_17) { "Package service with Java 17" }
-        val desktopVersion = (JsonSlurper().parse(file("desktop/package.json")) as Map<*, *>)["version"]
-        require(project.version.toString() == desktopVersion) { "Java and Electron release versions must match" }
+        val desktopVersion = (JsonSlurper().parse(desktopMetadata) as Map<*, *>)["version"]
+        require(serviceVersion == desktopVersion) { "Java and Electron release versions must match" }
         require(serviceChannel in listOf("INTERNAL", "PRODUCTION")) {
             "Explicit pathlab.forge.distributionChannel=INTERNAL or PRODUCTION is required"
         }
@@ -350,7 +352,7 @@ tasks.register<Sync>("stageElectronService") {
     }
     doLast {
         val manifest = mutableMapOf<String, Any>(
-            "version" to project.version.toString(),
+            "version" to serviceVersion,
             "platform" to if (serviceWindows) "win32" else "darwin",
             "arch" to if (serviceArchitecture == "arm64") "arm64" else "x64",
             "internalValidation" to (serviceChannel == "INTERNAL"),
