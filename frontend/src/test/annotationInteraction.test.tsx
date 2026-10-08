@@ -33,6 +33,17 @@ function click(x: number, y: number) { emit('canvas-press', x, y); emit('canvas-
 afterEach(() => { cleanup(); handlers.clear() })
 
 describe('annotation gesture capture', () => {
+  it('projects reviewed objects through crop and downsample as read-only geometry', () => {
+    const onSelect = vi.fn(), onUpdate = vi.fn()
+    render(<SlideViewer tileSource="slide.dzi" sourceWidth={1000} sourceHeight={1000}
+      cropX={100} cropY={200} downsample={2} activeTool="select" onSelect={onSelect} onUpdate={onUpdate}
+      analysisOverlays={[{ id: 'run:core', type: 'rectangle', geometry: '120,220;140,260', label: 'Reviewed core', color: '#39c7a3' }]} />)
+    const shape = screen.getByLabelText('Reviewed core')
+    expect(shape.querySelector('path')?.getAttribute('d')).toBe('M10,10h10v20h-10Z')
+    fireEvent.pointerDown(shape)
+    fireEvent.keyDown(shape, { key: 'ArrowRight' })
+    expect(onSelect).not.toHaveBeenCalled(); expect(onUpdate).not.toHaveBeenCalled()
+  })
   it('captures polygon and angle vertices without fabricated corners, with Escape and Enter', () => {
     const onCreate = vi.fn()
     const { rerender } = render(<SlideViewer tileSource="slide.dzi" sourceWidth={100} sourceHeight={100} activeTool="polygon" onCreate={onCreate} />)

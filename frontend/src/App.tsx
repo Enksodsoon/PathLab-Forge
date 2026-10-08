@@ -53,7 +53,7 @@ import type {
   ViewerPairing,
 } from './api'
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
-import { SlideViewer } from './SlideViewer'
+import { SlideViewer, type AnalysisOverlayShape } from './SlideViewer'
 import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
 import { StudyAuthoring, type StudyDraftRecord } from './StudyAuthoring'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
@@ -95,6 +95,9 @@ export function App() {
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
   const [analysisRuns, setAnalysisRuns] = useState<DeterministicRun[]>([])
   const [exportRunId, setExportRunId] = useState('')
+  const [analysisOverlay, setAnalysisOverlay] = useState<{ context: string; runId: string; shapes: AnalysisOverlayShape[] } | null>(null)
+  const [overlayPage, setOverlayPage] = useState(0)
+  const analysisContext = useRef('')
   const [cropDrafts, setCropDrafts] = useState<Record<string, CropBox>>(() => {
     try {
       return JSON.parse(window.localStorage.getItem('pathlab-forge-crop-drafts-v1') || '{}')
@@ -162,6 +165,8 @@ export function App() {
     } catch (cause) { if (epoch === remoteEpoch.current) setError(viewerConnectionMessage(cause)) }
   }
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
+  analysisContext.current = `${selected?.id}|${selected?.viewRevision}|${selected?.configurationRevision}`
+  const overlayRun = analysisRuns.find((run) => run.id === analysisOverlay?.runId)
   const selectedRemote = remoteLibrary.items.find((item) => item.id === selectedRemoteId)
     ?? remoteLibrary.items[0]
   const cropDraft = selected ? cropDrafts[selected.id] : undefined
@@ -185,6 +190,26 @@ export function App() {
   const selectedAnnotations = selected
     ? annotationsByDataset[selected.id] ?? NO_ANNOTATIONS
     : NO_ANNOTATIONS
+  const overlayRoi = selectedAnnotations.find((annotation) => annotation.id === overlayRun?.annotationId)
+  const visibleAnalysisOverlays = analysisOverlay?.context === analysisContext.current && overlayRun?.status === 'SUCCEEDED'
+    && !overlayRun.stale && overlayRoi?.revision === overlayRun.provenance.annotationRevision
+    && overlayRoi.geometry === overlayRun.provenance.annotationGeometry ? analysisOverlay.shapes : []
+  const showAnalysisObjects = async (requested: DeterministicRun) => {
+    const context = analysisContext.current
+    try {
+      const [runs, review] = await Promise.all([api.analysisRuns(requested.datasetId), api.analysisReview(requested.id)])
+      if (analysisContext.current !== context) return
+      const run = runs.find((item) => item.id === requested.id)
+      if (!run || run.status !== 'SUCCEEDED' || run.stale) throw new Error('Result changed; rerun against the current source and ROI.')
+      const shapes = review.objects.map((object) => ({
+        id: `${run.id}:${object.id}`, type: object.kind === 'TMA_CORE' ? 'rectangle' : 'point',
+        geometry: object.geometry, label: `${object.classification || object.kind} ${object.properties.missing === 'true' ? '(missing)' : object.properties.accepted === 'false' ? '(rejected)' : '(candidate)'}`,
+        color: object.properties.missing === 'true' || object.properties.accepted === 'false' ? '#d75667' : '#39c7a3',
+      }))
+      setAnalysisRuns(runs); setAnalysisOverlay({ context, runId: run.id, shapes }); setOverlayPage(0); setActiveTool('pan')
+      setNotice(`Inspecting ${shapes.length} saved objects on the slide. Review corrections in Tools; exports retain every object.`)
+    } catch (cause) { if (analysisContext.current === context) setError(message(cause)) }
+  }
 
   useEffect(() => {
     if (!selected || selected.width <= 0 || selected.height <= 0) {
@@ -527,7 +552,7 @@ export function App() {
     }, 5_000)
     return () => { stopped = true; window.clearInterval(timer) }
   }, [libraryMode, connection?.connected, connection?.viewerUrl, connection?.deviceName, connection?.connectionRevision])
-  useEffect(() => { setExportRunId('') }, [selected?.id, selected?.viewRevision, selected?.configurationRevision])
+  useEffect(() => { setExportRunId(''); setAnalysisOverlay(null) }, [selected?.id, selected?.viewRevision, selected?.configurationRevision])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -909,6 +934,10 @@ export function App() {
               cropEditing={cropEditing}
               onCropChange={setCropDraft}
               annotations={selectedAnnotations}
+              analysisOverlays={visibleAnalysisOverlays}
+              overlayPage={overlayPage}
+              onOverlayPage={setOverlayPage}
+              onClearAnalysis={() => setAnalysisOverlay(null)}
               activeTool={activeTool}
               viewer={viewer}
               onViewer={setViewer}
@@ -976,7 +1005,13 @@ export function App() {
                   ? ['he', 'stain_vector', 'normalize_preview', 'tma'] : pack.id === 'classical-analysis'
                     ? ['tissue', 'qc', 'nucleus_candidates', 'registration'] : [])}
                 onSubmit={api.submitAnalysis} onCancel={api.cancelAnalysis} onRefresh={refreshAnalysis}
-                onLoadReview={api.analysisReview} onSaveReview={api.saveAnalysisReview}
+                onLoadReview={api.analysisReview} onSaveReview={async (id, review) => {
+                  const saved = await api.saveAnalysisReview(id, review)
+                  const run = analysisRuns.find((item) => item.id === id)
+                  if (run && analysisOverlay?.runId === id) await showAnalysisObjects(run)
+                  return saved
+                }}
+                onShowObjects={(run) => void showAnalysisObjects(run)}
                 onLoadTargetAnnotations={api.annotations}
                 onExport={(id) => {
                   if (window.forgeDesktop) setExportRunId(id)
@@ -1907,6 +1942,10 @@ function ViewerStage({
   cropEditing,
   onCropChange,
   annotations,
+  analysisOverlays,
+  overlayPage,
+  onOverlayPage,
+  onClearAnalysis,
   activeTool,
   viewer,
   onViewer,
@@ -1924,6 +1963,10 @@ function ViewerStage({
   cropEditing: boolean
   onCropChange: (box: CropBox) => void
   annotations: AnnotationRecord[]
+  analysisOverlays: AnalysisOverlayShape[]
+  overlayPage: number
+  onOverlayPage: (page: number) => void
+  onClearAnalysis: () => void
   activeTool: string
   viewer: OpenSeadragon.Viewer | null
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
@@ -1967,6 +2010,12 @@ function ViewerStage({
           <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
           <span>{dataset ? `${datasetFormatLabel(dataset.format)} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
+        {analysisOverlays.length ? <button type="button" onClick={onClearAnalysis}>Clear analysis overlay</button> : null}
+        {analysisOverlays.length > 2000 ? <span aria-label="Analysis overlay pages">
+          <button type="button" disabled={overlayPage === 0} onClick={() => onOverlayPage(overlayPage - 1)}>Previous objects</button>
+          <span>{overlayPage * 2000 + 1}–{Math.min((overlayPage + 1) * 2000, analysisOverlays.length)} of {analysisOverlays.length}</span>
+          <button type="button" disabled={(overlayPage + 1) * 2000 >= analysisOverlays.length} onClick={() => onOverlayPage(overlayPage + 1)}>Next objects</button>
+        </span> : null}
         <button
           type="button"
           aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
@@ -1991,6 +2040,7 @@ function ViewerStage({
           cropEditing={cropEditing}
           onCropChange={onCropChange}
           annotations={annotations}
+          analysisOverlays={analysisOverlays.slice(overlayPage * 2000, (overlayPage + 1) * 2000)}
           sourceWidth={dataset?.width || 1}
           sourceHeight={dataset?.height || 1}
           cropX={revision && ['READY', 'APPROVED'].includes(revision.status)

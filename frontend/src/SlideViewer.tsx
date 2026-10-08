@@ -34,6 +34,7 @@ interface CropPointerGesture {
   start: OpenSeadragon.Point
   initial: CropBox
 }
+export type AnalysisOverlayShape = Pick<AnnotationRecord, 'id' | 'type' | 'geometry' | 'label' | 'color'>
 
 export const SlideViewer = memo(function SlideViewer({
   tileSource,
@@ -42,6 +43,7 @@ export const SlideViewer = memo(function SlideViewer({
   cropEditing = false,
   onCropChange,
   annotations = [],
+  analysisOverlays = [],
   sourceWidth = 1,
   sourceHeight = 1,
   cropX = 0,
@@ -59,6 +61,7 @@ export const SlideViewer = memo(function SlideViewer({
   cropEditing?: boolean
   onCropChange?: (box: CropBox) => void
   annotations?: AnnotationRecord[]
+  analysisOverlays?: AnalysisOverlayShape[]
   sourceWidth?: number
   sourceHeight?: number
   cropX?: number
@@ -569,6 +572,16 @@ export const SlideViewer = memo(function SlideViewer({
                   fill={['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'brush_subtract'].includes(annotation.type) ? annotation.color : 'none'} fillOpacity="0.12" />}
             {selected && selectable ? points.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="5" fill="white"
               {...common} onPointerDown={(event) => beginEdit(event, annotation, index)} />) : null}
+          </g>
+        })}
+        {analysisOverlays.map((shape) => {
+          const points = parseGeometry(shape.geometry)
+          if (!validGeometry(shape.type, points)) return null
+          const projected = points.map(project)
+          return <g key={shape.id} aria-label={shape.label} stroke={shape.color} strokeWidth="2" fill="none" data-analysis-overlay={shape.id}>
+            <title>{shape.label}</title>
+            {shape.type === 'point' ? <circle cx={projected[0].x} cy={projected[0].y} r="5" />
+              : <path d={shapePath(shape.type, projected)} vectorEffect="non-scaling-stroke" />}
           </g>
         })}
         {draft.length ? <path d={shapePath(activeTool, draft.map(project))} stroke="#f3b33d" strokeWidth="2" fill="none" strokeDasharray="5 3" /> : null}
