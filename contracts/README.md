@@ -9,7 +9,7 @@ Current Forge contract checks and fixtures:
 - `src/test/java/org/pathlab/forge/viewer/ViewerCapabilitiesTest.java`: negotiated formats, profiles, limits and ingest-creation idempotency.
 - `src/test/resources/viewer-sync-v1`: snapshot, change, mutation, conflict and retained-content fixtures.
 - `src/test/resources/study/viewer-v1.json` and `viewer-v1.checksum`: `pathlab.study-pack/1` canonical content and checksum.
-- `src/test/resources/study/viewer-authoritative-v1.json`: byte-identical to Viewer `tests/fixtures/study/viewer-v1.json` at scoped compatibility commit `a55cf3a0`, SHA-256 `94a592c1d71abeb4bd48a76cc178a124f564c00d2c9cf85cc049db59d72832fb`. Java validates its exact canonical checksum alongside the additional manual/spatial fixture.
+- `src/test/resources/study/viewer-authoritative-v1.json`: byte-identical to the committed Viewer `tests/fixtures/study/viewer-v1.json` at scoped compatibility commit `a55cf3a0`, SHA-256 `c39c96744302120d336239ad839a506028e6df85513fba699f570d3d3c1e722f`. Explicit LF checkout preserves those source bytes on Windows. Java validates its exact canonical checksum alongside the additional manual/spatial fixture.
 - `src/test/resources/study/canonical-numbers.json` and `canonical-numbers.txt`: cross-language numeric canonicalization.
 - `PrivateResultsBundleBuilderTest`: immutable original run/ROI/review identity, geometry transforms and exact result hashes.
 

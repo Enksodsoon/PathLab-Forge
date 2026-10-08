@@ -14,7 +14,10 @@ final class StudyAuthoringServiceTest {
     }
     private static String resource(String name)throws Exception{return new String(StudyAuthoringServiceTest.class.getResourceAsStream("/study/"+name).readAllBytes(),StandardCharsets.UTF_8);}
     @Test void matchesCurrentViewerCanonicalChecksumAndCoordinateScoring()throws Exception{
-        var authoritative = StudyPackCanonicalJson.parse(resource("viewer-authoritative-v1.json"));
+        var authoritativeText = resource("viewer-authoritative-v1.json");
+        assertEquals("c39c96744302120d336239ad839a506028e6df85513fba699f570d3d3c1e722f",
+                java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(authoritativeText.getBytes(StandardCharsets.UTF_8))));
+        var authoritative = StudyPackCanonicalJson.parse(authoritativeText);
         assertEquals("fb78ac6fdb525faba001395a6a155ef0fe399d481c1deae7c376311e661f0bd2", StudyPackCanonicalJson.checksum(authoritative));
         StudyAuthoringService.validateApproved(authoritative);
         var approved=StudyPackCanonicalJson.parse(resource("viewer-v1.json"));
