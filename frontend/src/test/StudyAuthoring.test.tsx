@@ -29,3 +29,11 @@ it('serializes edits arriving during a pending autosave without losing the lates
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ title: 'Latest' }) }), 5))
   expect(screen.getByLabelText('Title')).toHaveValue('Latest')
 })
+
+it('requires successful slide readiness in addition to a render callback for faculty review', () => {
+  const callbacks = props(vi.fn())
+  const { rerender } = render(<StudyAuthoring {...callbacks} renderSlide={() => <div>Loading pixels</div>} />)
+  expect(screen.getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeDisabled()
+  rerender(<StudyAuthoring {...callbacks} renderSlide={() => <div>Exact pixels ready</div>} canPreviewSlide={() => true} />)
+  expect(screen.getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeEnabled()
+})

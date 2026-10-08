@@ -29,6 +29,7 @@ export interface StudyAuthoringProps {
   onImportQuestions: (id: string, revision: number, format: string, text: string, slideId: string) => Promise<StudyDraftRecord>
   onExport: (id: string, format: 'json' | 'csv' | 'approved', checksum?: string) => void
   onPublish?: (checksum: string) => Promise<unknown>
+  canPreviewSlide?: (slide: StudySlide | undefined) => boolean
   renderSlide?: (slide: StudySlide | undefined, onLocation: (x: number, y: number) => void) => ReactNode
   onCaptureSpatial?: () => Promise<{ targetX: number; targetY: number; targetWidth: number; targetHeight: number }>
 }
@@ -117,6 +118,7 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
   const task = draft?.definition.tasks[taskIndex]
   const previewTask = draft?.definition.tasks[previewIndex]
   const previewReady = Boolean(draft?.previewChecksum)
+  const previewSlideReady = Boolean(previewTask && props.canPreviewSlide?.(draft?.definition.slides.find((slide) => slide.viewerSlideId === previewTask.slideId)))
   return <section aria-label="Offline Study Pack authoring" className="forge-inspector-section">
     <h2>Study Pack authoring</h2>
     <p>Author questions, locations, hints and explanations manually. Drafts, imports and faculty previews work offline.</p>
@@ -186,16 +188,16 @@ export function StudyAuthoring(props: StudyAuthoringProps) {
       <button type="button" disabled={busy} onClick={() => { void action(async () => { await flush(); if (server.current) adopt(await props.onPreview(server.current.id, server.current.revision)) }) }}>Open exact faculty preview</button>
       <button type="button" disabled={busy} onClick={() => { void action(async () => { await flush(); if (server.current) props.onExport(server.current.id, 'json') }) }}>Export local draft JSON</button>
       <button type="button" disabled={busy} onClick={() => { void action(async () => { await flush(); if (server.current) props.onExport(server.current.id, 'csv') }) }}>Export authored CSV</button>
-      {previewReady && previewTask ? <FacultyPreview draft={draft} task={previewTask} index={previewIndex} onIndex={setPreviewIndex} renderSlide={props.renderSlide} busy={busy}
+      {previewReady && previewTask ? <FacultyPreview draft={draft} task={previewTask} index={previewIndex} onIndex={setPreviewIndex} renderSlide={props.renderSlide} busy={busy} slideReady={previewSlideReady}
         onReviewed={() => { void action(async () => { if (server.current) { const next = await props.onReviewTask(server.current.id, server.current.revision, server.current.previewChecksum, previewTask.id); server.current = next; local.current = next; setDraft(next) } }) }} /> : null}
-      {previewReady ? <button type="button" disabled={busy || draft.reviewedTaskIds.length !== draft.definition.tasks.length} onClick={() => { void action(async () => { if (server.current) { const next = await props.onApprove(server.current.id, server.current.revision, server.current.previewChecksum); server.current = next; local.current = next; setDraft(next); setNotice('Immutable faculty-approved export saved locally.') } }) }}>Approve this exact version</button> : null}
+      {previewReady ? <button type="button" disabled={busy || !previewSlideReady || draft.reviewedTaskIds.length !== draft.definition.tasks.length} onClick={() => { void action(async () => { if (server.current) { const next = await props.onApprove(server.current.id, server.current.revision, server.current.previewChecksum); server.current = next; local.current = next; setDraft(next); setNotice('Immutable faculty-approved export saved locally.') } }) }}>Approve this exact version</button> : null}
       {draft.approvedChecksum ? <><button type="button" onClick={() => props.onExport(draft.id, 'approved', draft.approvedChecksum)}>Export approved Study Pack</button>
         {props.onPublish ? <button type="button" disabled={busy} onClick={() => { void action(async () => { await props.onPublish!(draft.approvedChecksum); setNotice('Viewer publication request completed.') }) }}>Publish approved pack to Viewer</button> : <p>The approved export stays local until an authorized Viewer publication is available.</p>}</> : null}
     </> : null}
   </section>
 }
 
-function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, busy }: { draft: StudyDraftRecord; task: StudyTask; index: number; onIndex: (index: number) => void; renderSlide?: StudyAuthoringProps['renderSlide']; onReviewed: () => void; busy: boolean }) {
+function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, busy, slideReady }: { draft: StudyDraftRecord; task: StudyTask; index: number; onIndex: (index: number) => void; renderSlide?: StudyAuthoringProps['renderSlide']; onReviewed: () => void; busy: boolean; slideReady: boolean }) {
   const [selectedOption, setSelectedOption] = useState('')
   const [location, setLocation] = useState({ x: .5, y: .5 })
   const [feedback, setFeedback] = useState('')
@@ -209,8 +211,8 @@ function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, 
     <p>Faculty key: {task.type === 'multiple-choice' ? task.answerKey : `${task.targetX}, ${task.targetY}; ${task.targetWidth} × ${task.targetHeight}; tolerance ${task.tolerance}`}</p>
     <p>{task.explanation}</p>{task.hints.map((hint, at) => <p key={at}>Hint {at + 1}: {hint}</p>)}
     {task.sources.map((source, at) => <p key={at}>{source.title} · {source.url}</p>)}
-    {!renderSlide ? <p role="status">Teaching slide preview is unavailable. Open its exact local artifact before confirming faculty review.</p> : null}
-    <button type="button" disabled={busy || !renderSlide} onClick={onReviewed}>I reviewed this task, key, hints and sources</button>
+    {!slideReady ? <p role="status">Teaching slide preview is unavailable. Open its exact local artifact before confirming faculty review.</p> : null}
+    <button type="button" disabled={busy || !slideReady} onClick={onReviewed}>I reviewed this task, key, hints and sources</button>
     <button type="button" disabled={index === 0} onClick={() => onIndex(index - 1)}>Previous task</button><button type="button" disabled={index + 1 >= draft.definition.tasks.length} onClick={() => onIndex(index + 1)}>Next task</button>
   </article>
 }
