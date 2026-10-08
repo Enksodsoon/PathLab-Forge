@@ -5,6 +5,10 @@ import org.gradle.jvm.tasks.Jar
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.security.KeyFactory
+import java.security.spec.X509EncodedKeySpec
+import java.util.Base64
 
 plugins {
     application
@@ -35,6 +39,7 @@ dependencies {
 
 val viewerOrigin = providers.gradleProperty("pathlab.forge.viewer.defaultOrigin")
     .orElse(providers.environmentVariable("PATHLAB_FORGE_VIEWER_DEFAULT_ORIGIN"))
+val featureCatalogPublicKey = providers.gradleProperty("pathlab.forge.featureCatalogPublicKey")
 
 application {
     mainClass = "org.pathlab.forge.ForgeApp"
@@ -328,6 +333,11 @@ tasks.register<Sync>("stageElectronService") {
         require(serviceChannel in listOf("INTERNAL", "PRODUCTION")) {
             "Explicit pathlab.forge.distributionChannel=INTERNAL or PRODUCTION is required"
         }
+        if (serviceChannel == "PRODUCTION") {
+            val encoded = featureCatalogPublicKey.orNull
+            require(!encoded.isNullOrBlank()) { "Production requires an approved feature catalog public key" }
+            KeyFactory.getInstance("Ed25519").generatePublic(X509EncodedKeySpec(Base64.getDecoder().decode(encoded)))
+        }
     }
     doLast {
         val manifest = mutableMapOf<String, Any>(
@@ -343,6 +353,43 @@ tasks.register<Sync>("stageElectronService") {
             }
             manifest["viewerOrigin"] = origin
         }
+        featureCatalogPublicKey.orNull?.let { manifest["featureCatalogPublicKey"] = it }
         destinationDir.resolve("runtime-manifest.json").writeText(JsonOutput.toJson(manifest) + "\n")
     }
+}
+
+tasks.register("distributionDependencies") {
+    group = "distribution"
+    description = "Inventories exact resolved Java artifacts and their embedded legal text; no license approval."
+    dependsOn(tasks.installDist)
+    doLast {
+        val output = layout.buildDirectory.dir("distribution-inputs").get().asFile
+        output.mkdirs()
+        val notices = output.resolve("java-notices")
+        notices.mkdirs()
+        val records = configurations.runtimeClasspath.get().resolvedConfiguration.resolvedArtifacts
+            .sortedBy { it.moduleVersion.id.toString() }.map { artifact ->
+                val digest = MessageDigest.getInstance("SHA-256").digest(artifact.file.readBytes())
+                    .joinToString("") { "%02x".format(it) }
+                val destination = notices.resolve(digest)
+                copy {
+                    from(zipTree(artifact.file))
+                    include("**/LICENSE*", "**/NOTICE*", "**/COPYING*", "**/license*", "**/notice*")
+                    into(destination)
+                }
+                mapOf("coordinate" to artifact.moduleVersion.id.toString(), "file" to artifact.file.name,
+                    "sha256" to digest, "decision" to "PENDING_REVIEW",
+                    "legalFiles" to destination.walkTopDown().filter { it.isFile }.map { it.relativeTo(output).invariantSeparatorsPath }.toList())
+            }
+        output.resolve("java-dependencies.json").writeText(JsonOutput.prettyPrint(JsonOutput.toJson(records)) + "\n")
+    }
+}
+
+tasks.register<Exec>("distributionInventory") {
+    group = "distribution"
+    description = "Creates clean-commit source and staged-byte receipts, explicitly NON_REDISTRIBUTABLE."
+    dependsOn("stageElectronService", "distributionDependencies")
+    environment("PATH", frontendPath)
+    commandLine("node", "scripts/distribution.cjs", "inventory", "build/distribution-inputs",
+        "desktop/resources/service", "${if (hostWindows) "win32" else "darwin"}-${if (hostArchitecture == "arm64") "arm64" else "x64"}")
 }
