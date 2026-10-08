@@ -514,11 +514,8 @@ export function App() {
     const selectedIds = new Set(ids)
     const candidates = datasets.filter((item) => selectedIds.has(item.id) && QUEUEABLE_STATUSES.has(item.status))
     if (!candidates.length) return
-    setNotice(`Preparing ${candidates.length} slides for the adaptive queue…`)
+    setNotice(`Saving ${candidates.length} slides to the durable queue…`)
     try {
-      for (const candidate of candidates) if (candidate.selectedSeries < 0) {
-        try { await api.inspectDataset(candidate.id) } catch { /* Keep invalid items in the durable per-slide report. */ }
-      }
       const batch = await api.createBatch(candidates.map((candidate) => candidate.id))
       setSavedBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)])
       setBatchReportsOpen(true); await refresh()
