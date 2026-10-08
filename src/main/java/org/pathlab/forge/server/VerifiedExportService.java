@@ -22,6 +22,23 @@ final class VerifiedExportService implements AutoCloseable {
     record State(String id, String status, long completedBytes, long totalBytes, String destination, String detail) {}
 
     synchronized State submit(Path source, String expectedHash, Path destination) throws IOException {
+        return submit(source, expectedHash, destination, false);
+    }
+    synchronized State submitBytes(byte[] bytes, Path destination) throws IOException {
+        if (bytes.length > 16 * 1024 * 1024) throw new IOException("Result export exceeds bounded size; export a smaller selection");
+        if (active()) throw new IllegalStateException("An export is active");
+        var source = Files.createTempFile("forge-result-export-", ".partial");
+        try {
+            Files.write(source, bytes);
+            var digest = MessageDigest.getInstance("SHA-256");
+            return submit(source, HexFormat.of().formatHex(digest.digest(bytes)), destination, true);
+        } catch (IOException | RuntimeException | NoSuchAlgorithmException error) {
+            Files.deleteIfExists(source);
+            if (error instanceof IOException io) throw io;
+            throw new IOException("Result export could not be staged", error);
+        }
+    }
+    private synchronized State submit(Path source, String expectedHash, Path destination, boolean temporary) throws IOException {
         if (state.status().equals("COPYING") || state.status().equals("VERIFYING")) throw new IllegalStateException("An export is active");
         if (!expectedHash.matches("[a-fA-F0-9]{64}")) throw new IllegalArgumentException("Verified artifact hash is required");
         if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(source)) throw new IOException("Artifact is unavailable");
@@ -31,7 +48,7 @@ final class VerifiedExportService implements AutoCloseable {
         if (Files.getFileStore(target.getParent()).getUsableSpace() < size + 1024 * 1024) throw new IOException("Insufficient destination space");
         cancelled = false;
         state = new State(UUID.randomUUID().toString(), "COPYING", 0, size, target.toString(), "Copying verified artifact");
-        worker.submit(() -> copy(source, expectedHash, target));
+        worker.submit(() -> copy(source, expectedHash, target, temporary));
         return state;
     }
     State state() { return state; }
@@ -40,7 +57,7 @@ final class VerifiedExportService implements AutoCloseable {
     private synchronized void checkCancelled() throws IOException {
         if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("Export cancelled");
     }
-    private void copy(Path source, String expectedHash, Path target) {
+    private void copy(Path source, String expectedHash, Path target, boolean temporary) {
         Path partial = null;
         try {
             partial = Files.createTempFile(target.getParent(), ".forge-export-", ".partial");
@@ -75,6 +92,7 @@ final class VerifiedExportService implements AutoCloseable {
             state = new State(state.id(), cancelled ? "CANCELLED" : "FAILED", state.completedBytes(), state.totalBytes(), target.toString(), error.getMessage());
         } finally {
             if (partial != null) try { Files.deleteIfExists(partial); } catch (IOException ignored) { /* Never delete destination on cleanup failure. */ }
+            if (temporary) try { Files.deleteIfExists(source); } catch (IOException ignored) { /* Only this service's temporary source. */ }
         }
     }
     @Override public synchronized void close() { cancelled = true; worker.shutdownNow(); }

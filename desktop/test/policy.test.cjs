@@ -1,7 +1,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { readiness, localUrl, externalUrl, allowedPath, windowState, serviceEnvironment } = require('../src/policy.cjs');
+const { readiness, startupFailure, localUrl, externalUrl, allowedPath, windowState, serviceEnvironment } = require('../src/policy.cjs');
+test('startup failures display fixed actionable messages without service details', () => {
+  assert.equal(startupFailure('ordinary output'), null);
+  assert.match(startupFailure('PATHLAB_FORGE_FAILED {"protocol":1,"code":"DATA_LOCKED","detail":"secret"}'), /Another Forge process/);
+  assert.throws(() => startupFailure('PATHLAB_FORGE_FAILED {"protocol":1,"code":"secret"}'));
+});
 test('private readiness rejects remote, credentialed and mismatched origins', () => {
   const line = value => 'PATHLAB_FORGE_READY ' + JSON.stringify({ desktopSecret: 'a'.repeat(43), ...value });
   assert.equal(readiness('ordinary service output'), null);

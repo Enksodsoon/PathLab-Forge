@@ -22,6 +22,17 @@ function externalUrl(value, origins) {
     return url.protocol === 'https:' && !url.username && !url.password && origins.includes(url.origin);
   } catch { return false; }
 }
+function startupFailure(line) {
+  if (!line.startsWith('PATHLAB_FORGE_FAILED ')) return null;
+  const record = JSON.parse(line.slice('PATHLAB_FORGE_FAILED '.length));
+  const messages = {
+    DATA_LOCKED: 'Another Forge process owns this library. Close it, then reopen Forge. Do not delete the library lock or data.',
+    DATA_DENIED: 'Forge cannot access its application-data folder. Restore read/write permission or free the drive, then reopen Forge.',
+    SERVICE_UNAVAILABLE: 'The local service could not initialize. Verify the installed runtime and available disk space. Reinstall the matching Forge version while preserving application data.'
+  };
+  if (record.protocol !== 1 || !Object.hasOwn(messages, record.code)) throw new Error('Invalid private startup failure');
+  return messages[record.code];
+}
 function allowedPath(value, selected) {
   if (typeof value !== 'string' || value.length > 32768 || value.includes('\0') || !path.isAbsolute(value)) return false;
   return selected.has(path.resolve(value));
@@ -39,4 +50,4 @@ function serviceEnvironment(environment) {
     !/^(JAVA_TOOL_OPTIONS|JDK_JAVA_OPTIONS|_JAVA_OPTIONS|CLASSPATH|JAVA_HOME|LD_PRELOAD|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH)$/i.test(key)
     && !/^PATHLAB_FORGE_/i.test(key)));
 }
-module.exports = { localUrl, readiness, externalUrl, allowedPath, windowState, serviceEnvironment };
+module.exports = { localUrl, readiness, startupFailure, externalUrl, allowedPath, windowState, serviceEnvironment };

@@ -10,6 +10,18 @@ import org.junit.jupiter.api.io.TempDir;
 
 class VerifiedExportServiceTest {
     @TempDir Path root;
+    @Test void generatedResultUsesVerifiedAtomicExport() throws Exception {
+        var target = root.resolve("study.json");
+        Files.writeString(target, "previous export");
+        try (var service = new VerifiedExportService()) {
+            service.submitBytes("{\"schema\":\"pathlab.study-pack/1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8), target);
+            await(service);
+            assertEquals("COMPLETE", service.state().status());
+            assertEquals("{\"schema\":\"pathlab.study-pack/1\"}", Files.readString(target));
+            assertThrows(java.io.IOException.class, () -> service.submitBytes(new byte[16 * 1024 * 1024 + 1], target));
+            assertEquals("{\"schema\":\"pathlab.study-pack/1\"}", Files.readString(target));
+        }
+    }
     @Test void corruptArtifactPreservesExistingDestinationAndVerifiedCopyReplacesIt() throws Exception {
         var source = root.resolve("source.ome.tif");
         var target = root.resolve("export.ome.tif");

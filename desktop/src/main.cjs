@@ -3,7 +3,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { localUrl, readiness, externalUrl, allowedPath, windowState, serviceEnvironment } = require('./policy.cjs');
+const { localUrl, readiness, startupFailure, externalUrl, allowedPath, windowState, serviceEnvironment } = require('./policy.cjs');
 
 // Squirrel invokes these during install/update; no service or data root is opened.
 if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)$/.test(value))) {
@@ -19,7 +19,7 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
 } else {
   let window, service, origin, desktopSecret, quitting = false, stopped = false, checkingQuit = false;
   const selected = new Set();
-  const externalOrigins = ['https://github.com'];
+  const externalOrigins = [];
   const smoke = process.argv.includes('--forge-smoke-test');
   const defaultDataRoot = process.platform === 'win32'
     ? path.join(process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData/Local'), 'PathLab Forge')
@@ -147,6 +147,8 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
         while ((end = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 1);
           try {
+            const failure = startupFailure(line);
+            if (failure) { clearTimeout(timeout); service.stdin.end(); reject(new Error(failure)); return; }
             const record = readiness(line);
             if (record) { ready = true; clearTimeout(timeout); buffer = ''; resolve(record); return; }
           } catch { clearTimeout(timeout); service.stdin.end(); reject(new Error('Invalid local service readiness')); return; }
@@ -231,8 +233,8 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
       process.stdout.write(`PATHLAB_FORGE_SMOKE ${JSON.stringify(result)}\n`);
       app.quit();
     }
-  }).catch(() => {
-    dialog.showErrorBox('PathLab Forge', 'Forge could not start its bundled local service. Check that the desktop package includes the matching Java runtime and service.');
+  }).catch(error => {
+    dialog.showErrorBox('PathLab Forge', error.message || 'Forge could not start its bundled local service. Check that the desktop package includes the matching Java runtime and service.');
     app.quit();
   });
 }

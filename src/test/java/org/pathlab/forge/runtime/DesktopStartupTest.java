@@ -11,6 +11,12 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 final class DesktopStartupTest {
+    @Test void failurePipeContainsOnlyAnAllowlistedCode() throws Exception {
+        var bytes = new ByteArrayOutputStream();
+        DesktopStartup.failed(new PrintStream(bytes), "DATA_LOCKED");
+        assertTrue(bytes.toString(StandardCharsets.UTF_8).startsWith("PATHLAB_FORGE_FAILED "));
+        assertThrows(IllegalArgumentException.class, () -> DesktopStartup.failed(System.out, "secret"));
+    }
     @Test
     void readinessIsOnePrivateRecordAndRejectsRemoteOrigins() throws Exception {
         var bytes = new ByteArrayOutputStream();

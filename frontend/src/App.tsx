@@ -93,6 +93,7 @@ export function App() {
   const [activeTool, setActiveTool] = useState('pan')
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
   const [analysisRuns, setAnalysisRuns] = useState<DeterministicRun[]>([])
+  const [exportRunId, setExportRunId] = useState('')
   const [cropDrafts, setCropDrafts] = useState<Record<string, CropBox>>(() => {
     try {
       return JSON.parse(window.localStorage.getItem('pathlab-forge-crop-drafts-v1') || '{}')
@@ -123,6 +124,7 @@ export function App() {
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
   const [featureLoading, setFeatureLoading] = useState(false)
+  const [featureProgress, setFeatureProgress] = useState<api.FeatureProgress>()
   const [libraryMode, setLibraryMode] = useState<'local' | 'viewer'>('local')
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([])
   const [localFolders, setLocalFolders] = useState<string[]>(() => readStored('pathlab-forge-folders-v1', [DEFAULT_LOCAL_FOLDER]))
@@ -717,12 +719,21 @@ export function App() {
     void loadFeatures()
   }
 
-  const changeFeature = async (feature: api.FeaturePack) => {
+  useEffect(() => {
+    if (!featureOpen || !featureLoading) return
+    const timer = window.setInterval(() => {
+      void api.featureProgress().then(setFeatureProgress).catch((error) => setError(message(error)))
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [featureOpen, featureLoading])
+
+  const changeFeature = async (feature: api.FeaturePack, action: api.FeatureAction, version = '') => {
     setFeatureLoading(true)
     try {
-      if (feature.state === 'INSTALLED') await api.disableFeature(feature.id)
-      else if (feature.state === 'DISABLED') await api.uninstallFeature(feature.id)
-      else await api.installFeature(feature.id)
+      if (action === 'disable') await api.disableFeature(feature.id)
+      else if (action === 'uninstall') await api.uninstallFeature(feature.id)
+      else if (action === 'install') await api.installFeature(feature.id)
+      else await api.featureAction(feature.id, action, version)
       setFeatures((await api.features()).features)
     } catch (nextError) {
       setError(message(nextError))
@@ -898,7 +909,7 @@ export function App() {
               onViewSource={viewSource}
               onRenameRevision={renameRevision}
               onDeleteRevision={deleteRevision}
-              tools={selected ? <DeterministicTools datasetId={selected.id} annotations={selectedAnnotations}
+              tools={selected ? <><DeterministicTools datasetId={selected.id} annotations={selectedAnnotations}
                 selectedAnnotationId={selectedAnnotationId} datasets={datasets} runs={analysisRuns}
                 enabledTools={features.filter((pack) => pack.state === 'INSTALLED').flatMap((pack) => pack.id === 'pathology-tools'
                   ? ['he', 'stain_vector', 'normalize_preview', 'tma'] : pack.id === 'classical-analysis'
@@ -906,8 +917,11 @@ export function App() {
                 onSubmit={api.submitAnalysis} onCancel={api.cancelAnalysis} onRefresh={refreshAnalysis}
                 onLoadReview={api.analysisReview} onSaveReview={api.saveAnalysisReview}
                 onLoadTargetAnnotations={api.annotations}
-                onExport={(id) => { window.location.href = `/api/analysis/runs/${encodeURIComponent(id)}/export` }}
-              /> : null}
+                onExport={(id) => {
+                  if (window.forgeDesktop) setExportRunId(id)
+                  else window.location.href = `/api/analysis/runs/${encodeURIComponent(id)}/export`
+                }}
+              />{exportRunId && window.forgeDesktop ? <NativeExport datasetId={selected.id} runId={exportRunId} /> : null}</> : null}
             />
           )}
           queue={(
@@ -1020,7 +1034,9 @@ export function App() {
           features={features}
           loading={featureLoading}
           onRefresh={() => void loadFeatures(true)}
-          onChange={(feature) => void changeFeature(feature)}
+          onChange={(feature, action, version) => void changeFeature(feature, action, version)}
+          progress={featureProgress}
+          onCancel={() => featureProgress?.id && void api.featureAction(featureProgress.id, 'cancel').catch((error) => setError(message(error)))}
           onClose={() => setFeatureOpen(false)}
         />
       ) : null}
@@ -1146,6 +1162,8 @@ function ForgeProductRail({
 }
 
 function FeatureCenter({
+  progress,
+  onCancel,
   features,
   loading,
   onRefresh,
@@ -1154,8 +1172,10 @@ function FeatureCenter({
 }: {
   features: api.FeaturePack[]
   loading: boolean
+  progress?: api.FeatureProgress
+  onCancel: () => void
   onRefresh: () => void
-  onChange: (feature: api.FeaturePack) => void
+  onChange: (feature: api.FeaturePack, action: api.FeatureAction, version?: string) => void
   onClose: () => void
 }) {
   return (
@@ -1170,22 +1190,37 @@ function FeatureCenter({
               <div>
                 <small>{feature.kind}{feature.pretrained ? ' · pretrained' : ''}{feature.trainingOnly ? ' · training only' : ''}</small>
                 <strong>{feature.name}</strong>
+                <small>Active: {feature.activeVersion || 'none'} · Available: {feature.version || 'unpublished'}</small>
                 <p>{feature.detail}</p>
                 {feature.downloadBytes ? <span>{formatBytes(feature.downloadBytes)} download · {formatBytes(feature.installedBytes)} installed</span> : null}
               </div>
               <button
                 type="button"
                 disabled={loading || !['AVAILABLE', 'INSTALLED', 'DISABLED'].includes(feature.state)}
-                onClick={() => onChange(feature)}
+                onClick={() => onChange(feature, feature.state === 'INSTALLED' ? 'disable' : feature.state === 'DISABLED' ? 'enable' : 'install')}
               >
-                {feature.state === 'INSTALLED' ? 'Disable' : feature.state === 'DISABLED' ? 'Uninstall' : feature.state === 'AVAILABLE' ? 'Install' : feature.state.replaceAll('_', ' ').toLowerCase()}
+                {feature.state === 'INSTALLED' ? 'Disable' : feature.state === 'DISABLED' ? 'Enable' : feature.state === 'AVAILABLE' ? 'Install' : feature.state.replaceAll('_', ' ').toLowerCase()}
               </button>
+              {['INSTALLED', 'DISABLED'].includes(feature.state) ? <>
+                <button type="button" disabled={loading} onClick={() => onChange(feature, 'uninstall')}>Uninstall</button>
+                {(feature.installedVersions?.length || 0) > 1 ? <>
+                  <button type="button" disabled={loading} onClick={() => onChange(feature, 'rollback')}>Roll back</button>
+                  <label>Active version <select value={feature.activeVersion || ''} disabled={loading}
+                    onChange={(event) => onChange(feature, 'activate', event.target.value)}>
+                    {feature.installedVersions?.map((version) => <option key={version} value={version}>{version}</option>)}
+                  </select></label>
+                </> : null}
+                {feature.version && feature.activeVersion && feature.version !== feature.activeVersion ?
+                  <button type="button" disabled={loading} onClick={() => onChange(feature, 'install')}>Install catalog version {feature.version}</button> : null}
+              </> : null}
             </article>
           ))}
           {!features.length ? <p role="status">{loading ? 'Checking installed features…' : 'No features are published.'}</p> : null}
         </div>
         <button type="button" disabled={loading} onClick={onRefresh}>Refresh signed catalog</button>
-        <small>No catalog request is made during normal startup.</small>
+        {progress ? <p role="status">{progress.phase} · {progress.detail} · {formatBytes(progress.completedBytes)} / {formatBytes(progress.totalBytes)}</p> : null}
+        {progress && !['IDLE', 'COMPLETE', 'FAILED', 'CANCELLED'].includes(progress.phase) ? <button type="button" onClick={onCancel}>Cancel install</button> : null}
+        <small>Startup reads verified local metadata. Remote refresh and installation happen only when requested.</small>
         <button className="forge-dialog-close" type="button" onClick={onClose}>Close</button>
       </section>
     </div>
@@ -2122,7 +2157,8 @@ function Inspector({
               annotation={annotations.find((item) => item.id === selectedAnnotationId)!}
               onSave={onUpdateAnnotation} />
           ) : null}
-          <a href={`/api/datasets/${encodeURIComponent(dataset.id)}/measurements.csv`} download>Export measurements CSV</a>
+          {window.forgeDesktop ? <NativeExport datasetId={dataset.id} /> :
+            <a href={`/api/datasets/${encodeURIComponent(dataset.id)}/measurements.csv`} download>Export measurements CSV</a>}
           <p className="forge-help">Editable annotation records remain source-anchored. Crop exports transform only intersecting geometry.</p>
         </section>
       ) : null}
@@ -2443,7 +2479,7 @@ function MultidimensionalViewControls({ dataset, image, onUpdate }: {
   </fieldset>
 }
 
-function NativeArtifactExport({ datasetId, revision }: { datasetId: string; revision: ArtifactRevision }) {
+function NativeExport({ datasetId, revision, runId }: { datasetId: string; revision?: ArtifactRevision; runId?: string }) {
   const [state, setState] = useState<api.ExportState>()
   const [error, setError] = useState('')
   const active = state && ['COPYING', 'VERIFYING'].includes(state.status)
@@ -2454,17 +2490,21 @@ function NativeArtifactExport({ datasetId, revision }: { datasetId: string; revi
     }, 500)
     return () => window.clearTimeout(timer)
   }, [active, state])
-  const save = async (kind: 'ome' | 'package') => {
+  const save = async (kind: 'ome' | 'package' | 'analysis' | 'measurements') => {
     setError('')
     try {
-      const name = (revision.name || 'slide').replace(/[\x00-\x1f/\\:]/g, '_')
-      const destination = await window.forgeDesktop?.selectExportDestination(`${name}${kind === 'ome' ? '.ome.tif' : '.plslide'}`)
-      if (destination) setState(await api.exportArtifact(datasetId, revision.id, kind, destination))
+      const name = (revision?.name || runId || 'measurements').replace(/[\x00-\x1f/\\:]/g, '_')
+      const extension = kind === 'ome' ? '.ome.tif' : kind === 'package' ? '.plslide' : kind === 'analysis' ? '.json' : '.csv'
+      const destination = await window.forgeDesktop?.selectExportDestination(`${name}${extension}`)
+      if (destination) setState(await (kind === 'ome' || kind === 'package'
+        ? api.exportArtifact(datasetId, revision!.id, kind, destination)
+        : api.exportResult(kind, datasetId, runId || '', destination)))
     } catch (error) { setError(message(error)) }
   }
   return <div aria-label="Native export">
-    <button type="button" disabled={Boolean(active)} onClick={() => void save('ome')}>Save verified OME as…</button>
-    {revision.format !== 'OME_DYNAMIC_V1' ? <button type="button" disabled={Boolean(active)} onClick={() => void save('package')}>Save package as…</button> : null}
+    <button type="button" disabled={Boolean(active)} onClick={() => void save(revision ? 'ome' : runId ? 'analysis' : 'measurements')}>
+      {revision ? 'Save verified OME as…' : runId ? 'Save selected result as…' : 'Save measurements CSV as…'}</button>
+    {revision && revision.format !== 'OME_DYNAMIC_V1' ? <button type="button" disabled={Boolean(active)} onClick={() => void save('package')}>Save package as…</button> : null}
     {state ? <p role="status">{state.detail} · {formatBytes(state.completedBytes)} / {formatBytes(state.totalBytes)}</p> : null}
     {active ? <button type="button" onClick={() => void api.cancelExport().then(setState)}>Cancel export</button> : null}
     {state?.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(state.destination)}>Reveal exported file</button> : null}
@@ -2764,7 +2804,7 @@ function ExportInspector({
               ? 'Validated and approved · ready for private Viewer delivery'
               : 'Validated locally · approve to enable private Viewer delivery'}</small>}
           </>
-          {window.forgeDesktop ? <NativeArtifactExport datasetId={dataset.id} revision={readyCurrent} /> : null}
+          {window.forgeDesktop ? <NativeExport datasetId={dataset.id} revision={readyCurrent} /> : null}
         </section>
       ) : null}
       {!series.length ? (

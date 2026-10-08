@@ -20,6 +20,18 @@ public final class ForgeApp {
     public static void main(String[] args)
             throws IOException, InterruptedException, DatasetInspectionException {
         var command = ForgeCommandLine.parse(args);
+        try {
+            run(command);
+        } catch (IOException | RuntimeException error) {
+            if (!command.desktop()) throw error;
+            DesktopStartup.failed(System.out, error instanceof DataRootLock.AlreadyOwnedException
+                    ? "DATA_LOCKED" : error instanceof java.nio.file.AccessDeniedException
+                    ? "DATA_DENIED" : "SERVICE_UNAVAILABLE");
+        }
+    }
+
+    private static void run(ForgeCommandLine command)
+            throws IOException, InterruptedException, DatasetInspectionException {
         if (command.dataRoot() == null || command.desktop()) ForgePaths.migrateLegacyMacData();
         var paths = command.dataRoot() == null
                 ? ForgePaths.defaults()

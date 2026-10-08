@@ -11,6 +11,14 @@ import java.util.Map;
 public final class DesktopStartup {
     private DesktopStartup() {}
 
+    public static void failed(PrintStream pipe, String code) throws IOException {
+        if (!java.util.Set.of("DATA_LOCKED", "DATA_DENIED", "SERVICE_UNAVAILABLE").contains(code)) {
+            throw new IllegalArgumentException("Unknown desktop startup failure");
+        }
+        pipe.println("PATHLAB_FORGE_FAILED " + new ObjectMapper().writeValueAsString(Map.of("protocol", 1, "code", code)));
+        pipe.flush();
+    }
+
     public static void ready(PrintStream pipe, URI origin, URI launchUri, String desktopSecret) throws IOException {
         if (!"http".equals(origin.getScheme()) || !"127.0.0.1".equals(origin.getHost())
                 || origin.getPort() <= 0 || !origin.resolve("/").equals(launchUri.resolve("/"))

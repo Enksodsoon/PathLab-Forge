@@ -113,6 +113,8 @@ vi.mock('../api', () => ({
     },
   ] })),
   installFeature: vi.fn(),
+  featureAction: vi.fn(),
+  featureProgress: vi.fn(async () => ({ id: '', phase: 'IDLE', completedBytes: 0, totalBytes: 0, detail: '' })),
   disableFeature: vi.fn(),
   uninstallFeature: vi.fn(),
   startViewerPairing: vi.fn(async () => ({

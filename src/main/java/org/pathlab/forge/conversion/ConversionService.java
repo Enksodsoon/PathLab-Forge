@@ -516,6 +516,24 @@ public final class ConversionService implements AutoCloseable {
         }
     }
 
+    /** Caller must first verify this retained copy and its current account binding. */
+    public DirectTileSource retainedCopyPreview(Path path) throws IOException {
+        return engine.directTileSource(path, 0);
+    }
+
+    public byte[] retainedCopyTile(Path path, String connectionKey, int level, int tileX, int tileY) throws IOException {
+        if (connectionKey.isBlank()) throw new IllegalArgumentException("Verified Viewer connection is required");
+        var attributes = java.nio.file.Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        var key = "offline|" + connectionKey + "|" + path + "|" + attributes.size() + "|" + attributes.lastModifiedTime();
+        var session = ensureReaderSession(key, path);
+        try {
+            return session.tile(new ReaderSession.TileKey(0, level, tileX, tileY),
+                    () -> engine.readDirectTile(path, 0, level, tileX, tileY));
+        } catch (IOException error) { throw error; }
+        catch (Exception error) { throw new IOException("Retained OME tile read failed", error); }
+    }
+
     private ArtifactPreviewSource directArtifactSource(String id, String revisionId)
             throws IOException {
         requireDataset(id);

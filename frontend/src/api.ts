@@ -6,6 +6,9 @@ export const cancelExport = () => request<ExportState>('/api/exports/cancel', { 
 export const exportArtifact = (datasetId: string, revisionId: string, kind: 'ome' | 'package', destination: string) =>
   request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ datasetId, revisionId, kind, destination }) })
+export const exportResult = (kind: 'analysis' | 'measurements', datasetId: string, runId: string, destination: string) =>
+  request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datasetId, runId, kind, destination }) })
 export const analysisRuns = (datasetId: string) => request<DeterministicRun[]>(`/api/analysis/runs?datasetId=${encodeURIComponent(datasetId)}`)
 export const submitAnalysis = (value: DeterministicRequest) => request<DeterministicRun>('/api/analysis/runs', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
@@ -220,6 +223,11 @@ export interface ViewerRemoteLibrary {
 }
 
 export interface FeaturePack {
+  activeVersion?: string
+  installedVersions?: string[]
+  platforms?: string[]
+  minimumCoreVersion?: string
+  licenseReviewStatus?: string
   id: string
   version: string
   name: string
@@ -575,6 +583,12 @@ export async function installFeature(id: string) {
 export async function disableFeature(id: string) {
   return request<void>(`/api/features/${encodeURIComponent(id)}/disable`, { method: 'POST' })
 }
+
+export type FeatureAction = 'install' | 'disable' | 'uninstall' | 'enable' | 'activate' | 'rollback' | 'cancel'
+export interface FeatureProgress { id: string; phase: string; completedBytes: number; totalBytes: number; detail: string }
+export const featureProgress = () => request<FeatureProgress>('/api/features/progress')
+export const featureAction = (id: string, action: FeatureAction, version = '') =>
+  request<void>(`/api/features/${encodeURIComponent(id)}/${action}?version=${encodeURIComponent(version)}`, { method: 'POST' })
 
 export async function uninstallFeature(id: string) {
   return request<void>(`/api/features/${encodeURIComponent(id)}`, { method: 'DELETE' })
