@@ -10,12 +10,13 @@ export interface BatchReport {
   slides: Array<{ item: BatchItem; artifact: { id: string; omeSha256: string; packageSha256: string } | null; artifactBytes: number; delivery: { state: string; nextAction: string; detail: string }; nextAction: string }>
 }
 
-export function BatchReports({ batches, onReport, onRetry, onCancel, onExport }: {
+export function BatchReports({ batches, onReport, onRetry, onCancel, onExport, onLoadOlder }: {
   batches: BatchSummary[]
   onReport: (id: string) => Promise<BatchReport>
   onRetry: (id: string, datasetId: string) => Promise<unknown>
   onCancel: (id: string) => Promise<unknown>
   onExport: (id: string, format: 'csv' | 'json') => void
+  onLoadOlder?: () => Promise<void>
 }) {
   const [selected, setSelected] = useState('')
   const [report, setReport] = useState<BatchReport>()
@@ -41,6 +42,7 @@ export function BatchReports({ batches, onReport, onRetry, onCancel, onExport }:
         {batches.map((batch) => <option key={batch.id} value={batch.id}>{new Date(batch.createdAt).toLocaleString()} · {batch.items.length} slides · {batch.id.slice(0, 8)}</option>)}
       </select></label>
       <button disabled={busy} onClick={() => void run(() => onReport(id))}>Refresh batch report</button>
+      {onLoadOlder && <button disabled={busy} onClick={() => void run(onLoadOlder)}>Load older batches</button>}
       <button disabled={busy || !report} onClick={() => onExport(id, 'csv')}>Export batch CSV</button>
       <button disabled={busy || !report} onClick={() => onExport(id, 'json')}>Export batch JSON</button>
       <button disabled={busy || !report?.slides.some((slide) => !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(slide.item.state))} onClick={() => void run(() => onCancel(id))}>Cancel unfinished slides</button>

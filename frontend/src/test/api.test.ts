@@ -6,6 +6,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+test('pages durable batch history with a separate server offset', async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response('[]', { headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetch)
+  await api.batches(50)
+  expect(fetch.mock.calls[0][0]).toBe('/api/batches?limit=50&offset=50')
+})
+
 test('reuses dataset payload when conditional request returns 304', async () => {
   const payload = { datasets: [{ id: 'slide-1' }] }
   const fetch = vi.fn()

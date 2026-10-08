@@ -12,7 +12,7 @@ export const teachingSlides = async (): Promise<StudySlide[]> => {
 export const publishStudy = (id: string, revision: number, checksum: string) => request<{ id: string; checksum: string }>(`/api/study/drafts/${encodeURIComponent(id)}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision, checksum }) })
 export const generateTeachingArtifact = (id: string) => request<Dataset>(`/api/datasets/${encodeURIComponent(id)}/teaching`, { method: 'POST' })
 
-export const batches = () => request<BatchSummary[]>('/api/batches?limit=50')
+export const batches = (offset = 0) => request<BatchSummary[]>(`/api/batches?limit=50&offset=${offset}`)
 export const createBatch = (datasetIds: string[]) => request<BatchSummary>('/api/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetIds }) })
 export const batchReport = (id: string) => request<BatchReport>(`/api/batches/${encodeURIComponent(id)}/report`)
 export const retryBatchItem = (id: string, datasetId: string) => request<BatchSummary>(`/api/batches/${encodeURIComponent(id)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetId }) })

@@ -148,6 +148,8 @@ export function App() {
   const [folderByDataset, setFolderByDataset] = useState<Record<string, string>>(() => readStored('pathlab-forge-folder-map-v1', {}))
   const [batchRemoveIds, setBatchRemoveIds] = useState<string[]>([])
   const [savedBatches, setSavedBatches] = useState<BatchSummary[]>([])
+  const [batchNextOffset, setBatchNextOffset] = useState(0)
+  const [batchHasOlder, setBatchHasOlder] = useState(false)
   const [batchReportsOpen, setBatchReportsOpen] = useState(false)
   const [batchExportRequest, setBatchExportRequest] = useState<{ id: string; format: 'csv' | 'json' }>()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
@@ -526,7 +528,12 @@ export function App() {
   const readBatchReport = useCallback(api.batchReport, [])
   const openBatchReports = async () => {
     setBatchReportsOpen(true)
-    try { setSavedBatches(await api.batches()) } catch (cause) { setError(message(cause)) }
+    try { const page = await api.batches(); setSavedBatches(page); setBatchNextOffset(page.length); setBatchHasOlder(page.length === 50) } catch (cause) { setError(message(cause)) }
+  }
+  const loadOlderBatches = async () => {
+    const page = await api.batches(batchNextOffset)
+    setSavedBatches((current) => [...current, ...page.filter((item) => !current.some((existing) => existing.id === item.id))])
+    setBatchNextOffset((current) => current + page.length); setBatchHasOlder(page.length === 50)
   }
 
   const removeSelectedDatasets = async () => {
@@ -1100,7 +1107,7 @@ export function App() {
       <button type="button" className="forge-viewer-sync-launcher" onClick={() => void openBatchReports()}>Saved batch reports</button>
       {batchReportsOpen ? <div className="forge-dialog-backdrop" role="presentation"><section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Saved batch workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setBatchReportsOpen(false) } }}>
         <button type="button" aria-label="Close batch reports" onClick={() => setBatchReportsOpen(false)}><X aria-hidden="true" /></button>
-        <BatchReports batches={savedBatches} onReport={readBatchReport} onRetry={api.retryBatchItem} onCancel={api.cancelBatch} onExport={(id, format) => {
+        <BatchReports batches={savedBatches} onLoadOlder={batchHasOlder ? loadOlderBatches : undefined} onReport={readBatchReport} onRetry={api.retryBatchItem} onCancel={api.cancelBatch} onExport={(id, format) => {
           if (window.forgeDesktop) setBatchExportRequest({ id, format })
           else { const link = document.createElement('a'); link.href = `/api/batches/${encodeURIComponent(id)}/export?format=${format}`; link.download = `batch-${id}.${format}`; link.click() }
         }} />
