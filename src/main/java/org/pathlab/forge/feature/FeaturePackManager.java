@@ -157,6 +157,16 @@ public final class FeaturePackManager {
     }
 
     public FeaturePackDescriptor install(String id) throws IOException {
+        return install(id, null, null);
+    }
+
+    /** Native selected files; the signed catalog and actual ZIP bytes determine the pack identity. */
+    public FeaturePackDescriptor importPack(Path signedCatalog, Path selectedArchive) throws IOException {
+        if (signedCatalog == null || selectedArchive == null) throw new IOException("Select a signed catalog and its approved pack archive");
+        return install("offline-import", signedCatalog, selectedArchive);
+    }
+
+    private FeaturePackDescriptor install(String id, Path signedCatalog, Path selectedArchive) throws IOException {
         requireId(id);
         if (!installing.compareAndSet(false, true)) throw new IOException("Another feature installation is running");
         cancelled = false;
@@ -165,15 +175,41 @@ public final class FeaturePackManager {
         Path archive = null, staging = null;
         Throwable failure = null;
         try {
-            installScope = networkScope();
-            var descriptor = catalog.stream().filter(candidate -> candidate.id().equals(id))
-                    .max((a, b) -> SemanticVersion.compare(a.version(), b.version()))
-                    .orElseThrow(() -> new IOException("Feature pack is not in the verified catalog"));
+            FeaturePackDescriptor descriptor;
+            CatalogEnvelope envelope;
+            if (selectedArchive == null) {
+                installScope = networkScope();
+                var requestedId = id;
+                descriptor = catalog.stream().filter(candidate -> candidate.id().equals(requestedId))
+                        .max((a, b) -> SemanticVersion.compare(a.version(), b.version()))
+                        .orElseThrow(() -> new IOException("Feature pack is not in the verified catalog"));
+                envelope = catalogEnvelope;
+                if (envelope == null || !verifiedCatalog(envelope).contains(descriptor)) throw new IOException("Catalog changed during installation");
+            } else {
+                installScope = null;
+                org.pathlab.forge.runtime.DataRootLock.requireSafePath(signedCatalog);
+                org.pathlab.forge.runtime.DataRootLock.requireSafePath(selectedArchive);
+                if (!Files.isRegularFile(signedCatalog, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                        || !Files.isRegularFile(selectedArchive, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                        || Files.size(signedCatalog) > MAX_CATALOG_BYTES || Files.size(selectedArchive) < 1
+                        || Files.size(selectedArchive) > MAX_PACK_BYTES) throw new IOException("Selected feature files are missing or exceed their bounds");
+                try (var input = Files.newInputStream(signedCatalog, java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    var bytes = input.readNBytes(Math.toIntExact(MAX_CATALOG_BYTES + 1));
+                    if (bytes.length > MAX_CATALOG_BYTES) throw new IOException("Selected signed catalog exceeds its bound");
+                    envelope = mapper.readValue(bytes, CatalogEnvelope.class);
+                }
+                var verified = verifiedCatalog(envelope);
+                var size = Files.size(selectedArchive);
+                var hash = hashFile(selectedArchive);
+                var matching = verified.stream().filter(candidate -> candidate.downloadBytes() == size && candidate.sha256().equalsIgnoreCase(hash)).toList();
+                if (matching.isEmpty() || matching.stream().map(FeaturePackDescriptor::id).distinct().count() != 1)
+                    throw new IOException("Selected archive does not identify exactly one approved non-AI pack");
+                descriptor = matching.stream().max((a, b) -> SemanticVersion.compare(a.version(), b.version())).orElseThrow();
+                id = descriptor.id();
+            }
             validateDescriptor(descriptor);
-            requireOrigin(installScope,descriptor.downloadUri());
+            if (selectedArchive == null) requireOrigin(installScope,descriptor.downloadUri());
             requireCompatible(descriptor);
-            var envelope = catalogEnvelope;
-            if (envelope == null || !verifiedCatalog(envelope).contains(descriptor)) throw new IOException("Catalog changed during installation");
             ensureManagedDirectory(root);
             Files.createDirectories(root);
             if (descriptor.downloadBytes() + descriptor.installedBytes() > Files.getFileStore(root).getUsableSpace() / 2)
@@ -182,8 +218,15 @@ public final class FeaturePackManager {
             Files.deleteIfExists(archive);
             staging = root.resolve("." + id + "-" + descriptor.version() + ".staging");
             deleteTree(staging);
-            update(id, "DOWNLOADING", 0, descriptor.downloadBytes(), "Downloading after explicit request");
-            download(descriptor, archive);
+            update(id, selectedArchive == null ? "DOWNLOADING" : "COPYING", 0, descriptor.downloadBytes(),
+                    selectedArchive == null ? "Downloading after explicit request" : "Copying explicitly selected signed pack");
+            if (selectedArchive == null) download(descriptor, archive);
+            else {
+                org.pathlab.forge.runtime.DataRootLock.requireSafePath(selectedArchive);
+                try (var input = Files.newInputStream(selectedArchive, java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    copyArchive(descriptor, input, archive, "COPYING");
+                }
+            }
             checkCancelled();
             update(id, "VERIFYING", descriptor.downloadBytes(), descriptor.downloadBytes(), "Verifying signed archive");
             verifyPackSignature(descriptor);
@@ -204,6 +247,7 @@ public final class FeaturePackManager {
             } else move(staging, target);
             staging = null;
             update(id, "ACTIVATING", 0, 1, "Verifying activation before switching active version");
+            if (selectedArchive != null) acceptCatalog(mapper.writeValueAsBytes(envelope));
             activate(id, descriptor.version());
             update(id, "COMPLETE", 1, 1, "Installed and activated verified pack");
             return installedState(descriptor);
@@ -403,9 +447,14 @@ public final class FeaturePackManager {
 
     private void download(FeaturePackDescriptor descriptor, Path archive) throws IOException {
         var response = get(descriptor.downloadUri(),installScope);
-        try (response; var input = response.body(); var output = Files.newOutputStream(archive, java.nio.file.StandardOpenOption.CREATE_NEW,
-                java.nio.file.StandardOpenOption.WRITE)) {
+        try (response; var input = response.body()) {
             if (response.status() != 200) throw new IOException("Feature pack download failed");
+            copyArchive(descriptor, input, archive, "DOWNLOADING");
+        }
+    }
+
+    private void copyArchive(FeaturePackDescriptor descriptor, InputStream input, Path archive, String phase) throws IOException {
+        try (var output = Files.newOutputStream(archive, java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE)) {
             downloadStream = input;
             var digest = sha256Digest();
             var buffer = new byte[64 * 1024];
@@ -414,7 +463,7 @@ public final class FeaturePackManager {
             while ((read = input.read(buffer)) != -1) {
                 checkCancelled();
                 total += read;
-                update(descriptor.id(), "DOWNLOADING", total, descriptor.downloadBytes(), "Downloading verified catalog pack");
+                update(descriptor.id(), phase, total, descriptor.downloadBytes(), phase.equals("COPYING") ? "Copying selected approved pack" : "Downloading verified catalog pack");
                 if (total > descriptor.downloadBytes() || total > MAX_PACK_BYTES) {
                     throw new IOException("Feature pack exceeded its declared size");
                 }
@@ -723,8 +772,7 @@ public final class FeaturePackManager {
 
     private void ensureManagedDirectory(Path directory) throws IOException {
         if (!directory.startsWith(root)) throw new IOException("Feature directory escaped managed storage");
-        for (var path = directory; path != null && path.startsWith(root); path = path.getParent())
-            if (Files.isSymbolicLink(path)) throw new IOException("Feature storage contains a symbolic link");
+        org.pathlab.forge.runtime.DataRootLock.requireSafePath(directory);
     }
 
     private boolean physicalFile(Path path) {
@@ -752,10 +800,13 @@ public final class FeaturePackManager {
 
     private String hashFile(Path path) throws IOException {
         var digest = sha256Digest();
-        try (var input = Files.newInputStream(path)) {
+        long total = 0;
+        try (var input = Files.newInputStream(path, java.nio.file.StandardOpenOption.READ, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
             var buffer = new byte[65536];
             for (int read; (read = input.read(buffer)) != -1;) {
                 checkCancelled();
+                total += read;
+                if (total > MAX_PACK_BYTES) throw new IOException("Feature payload exceeds its hash bound");
                 digest.update(buffer, 0, read);
             }
         }

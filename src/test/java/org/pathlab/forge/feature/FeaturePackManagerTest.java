@@ -47,6 +47,57 @@ final class FeaturePackManagerTest {
         assertFalse(new FeaturePackManager(temp).isInstalled("pathology-tools"));
     }
 
+    @Test void freshUnpairedUserImportsSignedSelectedFilesAndRecoversEnabledPacksOffline() throws Exception {
+        var zip = archive(false, null);
+        var catalogFile = temp.resolve("selected-catalog.json");
+        var archiveFile = temp.resolve("selected-pack.zip"); Files.write(archiveFile, zip);
+        Files.write(catalogFile, envelope(List.of(descriptor("1.0.0", zip))));
+        var manager = new FeaturePackManager(temp); // No Viewer, test HttpClient, identity or credential.
+        assertTrue(manager.importPack(catalogFile, archiveFile).state().equals("INSTALLED"));
+        assertEquals("COMPLETE", manager.progress().phase());
+        assertTrue(manager.isInstalled("pathology-tools"));
+        var settings = Files.writeString(temp.resolve("settings.json"), "private settings");
+        var results = Files.writeString(temp.resolve("analysis-result.json"), "accepted results");
+        Files.write(catalogFile, envelope(List.of(descriptor("1.0.0", zip), descriptor("1.1.0", zip))));
+        manager.importPack(catalogFile, archiveFile);
+        assertEquals("1.1.0", manager.activeVersion("pathology-tools").orElseThrow(), "Signed metadata determines the latest matching version");
+        var restarted = new FeaturePackManager(temp);
+        assertTrue(restarted.isInstalled("pathology-tools"));
+        assertEquals("1.1.0", pack(restarted).version());
+        restarted.disable("pathology-tools"); restarted.enable("pathology-tools"); restarted.rollback("pathology-tools");
+        assertEquals("1.0.0", restarted.activeVersion("pathology-tools").orElseThrow());
+        assertEquals("private settings", Files.readString(settings)); assertEquals("accepted results", Files.readString(results));
+        assertArrayEquals(zip, Files.readAllBytes(archiveFile), "Selected source archive is never moved or removed");
+        assertThrows(IOException.class, restarted::refresh, "Offline import grants no Viewer credentials or network privileges");
+    }
+
+    @Test void offlineImportRejectsUntrustedAndUnsafeFilesWithoutChangingActiveVersion() throws Exception {
+        var good = archive(false, null); var catalogFile = temp.resolve("catalog.json"); var archiveFile = temp.resolve("pack.zip");
+        Files.write(archiveFile, good); Files.write(catalogFile, envelope(List.of(descriptor("1.0.0", good))));
+        var manager = new FeaturePackManager(temp); manager.importPack(catalogFile, archiveFile);
+        var settings = Files.writeString(temp.resolve("settings.json"), "keep");
+        var invalid = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(envelope(List.of(descriptor("2.0.0", good))));
+        invalid.put("signature", Base64.getEncoder().encodeToString(new byte[64])); Files.write(catalogFile, mapper.writeValueAsBytes(invalid));
+        assertThrows(IOException.class, () -> manager.importPack(catalogFile, archiveFile));
+        Files.write(catalogFile, envelope(List.of(descriptor("2.0.0", good)))); Files.writeString(archiveFile, "unapproved bytes");
+        assertThrows(IOException.class, () -> manager.importPack(catalogFile, archiveFile));
+        for (var bad : List.of(archive(true, null), archive(false, "../outside"))) {
+            Files.write(archiveFile, bad); Files.write(catalogFile, envelope(List.of(descriptor("2.0.0", bad))));
+            assertThrows(IOException.class, () -> manager.importPack(catalogFile, archiveFile));
+        }
+        Files.write(archiveFile, good);
+        var incompatible = mapper.<com.fasterxml.jackson.databind.node.ObjectNode>valueToTree(descriptor("2.0.0", good));
+        incompatible.put("minimumCoreVersion", "99.0.0"); Files.write(catalogFile, envelope(List.of(mapper.treeToValue(incompatible, FeaturePackDescriptor.class))));
+        assertThrows(IOException.class, () -> manager.importPack(catalogFile, archiveFile));
+        var previousKey = System.getProperty("pathlab.forge.featureCatalogPublicKey"); System.clearProperty("pathlab.forge.featureCatalogPublicKey");
+        try { assertThrows(IOException.class, () -> manager.importPack(catalogFile, archiveFile)); }
+        finally { System.setProperty("pathlab.forge.featureCatalogPublicKey", previousKey); }
+        assertEquals("1.0.0", manager.activeVersion("pathology-tools").orElseThrow()); assertEquals("keep", Files.readString(settings));
+        try (var children = Files.list(temp.resolve("feature-packs"))) {
+            assertFalse(children.anyMatch(path -> path.getFileName().toString().endsWith(".partial") || path.getFileName().toString().endsWith(".staging")));
+        }
+    }
+
     @Test void persistsVerifiedCatalogOfflineAndOrdersVersionsSemantically() throws Exception {
         var zip = archive(false, null);
         var descriptors = List.of(descriptor("1.9.0", zip), descriptor("1.10.0", zip));
