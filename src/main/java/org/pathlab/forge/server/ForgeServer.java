@@ -3484,6 +3484,7 @@ public final class ForgeServer implements AutoCloseable {
     public void close() {
         server.stop(0);
         sourceVerificationService.close();
+        batchService.close();
         conversionService.close();
         analysisService.close();
         exportService.close();
