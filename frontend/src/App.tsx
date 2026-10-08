@@ -1101,7 +1101,7 @@ export function App() {
           )}
         />
       </div>
-      <button type="button" className="forge-viewer-sync-launcher" onClick={() => void openBatchReports()}>Saved batch reports</button>
+      <button type="button" className="forge-viewer-sync-launcher forge-dialog-close" onClick={() => void openBatchReports()}>Saved batch reports</button>
       {batchReportsOpen ? <div className="forge-dialog-backdrop" role="presentation"><section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Saved batch workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setBatchReportsOpen(false) } }}>
         <button type="button" aria-label="Close batch reports" onClick={() => setBatchReportsOpen(false)}><X aria-hidden="true" /></button>
         <BatchReports batches={savedBatches} onLoadOlder={batchHasOlder ? loadOlderBatches : undefined} onReport={readBatchReport} onRetry={api.retryBatchItem} onCancel={api.cancelBatch} onExport={(id, format) => {

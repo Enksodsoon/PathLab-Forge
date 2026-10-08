@@ -5,6 +5,7 @@
   "description": "Local whole-slide preparation desktop",
   "author": "PathLab",
   "private": true,
+  "packageManager": "pnpm@11.9.0",
   "main": "src/main.cjs",
   "scripts": {
     "start": "electron-forge start",
