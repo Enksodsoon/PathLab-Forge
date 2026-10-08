@@ -2975,8 +2975,17 @@ public final class ForgeServer implements AutoCloseable {
             for (var point : org.pathlab.forge.analysis.MaskContours.coordinates(stroke))
                 if (point.x() < 0 || point.y() < 0 || point.x() > series.width() || point.y() > series.height())
                     throw new IllegalArgumentException("Brush stroke is outside this source series");
-            var updated = annotationRepository.composeBrush(dataset.id(), parent.id(), body.path("revision").asLong(-1),
-                    body.path("operation").asText(), stroke, scope.series(), scope.z(), scope.t(), scope.viewRevision());
+            AnnotationRecord updated;
+            // ponytail: repository monitor serializes this short mutation with saved view changes; no inspection inside it.
+            synchronized (repository) {
+                var current = repository.find(dataset.id()).orElseThrow();
+                if (!current.configurationRevision().equals(dataset.configurationRevision())
+                        || !annotationScope(current).equals(scope) || !current.sourceFingerprint().equals(dataset.sourceFingerprint())
+                        || !org.pathlab.forge.library.DatasetSourceInventory.matchesSnapshot(Path.of(current.sourcePath()), current.sourceInventory()))
+                    throw new IllegalStateException("The source or view changed during the brush gesture");
+                updated = annotationRepository.composeBrush(dataset.id(), parent.id(), body.path("revision").asLong(-1),
+                        body.path("operation").asText(), stroke, scope.series(), scope.z(), scope.t(), scope.viewRevision());
+            }
             respond(exchange, 200, "application/json", annotationJson(updated));
         } catch (IllegalArgumentException error) {
             respond(exchange, 422, "application/json", "{\"error\":\"invalid_brush\",\"detail\":" + json(error.getMessage()) + "}");

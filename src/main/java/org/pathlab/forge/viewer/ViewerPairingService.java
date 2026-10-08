@@ -877,13 +877,12 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         var layerId = UUID.nameUUIDFromBytes(
                         ("pathlab-forge-layer:" + revision.id()).getBytes(StandardCharsets.UTF_8))
                 .toString();
+        var serialized = transformed.stream().map(annotation -> annotationOperation(
+                annotation, layerId, revision.outputWidth(), revision.outputHeight())).toList();
         var baseVersion = 0;
         for (var start = 0; start < transformed.size(); start += 50) {
             var end = Math.min(start + 50, transformed.size());
-            var operations = transformed.subList(start, end).stream()
-                    .map(annotation -> annotationOperation(
-                            annotation, layerId, revision.outputWidth(), revision.outputHeight()))
-                    .collect(java.util.stream.Collectors.joining(","));
+            var operations = String.join(",", serialized.subList(start, end));
             var ensureLayer = start == 0
                     ? ",\"ensureLayer\":{\"id\":\"" + layerId
                             + "\",\"name\":\"Layer 1\",\"sortOrder\":0,"

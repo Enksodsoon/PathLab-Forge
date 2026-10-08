@@ -1,0 +1,50 @@
+{
+  "schema": "pathlab.study-pack/1",
+  "packKey": "histology-basics",
+  "version": 1,
+  "title": "Histology basics",
+  "author": "Faculty",
+  "license": "CC-BY-4.0",
+  "provenance": "Faculty-authored from deidentified teaching material",
+  "revision": "2026-08-21",
+  "languages": [
+    "en",
+    "th"
+  ],
+  "slides": [
+    {
+      "viewerSlideId": "00000000-0000-4000-8000-000000000101",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "displayName": "Teaching fixture"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "task-1",
+      "type": "multiple-choice",
+      "slideId": "00000000-0000-4000-8000-000000000101",
+      "prompt": "Which option is faculty approved?",
+      "options": [
+        "Approved",
+        "Not approved"
+      ],
+      "answerKey": "Approved",
+      "hints": [
+        "Use the faculty source."
+      ],
+      "explanation": "Approved is the explicit answer.",
+      "sources": [
+        {
+          "title": "Faculty source",
+          "url": "https://example.edu/source"
+        }
+      ]
+    }
+  ],
+  "checksum": "fb78ac6fdb525faba001395a6a155ef0fe399d481c1deae7c376311e661f0bd2",
+  "facultyPreview": {
+    "packChecksum": "fb78ac6fdb525faba001395a6a155ef0fe399d481c1deae7c376311e661f0bd2",
+    "previewVersion": "pathlab.study-preview/1",
+    "reviewedAt": "2026-08-21T00:00:00Z"
+  }
+}
