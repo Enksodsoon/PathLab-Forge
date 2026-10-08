@@ -62,6 +62,42 @@ public final class StudyAuthoringService {
         if(nextVersion) definition.put("version",definition.path("version").bigIntegerValue().add(java.math.BigInteger.ONE));
         return createDraft(name,StudyPackCanonicalJson.canonicalize(definition),StudyPackCanonicalJson.canonicalize(source.associations()));
     }
+    public synchronized StudyDraft associateTeachingSlide(String id, long expectedRevision,
+            String referenceId, TeachingSlideAssociation binding) throws IOException {
+        var current = expected(id, expectedRevision);
+        if (!referenceId.equals(binding.referenceId())) throw new IllegalArgumentException("Teaching reference changed");
+        var definition = current.definition().deepCopy();
+        var slide = java.util.stream.StreamSupport.stream(definition.path("slides").spliterator(), false)
+                .filter(item -> referenceId.equals(item.path("viewerSlideId").asText())).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Draft teaching slide was not found"));
+        var resolvedId = binding.viewerSlideId().isBlank() ? referenceId : binding.viewerSlideId();
+        if (!referenceId.equals(resolvedId) && java.util.stream.StreamSupport.stream(definition.path("slides").spliterator(), false)
+                .anyMatch(item -> resolvedId.equals(item.path("viewerSlideId").asText()))) {
+            throw new IllegalArgumentException("Viewer slide is already associated in this draft");
+        }
+        ((ObjectNode) slide).put("viewerSlideId", resolvedId).put("sha256", binding.packageSha256());
+        for (var task : definition.path("tasks")) if (referenceId.equals(task.path("slideId").asText())) ((ObjectNode) task).put("slideId", resolvedId);
+        var associations = current.associations().deepCopy();
+        var bindings = associations.withObject("teachingSlides");
+        bindings.remove(referenceId);
+        bindings.set(resolvedId, StudyPackCanonicalJson.mapper().valueToTree(binding));
+        return saveDraft(id, current.name(), expectedRevision, definition.toString(), associations.toString());
+    }
+
+    public TeachingSlideAssociation teachingAssociation(String id, String slideId) throws IOException {
+        var draft = getDraft(id);
+        var node = draft.associations().path("teachingSlides").path(slideId);
+        if (!node.isObject()) throw new IllegalArgumentException("Select an explicit local teaching association first");
+        var association = StudyPackCanonicalJson.mapper().treeToValue(node, TeachingSlideAssociation.class);
+        var slide = java.util.stream.StreamSupport.stream(draft.definition().path("slides").spliterator(), false)
+                .filter(item -> slideId.equals(item.path("viewerSlideId").asText())).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Draft teaching slide was not found"));
+        if (!association.packageSha256().equals(slide.path("sha256").asText())
+                || !(slideId.equals(association.referenceId()) || slideId.equals(association.viewerSlideId()))) {
+            throw new IllegalStateException("Draft slide does not match its local teaching association");
+        }
+        return association;
+    }
     public synchronized List<StudyDraft> history(String id) throws IOException {
         getDraft(id);
         try(var connection=DriverManager.getConnection(url);var statement=connection.prepareStatement("SELECT record_json FROM study_draft_history WHERE id=? ORDER BY revision DESC LIMIT 100")) {
@@ -81,9 +117,22 @@ public final class StudyAuthoringService {
         save(preview,expectedRevision);return preview;
     }
     public synchronized StudyDraft reviewTask(String id,long expectedRevision,String checksum,String taskId) throws IOException {
+        throw new IllegalStateException("Load the exact associated teaching pixels before confirming faculty review");
+    }
+    public synchronized StudyDraft reviewTask(String id,long expectedRevision,String checksum,String taskId,
+            LoadedPixels pixels) throws IOException {
         var current=expected(id,expectedRevision);requirePreview(current,checksum);
-        boolean found=false;for(var task:current.definition().path("tasks")) if(task.path("id").asText().equals(taskId)) found=true;
-        if(!found) throw new IllegalArgumentException("Preview task was not found");
+        var task = java.util.stream.StreamSupport.stream(current.definition().path("tasks").spliterator(), false)
+                .filter(item -> taskId.equals(item.path("id").asText())).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Preview task was not found"));
+        var association = teachingAssociation(id, task.path("slideId").asText());
+        if (pixels == null || !checksum.equals(pixels.previewChecksum())
+                || !task.path("slideId").asText().equals(pixels.slideId())
+                || !association.datasetId().equals(pixels.datasetId())
+                || !association.artifactRevision().equals(pixels.artifactRevision())
+                || !association.packageSha256().equals(pixels.packageSha256())) {
+            throw new IllegalStateException("Loaded pixels do not match this exact faculty preview and teaching association");
+        }
         var reviewed=new java.util.TreeSet<>(current.reviewedTaskIds());reviewed.add(taskId);
         var draft=new StudyDraft(id,current.name(),current.revision()+1,current.definition(),current.associations(),List.of(),checksum,List.copyOf(reviewed),"",System.currentTimeMillis());
         save(draft,expectedRevision);return draft;
@@ -94,17 +143,25 @@ public final class StudyAuthoringService {
         if(current.reviewedTaskIds().size()!=tasks.size()) throw new IllegalStateException("Review every task, key, explanation and source before approving");
         var published=current.definition().deepCopy();published.put("checksum",checksum);
         var faculty=published.putObject("facultyPreview");faculty.put("packChecksum",checksum);faculty.put("previewVersion",StudyPackContract.PREVIEW_VERSION);faculty.put("reviewedAt",Instant.now().toString());
-        validateApproved(published);
-        var canonical=StudyPackCanonicalJson.canonicalize(published);
+        validateFacultyPreview(published);
+        var export = published;
+        if (hasLocalSlides(published)) {
+            export = StudyPackCanonicalJson.mapper().createObjectNode();
+            export.put("schema", "pathlab.study-local-approved/1");
+            export.put("detail", "Local faculty approval; resolve actual Viewer slide identities and preview again before publication");
+            export.set("definition", published);
+        }
+        var canonical=StudyPackCanonicalJson.canonicalize(export);
+        var exportKey = (hasLocalSlides(published) ? "local:" : "") + published.path("packKey").asText();
         var draft=new StudyDraft(id,current.name(),current.revision()+1,current.definition(),current.associations(),List.of(),checksum,current.reviewedTaskIds(),checksum,System.currentTimeMillis());
         try(var connection=DriverManager.getConnection(url)) {
             connection.setAutoCommit(false);
             try {
                 try(var statement=connection.prepareStatement("INSERT OR IGNORE INTO study_exports VALUES(?,?,?,?)")) {
-                    statement.setString(1,checksum);statement.setString(2,published.path("packKey").asText());statement.setString(3,published.path("version").asText());statement.setString(4,canonical);statement.executeUpdate();
+                    statement.setString(1,checksum);statement.setString(2,exportKey);statement.setString(3,published.path("version").asText());statement.setString(4,canonical);statement.executeUpdate();
                 }
                 try(var statement=connection.prepareStatement("SELECT checksum FROM study_exports WHERE pack_key=? AND version=?")) {
-                    statement.setString(1,published.path("packKey").asText());statement.setString(2,published.path("version").asText());
+                    statement.setString(1,exportKey);statement.setString(2,published.path("version").asText());
                     try(var rows=statement.executeQuery()) { if(!rows.next() || !checksum.equals(rows.getString(1))) throw new IllegalStateException("Approved pack versions are immutable; duplicate into a new version"); }
                 }
                 writeDraft(connection,draft,expectedRevision);connection.commit();
@@ -117,7 +174,11 @@ public final class StudyAuthoringService {
         try(var connection=DriverManager.getConnection(url);var statement=connection.prepareStatement("SELECT definition_json FROM study_exports WHERE checksum=?")) {
             statement.setString(1,checksum);try(var rows=statement.executeQuery()) {
                 if(!rows.next())throw new IllegalArgumentException("Approved Study Pack was not found");
-                var body=rows.getString(1);var definition=StudyPackCanonicalJson.parse(body);validateApproved(definition);
+                var body=rows.getString(1);var exported=StudyPackCanonicalJson.parse(body);
+                var definition = "pathlab.study-local-approved/1".equals(exported.path("schema").asText())
+                        && exported.path("definition") instanceof ObjectNode local ? local : exported;
+                validateFacultyPreview(definition);
+                if (hasLocalSlides(definition) && definition == exported) throw new IOException("Unresolved slides cannot be a published Study Pack");
                 if(!checksum.equals(StudyPackCanonicalJson.checksum(definition)))throw new IOException("Stored approved Study Pack checksum changed");return body;
             }
         }catch(SQLException error){throw new IOException("Approved Study Pack could not be read",error);}
@@ -128,6 +189,11 @@ public final class StudyAuthoringService {
     }
     public StudyDraft importDraft(String body) throws IOException {
         var bundle=StudyPackCanonicalJson.parse(body);
+        if ("pathlab.study-local-approved/1".equals(bundle.path("schema").asText())) {
+            if (!(bundle.path("definition") instanceof ObjectNode definition)) throw new IllegalArgumentException("Local approved draft definition is invalid");
+            validateFacultyPreview(definition);
+            return createDraft(definition.path("title").asText(), definition.toString(), "{}");
+        }
         if(bundle.path("schema").asText().equals("pathlab.study-draft/1")) {
             if(!bundle.path("definition").isObject() || !bundle.path("localAssociations").isObject())throw new IllegalArgumentException("Draft bundle definition/associations are invalid");
             return createDraft(bundle.path("name").asText(),StudyPackCanonicalJson.canonicalize(bundle.path("definition")),StudyPackCanonicalJson.canonicalize(bundle.path("localAssociations")));
@@ -166,9 +232,22 @@ public final class StudyAuthoringService {
                 Math.min(1,Math.hypot(x.asDouble()-targetX-width/2,y.asDouble()-targetY-height/2)/Math.sqrt(2)));
     }
     public static void validateApproved(ObjectNode definition) {
+        requireResolvedSlides(definition);
+        validateFacultyPreview(definition);
+    }
+    private static void validateFacultyPreview(ObjectNode definition) {
         StudyPackContract.validateCore(StudyPackCanonicalJson.core(definition));var checksum=StudyPackCanonicalJson.checksum(definition);
         var preview=definition.path("facultyPreview");
         if(!checksum.equals(definition.path("checksum").asText()) || !checksum.equals(preview.path("packChecksum").asText()) || !StudyPackContract.PREVIEW_VERSION.equals(preview.path("previewVersion").asText()) || preview.path("reviewedAt").asText().isBlank())throw new IllegalArgumentException("Study Pack checksum/faculty preview does not match");
+    }
+    private static boolean hasLocalSlides(ObjectNode definition) {
+        for (var slide : definition.path("slides")) if (slide.path("viewerSlideId").asText().startsWith("local:")) return true;
+        return false;
+    }
+    private static void requireResolvedSlides(ObjectNode definition) {
+        for (var slide : definition.path("slides")) if (slide.path("viewerSlideId").asText().startsWith("local:")) {
+            throw new IllegalStateException("Deliver the teaching slides and resolve their actual Viewer identities, then preview again before approval");
+        }
     }
     private StudyDraft expected(String id,long revision)throws IOException{var draft=getDraft(id);if(draft.revision()!=revision)throw new IllegalStateException("Study draft revision changed");return draft;}
     private static void requirePreview(StudyDraft draft,String checksum){if(checksum==null || !checksum.equals(draft.previewChecksum()) || !checksum.equals(StudyPackCanonicalJson.checksum(draft.definition())))throw new IllegalStateException("Any edit invalidates the faculty preview");}
@@ -208,4 +287,6 @@ public final class StudyAuthoringService {
         try(var statement=connection.prepareStatement("DELETE FROM study_draft_history WHERE id=? AND revision NOT IN(SELECT revision FROM study_draft_history WHERE id=? ORDER BY revision DESC LIMIT 100)")){statement.setString(1,draft.id());statement.setString(2,draft.id());statement.executeUpdate();}
     }
     public record Score(boolean correct,Double normalizedError){}
+    public record LoadedPixels(String previewChecksum, String slideId, String datasetId,
+            String artifactRevision, String packageSha256) {}
 }
