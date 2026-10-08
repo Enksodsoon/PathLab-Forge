@@ -321,7 +321,7 @@ test('collapses and restores the slide inspector without losing its state', asyn
   expect(host).not.toHaveClass('inspector-collapsed')
   expect(inspector).toBeVisible()
 
-  fireEvent.click(within(inspectorLabel.closest('header')!).getByRole('button', {
+  fireEvent.click(await within(inspectorLabel.closest('header')!).findByRole('button', {
     name: 'Collapse slide inspector',
   }))
 

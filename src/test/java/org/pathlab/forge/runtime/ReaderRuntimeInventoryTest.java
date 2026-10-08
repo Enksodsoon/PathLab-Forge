@@ -19,7 +19,7 @@ final class ReaderRuntimeInventoryTest {
         Files.writeString(source.resolve("bftools/bioformats_package.jar"), "bioformats");
         Files.writeString(source.resolve("vips/bin/vips.exe"), "vips");
         var manifest = ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64");
+                source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
         new ReaderRuntimeInstaller(temporary.resolve("data")).install(source, manifest);
 
         var inventory = ReaderRuntimeInventory.inspect(temporary.resolve("data"));
