@@ -26,10 +26,144 @@ import org.pathlab.forge.derivative.DerivativeInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pathlab.forge.library.PropertiesDatasetRepository;
+import org.pathlab.forge.reader.ReaderDescriptor;
+import org.pathlab.forge.reader.RuntimeCatalog;
 
 final class ForgeLibraryApiTest {
     @TempDir
     Path tempDirectory;
+
+    @Test
+    void exposesLiveReaderCatalogWithoutHardCodedFormatEnum() throws Exception {
+        var repository = new PropertiesDatasetRepository(tempDirectory.resolve("formats.properties"));
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        ConversionEngine engine = new ConversionEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String runtimeDescription() { return "Bio-Formats 8.5.0"; }
+            @Override public java.util.Optional<RuntimeCatalog> runtimeCatalog() {
+                return java.util.Optional.of(new RuntimeCatalog(
+                        "Bio-Formats 8.5.0",
+                        "a".repeat(64),
+                        List.of(new ReaderDescriptor(
+                                "BIO_FORMATS", "zeiss-czi", "Zeiss CZI", List.of("czi"),
+                                true, false, true, true))));
+            }
+            @Override public List<SeriesInfo> inspect(Path ignored) { return List.of(); }
+            @Override public void convert(Path ignored, int series, Path output) {}
+        };
+        DerivativeEngine derivatives = new DerivativeEngine() {
+            @Override public boolean available() { return false; }
+            @Override public String description() { return "unavailable"; }
+            @Override public void optimizeOme(Path input, Path output, int width, int height) {}
+            @Override public DerivativeInfo generateDzi(Path input, Path output, int width, int height) {
+                throw new UnsupportedOperationException();
+            }
+        };
+
+        try (var server = ForgeServer.start(
+                repository, List::of, tempDirectory.resolve("formats-managed"), engine, derivatives)) {
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var response = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/v2/desktop/formats")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, response.statusCode());
+            assertTrue(response.body().contains("\"readerId\":\"zeiss-czi\""));
+            assertTrue(response.body().contains("\"extensions\":[\"czi\"]"));
+            assertTrue(response.body().contains("\"policy\":\"BEST_EFFORT\""));
+            assertTrue(response.body().contains("\"components\":"));
+            assertTrue(response.body().contains("\"diagnosticCode\":\"NOT_INSTALLED\""));
+        }
+    }
+
+    @Test
+    void importsArbitraryReadableFilesThroughVersionedJsonContract() throws Exception {
+        var source = Files.write(tempDirectory.resolve("volume.czi"), new byte[] {1, 2, 3});
+        var repository = new PropertiesDatasetRepository(tempDirectory.resolve("universal.properties"));
+        var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+        var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+        ConversionEngine engine = new ConversionEngine() {
+            @Override public boolean available() { return true; }
+            @Override public String runtimeDescription() { return "test reader"; }
+            @Override public java.util.Optional<RuntimeCatalog> runtimeCatalog() {
+                return java.util.Optional.of(new RuntimeCatalog(
+                        "test reader", "c".repeat(64),
+                        List.of(new ReaderDescriptor(
+                                "BIO_FORMATS", "zeiss-czi", "Zeiss CZI", List.of("czi"),
+                                true, false, false, true))));
+            }
+            @Override public List<SeriesInfo> inspect(Path ignored) {
+                return List.of(new SeriesInfo(
+                        0, "Volume", 128, 64, 2, 4, 3, "uint16", 1, 1, "µm"));
+            }
+            @Override public void convert(Path ignored, int series, Path output) {}
+        };
+        DerivativeEngine derivatives = new DerivativeEngine() {
+            @Override public boolean available() { return false; }
+            @Override public String description() { return "unavailable"; }
+            @Override public void optimizeOme(Path input, Path output, int width, int height) {}
+            @Override public DerivativeInfo generateDzi(Path input, Path output, int width, int height) {
+                throw new UnsupportedOperationException();
+            }
+        };
+
+        try (var server = ForgeServer.start(
+                repository, List::of, tempDirectory.resolve("universal-managed"), engine, derivatives)) {
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+            var session = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var requestBody = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(java.util.Map.of("paths", List.of(source.toString())));
+            var response = client.send(
+                    HttpRequest.newBuilder(server.baseUri().resolve("/api/v2/desktop/imports"))
+                            .header("Origin", server.baseUri().toString())
+                            .header("X-Forge-CSRF", session.headers()
+                                    .firstValue("x-forge-csrf").orElseThrow())
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(200, response.statusCode());
+            assertTrue(response.body().contains("\"format\":\"ZEISS_CZI\""));
+            assertTrue(response.body().contains("\"diagnostics\":[]"));
+            var dataset = repository.list().get(0);
+            assertEquals("zeiss-czi", dataset.readerId());
+
+            var images = client.send(HttpRequest.newBuilder(server.baseUri().resolve(
+                            "/api/v2/desktop/datasets/" + dataset.id() + "/images"))
+                    .GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, images.statusCode());
+            assertTrue(images.body().contains("\"sizeZ\":4"));
+            assertTrue(images.body().contains("\"sizeT\":3"));
+
+            var viewJson = """
+                    {"series":0,
+                     "z":{"mode":"MAX","start":0,"end":3},
+                     "t":{"mode":"SLICE","start":1,"end":1},
+                     "channels":[
+                       {"channel":0,"enabled":true,"color":"#ff0000","minimum":100,"maximum":1000},
+                       {"channel":1,"enabled":true,"color":"#00ff00","minimum":50,"maximum":900}],
+                     "profile":"DISPLAY_COMPOSITE"}
+                    """;
+            var updated = client.send(HttpRequest.newBuilder(server.baseUri().resolve(
+                            "/api/v2/desktop/datasets/" + dataset.id() + "/view"))
+                    .header("Origin", server.baseUri().toString())
+                    .header("X-Forge-CSRF", session.headers()
+                            .firstValue("x-forge-csrf").orElseThrow())
+                    .header("Content-Type", "application/json")
+                    .PUT(HttpRequest.BodyPublishers.ofString(viewJson)).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, updated.statusCode());
+            assertTrue(updated.body().contains("\"viewRevision\":"));
+            assertTrue(repository.find(dataset.id()).orElseThrow().viewDefinitionJson()
+                    .contains("\"mode\":\"MAX\""));
+        }
+    }
 
     @Test
     void servesVerifiedDirectOmeArtifactsWithoutBuildingPersistentDzi() throws Exception {

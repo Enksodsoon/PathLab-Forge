@@ -15,10 +15,11 @@ public final class ChildProcessContainment implements AutoCloseable {
     private static final ChildProcessContainment GLOBAL = createGlobal();
     private final Set<Process> processes = ConcurrentHashMap.newKeySet();
     private final WindowsJob windowsJob;
+    private volatile boolean jobAssigned;
 
     public ChildProcessContainment() {
-        windowsJob = WindowsJob.create(RuntimeProfile.target().processTreeLimitBytes());
-        windowsJob.assign(ProcessHandle.current().pid());
+        windowsJob = WindowsJob.create(RuntimeProfile.system().processTreeLimitBytes());
+        jobAssigned = windowsJob.assign(ProcessHandle.current().pid());
     }
 
     public static ChildProcessContainment global() {
@@ -33,10 +34,14 @@ public final class ChildProcessContainment implements AutoCloseable {
     }
 
     public Process register(Process process) {
-        windowsJob.assign(process.pid());
+        jobAssigned &= windowsJob.assign(process.pid());
         processes.add(process);
         process.onExit().thenRun(() -> processes.remove(process));
         return process;
+    }
+
+    public String mode() {
+        return jobAssigned ? "WINDOWS_JOB_MEMORY_LIMIT" : "BEST_EFFORT_PROCESS_TREE_TERMINATION";
     }
 
     @Override
@@ -49,19 +54,18 @@ public final class ChildProcessContainment implements AutoCloseable {
     }
 
     private static void terminateTree(Process process) {
-        process.descendants()
-                .sorted(java.util.Comparator.comparingLong(ProcessHandle::pid).reversed())
-                .forEach(ProcessHandle::destroy);
+        var descendants = process.descendants().toList();
+        descendants.forEach(ProcessHandle::destroy);
         process.destroy();
         try {
             if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                process.descendants().forEach(ProcessHandle::destroyForcibly);
+                descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
                 process.waitFor(2, TimeUnit.SECONDS);
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
             process.destroyForcibly();
         }
     }
@@ -113,19 +117,19 @@ public final class ChildProcessContainment implements AutoCloseable {
             }
         }
 
-        void assign(long processId) {
+        boolean assign(long processId) {
             if (handle == null) {
-                return;
+                return false;
             }
             var process = kernel32.OpenProcess(
                     PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
                     false,
                     Math.toIntExact(processId));
             if (process == null) {
-                return;
+                return false;
             }
             try {
-                kernel32.AssignProcessToJobObject(handle, process);
+                return kernel32.AssignProcessToJobObject(handle, process);
             } finally {
                 kernel32.CloseHandle(process);
             }

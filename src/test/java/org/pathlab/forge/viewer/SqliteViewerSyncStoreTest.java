@@ -45,4 +45,23 @@ final class SqliteViewerSyncStoreTest {
             assertTrue(store.conflicts().get(0).unresolved());
         }
     }
+
+    @Test
+    void replacesRemoteSnapshotAndRemovesSlidesMissingFromViewer() throws Exception {
+        var first = new ViewerRemoteSlide(
+                "remote-1", "Deleted remotely", "", "ready_private",
+                1, 0, 0, 0, "thumbnail-1", "tiles-1", Instant.parse("2026-08-12T00:00:00Z"));
+        var remaining = new ViewerRemoteSlide(
+                "remote-2", "Still remote", "", "ready_private",
+                1, 0, 0, 0, "thumbnail-2", "tiles-2", Instant.parse("2026-08-12T00:00:00Z"));
+
+        try (var store = new SqliteViewerSyncStore(temp.resolve("replace.db"))) {
+            store.replaceRemoteSlides(List.of(first, remaining));
+            store.replaceRemoteSlides(List.of(remaining));
+
+            assertTrue(store.find("remote-1").isEmpty());
+            assertEquals(List.of("remote-2"), store.all().stream()
+                    .map(record -> record.remote().id()).toList());
+        }
+    }
 }

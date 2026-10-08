@@ -1,0 +1,25 @@
+{
+  "name": "pathlab-forge-desktop",
+  "productName": "PathLab Forge",
+  "version": "1.0.0-rc.1",
+  "description": "Local whole-slide preparation desktop",
+  "author": "PathLab",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "test": "node --test test/*.test.cjs",
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/policy.cjs && node --check src/activation.cjs && node --check release.cjs && node --check native-signing.cjs && node --check forge.config.cjs"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "8.0.1",
+    "@electron-forge/maker-dmg": "8.0.1",
+    "@electron-forge/maker-squirrel": "8.0.1",
+    "@electron/fuses": "2.1.3",
+    "electron": "44.7.0",
+    "electron-winstaller": "5.4.4"
+  }
+}

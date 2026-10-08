@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pathlab:forge:release-input:1",
+  "description": "Local reviewed release inputs. Viewer maps admitted files to immutable private downloads; local receipt paths are not browser URLs.",
+  "type": "object",
+  "required": ["schema", "commit", "version", "target", "channel", "inventorySha256", "sourceSha256", "artifact", "appInventory", "nativeAcceptance", "signatureVerification"],
+  "properties": {
+    "schema": { "const": "pathlab.forge.release/1" },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[1-9][0-9]*)?$" },
+    "target": { "enum": ["win32-x64", "darwin-x64", "darwin-arm64"] },
+    "channel": { "enum": ["candidate", "stable"] },
+    "inventorySha256": { "$ref": "#/$defs/sha256" },
+    "sourceSha256": { "$ref": "#/$defs/sha256" },
+    "artifact": { "allOf": [{ "$ref": "#/$defs/file" }, { "type": "object", "required": ["bytes"], "properties": { "bytes": { "type": "integer", "minimum": 1 } } }] },
+    "appInventory": { "$ref": "#/$defs/file" },
+    "nativeAcceptance": { "$ref": "#/$defs/file" },
+    "signatureVerification": { "$ref": "#/$defs/file" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "file": { "type": "object", "required": ["file", "sha256"], "properties": {
+      "file": { "type": "string", "minLength": 1 }, "sha256": { "$ref": "#/$defs/sha256" }
+    } }
+  }
+}

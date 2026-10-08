@@ -24,6 +24,23 @@ final class ConversionSourceRevalidationTest {
     Path temporaryDirectory;
 
     @Test
+    void pausedQueueDoesNotDispatchAndCanCancelWithoutTouchingSource() throws Exception {
+        var fixture = fixture();
+        try (var service = fixture.service()) {
+            service.setQueuePaused(true);
+            var queued = service.start(fixture.datasetId());
+            assertEquals(DatasetStatus.QUEUED, queued.status());
+            // Two scheduler passes must also honor durable admission pause.
+            Thread.sleep(2100);
+            assertEquals(0, service.activeConversionCount());
+            assertEquals(1, service.queuedConversionCount());
+            assertEquals(DatasetStatus.CANCELLED, service.cancel(fixture.datasetId()).status());
+            assertTrue(Files.isRegularFile(fixture.companion()));
+            assertTrue(service.queuePaused());
+        }
+    }
+
+    @Test
     void rejectsCompanionRemovedAfterImport() throws Exception {
         var fixture = fixture();
         Files.delete(fixture.companion());

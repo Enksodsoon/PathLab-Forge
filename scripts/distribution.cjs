@@ -1,0 +1,135 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { inventory, sha256, targets, validateReview } = require('../desktop/release.cjs');
+const root = path.join(__dirname, '..');
+const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+const write = (file, value) => { fs.writeFileSync(`${file}.partial`, JSON.stringify(value, null, 2) + '\n'); fs.renameSync(`${file}.partial`, file); };
+function collectNpm(projectRoot, project, output) {
+  const store = path.join(projectRoot, 'node_modules');
+  if (!fs.existsSync(store)) throw new Error(`Install frozen ${project} dependencies first`);
+  const records = [], modulesToVisit = [store], packages = new Set(), modulesVisited = new Set();
+  const virtualStore = path.join(store, '.pnpm');
+  if (fs.existsSync(virtualStore)) for (const entry of fs.readdirSync(virtualStore)) {
+    const modules = path.join(virtualStore, entry, 'node_modules');
+    if (fs.existsSync(modules)) modulesToVisit.push(modules);
+  }
+  for (const modules of modulesToVisit) {
+    const actualModules = fs.realpathSync(modules);
+    if (modulesVisited.has(actualModules)) continue;
+    modulesVisited.add(actualModules);
+    const names = fs.readdirSync(actualModules).filter(name => !name.startsWith('.')).flatMap(name => name.startsWith('@')
+      ? fs.readdirSync(path.join(actualModules, name)).map(child => `${name}/${child}`) : [name]);
+    for (const name of names) {
+      const candidate = path.join(actualModules, name);
+      if (!fs.existsSync(path.join(candidate, 'package.json'))) continue;
+      const packageRoot = fs.realpathSync(candidate);
+      if (packages.has(packageRoot)) continue;
+      packages.add(packageRoot);
+      const metadata = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+      if (typeof metadata.name !== 'string' || !metadata.name || typeof metadata.version !== 'string' || !metadata.version) throw new Error('Installed package metadata is incomplete');
+      if (fs.existsSync(path.join(packageRoot, 'node_modules'))) modulesToVisit.push(path.join(packageRoot, 'node_modules'));
+      const legal = fs.readdirSync(packageRoot).filter(file => /^(license|notice|copying|copyright)/i.test(file)
+        && fs.statSync(path.join(packageRoot, file)).isFile());
+      const notices = legal.map(file => {
+        const source = path.join(packageRoot, file), digest = sha256(source);
+        const destination = path.join(output, 'npm-notices', digest);
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.copyFileSync(source, destination);
+        return { file: `npm-notices/${digest}`, sha256: digest };
+      });
+      records.push({ project, name: metadata.name, version: metadata.version, declaredLicense: metadata.license || 'UNKNOWN',
+        packageJsonSha256: sha256(path.join(packageRoot, 'package.json')), decision: 'PENDING_REVIEW', notices });
+    }
+  }
+  const declared = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
+  const direct = Object.keys({ ...declared.dependencies, ...declared.devDependencies });
+  if (!records.length || !direct.every(name => records.some(record => record.name === name))) throw new Error(`Incomplete installed dependency inventory for ${project}`);
+  return records.sort((a, b) => `${a.name}@${a.version}:${a.packageJsonSha256}`.localeCompare(`${b.name}@${b.version}:${b.packageJsonSha256}`));
+}
+function collect(service, output, target) {
+  if (!targets.has(target)) throw new Error('Unsupported inventory target');
+  if (git(['status', '--porcelain', '--untracked-files=normal'])) throw new Error('Source archive requires clean committed tree');
+  const commit = git(['rev-parse', 'HEAD']);
+  fs.mkdirSync(output, { recursive: true });
+  const source = `pathlab-forge-${commit}.tar`;
+  execFileSync('git', ['archive', '--format=tar', `--output=${path.join(output, source)}`, commit], { cwd: root });
+  const files = inventory(service);
+  const dependencyFile = path.join(output, 'java-dependencies.json');
+  if (!fs.existsSync(dependencyFile)) throw new Error('Run distributionDependencies before collecting inputs');
+  const lockfiles = ['frontend/pnpm-lock.yaml', 'desktop/pnpm-lock.yaml', 'reader-runtime.lock.properties', 'gradle/wrapper/gradle-wrapper.properties'];
+  const dependencyInputs = lockfiles.map(file => ({ file, sha256: sha256(path.join(root, file)) }));
+  const npm = ['frontend', 'desktop'].flatMap(project => collectNpm(path.join(root, project), project, output));
+  write(path.join(output, 'npm-dependencies.json'), npm);
+  const legalFiles = ['java-notices', 'npm-notices'].flatMap(folder => {
+    const base = path.join(output, folder);
+    return fs.existsSync(base) && fs.readdirSync(base).length ? inventory(base).map(file => ({ ...file, path: `${folder}/${file.path}` })) : [];
+  });
+  const receipt = { schema: 'pathlab.forge.inventory/1', distribution: 'NON_REDISTRIBUTABLE_PENDING_REVIEW',
+    commit, version: require('../desktop/package.json').version, target,
+    source: { file: source, sha256: sha256(path.join(output, source)) }, files, dependencyInputs,
+    javaDependenciesSha256: sha256(dependencyFile), npmDependenciesSha256: sha256(path.join(output, 'npm-dependencies.json')), legalFiles };
+  write(path.join(output, 'inventory.json'), receipt);
+  const notices = files.filter(file => /(^|\/)(legal|licenses?)(\/|$)|(^|\/)(notice|copying|copyright)/i.test(file.path));
+  write(path.join(output, 'notice-inventory.json'), { schema: 'pathlab.forge.notice-inventory/1', commit, files: notices });
+  // Discovery only: exact bytes do not confer redistribution rights.
+  return receipt;
+}
+function validateCatalog(directory, catalog) {
+  const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'inventory.json'), 'utf8'));
+  validateReview(JSON.parse(fs.readFileSync(path.join(directory, 'review.json'), 'utf8')), receipt, directory);
+  if (catalog.schema !== 'pathlab.forge.release/1' || catalog.commit !== receipt.commit
+      || catalog.version !== receipt.version || catalog.target !== receipt.target
+      || catalog.channel !== (/-rc\.[1-9][0-9]*$/.test(receipt.version) ? 'candidate' : 'stable')
+      || catalog.inventorySha256 !== sha256(path.join(directory, 'inventory.json'))
+      || catalog.sourceSha256 !== receipt.source.sha256) throw new Error('Catalog identity mismatch');
+  for (const name of ['artifact', 'appInventory', 'nativeAcceptance', 'signatureVerification']) {
+    const item = catalog[name];
+    if (!item || typeof item.file !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new Error(`Missing ${name}`);
+    const file = path.resolve(directory, item.file);
+    if (!file.startsWith(path.resolve(directory) + path.sep) || sha256(file) !== item.sha256) throw new Error(`Changed ${name}`);
+  }
+  const appInventory = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.appInventory.file), 'utf8'));
+  if (appInventory.schema !== 'pathlab.forge.final-app-inventory/1' || appInventory.commit !== receipt.commit
+      || `${appInventory.platform}-${appInventory.arch}` !== receipt.target || appInventory.version !== receipt.version
+      || appInventory.distribution !== 'PRODUCTION' || appInventory.sourceDirty !== false || appInventory.payloadBound !== true
+      || appInventory.artifactSha256 !== catalog.artifact.sha256 || !Array.isArray(appInventory.files)) throw new Error('Final app inventory identity mismatch');
+  const finalReview = JSON.parse(fs.readFileSync(path.join(directory, 'final-review.json'), 'utf8'));
+  if (finalReview.schema !== 'pathlab.forge.final-distribution-review/1' || finalReview.commit !== receipt.commit
+      || finalReview.target !== receipt.target || finalReview.version !== receipt.version
+      || finalReview.artifactSha256 !== catalog.artifact.sha256 || finalReview.appInventorySha256 !== catalog.appInventory.sha256
+      || finalReview.distributionReviewSha256 !== sha256(path.join(directory, 'review.json'))
+      || finalReview.applicationLicense !== 'GPL-3.0-or-later' || finalReview.decision !== 'APPROVED'
+      || typeof finalReview.reviewer !== 'string' || finalReview.reviewer.trim().length < 3 || !Array.isArray(finalReview.components)) throw new Error('Final signed artifact distribution review required');
+  for (const file of appInventory.files.filter(file => file.sha256)) {
+    if (!finalReview.components.some(component => component.sha256 === file.sha256 && component.decision === 'APPROVED'
+        && typeof component.license === 'string' && component.license.trim().length > 1
+        && !/pending|unknown|placeholder/i.test(component.license))) throw new Error(`Unreviewed final app file: ${file.path}`);
+  }
+  const expected = receipt.target === 'win32-x64' ? '.exe' : '.dmg';
+  if (!catalog.artifact.file.endsWith(expected) || catalog.artifact.bytes !== fs.statSync(path.resolve(directory, catalog.artifact.file)).size) throw new Error('Artifact type/size mismatch');
+  const acceptance = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.nativeAcceptance.file), 'utf8'));
+  const signature = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.signatureVerification.file), 'utf8'));
+  if (acceptance.schema !== 'pathlab.forge.native-acceptance/1' || signature.schema !== 'pathlab.forge.signature-verification/1') throw new Error('Native evidence schema mismatch');
+  for (const record of [acceptance, signature]) {
+    if (record.commit !== receipt.commit || record.target !== receipt.target || record.artifactSha256 !== catalog.artifact.sha256
+        || record.version !== receipt.version || record.result !== 'PASS') throw new Error('Final artifact evidence mismatch');
+  }
+  const required = receipt.target === 'win32-x64' ? ['Windows 10 22H2', 'Windows 11'] : ['macOS 14'];
+  if (!required.every(os => acceptance.platforms?.includes(os)) || acceptance.dataPreserved !== true
+      || acceptance.upgradeRollback !== true || acceptance.accessibility !== true || acceptance.journeys !== true) throw new Error('Native acceptance incomplete');
+  if (signature.timestampVerified !== true || signature.nestedVerified !== true || signature.fusesVerified !== true || signature.policyVerified !== true || signature.payloadVerified !== true
+      || signature.appInventorySha256 !== catalog.appInventory.sha256
+      || (receipt.target.startsWith('darwin') && (signature.notarized !== true || signature.stapled !== true))) throw new Error('Signature evidence incomplete');
+  return catalog;
+}
+if (require.main === module) {
+  try {
+    const [command, directory, input, target] = process.argv.slice(2);
+    if (command === 'inventory') collect(path.resolve(input), path.resolve(directory), target);
+    else if (command === 'validate') validateCatalog(path.resolve(directory), JSON.parse(fs.readFileSync(input, 'utf8')));
+    else throw new Error('Usage: node scripts/distribution.cjs inventory <output> <service> <win32-x64|darwin-x64|darwin-arm64> | validate <inputs> <catalog.json>');
+    console.log(command === 'inventory' ? 'Inventory generated: NON_REDISTRIBUTABLE_PENDING_REVIEW' : 'Exact catalog inputs verified; publication remains separately authorized');
+  } catch (error) { console.error(error.message); process.exitCode = 1; }
+}
+module.exports = { collect, collectNpm, validateCatalog };

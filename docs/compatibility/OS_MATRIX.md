@@ -4,22 +4,17 @@ A platform is labelled supported only after a packaged artifact passes the liste
 
 | Platform | Architecture | Target channel | Status |
 |---|---|---|---|
-| Windows 11 | x86-64 | Modern | Planned |
-| Windows 10 | x86-64 | Modern | Planned |
-| macOS 11+ | Apple Silicon | Modern | Planned |
-| macOS 11+ | Intel | Modern | Planned |
-| Windows 8.1 | x86-64 | Legacy | Investigation |
-| Windows 7 SP1 | x86-64 | Legacy | Investigation |
-| Windows Server 2012 R2 | x86-64 | Extended | Investigation |
-| macOS 10.15 | Intel | Legacy | Investigation |
-| macOS 10.14 | Intel | Legacy | Investigation |
-| macOS 10.13 | Intel | Legacy | Investigation |
-| macOS 10.11–10.12 | Intel | Extended | Not promised |
+| Windows 11 | x86-64 | Modern | Internal package validated; release gated |
+| Windows 10 22H2 | x86-64 | 1.0 | Actual-machine acceptance pending |
+| macOS 14+ | Apple Silicon | 1.0 | Build, signing and actual-machine acceptance pending |
+| macOS 14+ | Intel | 1.0 | Build, signing and actual-machine acceptance pending |
 
 Unsupported by design:
 
 - 32-bit Windows;
 - Windows XP/Vista;
+- Windows versions before Windows 10 22H2;
+- macOS versions before macOS 14;
 - PowerPC or 32-bit Intel Macs.
 
 ## Required platform tests
@@ -37,6 +32,6 @@ Unsupported by design:
 11. resumably upload;
 12. recover queue after restart.
 
-## Compatibility rule
+## Release rule
 
-Legacy support must not weaken HTTPS certificate validation, token storage, checksum verification or package validation.
+Advertise only combinations qualified against the final signed artifact. An internal Windows 11 smoke test does not establish Windows 10 or macOS support. Earlier legacy investigation is historical and outside this release.

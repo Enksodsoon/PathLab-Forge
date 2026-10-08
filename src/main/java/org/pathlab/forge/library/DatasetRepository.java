@@ -30,4 +30,10 @@ public interface DatasetRepository {
     default void saveQueueEntry(ConversionQueueEntry entry) throws IOException {}
 
     default void deleteQueueEntry(String datasetId) throws IOException {}
+
+    default boolean queuePaused() { return false; }
+
+    default void setQueuePaused(boolean paused) throws IOException {
+        throw new IOException("This repository cannot persist queue pause state");
+    }
 }

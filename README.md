@@ -1,6 +1,6 @@
 # PathLab Forge
 
-**PathLab Forge** is the local desktop companion for PathLab Viewer.
+**PathLab Forge** is the local desktop companion for PathLab Viewer. The active non-AI Windows/macOS release is in development; see `docs/plans/active/current.md` and `docs/plans/active/RELEASE_PROGRESS.md` for current implementation and qualification.
 
 It opens supported whole-slide image datasets on Windows and macOS, lets the user inspect the correct image series, crop or downsample, renders standardized 8-bit RGB through a temporary pyramidal OME-TIFF, generates a compact PathLab-compatible DZI, processes slides in batch, and uploads prepared packages resumably.
 
@@ -9,10 +9,10 @@ PathLab Forge is deliberately separate from `PathLab-Viewer`.
 ```text
 PathLab Forge desktop
     -> local WSI read / view / crop / convert
-    -> temporary local OME-TIFF staging
-    -> verified .plslide with compact DZI + thumbnail
-    -> staging OME and loose DZI removed
-    -> HTTPS + tus
+    -> retained verified OME-TIFF artifact (normal delivery)
+    -> explicit Teaching delivery: separate verified DZI package + thumbnail
+    -> original sources and completed artifacts preserved
+    -> HTTPS + existing offset-aware desktop transfer
 PathLab Viewer server
     -> safe validation / import
     -> existing library folder or Unfiled
@@ -33,7 +33,7 @@ The latest Viewer is a folder-aware library rather than a flat upload list. Forg
 
 Forge does not replace any of those systems.
 
-## Run the viewer-first shell
+## Development browser mode (desktop release uses Electron)
 
 The desktop shell binds only to a
 random `127.0.0.1` port, opens a one-time launch URL, and establishes an HttpOnly,

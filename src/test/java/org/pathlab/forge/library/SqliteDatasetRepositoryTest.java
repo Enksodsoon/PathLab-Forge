@@ -102,4 +102,37 @@ final class SqliteDatasetRepositoryTest {
             assertEquals(java.util.List.of(), repository.listQueueEntries());
         }
     }
+
+    @Test
+    void persistsReaderAndMultidimensionalViewMetadataInSchemaVersionFour() throws Exception {
+        var database = temporaryDirectory.resolve("reader-metadata.db");
+        var dataset = new LocalDataset(
+                "33333333-3333-3333-3333-333333333333",
+                "sample.czi",
+                temporaryDirectory.resolve("sample.czi").toString(),
+                123,
+                DatasetFormat.valueOf("ZEISS_CZI"),
+                DatasetStatus.READY,
+                "ready",
+                "",
+                "")
+                .withReaderMetadata(
+                        "BIO_FORMATS", "zeiss-czi", "Zeiss CZI", "a".repeat(64),
+                        "{\"series\":0,\"z\":1,\"t\":2}");
+
+        try (var repository = new SqliteDatasetRepository(
+                database, temporaryDirectory.resolve("missing.properties"))) {
+            repository.save(dataset);
+        }
+
+        try (var repository = new SqliteDatasetRepository(
+                database, temporaryDirectory.resolve("missing.properties"))) {
+            var restored = repository.find(dataset.id()).orElseThrow();
+            assertEquals("BIO_FORMATS", restored.readerEngine());
+            assertEquals("zeiss-czi", restored.readerId());
+            assertEquals("Zeiss CZI", restored.formatName());
+            assertEquals("a".repeat(64), restored.runtimeFingerprint());
+            assertEquals("{\"series\":0,\"z\":1,\"t\":2}", restored.viewDefinitionJson());
+        }
+    }
 }

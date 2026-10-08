@@ -3,6 +3,9 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import type { AnnotationRecord } from './api'
+import { AnalysisMaskOverlay, type MaskChannel } from './AnalysisMaskOverlay'
+import type { DeterministicRun } from './DeterministicTools'
+import { geometryText, geometryWithPoints, maskPath, parseGeometry, shapePath, validGeometry, type AnnotationPoint } from './annotationGeometry'
 import {
   cropFromPoints,
   moveCrop,
@@ -33,6 +36,7 @@ interface CropPointerGesture {
   start: OpenSeadragon.Point
   initial: CropBox
 }
+export type AnalysisOverlayShape = Pick<AnnotationRecord, 'id' | 'type' | 'geometry' | 'label' | 'color'>
 
 export const SlideViewer = memo(function SlideViewer({
   tileSource,
@@ -41,12 +45,18 @@ export const SlideViewer = memo(function SlideViewer({
   cropEditing = false,
   onCropChange,
   annotations = [],
+  analysisOverlays = [],
+  analysisMask,
   sourceWidth = 1,
   sourceHeight = 1,
   cropX = 0,
   cropY = 0,
   downsample = 0,
   onCreate,
+  selectedAnnotationId,
+  onSelect,
+  onUpdate,
+  onComposeBrush,
   onReady,
 }: {
   tileSource: string
@@ -55,21 +65,37 @@ export const SlideViewer = memo(function SlideViewer({
   cropEditing?: boolean
   onCropChange?: (box: CropBox) => void
   annotations?: AnnotationRecord[]
+  analysisOverlays?: AnalysisOverlayShape[]
+  analysisMask?: { run: DeterministicRun; channel: MaskChannel }
   sourceWidth?: number
   sourceHeight?: number
   cropX?: number
   cropY?: number
   downsample?: number
   onCreate?: (geometry: string) => void
+  selectedAnnotationId?: string
+  onSelect?: (id: string) => void
+  onUpdate?: (id: string, geometry: string) => void
+  onComposeBrush?: (parentId: string, operation: 'brush_add' | 'brush_subtract', strokeGeometry: string, expectedRevision: number) => void
   onReady?: (viewer: OpenSeadragon.Viewer | null) => void
 }) {
+  const annotationRevisionKey = annotations.map((annotation) => `${annotation.id}:${annotation.revision}`).join('|')
   const elementRef = useRef<HTMLDivElement>(null)
   const cropOverlayRef = useRef<HTMLDivElement>(null)
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null)
   const dragStartRef = useRef<OpenSeadragon.Point | null>(null)
   const cropGestureRef = useRef<CropPointerGesture | null>(null)
+  const cropDrawInitialRef = useRef<CropBox | undefined>(undefined)
+  const cropBoxRef = useRef(cropBox)
+  cropBoxRef.current = cropBox
   const optimizingRef = useRef(false)
+  const draftRef = useRef<AnnotationPoint[]>([])
+  const [draft, setDraft] = useState<AnnotationPoint[]>([])
+  const [projectionEpoch, setProjectionEpoch] = useState(0)
+  const editRef = useRef<{ id: string; vertex?: number; start: AnnotationPoint; points: AnnotationPoint[] } | null>(null)
+  const [edited, setEdited] = useState<{ id: string; points: AnnotationPoint[] } | null>(null)
   const [loading, setLoading] = useState(true)
+  const [brushError, setBrushError] = useState('')
   const [loadError, setLoadError] = useState('')
   const [sourceEpoch, setSourceEpoch] = useState(0)
   const [optimizing, setOptimizing] = useState(false)
@@ -131,7 +157,7 @@ export const SlideViewer = memo(function SlideViewer({
     )
   }
 
-  const sourcePointFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
+  const sourcePointFromPointer = (event: ReactPointerEvent<Element>) => {
     const bounds = elementRef.current?.getBoundingClientRect()
     return sourcePointFromPixel(new OpenSeadragon.Point(
       event.clientX - (bounds?.left || 0),
@@ -196,14 +222,72 @@ export const SlideViewer = memo(function SlideViewer({
     gestureViewer.gestureSettingsMouse.dragToPan = !drawing
     gestureViewer.gestureSettingsTouch.dragToPan = !drawing
 
+    draftRef.current = []
+    setDraft([])
+    setBrushError('')
+    dragStartRef.current = null
+    const setPoints = (points: AnnotationPoint[]) => {
+      draftRef.current = points
+      setDraft(points)
+    }
+    const finish = () => {
+      if (validGeometry(activeTool, draftRef.current)) {
+        if (activeTool === 'brush_add' || activeTool === 'brush_subtract') {
+          const parent = annotations.find((item) => item.id === selectedAnnotationId)
+          if (!parent || !['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'roi_mask'].includes(parent.type) || parent.series === undefined || parent.series < 0 || parent.z === undefined || parent.z < 0 || parent.t === undefined || parent.t < 0 || !parent.viewRevision || !onComposeBrush) setBrushError('Select a saved closed ROI before adding or subtracting a brush region.')
+          else { setBrushError(''); onComposeBrush(parent.id, activeTool, geometryText(draftRef.current), parent.revision) }
+        } else onCreate?.(geometryText(draftRef.current))
+      }
+      setPoints([])
+    }
+    const multiClick = ['polygon', 'polyline', 'angle'].includes(activeTool)
+    const sampled = ['freehand', 'brush_add', 'brush_subtract'].includes(activeTool)
+    const cancel = () => {
+      const initialCrop = cropGestureRef.current?.initial || cropDrawInitialRef.current
+      if (initialCrop) onCropChange?.(initialCrop)
+      cropDrawInitialRef.current = undefined
+      dragStartRef.current = null
+      cropGestureRef.current = null
+      editRef.current = null
+      setEdited(null)
+      setPoints([])
+    }
+    const keydown = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.matches('input,textarea,select,[contenteditable="true"]')) return
+      if (event.key === 'Escape') {
+        cancel()
+      } else if (event.key === 'Enter' && multiClick) {
+        event.preventDefault()
+        finish()
+      } else if (event.key === 'Backspace' && multiClick && draftRef.current.length) {
+        event.preventDefault()
+        setPoints(draftRef.current.slice(0, -1))
+      }
+    }
+
     const press = (event: ViewerPointerEvent) => {
       if (!drawing) return
       event.preventDefaultAction = true
       dragStartRef.current = sourcePointFromPixel(event.position)
+      if (cropEditing) cropDrawInitialRef.current = cropBoxRef.current
+      if (!cropEditing && !multiClick) setPoints([dragStartRef.current])
     }
     const drag = (event: ViewerPointerEvent) => {
-      if (!cropEditing || !dragStartRef.current) return
+      if (!drawing || !dragStartRef.current) return
       event.preventDefaultAction = true
+      if (!cropEditing) {
+        if (multiClick) return
+        const point = sourcePointFromPixel(event.position)
+        if (sampled) {
+          const previous = draftRef.current.at(-1)
+          if (!previous || Math.hypot(point.x - previous.x, point.y - previous.y) >= 0.1) {
+            const limit = activeTool === 'freehand' ? 4095 : 1023
+            if (draftRef.current.length < limit) setPoints([...draftRef.current, point])
+            else { dragStartRef.current = null; setPoints([]); setBrushError('Stroke exceeds its vertex limit. Draw a shorter region.'); }
+          }
+        } else setPoints([dragStartRef.current, point])
+        return
+      }
       onCropChange?.(cropFromPoints(
         dragStartRef.current,
         sourcePointFromPixel(event.position),
@@ -219,25 +303,43 @@ export const SlideViewer = memo(function SlideViewer({
       dragStartRef.current = null
       if (cropEditing) {
         onCropChange?.(cropFromPoints(start, end, sourceWidth, sourceHeight))
+        cropDrawInitialRef.current = undefined
         return
       }
       if (activeTool === 'point' || activeTool === 'text') {
-        onCreate?.(pointText(end))
+        setPoints([end])
+        finish()
         return
       }
-      if (activeTool === 'angle') {
-        onCreate?.(`${pointText(start)};${pointText(new OpenSeadragon.Point(end.x, start.y))};${pointText(end)}`)
+      if (multiClick) {
+        const previous = draftRef.current.at(-1)
+        if (!previous || previous.x !== end.x || previous.y !== end.y) setPoints([...draftRef.current, end])
+        if (activeTool === 'angle' && draftRef.current.length === 3) finish()
         return
       }
-      onCreate?.(`${pointText(start)};${pointText(end)}`)
+      setPoints(sampled ? [...draftRef.current, end] : [start, end])
+      finish()
+    }
+    const doubleClick = (event: ViewerPointerEvent) => {
+      if (!multiClick) return
+      event.preventDefaultAction = true
+      finish()
     }
     viewer.addHandler('canvas-press', press)
     viewer.addHandler('canvas-drag', drag)
     viewer.addHandler('canvas-release', release)
+    viewer.addHandler('canvas-double-click', doubleClick)
+    window.addEventListener('keydown', keydown)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('blur', cancel)
     return () => {
       viewer.removeHandler('canvas-press', press)
       viewer.removeHandler('canvas-drag', drag)
       viewer.removeHandler('canvas-release', release)
+      viewer.removeHandler('canvas-double-click', doubleClick)
+      window.removeEventListener('keydown', keydown)
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('blur', cancel)
     }
   }, [
     activeTool,
@@ -247,8 +349,13 @@ export const SlideViewer = memo(function SlideViewer({
     downsample,
     onCropChange,
     onCreate,
+    onComposeBrush,
+    selectedAnnotationId,
+    annotationRevisionKey,
     sourceHeight,
     sourceWidth,
+    tileSource,
+    sourceEpoch,
   ])
 
   useEffect(() => {
@@ -315,58 +422,68 @@ export const SlideViewer = memo(function SlideViewer({
 
   useEffect(() => {
     const viewer = viewerRef.current
-    if (!viewer || !viewer.world.getItemCount()) return
-    viewer.clearOverlays()
-    const content = viewer.world.getItemAt(0)?.getContentSize()
-    const toImage = (point: OpenSeadragon.Point) => downsample > 0
-      ? new OpenSeadragon.Point((point.x - cropX) / downsample, (point.y - cropY) / downsample)
-      : new OpenSeadragon.Point(
-        point.x * Math.max(1, content?.x || sourceWidth) / sourceWidth,
-        point.y * Math.max(1, content?.y || sourceHeight) / sourceHeight,
-      )
-    for (const annotation of annotations) {
-      const points = annotation.geometry.split(';').map((value) => {
-        const [x, y] = value.split(',').map(Number)
-        return toImage(new OpenSeadragon.Point(x, y))
-      })
-      if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) continue
-      const element = document.createElement('div')
-      element.className = 'forge-annotation-overlay'
-      element.style.borderColor = annotation.color
-      element.setAttribute('aria-label', annotation.label || `${annotation.type} annotation`)
-      if (points.length === 1) {
-        element.classList.add('point')
-        viewer.addOverlay({
-          element,
-          location: viewer.viewport.imageToViewportCoordinates(points[0]),
-          placement: OpenSeadragon.Placement.CENTER,
-          checkResize: false,
-        })
-        continue
-      }
-      const minimumX = Math.min(...points.map((point) => point.x))
-      const maximumX = Math.max(...points.map((point) => point.x))
-      const minimumY = Math.min(...points.map((point) => point.y))
-      const maximumY = Math.max(...points.map((point) => point.y))
-      viewer.addOverlay({
-        element,
-        location: viewer.viewport.imageToViewportRectangle(
-          minimumX,
-          minimumY,
-          Math.max(2, maximumX - minimumX),
-          Math.max(2, maximumY - minimumY),
-        ),
+    if (!viewer) return
+    let frame = 0
+    const redraw = () => {
+      if (!frame) frame = window.requestAnimationFrame(() => {
+        frame = 0
+        setProjectionEpoch((value) => value + 1)
       })
     }
-  }, [
-    annotations,
-    cropX,
-    cropY,
-    downsample,
-    sourceHeight,
-    sourceWidth,
-    tileSource,
-  ])
+    redraw()
+    viewer.addHandler('open', redraw)
+    viewer.addHandler('animation', redraw)
+    viewer.addHandler('resize', redraw)
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame)
+      viewer.removeHandler('open', redraw)
+      viewer.removeHandler('animation', redraw)
+      viewer.removeHandler('resize', redraw)
+    }
+  }, [tileSource, sourceEpoch])
+
+  const project = (point: AnnotationPoint): AnnotationPoint => {
+    const viewer = viewerRef.current
+    if (!viewer?.world.getItemCount()) return point
+    const content = viewer.world.getItemAt(0)?.getContentSize()
+    const x = downsample > 0 ? (point.x - cropX) / downsample
+      : point.x * Math.max(1, content?.x || sourceWidth) / sourceWidth
+    const y = downsample > 0 ? (point.y - cropY) / downsample
+      : point.y * Math.max(1, content?.y || sourceHeight) / sourceHeight
+    return viewer.viewport.pixelFromPoint(viewer.viewport.imageToViewportCoordinates(x, y), true)
+  }
+
+  const beginEdit = (event: ReactPointerEvent<SVGElement>, annotation: AnnotationRecord, vertex?: number) => {
+    if (!['select', 'marquee'].includes(activeTool) || !onUpdate) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    onSelect?.(annotation.id)
+    editRef.current = { id: annotation.id, vertex, start: sourcePointFromPointer(event), points: parseGeometry(annotation.geometry) }
+  }
+  const continueEdit = (event: ReactPointerEvent<SVGElement>) => {
+    const edit = editRef.current
+    if (!edit) return
+    event.preventDefault()
+    event.stopPropagation()
+    const point = sourcePointFromPointer(event)
+    const points = edit.points.map((original, index) => edit.vertex === undefined
+      ? { x: original.x + point.x - edit.start.x, y: original.y + point.y - edit.start.y }
+      : index === edit.vertex ? point : original)
+    setEdited({ id: edit.id, points })
+    return points
+  }
+  const endEdit = (event: ReactPointerEvent<SVGElement>) => {
+    const edit = editRef.current
+    const points = continueEdit(event)
+    if (edit && points) {
+      const annotation = annotations.find((item) => item.id === edit.id)
+      if (annotation && validGeometry(annotation.type, points)) onUpdate?.(edit.id, geometryWithPoints(annotation.geometry, points))
+    }
+    editRef.current = null
+    setEdited(null)
+  }
+  const cancelEdit = () => { editRef.current = null; setEdited(null) }
 
   const startCropGesture = (
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -414,6 +531,11 @@ export const SlideViewer = memo(function SlideViewer({
     }
   }
 
+  const cancelCropGesture = () => {
+    if (cropGestureRef.current) onCropChange?.(cropGestureRef.current.initial)
+    cropGestureRef.current = null
+  }
+
   const showCrop = Boolean(
     cropBox
     && shouldShowCropOverlay(cropEditing, cropBox, sourceWidth, sourceHeight),
@@ -431,7 +553,62 @@ export const SlideViewer = memo(function SlideViewer({
 
   return (
     <div className="forge-osd-shell">
+      {brushError ? <p role="alert">{brushError}</p> : null}
       <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
+      <svg aria-label="Slide annotations" data-projection={projectionEpoch}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' }}>
+        {annotations.map((annotation) => {
+          const points = (edited?.id === annotation.id ? edited.points : parseGeometry(annotation.geometry)).map(project)
+          if (!points.length) return null
+          const selectable = ['select', 'marquee'].includes(activeTool)
+          const selected = selectedAnnotationId === annotation.id
+          const common = {
+            tabIndex: selectable ? 0 : undefined,
+            role: selectable ? 'button' : undefined,
+            'aria-label': annotation.label || `${annotation.type} annotation`,
+            onFocus: () => { if (selectable) onSelect?.(annotation.id) },
+            onKeyDown: (event: React.KeyboardEvent<SVGElement>) => {
+              if (!selectable || !onUpdate) return
+              const delta: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+              if (!delta[event.key]) return
+              event.preventDefault()
+              event.stopPropagation()
+              const [x, y] = delta[event.key]
+              const step = event.shiftKey ? 10 : 1
+              onUpdate(annotation.id, geometryWithPoints(annotation.geometry, parseGeometry(annotation.geometry).map((point) => ({ x: point.x + x * step, y: point.y + y * step }))))
+            },
+            onPointerDown: (event: ReactPointerEvent<SVGElement>) => beginEdit(event, annotation),
+            onPointerMove: continueEdit,
+            onPointerUp: endEdit,
+            onPointerCancel: cancelEdit,
+            style: { pointerEvents: selectable ? 'auto' as const : 'none' as const, cursor: selectable ? 'move' : undefined },
+          }
+          return <g key={annotation.id} stroke={annotation.color} strokeWidth={selected ? 3 : 2}
+            fill="none" aria-label={annotation.label || `${annotation.type} annotation`}>
+            {annotation.type === 'brush_subtract' ? <title>Legacy subtract stroke; not applied to a parent ROI</title> : null}
+            {['point', 'text'].includes(annotation.type)
+              ? <g {...common}><circle cx={points[0].x} cy={points[0].y} r="5" />
+                  {annotation.type === 'text' ? <text x={points[0].x + 8} y={points[0].y} stroke="none" fill={annotation.color}>{annotation.label}</text> : null}</g>
+              : <path {...common} d={annotation.type === 'roi_mask' ? maskPath(edited?.id === annotation.id ? geometryWithPoints(annotation.geometry, edited.points) : annotation.geometry, project) : shapePath(annotation.type, points)} fillRule="evenodd" vectorEffect="non-scaling-stroke"
+                  fill={['rectangle', 'ellipse', 'polygon', 'freehand', 'brush_add', 'roi_mask'].includes(annotation.type) ? annotation.color : 'none'} fillOpacity="0.12" />}
+            {selected && selectable ? points.map((point, index) => <circle key={index} cx={point.x} cy={point.y} r="5" fill="white"
+              {...common} onPointerDown={(event) => beginEdit(event, annotation, index)} />) : null}
+          </g>
+        })}
+        {analysisMask ? <AnalysisMaskOverlay outputs={analysisMask.run.outputs} provenance={analysisMask.run.provenance} channel={analysisMask.channel} project={project} /> : null}
+        {analysisOverlays.map((shape) => {
+          const points = parseGeometry(shape.geometry)
+          if (!validGeometry(shape.type, points)) return null
+          const projected = points.map(project)
+          return <g key={shape.id} aria-label={shape.label} stroke={shape.color} strokeWidth="2" fill="none" data-analysis-overlay={shape.id}>
+            <title>{shape.label}</title>
+            {shape.type === 'point' ? <circle cx={projected[0].x} cy={projected[0].y} r="5" />
+              : <path d={shapePath(shape.type, projected)} vectorEffect="non-scaling-stroke" />}
+          </g>
+        })}
+        {draft.length ? <path d={shapePath(activeTool, draft.map(project))} stroke="#f3b33d" strokeWidth="2" fill="none" strokeDasharray="5 3" /> : null}
+      </svg>
+      {draft.length && ['polygon', 'polyline', 'angle'].includes(activeTool) ? <div role="status" style={{ position: 'absolute', bottom: 12, left: 12 }}>Click vertices. Enter finishes; Backspace removes a vertex; Escape cancels.</div> : null}
       {showCrop && cropBox ? (
         <div
           ref={cropOverlayRef}
@@ -450,7 +627,7 @@ export const SlideViewer = memo(function SlideViewer({
                 onPointerDown={(event) => startCropGesture(event, 'move')}
                 onPointerMove={continueCropGesture}
                 onPointerUp={endCropGesture}
-                onPointerCancel={endCropGesture}
+                onPointerCancel={cancelCropGesture}
               />
               {(Object.keys(cropHandleLabels) as CropHandle[]).map((handle) => (
                 <button
@@ -461,7 +638,7 @@ export const SlideViewer = memo(function SlideViewer({
                   onPointerDown={(event) => startCropGesture(event, 'resize', handle)}
                   onPointerMove={continueCropGesture}
                   onPointerUp={endCropGesture}
-                  onPointerCancel={endCropGesture}
+                  onPointerCancel={cancelCropGesture}
                 />
               ))}
             </>
@@ -486,11 +663,3 @@ export const SlideViewer = memo(function SlideViewer({
     </div>
   )
 })
-
-function pointText(point: OpenSeadragon.Point) {
-  return `${round(point.x)},${round(point.y)}`
-}
-
-function round(value: number) {
-  return Math.round(value * 1000) / 1000
-}

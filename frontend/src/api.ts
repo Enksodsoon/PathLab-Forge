@@ -1,8 +1,57 @@
+import type { StudyDraftRecord } from './StudyAuthoring'
+import type { DeterministicRun, DeterministicRequest, DeterministicReview } from './DeterministicTools'
+import type { BatchSummary, BatchReport } from './BatchReports'
+import type { TeachingPixels } from './teachingAssociations'
+import type { StudySlide } from './StudyAuthoring'
+
+export const teachingSlides = async (): Promise<StudySlide[]> => {
+  const slides = await request<Array<{ id: string; displayName: string; sha256: string }>>('/api/study/viewer/slides')
+  if (!Array.isArray(slides) || slides.some((slide) => !slide.id || !slide.displayName || !/^[a-f0-9]{64}$/.test(slide.sha256))) throw new Error('Viewer teaching slide identities are invalid')
+  return slides.map((slide) => ({ viewerSlideId: slide.id, displayName: slide.displayName, sha256: slide.sha256 }))
+}
+export const publishStudy = (id: string, revision: number, checksum: string) => request<{ id: string; checksum: string }>(`/api/study/drafts/${encodeURIComponent(id)}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision, checksum }) })
+export const generateTeachingArtifact = (id: string) => request<Dataset>(`/api/datasets/${encodeURIComponent(id)}/teaching`, { method: 'POST' })
+
+export const batches = (offset = 0) => request<BatchSummary[]>(`/api/batches?limit=50&offset=${offset}`)
+export const createBatch = (datasetIds: string[]) => request<BatchSummary>('/api/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetIds }) })
+export const batchReport = (id: string) => request<BatchReport>(`/api/batches/${encodeURIComponent(id)}/report`)
+export const retryBatchItem = (id: string, datasetId: string) => request<BatchSummary>(`/api/batches/${encodeURIComponent(id)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetId }) })
+export const cancelBatch = (id: string) => request<BatchSummary>(`/api/batches/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+export const exportBatch = (batchId: string, format: 'csv' | 'json', destination: string) => request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'batch', batchId, format, destination }) })
+
+export interface ExportState { id: string; status: string; completedBytes: number; totalBytes: number; destination: string; detail: string }
+export const exportState = () => request<ExportState>('/api/exports')
+export const cancelExport = (expectedId: string) => request<ExportState>(`/api/exports/cancel?id=${encodeURIComponent(expectedId)}`, { method: 'POST' })
+export const exportArtifact = (datasetId: string, revisionId: string, kind: 'ome' | 'package', destination: string) =>
+  request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datasetId, revisionId, kind, destination }) })
+export const exportResult = (kind: 'analysis' | 'measurements', datasetId: string, runId: string, destination: string) =>
+  request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datasetId, runId, kind, destination }) })
+export const analysisRuns = (datasetId: string) => request<DeterministicRun[]>(`/api/analysis/runs?datasetId=${encodeURIComponent(datasetId)}`)
+export const analysisRun = (id: string) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}`)
+export const analysisHistory = (datasetId: string, offset: number) => request<{ runs: DeterministicRun[]; hasMore: boolean; nextOffset: number }>(`/api/analysis/runs?datasetId=${encodeURIComponent(datasetId)}&page=true&limit=100&offset=${offset}`)
+export const persistTma = (id: string, reviewRevision: number) => request<AnnotationRecord[]>(`/api/analysis/runs/${encodeURIComponent(id)}/cores`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewRevision }) })
+export const analyzeTmaCore = (id: string, reviewRevision: number, coreId: string, tool: string, configuration: Record<string, number>) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}/core-analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewRevision, coreId, tool, configuration }) })
+export const submitAnalysis = (value: DeterministicRequest) => request<DeterministicRun>('/api/analysis/runs', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
+export const cancelAnalysis = (id: string) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+export const analysisReview = (id: string) => request<DeterministicReview>(`/api/analysis/runs/${encodeURIComponent(id)}/review`)
+export const saveAnalysisReview = (id: string, review: DeterministicReview) => request<DeterministicReview>(`/api/analysis/runs/${encodeURIComponent(id)}/review`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(review) })
+
 export interface Dataset {
+  unscopedAnnotationCount?: number
   id: string
   displayName: string
   sourceBytes: number
-  format: 'OME_TIFF' | 'VSI' | 'SVS'
+  format: string
+  readerEngine?: string
+  readerId?: string
+  formatName?: string
+  runtimeFingerprint?: string
+  viewDefinitionJson?: string
+  viewRevision?: string
   status: string
   detail: string
   outputPath: string
@@ -52,7 +101,43 @@ export interface SeriesInfo {
   rgbPlane: boolean
 }
 
+export type AxisMode = 'SLICE' | 'MIN' | 'MAX' | 'MEAN'
+export interface ViewDefinition {
+  series: number
+  z: { mode: AxisMode; start: number; end: number }
+  t: { mode: AxisMode; start: number; end: number }
+  channels: Array<{
+    channel: number; enabled: boolean; color: string; minimum: number; maximum: number
+  }>
+  profile: 'PATHOLOGY_STANDARD' | 'DISPLAY_COMPOSITE'
+}
+
+export interface ImportDiagnostic {
+  code: 'UNSUPPORTED' | 'CORRUPT' | 'ENCRYPTED' | 'MISSING_COMPANION'
+    | 'CODEC_UNAVAILABLE' | 'PROBE_TIMEOUT' | 'RESOURCE_LIMIT'
+  detail: string
+  repairable: boolean
+  paths: string[]
+}
+
+export interface FormatCatalog {
+  policy: 'BEST_EFFORT'
+  runtimeVersion: string
+  runtimeFingerprint: string
+  formats: Array<{
+    engine: string
+    readerId: string
+    displayName: string
+    extensions: string[]
+    multidimensional: boolean
+    nativePyramid: boolean
+    groupedFiles: boolean
+    randomRegions: boolean
+  }>
+}
+
 export interface ArtifactRevision {
+  configurationRevision?: string
   id: string
   name?: string
   status: 'CONVERTING' | 'READY' | 'APPROVED' | 'FAILED'
@@ -97,6 +182,7 @@ export interface ViewerConnection {
   viewerUrl: string
   deviceName: string
   scopes: string[]
+  connectionRevision?: string
   conversionMode?: 'OME_DYNAMIC_V1' | 'PREPARED_DZI_V2'
 }
 
@@ -116,7 +202,7 @@ export interface ViewerUpload {
   totalBytes: number
   viewerSlideId: string
   viewerSlideSha256: string
-  uploadMode: 'OME_DYNAMIC' | ''
+  uploadMode: 'OME_DYNAMIC' | 'PREPARED_V2' | ''
   detail: string
 }
 
@@ -131,6 +217,10 @@ export interface AnnotationRecord {
   classification: string
   updatedAt: number
   revision: number
+  series?: number
+  z?: number
+  t?: number
+  viewRevision?: string
 }
 
 export interface ViewerRemoteItem {
@@ -145,15 +235,27 @@ export interface ViewerRemoteItem {
   tileSourceUrl: string
   offlineBytes: number
   offlineComplete: boolean
+  downloadState?: 'NONE' | 'DOWNLOADING' | 'VERIFYING' | 'READY' | 'FAILED' | 'CANCELLED'
+  downloadDetail?: string
+  visibility?: 'private' | 'published'
+  annotationRevision?: number
+  metadataRevision?: number
+  updatedAt?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface ViewerRemoteLibrary {
   items: ViewerRemoteItem[]
   folders: Array<{ id: string; name: string; parentId: string }>
-  conflicts: Array<{ slideId: string; field: string }>
+  conflicts: Array<{ slideId: string; field: string; localValue?: unknown; remoteValue?: unknown; baseRevision?: number; remoteRevision?: number }>
 }
 
 export interface FeaturePack {
+  activeVersion?: string
+  installedVersions?: string[]
+  platforms?: string[]
+  minimumCoreVersion?: string
+  licenseReviewStatus?: string
   id: string
   version: string
   name: string
@@ -206,9 +308,19 @@ export async function capabilities() {
     downsamples: number[]
     activeConversions?: number
     queuedConversions?: number
+    queuePaused?: boolean
+    managedUsage?: { bytes: number; files: number; complete: boolean; measuredAt: number } | null
+    usableBytes?: number
+    effectiveCapacityBytes?: number
     maximumConcurrentConversions?: number
     projectFolderImport?: boolean
   }>('/api/capabilities')
+}
+
+export async function setQueuePaused(paused: boolean) {
+  return request<{ paused: boolean; active: number; queued: number }>(
+    `/api/queue?paused=${paused}`, { method: 'POST' },
+  )
 }
 
 export async function importProjectFolder(path?: string) {
@@ -219,15 +331,60 @@ export async function importProjectFolder(path?: string) {
   )
 }
 
-export async function chooseDatasets() {
-  return request<{ datasets: Dataset[] }>('/api/datasets/select', { method: 'POST' })
+export interface LocalFileListing {
+  path: string
+  parent: string | null
+  locations: Array<{ name: string; path: string }>
+  entries: Array<{ name: string; path: string; directory: boolean; bytes: number }>
+  truncated: boolean
+}
+
+export async function browseLocalFiles(path?: string) {
+  const query = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : ''
+  return request<LocalFileListing>(`/api/local-files${query}`)
 }
 
 export async function importDataset(path: string) {
-  return request<{ datasets: Dataset[] }>(
-    `/api/datasets/import?path=${encodeURIComponent(path)}`,
-    { method: 'POST' },
+  const report = await importDatasets([path])
+  if (!report.datasets.length && report.diagnostics.length) {
+    throw new Error(`${report.diagnostics[0].code}: ${report.diagnostics[0].detail}`)
+  }
+  datasetEtag = ''
+  return { datasets: await datasets() }
+}
+
+export async function formats() {
+  return request<FormatCatalog>('/api/v2/desktop/formats')
+}
+
+export async function importDatasets(paths: string[]) {
+  return request<{ datasets: Dataset[]; diagnostics: ImportDiagnostic[] }>(
+    '/api/v2/desktop/imports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths }),
+    },
   )
+}
+
+export async function images(id: string) {
+  return request<{ series: SeriesInfo[]; viewDefinition: ViewDefinition | null }>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/images`,
+  )
+}
+
+export async function updateView(id: string, view: ViewDefinition) {
+  return request<Dataset & { viewRevision: string }>(
+    `/api/v2/desktop/datasets/${encodeURIComponent(id)}/view`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(view),
+    },
+  )
+}
+
+export function viewDziUrl(id: string, revision: string) {
+  return `/api/v2/desktop/datasets/${encodeURIComponent(id)}/views/${encodeURIComponent(revision)}/slide.dzi`
 }
 
 export async function deleteDataset(id: string) {
@@ -411,13 +568,14 @@ export async function annotations(id: string) {
 
 export async function createAnnotation(
   id: string,
-  values: { type: string; geometry: string; label?: string; color?: string },
+  values: { type: string; geometry: string; label?: string; color?: string; configurationRevision?: string },
 ) {
   const query = new URLSearchParams({
     type: values.type.replaceAll('-', '_'),
     geometry: values.geometry,
     label: values.label || '',
     color: values.color || '#f3b33d',
+    configurationRevision: values.configurationRevision || '',
   })
   return request<AnnotationRecord>(
     `/api/datasets/${encodeURIComponent(id)}/annotations?${query}`,
@@ -432,6 +590,23 @@ export async function deleteAnnotation(id: string, annotationId: string) {
   )
 }
 
+export async function composeBrush(id: string, parentId: string, operation: 'brush_add' | 'brush_subtract', geometry: string, revision: number, configurationRevision: string) {
+  return request<AnnotationRecord>(`/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(parentId)}/brush`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation, geometry, revision, configurationRevision }),
+  })
+}
+
+export async function updateAnnotation(id: string, annotation: AnnotationRecord,
+  values: { geometry?: string; label?: string; color?: string }) {
+  const query = new URLSearchParams({ geometry: values.geometry ?? annotation.geometry,
+    label: values.label ?? annotation.label, color: values.color ?? annotation.color,
+    revision: String(annotation.revision) })
+  return request<AnnotationRecord>(
+    `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotation.id)}?${query}`,
+    { method: 'PATCH' },
+  )
+}
+
 export async function features(refresh = false) {
   return request<{ features: FeaturePack[] }>(`/api/features${refresh ? '?refresh=true' : ''}`)
 }
@@ -440,21 +615,30 @@ export async function installFeature(id: string) {
   return request<FeaturePack>(`/api/features/${encodeURIComponent(id)}/install`, { method: 'POST' })
 }
 
+export const importFeature = (files: { catalogPath: string; archivePath: string }) =>
+  request<FeaturePack>('/api/features/import', { method: 'POST', body: JSON.stringify(files) })
+
 export async function disableFeature(id: string) {
   return request<void>(`/api/features/${encodeURIComponent(id)}/disable`, { method: 'POST' })
 }
+
+export type FeatureAction = 'install' | 'disable' | 'uninstall' | 'enable' | 'activate' | 'rollback' | 'cancel'
+export interface FeatureProgress { id: string; phase: string; completedBytes: number; totalBytes: number; detail: string }
+export const featureProgress = () => request<FeatureProgress>('/api/features/progress')
+export const featureAction = (id: string, action: FeatureAction, version = '') =>
+  request<void>(`/api/features/${encodeURIComponent(id)}/${action}?version=${encodeURIComponent(version)}`, { method: 'POST' })
 
 export async function uninstallFeature(id: string) {
   return request<void>(`/api/features/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export async function annotationMeasurements(id: string, annotationId: string) {
-  return request<{ annotationId: string; units: 'pixels'; values: Record<string, number> }>(
+  return request<{ annotationId: string; units: 'pixels' | 'pixels-and-micrometres'; values: Record<string, number> }>(
     `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}/measurements`,
   )
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, sessionRetry = true): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.method && init.method !== 'GET') {
     headers.set('X-Forge-CSRF', csrf)
@@ -466,8 +650,42 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: 'same-origin',
   })
   const body = response.status === 204 ? undefined : await response.json()
+  if (response.status === 403 && sessionRetry && init.method && init.method !== 'GET'
+      && body?.error === 'forbidden') {
+    const session = await fetch('/api/session', { credentials: 'same-origin' })
+    if (session.ok) {
+      csrf = session.headers.get('X-Forge-CSRF') || ''
+      return request<T>(path, init, false)
+    }
+  }
   if (!response.ok) {
     throw new Error(body?.detail || body?.error || `Request failed (${response.status})`)
   }
   return body as T
 }
+
+const studyPath = (id: string) => `/api/study/drafts/${encodeURIComponent(id)}`
+const studyWrite = <T,>(path: string, value: unknown, method = 'POST') => request<T>(path, {
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
+export const studyDrafts = () => request<StudyDraftRecord[]>('/api/study/drafts')
+export const studyDraft = (id: string) => request<StudyDraftRecord>(studyPath(id))
+export const createStudyDraft = (name: string) => studyWrite<StudyDraftRecord>('/api/study/drafts', { name })
+export const saveStudyDraft = (draft: StudyDraftRecord, revision: number) => studyWrite<StudyDraftRecord>(studyPath(draft.id), { name: draft.name, revision, definition: draft.definition, associations: draft.associations }, 'PUT')
+export const duplicateStudyDraft = (id: string, name: string, nextVersion: boolean) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/duplicate`, { name, nextVersion })
+export const studyHistory = (id: string) => request<StudyDraftRecord[]>(`${studyPath(id)}/history`)
+export const recoverStudyDraft = (id: string, historicalRevision: number, revision: number) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/recover`, { historicalRevision, revision })
+export const previewStudyDraft = (id: string, revision: number) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/preview`, { revision })
+export const reviewStudyTask = (id: string, revision: number, checksum: string, taskId: string, pixels: TeachingPixels) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/review`, { revision, checksum, taskId, pixels })
+export const approveStudyDraft = (id: string, revision: number, checksum: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/approve`, { revision, checksum })
+export const importStudyDraft = (format: 'json' | 'csv', text: string) => studyWrite<StudyDraftRecord>('/api/study/import', { format, text })
+export const importStudyQuestions = (id: string, revision: number, format: string, text: string, slideId: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/questions`, { revision, format, text, slideId })
+export const studyExportUrl = (id: string, format: 'json' | 'csv' | 'approved', checksum = '') => `${studyPath(id)}/export?${new URLSearchParams({ format, checksum })}`
+export const exportStudy = (draftId: string, format: 'json' | 'csv' | 'approved', checksum: string, destination: string) =>
+  studyWrite<ExportState>('/api/exports', { kind: 'study', draftId, format, checksum, destination })
+
+export const cancelViewerOfflineDownload = (id: string) => request<void>(`/api/viewer/slides/${encodeURIComponent(id)}/offline/cancel`, { method: 'POST' })
+
+export const uploadTeachingArtifact = (id: string) => request<ViewerUpload>(`/api/datasets/${encodeURIComponent(id)}/teaching-upload`, { method: 'POST' })
+
+export const associateTeachingSlide = (id: string, revision: number, referenceId: string, datasetId: string, artifactRevision: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/associate`, { revision, referenceId, datasetId, artifactRevision })
+export const teachingPreviewUrl = (datasetId: string, artifactRevision: string) => `/api/datasets/${encodeURIComponent(datasetId)}/artifacts/${encodeURIComponent(artifactRevision)}/teaching-preview/slide.dzi`

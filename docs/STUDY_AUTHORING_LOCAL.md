@@ -1,0 +1,11 @@
+# Offline Study authoring
+
+Named SQLite drafts are editable and recoverable independently of immutable faculty-approved exports. Every saved edit, including local associations, clears the preview and reviewed-task list. Approval requires the checksum of the exact current content and explicit review of every task. Pack key/version collisions require a new version; an existing immutable export cannot be overwritten.
+
+The canonical checksum fixture comes from the current Viewer `study_pack_contract.py`, including UTF-8 text and numeric edge cases. Published definitions exclude Forge dataset/artifact/transform associations. The component takes persistence and publication callbacks; publication eligibility, source privacy, prepared teaching artifacts, authorization and live Viewer course integration are enforced by the server integration, not these callbacks alone.
+
+Question imports are bounded to 2 MiB and 500 tasks. CSV/JSON preserve authored content and explicit keys. Supported QTI is XML with a single identifier response and standard matching key; supported Moodle is a single-choice XML question with exactly one fully correct answer. Other XML forms remain incomplete for faculty conversion with imported scoring/source XML retained in local associations. Anki import supports text TSV exports; a two-field card remains incomplete until faculty supplies choices, a key and sources. Binary APKG files and QTI ZIP packages are not supported. HTML/script content is reduced to plain text. No medical prompts, keys or distractors are generated.
+
+`teachingTarget` maps an explicitly selected pixel ROI through an explicitly supplied registration into the selected teaching crop and normalized coordinates. Downsampling preserves normalized positions. Out-of-crop endpoints are rejected. A rotation or shear that changes an axis aligned rectangle requires manual target correction; the helper does not substitute its bounding box. The helper does not qualify anatomical correspondence.
+
+Focused tests cover checksum parity, immutable approval, stale revisions, recovery, question keys/sanitization, malformed draft shapes, autosave serialization, preview invalidation and normalized coordinate scoring. Native preview tiles and authenticated Viewer publication require separate integration evidence.

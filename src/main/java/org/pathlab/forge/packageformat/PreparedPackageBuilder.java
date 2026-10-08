@@ -378,6 +378,12 @@ public final class PreparedPackageBuilder {
                 + "\"artifactRevisionId\":\"" + escape(metadata.artifactRevisionId()) + "\","
                 + "\"configurationRevision\":\"" + escape(metadata.configurationRevision()) + "\","
                 + "\"sourceFingerprint\":\"" + escape(metadata.sourceFingerprint()) + "\","
+                + "\"readerEngine\":\"" + escape(metadata.readerEngine()) + "\","
+                + "\"readerId\":\"" + escape(metadata.readerId()) + "\","
+                + "\"formatName\":\"" + escape(metadata.formatName()) + "\","
+                + "\"runtimeFingerprint\":\"" + escape(metadata.runtimeFingerprint()) + "\","
+                + "\"viewDefinition\":"
+                + (metadata.viewDefinitionJson().isBlank() ? "null" : metadata.viewDefinitionJson()) + ","
                 + "\"series\":" + metadata.series() + ",\"crop\":{"
                 + "\"x\":" + metadata.cropX() + ",\"y\":" + metadata.cropY()
                 + ",\"width\":" + metadata.cropWidth()

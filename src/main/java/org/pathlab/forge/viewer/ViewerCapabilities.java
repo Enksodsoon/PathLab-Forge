@@ -14,7 +14,8 @@ public record ViewerCapabilities(
         Set<ViewerOmeProfile> omeProfiles,
         long maxChunkBytes,
         long recommendedChunkBytes,
-        long maxUploadBytes) {
+        long maxUploadBytes,
+        boolean ingestCreateIdempotency) {
     private static final long LEGACY_CHUNK_BYTES = 16L * 1024 * 1024;
     private static final long MAX_CHUNK_BYTES = 64L * 1024 * 1024;
     private static final ObjectMapper JSON = new ObjectMapper(JsonFactory.builder()
@@ -27,6 +28,11 @@ public record ViewerCapabilities(
         if (maxChunkBytes < 1 || recommendedChunkBytes < 1 || maxUploadBytes < 1) {
             throw new IllegalArgumentException("Viewer chunk sizes must be positive");
         }
+    }
+
+    public ViewerCapabilities(Set<String> ingestModes, Set<ViewerOmeProfile> omeProfiles,
+            long maxChunkBytes, long recommendedChunkBytes, long maxUploadBytes) {
+        this(ingestModes, omeProfiles, maxChunkBytes, recommendedChunkBytes, maxUploadBytes, false);
     }
 
     public static ViewerCapabilities legacy() {
@@ -74,7 +80,8 @@ public record ViewerCapabilities(
                     profiles,
                     requiredPositive(root, "maxChunkBytes"),
                     requiredPositive(root, "recommendedChunkBytes"),
-                    requiredPositive(root, "maxUploadBytes"));
+                    requiredPositive(root, "maxUploadBytes"),
+                    root.path("ingestCreateIdempotency").isBoolean() && root.path("ingestCreateIdempotency").booleanValue());
         } catch (JsonProcessingException | ArithmeticException | IllegalArgumentException error) {
             throw new IOException("Viewer capabilities are malformed", error);
         }

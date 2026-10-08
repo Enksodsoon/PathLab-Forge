@@ -16,8 +16,32 @@ import java.util.Optional;
 import java.util.function.UnaryOperator;
 
 public final class SqliteDatasetRepository implements DatasetRepository, AutoCloseable {
-    private static final int SCHEMA_VERSION = 3;
+    private static final int SCHEMA_VERSION = 4;
     private final Connection connection;
+
+    @Override
+    public synchronized boolean queuePaused() {
+        try (var query = connection.prepareStatement(
+                "SELECT value FROM forge_meta WHERE key='queue_paused'");
+                var rows = query.executeQuery()) {
+            return rows.next() && "true".equals(rows.getString(1));
+        } catch (SQLException error) {
+            throw new IllegalStateException("Unable to read queue pause state", error);
+        }
+    }
+
+    @Override
+    public synchronized void setQueuePaused(boolean paused) throws IOException {
+        try (var update = connection.prepareStatement("""
+                INSERT INTO forge_meta(key,value) VALUES ('queue_paused',?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """)) {
+            update.setString(1, Boolean.toString(paused));
+            update.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to persist queue pause state", error);
+        }
+    }
 
     public SqliteDatasetRepository(Path database, Path legacyProperties) throws IOException {
         try {
@@ -74,6 +98,11 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                       configuration_revision TEXT NOT NULL,
                       current_artifact_revision TEXT NOT NULL,
                       approved_artifact_revision TEXT NOT NULL,
+                      reader_engine TEXT NOT NULL DEFAULT '',
+                      reader_id TEXT NOT NULL DEFAULT '',
+                      format_name TEXT NOT NULL DEFAULT '',
+                      runtime_fingerprint TEXT NOT NULL DEFAULT '',
+                      view_definition_json TEXT NOT NULL DEFAULT '',
                       workspace_revision INTEGER NOT NULL DEFAULT 1
                     )""");
             statement.execute("""
@@ -96,11 +125,26 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                         "ALTER TABLE conversion_queue ADD COLUMN requested_format "
                                 + "TEXT NOT NULL DEFAULT 'PREPARED_DZI_V2'");
             }
+            addDatasetColumn(statement, "reader_engine", "TEXT NOT NULL DEFAULT ''");
+            addDatasetColumn(statement, "reader_id", "TEXT NOT NULL DEFAULT ''");
+            addDatasetColumn(statement, "format_name", "TEXT NOT NULL DEFAULT ''");
+            addDatasetColumn(statement, "runtime_fingerprint", "TEXT NOT NULL DEFAULT ''");
+            addDatasetColumn(statement, "view_definition_json", "TEXT NOT NULL DEFAULT ''");
+            statement.execute("UPDATE datasets SET format_name=format WHERE format_name=''");
             statement.execute("""
                     INSERT INTO forge_meta(key, value) VALUES ('schema_version', '%d')
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value
                     """.formatted(SCHEMA_VERSION));
         }
+    }
+
+    private static void addDatasetColumn(
+            java.sql.Statement statement, String name, String declaration) throws SQLException {
+        var present = false;
+        try (var columns = statement.executeQuery("PRAGMA table_info(datasets)")) {
+            while (columns.next()) present |= name.equals(columns.getString("name"));
+        }
+        if (!present) statement.execute("ALTER TABLE datasets ADD COLUMN " + name + " " + declaration);
     }
 
     private void migrateLegacy(Path legacy) throws IOException, SQLException {
@@ -219,9 +263,13 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
 
     private void upsert(LocalDataset dataset) throws SQLException {
         try (var statement = connection.prepareStatement("""
-                INSERT INTO datasets VALUES (
-                  ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1
-                )
+                INSERT INTO datasets(
+                  id,display_name,source_path,source_bytes,format,status,detail,output_path,sha256,
+                  selected_series,width,height,downsample,estimated_output_bytes,crop_x,crop_y,
+                  crop_width,crop_height,source_fingerprint,source_inventory,configuration_revision,
+                  current_artifact_revision,approved_artifact_revision,reader_engine,reader_id,
+                  format_name,runtime_fingerprint,view_definition_json,workspace_revision
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
                 ON CONFLICT(id) DO UPDATE SET
                   display_name=excluded.display_name,
                   source_path=excluded.source_path,
@@ -245,6 +293,11 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                   configuration_revision=excluded.configuration_revision,
                   current_artifact_revision=excluded.current_artifact_revision,
                   approved_artifact_revision=excluded.approved_artifact_revision,
+                  reader_engine=excluded.reader_engine,
+                  reader_id=excluded.reader_id,
+                  format_name=excluded.format_name,
+                  runtime_fingerprint=excluded.runtime_fingerprint,
+                  view_definition_json=excluded.view_definition_json,
                   workspace_revision=datasets.workspace_revision+1
                 """)) {
             bind(statement, dataset);
@@ -276,7 +329,12 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
         statement.setString(index++, dataset.sourceInventory());
         statement.setString(index++, dataset.configurationRevision());
         statement.setString(index++, dataset.currentArtifactRevision());
-        statement.setString(index, dataset.approvedArtifactRevision());
+        statement.setString(index++, dataset.approvedArtifactRevision());
+        statement.setString(index++, dataset.readerEngine());
+        statement.setString(index++, dataset.readerId());
+        statement.setString(index++, dataset.formatName());
+        statement.setString(index++, dataset.runtimeFingerprint());
+        statement.setString(index, dataset.viewDefinitionJson());
     }
 
     private static LocalDataset read(ResultSet rows) throws SQLException {
@@ -303,7 +361,12 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
                 rows.getString("source_inventory"),
                 rows.getString("configuration_revision"),
                 rows.getString("current_artifact_revision"),
-                rows.getString("approved_artifact_revision"));
+                rows.getString("approved_artifact_revision"),
+                rows.getString("reader_engine"),
+                rows.getString("reader_id"),
+                rows.getString("format_name"),
+                rows.getString("runtime_fingerprint"),
+                rows.getString("view_definition_json"));
     }
 
     @Override
