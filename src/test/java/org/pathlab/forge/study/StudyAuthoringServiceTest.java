@@ -5,6 +5,13 @@ import java.nio.file.Files;
 import org.junit.jupiter.api.Test;
 
 final class StudyAuthoringServiceTest {
+    @Test void incompleteDraftsRemainEditableButMalformedCollectionsAndUnqualifiedScoringAreRejected()throws Exception{
+        var service=new StudyAuthoringService(Files.createTempDirectory("study-draft-shape"));
+        var blank=service.createDraft("Offline draft","{}","{}");
+        assertTrue(blank.definition().path("tasks").isArray());assertFalse(blank.issues().isEmpty());
+        assertThrows(IllegalArgumentException.class,()->service.createDraft("Malformed","{\"tasks\":[{\"sources\":[\"unsafe shape\"]}]}","{}"));
+        assertThrows(IllegalArgumentException.class,()->StudyAuthoringService.score(StudyPackCanonicalJson.parse("{\"type\":\"faculty-conversion\"}"),StudyPackCanonicalJson.parse("{\"x\":0,\"y\":0}")));
+    }
     private static String resource(String name)throws Exception{return new String(StudyAuthoringServiceTest.class.getResourceAsStream("/study/"+name).readAllBytes(),StandardCharsets.UTF_8);}
     @Test void matchesCurrentViewerCanonicalChecksumAndCoordinateScoring()throws Exception{
         var approved=StudyPackCanonicalJson.parse(resource("viewer-v1.json"));
