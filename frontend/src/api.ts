@@ -1,3 +1,4 @@
+import type { StudyDraftRecord } from './StudyAuthoring'
 import type { DeterministicRun, DeterministicRequest, DeterministicReview } from './DeterministicTools'
 
 export interface ExportState { id: string; status: string; completedBytes: number; totalBytes: number; destination: string; detail: string }
@@ -625,3 +626,22 @@ async function request<T>(path: string, init: RequestInit = {}, sessionRetry = t
   }
   return body as T
 }
+
+const studyPath = (id: string) => `/api/study/drafts/${encodeURIComponent(id)}`
+const studyWrite = <T,>(path: string, value: unknown, method = 'POST') => request<T>(path, {
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
+export const studyDrafts = () => request<StudyDraftRecord[]>('/api/study/drafts')
+export const studyDraft = (id: string) => request<StudyDraftRecord>(studyPath(id))
+export const createStudyDraft = (name: string) => studyWrite<StudyDraftRecord>('/api/study/drafts', { name })
+export const saveStudyDraft = (draft: StudyDraftRecord, revision: number) => studyWrite<StudyDraftRecord>(studyPath(draft.id), { name: draft.name, revision, definition: draft.definition, associations: draft.associations }, 'PUT')
+export const duplicateStudyDraft = (id: string, name: string, nextVersion: boolean) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/duplicate`, { name, nextVersion })
+export const studyHistory = (id: string) => request<StudyDraftRecord[]>(`${studyPath(id)}/history`)
+export const recoverStudyDraft = (id: string, historicalRevision: number, revision: number) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/recover`, { historicalRevision, revision })
+export const previewStudyDraft = (id: string, revision: number) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/preview`, { revision })
+export const reviewStudyTask = (id: string, revision: number, checksum: string, taskId: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/review`, { revision, checksum, taskId })
+export const approveStudyDraft = (id: string, revision: number, checksum: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/approve`, { revision, checksum })
+export const importStudyDraft = (format: 'json' | 'csv', text: string) => studyWrite<StudyDraftRecord>('/api/study/import', { format, text })
+export const importStudyQuestions = (id: string, revision: number, format: string, text: string, slideId: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/questions`, { revision, format, text, slideId })
+export const studyExportUrl = (id: string, format: 'json' | 'csv' | 'approved', checksum = '') => `${studyPath(id)}/export?${new URLSearchParams({ format, checksum })}`
+export const exportStudy = (draftId: string, format: 'json' | 'csv' | 'approved', checksum: string, destination: string) =>
+  studyWrite<ExportState>('/api/exports', { kind: 'study', draftId, format, checksum, destination })

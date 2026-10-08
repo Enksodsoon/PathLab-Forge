@@ -55,6 +55,7 @@ import type {
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
 import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
+import { StudyAuthoring, type StudyDraftRecord } from './StudyAuthoring'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -121,6 +122,11 @@ export function App() {
   const [selectedRemoteId, setSelectedRemoteId] = useState('')
   const [remoteRename, setRemoteRename] = useState<{ id: string; current: string; value: string }>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
+  const [studyOpen, setStudyOpen] = useState(false)
+  const [studyLoaded, setStudyLoaded] = useState(false)
+  const [studyDrafts, setStudyDrafts] = useState<StudyDraftRecord[]>([])
+  const [studyError, setStudyError] = useState('')
+  const [studyExport, setStudyExport] = useState<api.ExportState>()
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
   const [featureLoading, setFeatureLoading] = useState(false)
@@ -742,6 +748,33 @@ export function App() {
     }
   }
 
+  const rememberStudy = async (operation: Promise<StudyDraftRecord>) => {
+    const saved = await operation
+    setStudyDrafts((current) => [saved, ...current.filter((value) => value.id !== saved.id)])
+    return saved
+  }
+  const openStudy = async () => {
+    setStudyOpen(true); setStudyError('')
+    try { setStudyDrafts(await api.studyDrafts()); setStudyLoaded(true) }
+    catch (cause) { setStudyError(message(cause)) }
+  }
+  const exportAuthoredStudy = async (id: string, format: 'json' | 'csv' | 'approved', checksum = '') => {
+    setStudyError('')
+    try {
+      if (window.forgeDesktop) {
+        const destination = await window.forgeDesktop.selectExportDestination(`study-pack.${format === 'csv' ? 'csv' : 'json'}`)
+        if (destination) setStudyExport(await api.exportStudy(id, format, checksum, destination))
+      } else {
+        const link = document.createElement('a'); link.href = api.studyExportUrl(id, format, checksum); link.download = `study-pack.${format === 'csv' ? 'csv' : 'json'}`; link.click()
+      }
+    } catch (cause) { setStudyError(message(cause)) }
+  }
+  useEffect(() => {
+    if (!studyExport || !['COPYING', 'VERIFYING'].includes(studyExport.status)) return
+    const timer = window.setTimeout(() => { void api.exportState().then(setStudyExport).catch((cause) => setStudyError(message(cause))) }, 500)
+    return () => window.clearTimeout(timer)
+  }, [studyExport])
+
   const rail = (
     <ForgeProductRail
       expanded={railExpanded}
@@ -759,6 +792,7 @@ export function App() {
       onViewerLibrary={() => void syncViewer()}
       onImport={() => { setImportError(''); setImportOpen(true) }}
       onFeatures={openFeatures}
+      onStudy={() => void openStudy()}
       onTheme={toggleTheme}
       onSecurity={connect}
       onSignOut={connect}
@@ -1029,6 +1063,27 @@ export function App() {
           onClose={() => setBatchRemoveIds([])}
         />
       ) : null}
+      {studyOpen || studyLoaded ? <div className="forge-dialog-backdrop" role="presentation" style={studyOpen ? undefined : { display: 'none' }}>
+        <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Study authoring workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setStudyOpen(false) } }}>
+          <button type="button" aria-label="Close Study authoring" onClick={() => setStudyOpen(false)}><X aria-hidden="true" /></button>
+          <p role="status">Teaching slide preview is unavailable until a verified local teaching source is associated. Drafts remain editable offline; faculty review and publication are unavailable.</p>
+          {studyError ? <p role="alert">{studyError}</p> : null}
+          {!studyLoaded ? <button type="button" onClick={() => void openStudy()}>Retry loading drafts</button> : <StudyAuthoring drafts={studyDrafts}
+            onLoad={api.studyDraft} onCreate={(name) => rememberStudy(api.createStudyDraft(name))}
+            onSave={(draft, revision) => rememberStudy(api.saveStudyDraft(draft, revision))}
+            onDuplicate={(id, name, nextVersion) => rememberStudy(api.duplicateStudyDraft(id, name, nextVersion))}
+            onHistory={api.studyHistory} onRecover={(id, historical, revision) => rememberStudy(api.recoverStudyDraft(id, historical, revision))}
+            onPreview={(id, revision) => rememberStudy(api.previewStudyDraft(id, revision))}
+            onReviewTask={(id, revision, checksum, taskId) => rememberStudy(api.reviewStudyTask(id, revision, checksum, taskId))}
+            onApprove={(id, revision, checksum) => rememberStudy(api.approveStudyDraft(id, revision, checksum))}
+            onImport={(format, text) => rememberStudy(api.importStudyDraft(format, text))}
+            onImportQuestions={(id, revision, format, text, slideId) => rememberStudy(api.importStudyQuestions(id, revision, format, text, slideId))}
+            onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }} canPreviewSlide={() => false} />}
+          {studyExport ? <div aria-label="Study native export"><p role="status">{studyExport.detail}</p>
+            {['COPYING', 'VERIFYING'].includes(studyExport.status) ? <button type="button" onClick={() => void api.cancelExport().then(setStudyExport).catch((cause) => setStudyError(message(cause)))}>Cancel Study export</button> : null}
+            {studyExport.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(studyExport.destination)}>Reveal Study export</button> : null}</div> : null}
+        </section>
+      </div> : null}
       {featureOpen ? (
         <FeatureCenter
           features={features}
@@ -1093,6 +1148,7 @@ function ForgeProductRail({
   onViewerLibrary,
   onImport,
   onFeatures,
+  onStudy,
   onTheme,
   onSecurity,
   onSignOut,
@@ -1110,6 +1166,7 @@ function ForgeProductRail({
   onViewerLibrary: () => void
   onImport: () => void
   onFeatures: () => void
+  onStudy: () => void
   onTheme: () => void
   onSecurity: () => void
   onSignOut: () => void
@@ -1144,6 +1201,7 @@ function ForgeProductRail({
           <CloudArrowUp aria-hidden="true" /><span>Viewer library</span>
         </button>
         <button type="button" aria-label="Import" onClick={onImport}><UploadSimple aria-hidden="true" /><span>Import</span></button>
+        <button type="button" aria-label="Study Pack authoring" onClick={onStudy}><FileText aria-hidden="true" /><span>Study authoring</span></button>
         <button type="button" aria-label="Feature Center" onClick={onFeatures}><Wrench aria-hidden="true" /><span>Feature Center</span></button>
       </nav>
       <div className="library-rail-utilities" aria-label="Account actions">

@@ -70,3 +70,15 @@ test('uses versioned capability, import, image, and view contracts', async () =>
     .toEqual({ paths: ['C:\\slides\\case.czi'] })
   expect((fetch.mock.calls[3][1] as RequestInit).method).toBe('PUT')
 })
+
+test('sends Study revision, immutable checksum and native grant destination without inventing publication routes', async () => {
+  const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  vi.stubGlobal('fetch', fetch)
+  await api.recoverStudyDraft('draft 1', 3, 8)
+  await api.reviewStudyTask('draft 1', 9, 'exact-checksum', 'task-1')
+  await api.exportStudy('draft 1', 'approved', 'exact-checksum', 'C:\\exports\\pack.json')
+  expect(fetch.mock.calls.map(([path]) => path)).toEqual(['/api/study/drafts/draft%201/recover', '/api/study/drafts/draft%201/review', '/api/exports'])
+  expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ historicalRevision: 3, revision: 8 })
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ revision: 9, checksum: 'exact-checksum', taskId: 'task-1' })
+  expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ kind: 'study', draftId: 'draft 1', format: 'approved', checksum: 'exact-checksum', destination: 'C:\\exports\\pack.json' })
+})

@@ -48,6 +48,20 @@ vi.mock('../api', () => ({
     downsamples: [1, 1.5, 2, 4, 8],
   }]),
   datasets: vi.fn(async () => []),
+  studyDrafts: vi.fn(async () => []),
+  studyDraft: vi.fn(),
+  createStudyDraft: vi.fn(),
+  saveStudyDraft: vi.fn(),
+  duplicateStudyDraft: vi.fn(),
+  studyHistory: vi.fn(),
+  recoverStudyDraft: vi.fn(),
+  previewStudyDraft: vi.fn(),
+  reviewStudyTask: vi.fn(),
+  approveStudyDraft: vi.fn(),
+  importStudyDraft: vi.fn(),
+  importStudyQuestions: vi.fn(),
+  exportStudy: vi.fn(),
+  studyExportUrl: vi.fn(),
   capabilities: vi.fn(),
   formats: vi.fn(async () => ({
     policy: 'BEST_EFFORT', runtimeVersion: 'test readers', runtimeFingerprint: 'a'.repeat(64), formats: [],
@@ -1815,4 +1829,27 @@ test('shows one actionable size quality conflict without changing the crop', asy
     'data-tile-source',
     '/api/datasets/compact-conflict/preview/slide.dzi?revision=conflict-config&preview=responsive-v2',
   )
+})
+
+it('opens offline Study authoring from navigation, saves a named draft and keeps unseen pixels unapproved', async () => {
+  const draft = { id: 'study-id', name: 'Offline faculty', revision: 1, associations: {}, issues: [], previewChecksum: 'exact', reviewedTaskIds: ['q'], approvedChecksum: '', updatedAt: 1,
+    definition: { schema: 'pathlab.study-pack/1' as const, packKey: 'pack', version: 1, title: 'Teaching', author: 'Faculty', license: 'CC-BY', provenance: 'Manual', revision: 'r1', languages: ['en'],
+      slides: [{ viewerSlideId: 'slide', sha256: 'a'.repeat(64), displayName: 'Imported teaching reference' }], tasks: [{ id: 'q', type: 'multiple-choice', slideId: 'slide', prompt: 'Supplied question', options: ['A', 'B'], answerKey: 'B', hints: [], explanation: 'Supplied explanation', sources: [{ title: 'Source', url: 'https://example.org' }] }] } }
+  vi.mocked(api.createStudyDraft).mockResolvedValue(draft)
+  vi.mocked(api.saveStudyDraft).mockImplementation(async (value, revision) => ({ ...value, revision: revision + 1 }))
+  render(<App />)
+  fireEvent.click(screen.getByRole('button', { name: 'Study Pack authoring' }))
+  const workspace = await screen.findByRole('dialog', { name: 'Study authoring workspace' })
+  expect(await within(workspace).findByText('Study Pack authoring', { selector: 'h2' })).toBeInTheDocument()
+  fireEvent.change(within(workspace).getByLabelText('Draft name'), { target: { value: 'Offline faculty' } })
+  fireEvent.click(within(workspace).getByRole('button', { name: 'New draft' }))
+  await waitFor(() => expect(api.createStudyDraft).toHaveBeenCalledWith('Offline faculty'))
+  await within(workspace).findByLabelText('Title')
+  expect(within(workspace).getByRole('button', { name: 'Approve this exact version' })).toBeDisabled()
+  expect(within(workspace).getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeDisabled()
+  fireEvent.change(within(workspace).getByLabelText('Title'), { target: { value: 'Offline correction' } })
+  fireEvent.click(within(workspace).getByRole('button', { name: 'Close Study authoring' }))
+  await waitFor(() => expect(api.saveStudyDraft).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ title: 'Offline correction' }), previewChecksum: '' }), 1))
+  expect(screen.queryByRole('dialog', { name: 'Study authoring workspace' })).not.toBeInTheDocument()
+  expect(api.approveStudyDraft).not.toHaveBeenCalled()
 })
