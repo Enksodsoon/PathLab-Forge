@@ -1,6 +1,8 @@
+import groovy.json.JsonOutput
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.testing.Test
 import org.gradle.jvm.tasks.Jar
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -47,15 +49,28 @@ tasks.register("productionDist") {
     dependsOn("verifyReaderRuntimeBundle", tasks.installDist)
 }
 
-tasks.register<Exec>("verifyReaderRuntimeBundle") {
+tasks.register<JavaExec>("verifyReaderRuntimeBundle") {
     group = "verification"
-    description = "Fail-closed verification of licensed, pinned Bio-Formats and libvips artifacts."
+    description = "Portable fail-closed licensed reader and architecture verification."
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass = "org.pathlab.forge.runtime.ReaderRuntimeVerifier"
     val runtimeRoot = providers.gradleProperty("pathlab.forge.readerRuntimeRoot").orElse("PENDING_REVIEW")
-    commandLine("powershell", "-NoProfile", "-File",
-        layout.projectDirectory.file("scripts/verify-reader-runtime.ps1").asFile,
-        "-RuntimeRoot", runtimeRoot.get())
-    inputs.files("reader-runtime.lock.properties", "scripts/verify-reader-runtime.ps1")
+    args(runtimeRoot.get(), layout.projectDirectory.file("reader-runtime.lock.properties").asFile.absolutePath)
+    inputs.files("reader-runtime.lock.properties")
 }
+
+val hostWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+val hostMac = System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
+val executableSuffix = if (hostWindows) ".exe" else ""
+val hostArchitecture = when (System.getProperty("os.arch")) {
+    "amd64", "x86_64" -> "x86_64"
+    "aarch64", "arm64" -> "arm64"
+    else -> "unsupported"
+}
+val readerPlatform = "${if (hostWindows) "windows" else if (hostMac) "macos" else "unsupported"}-$hostArchitecture"
+val packagedApp = if (hostMac) "PathLab Forge.app/Contents/Resources" else "PathLab Forge"
+val packagedRuntime = if (hostMac) "PathLab Forge.app/Contents/runtime/Contents/Home" else "PathLab Forge/runtime"
 
 val pnpmCommand = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "pnpm.cmd" else "pnpm"
 val codexNodeBin = file(
@@ -181,9 +196,9 @@ val cleanInternalReaderDist = tasks.register<Delete>("cleanInternalReaderDist") 
 
 val stageInternalReaderApp = tasks.register<Exec>("stageInternalReaderApp") {
     group = "distribution"
-    description = "Builds a Windows application image with its own Java runtime."
+    description = "Builds a host-native application image with its own Java 17 runtime."
     dependsOn(cleanInternalReaderDist, tasks.installDist)
-    val jpackage = file("${System.getProperty("java.home")}/bin/jpackage.exe")
+    val jpackage = file("${System.getProperty("java.home")}/bin/jpackage$executableSuffix")
     val input = layout.buildDirectory.dir("install/${project.name}/lib").get().asFile
     inputs.dir(input)
     doNotTrackState("jpackage requires its application-image destination not to exist")
@@ -198,15 +213,15 @@ val stageInternalReaderApp = tasks.register<Exec>("stageInternalReaderApp") {
         "--add-modules", "ALL-MODULE-PATH",
         "--java-options", "-Xmx512m",
         "--java-options", "--enable-native-access=ALL-UNNAMED",
-        "--win-console")
+        *if (hostWindows) arrayOf("--win-console") else emptyArray<String>())
 }
 
 val stageInternalReaderChildJvm = tasks.register<Copy>("stageInternalReaderChildJvm") {
     group = "distribution"
     description = "Adds the matching Java launcher required by the contained Bio-Formats child process."
     dependsOn(stageInternalReaderApp)
-    from(file("${System.getProperty("java.home")}/bin/java.exe"))
-    into(internalReaderRoot.map { it.dir("PathLab Forge/runtime/bin") })
+    from(file("${System.getProperty("java.home")}/bin/java$executableSuffix"))
+    into(internalReaderRoot.map { it.dir("$packagedRuntime/bin") })
 }
 
 val assembleInternalReaderRuntime = tasks.register<JavaExec>("assembleInternalReaderRuntime") {
@@ -217,14 +232,14 @@ val assembleInternalReaderRuntime = tasks.register<JavaExec>("assembleInternalRe
     mainClass = "org.pathlab.forge.runtime.ReaderRuntimeAssembler"
     val source = providers.gradleProperty("pathlab.forge.readerRuntimeRoot")
     inputs.dir(source)
-    outputs.dir(internalReaderRoot.map { it.dir("PathLab Forge/reader-data/runtime") })
-    args(source.get(), internalReaderRoot.get().dir("PathLab Forge/reader-data").asFile.absolutePath,
-        "INTERNAL", "windows-x86_64")
+    outputs.dir(internalReaderRoot.map { it.dir("$packagedApp/reader-data/runtime") })
+    args(source.get(), internalReaderRoot.get().dir("$packagedApp/reader-data").asFile.absolutePath,
+        "INTERNAL", readerPlatform)
 }
 
 tasks.register("internalReaderDist") {
     group = "distribution"
-    description = "Builds a NON_REDISTRIBUTABLE Windows package with owner-supplied readers."
+    description = "Builds a NON_REDISTRIBUTABLE host-native package with owner-supplied readers."
     dependsOn(assembleInternalReaderRuntime)
     outputs.dir(internalReaderRoot)
 }
@@ -237,9 +252,9 @@ val cleanProductionReaderDist = tasks.register<Delete>("cleanProductionReaderDis
 
 val stageProductionReaderApp = tasks.register<Exec>("stageProductionReaderApp") {
     group = "distribution"
-    description = "Builds the approved Windows application image with its own Java runtime."
+    description = "Builds the approved host-native application image with its own Java 17 runtime."
     dependsOn(cleanProductionReaderDist, tasks.installDist, "verifyReaderRuntimeBundle")
-    val jpackage = file("${System.getProperty("java.home")}/bin/jpackage.exe")
+    val jpackage = file("${System.getProperty("java.home")}/bin/jpackage$executableSuffix")
     val input = layout.buildDirectory.dir("install/${project.name}/lib").get().asFile
     val officialOrigin = viewerOrigin.orNull
     require(!officialOrigin.isNullOrBlank()) {
@@ -261,15 +276,16 @@ val stageProductionReaderApp = tasks.register<Exec>("stageProductionReaderApp") 
         "--add-modules", "ALL-MODULE-PATH",
         "--java-options", "-Xmx512m",
         "--java-options", "--enable-native-access=ALL-UNNAMED",
-        "--java-options", "-Dpathlab.forge.viewer.defaultOrigin=$officialOrigin")
+        "--java-options", "-Dpathlab.forge.viewer.defaultOrigin=$officialOrigin",
+        "--java-options", "-Dpathlab.forge.runtime.requireProduction=true")
 }
 
 val stageProductionReaderChildJvm = tasks.register<Copy>("stageProductionReaderChildJvm") {
     group = "distribution"
     description = "Adds the matching Java launcher for the approved Bio-Formats child process."
     dependsOn(stageProductionReaderApp)
-    from(file("${System.getProperty("java.home")}/bin/java.exe"))
-    into(productionReaderRoot.map { it.dir("PathLab Forge/runtime/bin") })
+    from(file("${System.getProperty("java.home")}/bin/java$executableSuffix"))
+    into(productionReaderRoot.map { it.dir("$packagedRuntime/bin") })
 }
 
 val assembleProductionReaderRuntime = tasks.register<JavaExec>("assembleProductionReaderRuntime") {
@@ -280,12 +296,44 @@ val assembleProductionReaderRuntime = tasks.register<JavaExec>("assembleProducti
     mainClass = "org.pathlab.forge.runtime.ReaderRuntimeAssembler"
     val source = providers.gradleProperty("pathlab.forge.readerRuntimeRoot")
     inputs.dir(source)
-    outputs.dir(productionReaderRoot.map { it.dir("PathLab Forge/reader-data/runtime") })
-    args(source.get(), productionReaderRoot.get().dir("PathLab Forge/reader-data").asFile.absolutePath,
-        "PRODUCTION", "windows-x86_64")
+    outputs.dir(productionReaderRoot.map { it.dir("$packagedApp/reader-data/runtime") })
+    args(source.get(), productionReaderRoot.get().dir("$packagedApp/reader-data").asFile.absolutePath,
+        "PRODUCTION", readerPlatform)
 }
 
 tasks.named("productionDist") {
     setDependsOn(listOf(assembleProductionReaderRuntime))
     outputs.dir(productionReaderRoot)
+}
+
+// The Electron launcher uses this self-contained service; no system Java lookup.
+tasks.register<Sync>("stageElectronService") {
+    group = "distribution"
+    dependsOn(tasks.installDist)
+    val servicePlatform = readerPlatform
+    val serviceWindows = hostWindows
+    val serviceArchitecture = hostArchitecture
+    val serviceOrigin = viewerOrigin.orNull
+    into(layout.projectDirectory.dir("desktop/resources/service"))
+    from(layout.buildDirectory.dir("install/${project.name}/lib")) { into("lib") }
+    from(System.getProperty("java.home")) { into("runtime") }
+    doFirst {
+        require(servicePlatform in listOf("windows-x86_64", "macos-x86_64", "macos-arm64")) {
+            "Unsupported packaged service platform: $servicePlatform"
+        }
+        require(JavaVersion.current() == JavaVersion.VERSION_17) { "Package service with Java 17" }
+    }
+    doLast {
+        val manifest = mutableMapOf<String, String>(
+            "platform" to if (serviceWindows) "win32" else "darwin",
+            "arch" to if (serviceArchitecture == "arm64") "arm64" else "x64")
+        serviceOrigin?.let { origin ->
+            val uri = URI(origin)
+            require(uri.scheme == "https" && uri.host != null && uri.userInfo == null) {
+                "Packaged Viewer origin requires an HTTPS host without credentials"
+            }
+            manifest["viewerOrigin"] = origin
+        }
+        destinationDir.resolve("runtime-manifest.json").writeText(JsonOutput.toJson(manifest) + "\n")
+    }
 }

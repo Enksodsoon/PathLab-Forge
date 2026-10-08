@@ -55,3 +55,6 @@ installers/
 
 # Local evidence that may contain sensitive names
 docs/evidence/local/
+
+# Generated bundled Java service
+/desktop/resources/service/

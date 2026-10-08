@@ -81,6 +81,11 @@ public record ReaderRuntimeManifest(
         channel = text(channel, "channel");
         distributionLabel = text(distributionLabel, "distributionLabel");
         platform = text(platform, "platform");
+        if (!List.of("windows-x86_64", "macos-x86_64", "macos-arm64").contains(platform))
+            throw new IllegalArgumentException("Unsupported reader runtime platform");
+        if (!(channel.equals("INTERNAL") && distributionLabel.equals("NON_REDISTRIBUTABLE"))
+                && !(channel.equals("PRODUCTION") && distributionLabel.equals("PRODUCTION")))
+            throw new IllegalArgumentException("Runtime channel and label do not match");
         fingerprint = Objects.requireNonNull(fingerprint, "fingerprint");
         components = List.copyOf(Objects.requireNonNull(components, "components"));
         files = List.copyOf(Objects.requireNonNull(files, "files"));
@@ -118,6 +123,8 @@ public record ReaderRuntimeManifest(
                 throw new IOException("Required reader runtime component is missing: " + component.id());
             }
         }
+        if (!platform.startsWith("windows-") && components.stream().anyMatch(c -> c.id().equals("sdpc") && c.included()))
+            throw new IOException("SDPC runtime is Windows-only and is not approved for macOS redistribution");
         var entries = scan(root);
         var label = production ? "PRODUCTION" : "NON_REDISTRIBUTABLE";
         var fingerprint = fingerprint(channel.name(), label, platform, components, entries);
@@ -135,6 +142,8 @@ public record ReaderRuntimeManifest(
 
     public void verify(Path root, boolean requireProduction) throws IOException {
         var normalized = root.toAbsolutePath().normalize();
+        if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Runtime root is not a physical directory");
         if (requireProduction && (!"PRODUCTION".equals(distributionLabel)
                 || components.stream().filter(Component::included)
                         .anyMatch(component -> !"APPROVED".equals(component.reviewStatus())
@@ -144,8 +153,7 @@ public record ReaderRuntimeManifest(
         long total = 0;
         for (var entry : files) {
             var file = normalized.resolve(entry.path().replace('/', java.io.File.separatorChar)).normalize();
-            if (!file.startsWith(normalized) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
-                    || Files.isSymbolicLink(file) || Files.size(file) != entry.bytes()
+            if (!file.startsWith(normalized) || !verifiedRegularFile(normalized, file) || Files.size(file) != entry.bytes()
                     || !sha256(file).equals(entry.sha256())) {
                 throw new IOException("Reader runtime file verification failed: " + entry.path());
             }
@@ -161,7 +169,11 @@ public record ReaderRuntimeManifest(
     public static String currentPlatform() {
         var os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         var arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-        var normalizedArch = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "x86_64";
+        var normalizedArch = switch (arch) {
+            case "aarch64", "arm64" -> "arm64";
+            case "amd64", "x86_64" -> "x86_64";
+            default -> "unsupported";
+        };
         if (os.contains("win")) return "windows-" + normalizedArch;
         if (os.contains("mac")) return "macos-" + normalizedArch;
         return "unsupported-" + normalizedArch;
@@ -173,8 +185,9 @@ public record ReaderRuntimeManifest(
         try (var paths = Files.walk(root)) {
             for (var path : paths.sorted().toList()) {
                 if (path.equals(root)) continue;
-                if (Files.isSymbolicLink(path)) throw new IOException("Reader runtime may not contain symbolic links");
-                if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) continue;
+                if (Files.isSymbolicLink(path) && !verifiedRegularFile(root, path))
+                    throw new IOException("Runtime symbolic link is unreviewed, a directory or escapes its component");
+                if (!Files.isRegularFile(path)) continue;
                 var relative = root.relativize(path).toString().replace('\\', '/');
                 if (relative.equals("runtime-review.properties")
                         || relative.equals("reader-runtime-manifest.json")
@@ -193,6 +206,17 @@ public record ReaderRuntimeManifest(
         }
         entries.sort(Comparator.comparing(FileEntry::path));
         return List.copyOf(entries);
+    }
+
+    private static boolean verifiedRegularFile(Path root, Path path) throws IOException {
+        if (!Files.isSymbolicLink(path)) return Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS);
+        if (!"APPROVED".equals(review(root).get("macos.file-symlinks.status"))) return false;
+        var relative = root.relativize(path);
+        if (relative.getNameCount() < 2) return false;
+        var component = root.resolve(relative.getName(0)).toRealPath();
+        var resolved = path.toRealPath();
+        return component.startsWith(root.toRealPath()) && resolved.startsWith(component)
+                && Files.isRegularFile(resolved, LinkOption.NOFOLLOW_LINKS);
     }
 
     private static String classify(String path) {

@@ -19,9 +19,9 @@ final class ReaderRuntimePackageTest {
         var source = runtimeSource("one");
 
         var first = ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64");
+                source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
         var second = ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64");
+                source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
 
         assertEquals(first.toJson(), second.toJson());
         assertEquals(first.fingerprint(), second.fingerprint());
@@ -38,7 +38,7 @@ final class ReaderRuntimePackageTest {
         var source = runtimeSource("pending");
 
         var error = assertThrows(IOException.class, () -> ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.PRODUCTION, "windows-x86_64"));
+                source, ReaderRuntimeManifest.Channel.PRODUCTION, ReaderRuntimeManifest.currentPlatform()));
 
         assertTrue(error.getMessage().contains("redistribution"));
     }
@@ -49,7 +49,7 @@ final class ReaderRuntimePackageTest {
         Files.writeString(source.resolve("unexpected-plugin.dll"), "plugin");
 
         assertThrows(IOException.class, () -> ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64"));
+                source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform()));
     }
 
     @Test
@@ -58,7 +58,7 @@ final class ReaderRuntimePackageTest {
         var installer = new ReaderRuntimeInstaller(dataRoot);
         var firstSource = runtimeSource("first");
         var first = ReaderRuntimeManifest.create(
-                firstSource, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64");
+                firstSource, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
 
         var firstTarget = installer.install(firstSource, first);
         assertEquals(first.fingerprint(), Files.readString(
@@ -70,7 +70,7 @@ final class ReaderRuntimePackageTest {
         var secondSource = runtimeSource("second");
         Files.writeString(secondSource.resolve("bftools/bioformats_package.jar"), "second-version");
         var second = ReaderRuntimeManifest.create(
-                secondSource, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64");
+                secondSource, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
         installer.install(secondSource, second);
         assertEquals(second.fingerprint(), installer.activeFingerprint().orElseThrow());
 
@@ -86,7 +86,7 @@ final class ReaderRuntimePackageTest {
     void rejectsManifestForAnotherArchitecture() throws Exception {
         var source = runtimeSource("architecture");
         var manifest = ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.INTERNAL, "macos-arm64");
+                source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform().startsWith("windows-") ? "macos-arm64" : "windows-x86_64");
 
         assertThrows(IOException.class,
                 () -> new ReaderRuntimeInstaller(temporary.resolve("data-architecture"))
@@ -100,7 +100,7 @@ final class ReaderRuntimePackageTest {
         var executable = Files.writeString(appRoot.resolve("PathLab Forge.exe"), "launcher");
         var source = runtimeSource("packaged-source");
         var manifest = ReaderRuntimeManifest.create(
-                source, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86_64");
+                source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
         new ReaderRuntimeInstaller(appRoot.resolve("reader-data")).install(source, manifest);
         var previous = System.getProperty("jpackage.app-path");
         try {
@@ -110,6 +110,42 @@ final class ReaderRuntimePackageTest {
         } finally {
             if (previous == null) System.clearProperty("jpackage.app-path");
             else System.setProperty("jpackage.app-path", previous);
+        }
+    }
+
+    @Test
+    void rejectsUnknownArchitectureAndMismatchedChannel() throws Exception {
+        var source = runtimeSource("unknown-arch");
+        assertThrows(IllegalArgumentException.class, () -> ReaderRuntimeManifest.create(
+                source, ReaderRuntimeManifest.Channel.INTERNAL, "windows-x86"));
+        var manifest = ReaderRuntimeManifest.create(source, ReaderRuntimeManifest.Channel.INTERNAL, ReaderRuntimeManifest.currentPlatform());
+        assertThrows(IllegalArgumentException.class, () -> new ReaderRuntimeManifest(1, "INTERNAL", "PRODUCTION",
+                manifest.platform(), manifest.fingerprint(), manifest.components(), manifest.files()));
+    }
+
+    @Test
+    void rejectsMacSdpcAndIncompleteProductionLock() throws Exception {
+        var source = runtimeSource("sdpc-mac");
+        Files.createDirectories(source.resolve("sdpc"));
+        assertThrows(IOException.class, () -> ReaderRuntimeManifest.create(
+                source, ReaderRuntimeManifest.Channel.INTERNAL, "macos-arm64"));
+        var lock = Files.writeString(temporary.resolve("pending.properties"), "redistribution.status=PENDING_REVIEW\n");
+        assertThrows(IOException.class, () -> ReaderRuntimeVerifier.verify(source, lock));
+    }
+
+    @Test
+    void locatesMacResourcesWithoutAnExeAssumption() throws Exception {
+        var resources = temporary.resolve("PathLab Forge.app/Contents/Resources");
+        var source = runtimeSource("mac-layout");
+        var manifest = ReaderRuntimeManifest.create(source, ReaderRuntimeManifest.Channel.INTERNAL,
+                ReaderRuntimeManifest.currentPlatform());
+        new ReaderRuntimeInstaller(resources.resolve("reader-data")).install(source, manifest);
+        var previous = System.getProperty("jpackage.app-path");
+        try {
+            System.setProperty("jpackage.app-path", temporary.resolve("PathLab Forge.app/Contents/MacOS/PathLab Forge").toString());
+            assertTrue(ReaderRuntimeLocator.activeRoot(temporary.resolve("fresh-mac")).isPresent());
+        } finally {
+            if (previous == null) System.clearProperty("jpackage.app-path"); else System.setProperty("jpackage.app-path", previous);
         }
     }
 

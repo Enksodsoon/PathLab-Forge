@@ -25,7 +25,11 @@ public final class ReaderRuntimeLocator {
         var appPath = System.getProperty("jpackage.app-path", "").trim();
         if (!appPath.isEmpty()) {
             var parent = Path.of(appPath).toAbsolutePath().normalize().getParent();
-            if (parent != null) roots.add(parent.resolve("reader-data"));
+            if (parent != null) {
+                roots.add(parent.resolve("reader-data"));
+                if (parent.getFileName().toString().equals("MacOS") && parent.getParent() != null)
+                    roots.add(parent.getParent().resolve("Resources/reader-data"));
+            }
         }
         return List.copyOf(roots);
     }
@@ -42,7 +46,8 @@ public final class ReaderRuntimeLocator {
                     || !Files.isRegularFile(root.resolve("reader-runtime-manifest.json"),
                             LinkOption.NOFOLLOW_LINKS)) return Optional.empty();
             var manifest = ReaderRuntimeManifest.read(root.resolve("reader-runtime-manifest.json"));
-            manifest.verify(root, false);
+            if (!manifest.platform().equals(ReaderRuntimeManifest.currentPlatform())) return Optional.empty();
+            manifest.verify(root, Boolean.getBoolean("pathlab.forge.runtime.requireProduction"));
             return Optional.of(root);
         } catch (IOException | RuntimeException ignored) {
             return Optional.empty();
