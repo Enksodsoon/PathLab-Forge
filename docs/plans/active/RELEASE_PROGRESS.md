@@ -11,17 +11,17 @@ Baseline 2026-10-08:
 
 | Milestone | State | Required evidence |
 |---|---|---|
-| M0 baseline | In progress | Tests/VSI reproduction/feature inventory/fixtures |
+| M0 baseline | Local baseline integrated | VSI failure repaired, feature inventory and shared fixtures recorded; deployed Viewer version unverified |
 | M1 ownership | Viewer local qualification complete; release gates open | SQLite isolation/backfill/restore and independent review passed; PostgreSQL/protected CI/deployment pending |
 | M2 Electron | Integrated, qualification incomplete | Native grants/quit/startup checks pass; final packaged/platform journeys pending |
 | M3 runtime | Integrated, release blocked | Portable verifier/Keychain/process containment implemented; actual Mac and redistribution approval pending |
 | M4 geometry | Integrated, qualification incomplete | Actual geometry/calibration/native exports implemented; final real-slide journeys pending |
 | M5 batches | Durable backend/HTTP/UI integrated | Synthetic mixed/cancel/retry/stage recovery pass; pre-inspection intent and actual ten-slide/disk-full acceptance open |
-| M6 tools | Complete TMA/registration/mask result workflows integrated | Durable runs/reviews/core provenance/held-out residuals/real overlays tested; brush Boolean composition and real-slide/native acceptance open |
+| M6 tools | Complete TMA/registration/mask result workflows integrated | Durable runs/reviews/core provenance/held-out residuals/real overlays tested; brush Boolean composition/HTTP conflicts tested; real-slide/native acceptance open |
 | M7 packs | Integrated lifecycle and authenticated transport | Compatibility/cancel/rollback/offline catalog checks; actual hosted signed catalogs/platform journeys pending |
-| M8 teaching | Drafts/imports/Teaching generation+upload/scoped publication integrated | Prepared package-SHA results tests pass; exact offline loaded-pixel association/preview in progress; real Viewer publication open |
-| M9 sync | Integrated recovery core and UI | Account binding/atomic snapshots/verified offline files/idempotency tested; Viewer negotiated creation and final offline/production journeys pending |
-| M10 distribution | Producer/activation gates integrated; release blocked | Exact-byte inventory/source/signing pipeline exists; rights/signing/Mac acceptance/private downloads/upgrades pending |
+| M8 teaching | Drafts/imports/Teaching generation+upload/scoped publication integrated | Prepared package-SHA results tests pass; exact offline loaded-pixel association/preview locally passed; real Viewer publication open |
+| M9 sync | Integrated recovery core and UI | Account binding/atomic snapshots/verified offline files/idempotency tested; Viewer negotiated creation locally passed; final offline/production journeys pending |
+| M10 distribution | Producer/activation gates integrated; release blocked | Exact-byte inventory/source/signing pipeline exists; private downloads implemented; rights/signing/Mac/upgrade/native acceptance pending |
 
 No row complete merely because code exists. Record commits, checks and artifact receipts as available. Actual-platform, production, license and signing gates pending until evidenced.
 

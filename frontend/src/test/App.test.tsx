@@ -293,7 +293,8 @@ test('collapses and restores the slide inspector without losing its state', asyn
 
   render(<App />)
 
-  const inspectorLabel = await screen.findByText('Slide inspector')
+  await screen.findByRole('button', { name: 'Collapse slide inspector' })
+  const inspectorLabel = screen.getByText('Slide inspector')
   const host = inspectorLabel.closest('.forge-canvas-host')
   const inspector = inspectorLabel.closest('aside')
   expect(host).not.toHaveClass('inspector-collapsed')
