@@ -11,12 +11,13 @@
     "package": "electron-forge package",
     "make": "electron-forge make",
     "test": "node --test test/*.test.cjs",
-    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/policy.cjs"
+    "check": "node --check src/main.cjs && node --check src/preload.cjs && node --check src/policy.cjs && node --check src/activation.cjs && node --check release.cjs && node --check native-signing.cjs && node --check forge.config.cjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.1",
     "@electron-forge/maker-dmg": "8.0.1",
     "@electron-forge/maker-squirrel": "8.0.1",
+    "@electron/fuses": "2.1.3",
     "electron": "44.7.0"
   }
 }

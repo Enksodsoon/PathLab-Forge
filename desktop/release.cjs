@@ -2,30 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const sha256 = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const { inventory, digest: sha256 } = require('./src/activation.cjs');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const requireThat = (condition, message) => { if (!condition) throw new Error(message); };
 const targets = new Set(['win32-x64', 'darwin-x64', 'darwin-arm64']);
-function inventory(root) {
-  root = fs.realpathSync(root);
-  const files = [];
-  function visit(directory) {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const file = path.join(directory, entry.name);
-      const relative = path.relative(root, file).split(path.sep).join('/');
-      if (entry.isSymbolicLink()) {
-        const resolved = fs.realpathSync(file);
-        requireThat(resolved.startsWith(root + path.sep), 'Inventory symlink escapes bundle');
-        files.push({ path: relative, symlink: fs.readlinkSync(file) });
-      } else if (entry.isDirectory()) visit(file);
-      else if (entry.isFile()) files.push({ path: relative, bytes: fs.statSync(file).size, sha256: sha256(file) });
-      else throw new Error('Unsupported inventory file');
-    }
-  }
-  visit(root);
-  requireThat(files.length > 0, 'Empty inventory');
-  return files;
-}
 function exactInventory(root, expected) {
   requireThat(JSON.stringify(inventory(root)) === JSON.stringify(expected), 'Bundle inventory changed');
 }
@@ -63,6 +43,7 @@ function validateReview(review, receipt, directory) {
   for (const file of [...receipt.files.filter(file => file.sha256), ...dependencies]) {
     requireThat(review.components.some(component => component.sha256 === file.sha256
       && component.decision === 'APPROVED' && typeof component.license === 'string'
+      && component.license.trim().length > 1
       && !/pending|unknown|placeholder/i.test(component.license)), `Unreviewed file: ${file.path}`);
   }
   requireThat(Array.isArray(receipt.legalFiles), 'Legal input inventory required');
@@ -97,6 +78,7 @@ function preflight(serviceRoot, platform, arch, env = process.env) {
     && new Set(receipt.dependencyInputs.map(input => input.file)).size === 4, 'Dependency lock inputs changed');
   exactInventory(serviceRoot, receipt.files);
   validateReview(read(path.join(directory, 'review.json')), receipt, directory);
+  require('./native-signing.cjs').verifyService(serviceRoot);
   return true;
 }
 function signing(platform, env = process.env) {
@@ -106,11 +88,12 @@ function signing(platform, env = process.env) {
     requireThat(timestamp.protocol === 'https:' && !timestamp.username && !timestamp.password
       && !/[\s"'<>]/.test(timestamp.href), 'HTTPS timestamp required');
     // Store/HSM identity: no private key or password enters a subprocess argument.
-    return { windowsSign: { signWithParams: `/sha1 ${env.PATHLAB_FORGE_WINDOWS_CERT_SHA1} /fd SHA256 /tr ${timestamp.href} /td SHA256` } };
+    return { windowsSign: { signWithParams: `/sha1 ${env.PATHLAB_FORGE_WINDOWS_CERT_SHA1} /fd SHA256 /tr ${timestamp.href} /td SHA256`, hashes: ['sha256'] } };
   }
   requireThat(platform === 'darwin' && /^Developer ID Application: .+ \([A-Z0-9]{10}\)$/.test(env.PATHLAB_FORGE_MAC_IDENTITY || '')
     && /^[A-Za-z0-9._-]+$/.test(env.PATHLAB_FORGE_NOTARY_PROFILE || ''), 'Trusted macOS identity and keychain profile required');
   return { osxSign: { identity: env.PATHLAB_FORGE_MAC_IDENTITY, continueOnError: false, hardenedRuntime: true,
+    ignore: file => /[\\/]Resources[\\/]service(?:[\\/]|$)/.test(file),
     optionsForFile: () => ({ hardenedRuntime: true }) },
   osxNotarize: { keychainProfile: env.PATHLAB_FORGE_NOTARY_PROFILE } };
 }

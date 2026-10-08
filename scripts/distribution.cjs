@@ -69,16 +69,33 @@ function validateCatalog(directory, catalog) {
       || catalog.channel !== (/-rc\.[1-9][0-9]*$/.test(receipt.version) ? 'candidate' : 'stable')
       || catalog.inventorySha256 !== sha256(path.join(directory, 'inventory.json'))
       || catalog.sourceSha256 !== receipt.source.sha256) throw new Error('Catalog identity mismatch');
-  for (const name of ['artifact', 'nativeAcceptance', 'signatureVerification']) {
+  for (const name of ['artifact', 'appInventory', 'nativeAcceptance', 'signatureVerification']) {
     const item = catalog[name];
     if (!item || typeof item.file !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new Error(`Missing ${name}`);
     const file = path.resolve(directory, item.file);
     if (!file.startsWith(path.resolve(directory) + path.sep) || sha256(file) !== item.sha256) throw new Error(`Changed ${name}`);
   }
+  const appInventory = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.appInventory.file), 'utf8'));
+  if (appInventory.schema !== 'pathlab.forge.final-app-inventory/1' || appInventory.commit !== receipt.commit
+      || `${appInventory.platform}-${appInventory.arch}` !== receipt.target || appInventory.version !== receipt.version
+      || appInventory.distribution !== 'PRODUCTION' || appInventory.sourceDirty !== false || !Array.isArray(appInventory.files)) throw new Error('Final app inventory identity mismatch');
+  const finalReview = JSON.parse(fs.readFileSync(path.join(directory, 'final-review.json'), 'utf8'));
+  if (finalReview.schema !== 'pathlab.forge.final-distribution-review/1' || finalReview.commit !== receipt.commit
+      || finalReview.target !== receipt.target || finalReview.version !== receipt.version
+      || finalReview.artifactSha256 !== catalog.artifact.sha256 || finalReview.appInventorySha256 !== catalog.appInventory.sha256
+      || finalReview.distributionReviewSha256 !== sha256(path.join(directory, 'review.json'))
+      || finalReview.applicationLicense !== 'GPL-3.0-or-later' || finalReview.decision !== 'APPROVED'
+      || typeof finalReview.reviewer !== 'string' || finalReview.reviewer.trim().length < 3 || !Array.isArray(finalReview.components)) throw new Error('Final signed artifact distribution review required');
+  for (const file of appInventory.files.filter(file => file.sha256)) {
+    if (!finalReview.components.some(component => component.sha256 === file.sha256 && component.decision === 'APPROVED'
+        && typeof component.license === 'string' && component.license.trim().length > 1
+        && !/pending|unknown|placeholder/i.test(component.license))) throw new Error(`Unreviewed final app file: ${file.path}`);
+  }
   const expected = receipt.target === 'win32-x64' ? '.exe' : '.dmg';
   if (!catalog.artifact.file.endsWith(expected) || catalog.artifact.bytes !== fs.statSync(path.resolve(directory, catalog.artifact.file)).size) throw new Error('Artifact type/size mismatch');
   const acceptance = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.nativeAcceptance.file), 'utf8'));
   const signature = JSON.parse(fs.readFileSync(path.resolve(directory, catalog.signatureVerification.file), 'utf8'));
+  if (acceptance.schema !== 'pathlab.forge.native-acceptance/1' || signature.schema !== 'pathlab.forge.signature-verification/1') throw new Error('Native evidence schema mismatch');
   for (const record of [acceptance, signature]) {
     if (record.commit !== receipt.commit || record.target !== receipt.target || record.artifactSha256 !== catalog.artifact.sha256
         || record.version !== receipt.version || record.result !== 'PASS') throw new Error('Final artifact evidence mismatch');
@@ -86,7 +103,8 @@ function validateCatalog(directory, catalog) {
   const required = receipt.target === 'win32-x64' ? ['Windows 10 22H2', 'Windows 11'] : ['macOS 14'];
   if (!required.every(os => acceptance.platforms?.includes(os)) || acceptance.dataPreserved !== true
       || acceptance.upgradeRollback !== true || acceptance.accessibility !== true || acceptance.journeys !== true) throw new Error('Native acceptance incomplete');
-  if (signature.timestampVerified !== true || signature.nestedVerified !== true
+  if (signature.timestampVerified !== true || signature.nestedVerified !== true || signature.fusesVerified !== true || signature.policyVerified !== true
+      || signature.appInventorySha256 !== catalog.appInventory.sha256
       || (receipt.target.startsWith('darwin') && (signature.notarized !== true || signature.stapled !== true))) throw new Error('Signature evidence incomplete');
   return catalog;
 }

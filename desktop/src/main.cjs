@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { localUrl, readiness, startupFailure, externalUrl, allowedPath, windowState, serviceEnvironment } = require('./policy.cjs');
+const { activate } = require('./activation.cjs');
 
 // Squirrel invokes these during install/update; no service or data root is opened.
 if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)$/.test(value))) {
@@ -109,7 +110,9 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
 
   function startService() {
     const root = app.isPackaged ? path.join(process.resourcesPath, 'service') : path.join(__dirname, '../resources/service');
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime-manifest.json'), 'utf8'));
+    const manifest = app.isPackaged
+      ? activate(root, require('../release-policy.json'), process.platform, process.arch, app.getVersion())
+      : JSON.parse(fs.readFileSync(path.join(root, 'runtime-manifest.json'), 'utf8'));
     if (smoke && manifest.internalValidation !== true) throw new Error('Smoke requires an internal validation package');
     if (manifest.platform !== process.platform || manifest.arch !== process.arch) throw new Error('Java runtime target mismatch');
     const java = path.join(root, 'runtime/bin', process.platform === 'win32' ? 'java.exe' : 'java');
@@ -202,7 +205,11 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
       { role: 'editMenu' },
       { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
       { role: 'windowMenu' },
-      { label: 'Help', submenu: [{ label: 'About PathLab Forge', click: () => app.showAboutPanel() }] },
+      { label: 'Help', submenu: [{ label: 'Check for updates…', click: async () => {
+        if (!externalOrigins[0]) { dialog.showErrorBox('Updates unavailable', 'This installation has no approved Viewer destination. Install the matching Forge release.'); return; }
+        try { await shell.openExternal(`${externalOrigins[0]}/forge/downloads`); }
+        catch { dialog.showErrorBox('Unable to open downloads', 'Open your approved PathLab Viewer and select Forge downloads.'); }
+      } }, { label: 'About PathLab Forge', click: () => app.showAboutPanel() }] },
     ]));
     await window.loadURL(record.launchUrl);
     window.show();
@@ -239,6 +246,7 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
       app.quit();
     }
   }).catch(error => {
+    if (smoke) { process.stdout.write('PATHLAB_FORGE_SMOKE_FAILURE integrity-or-startup\n'); app.exit(1); return; }
     dialog.showErrorBox('PathLab Forge', error.message || 'Forge could not start its bundled local service. Check that the desktop package includes the matching Java runtime and service.');
     app.quit();
   });

@@ -64,14 +64,26 @@ test('review and catalog fail closed on incomplete or mismatched exact evidence'
   assert.throws(() => validateReview({ ...review, commit: 'c'.repeat(40) }, receipt, directory));
   fs.writeFileSync(path.join(directory, 'review.json'), JSON.stringify(review));
   const artifact = { file: 'installer.exe', sha256: sha256(path.join(directory, 'installer.exe')), bytes: fs.statSync(path.join(directory, 'installer.exe')).size };
-  const evidence = { commit, target: receipt.target, version: receipt.version, artifactSha256: artifact.sha256, result: 'PASS', platforms: ['Windows 10 22H2', 'Windows 11'],
-    dataPreserved: true, upgradeRollback: true, accessibility: true, journeys: true, timestampVerified: true, nestedVerified: true };
+  fs.writeFileSync(path.join(directory, 'final-app.json'), JSON.stringify({ schema: 'pathlab.forge.final-app-inventory/1', commit,
+    platform: 'win32', arch: 'x64', version: receipt.version, distribution: 'PRODUCTION', sourceDirty: false, files: receipt.files }));
+  const appInventory = { file: 'final-app.json', sha256: sha256(path.join(directory, 'final-app.json')) };
+  const finalReview = { schema: 'pathlab.forge.final-distribution-review/1', commit, target: receipt.target, version: receipt.version,
+    artifactSha256: artifact.sha256, appInventorySha256: appInventory.sha256, distributionReviewSha256: sha256(path.join(directory, 'review.json')),
+    applicationLicense: 'GPL-3.0-or-later', decision: 'APPROVED', reviewer: 'synthetic reviewer', components: review.components };
+  fs.writeFileSync(path.join(directory, 'final-review.json'), JSON.stringify(finalReview));
+  const evidence = { schema: 'pathlab.forge.native-acceptance/1', commit, target: receipt.target, version: receipt.version, artifactSha256: artifact.sha256, result: 'PASS', platforms: ['Windows 10 22H2', 'Windows 11'],
+    dataPreserved: true, upgradeRollback: true, accessibility: true, journeys: true, timestampVerified: true, nestedVerified: true,
+    fusesVerified: true, policyVerified: true, appInventorySha256: appInventory.sha256 };
   fs.writeFileSync(path.join(directory, 'acceptance.json'), JSON.stringify(evidence));
+  fs.writeFileSync(path.join(directory, 'signature.json'), JSON.stringify({ ...evidence, schema: 'pathlab.forge.signature-verification/1' }));
   const catalog = { schema: 'pathlab.forge.release/1', commit, version: receipt.version, target: receipt.target, channel: 'candidate', inventorySha256: review.inventorySha256, sourceSha256: sourceHash,
-    artifact, nativeAcceptance: { file: 'acceptance.json', sha256: sha256(path.join(directory, 'acceptance.json')) }, signatureVerification: { file: 'acceptance.json', sha256: sha256(path.join(directory, 'acceptance.json')) } };
+    artifact, appInventory, nativeAcceptance: { file: 'acceptance.json', sha256: sha256(path.join(directory, 'acceptance.json')) }, signatureVerification: { file: 'signature.json', sha256: sha256(path.join(directory, 'signature.json')) } };
   assert.equal(validateCatalog(directory, catalog), catalog);
   assert.throws(() => validateCatalog(directory, { ...catalog, target: 'darwin-arm64' }));
   assert.throws(() => validateCatalog(directory, { ...catalog, channel: 'stable' }));
+  fs.writeFileSync(path.join(directory, 'final-review.json'), JSON.stringify({ ...finalReview, components: [] }));
+  assert.throws(() => validateCatalog(directory, catalog), /Unreviewed final/);
+  fs.writeFileSync(path.join(directory, 'final-review.json'), JSON.stringify(finalReview));
   fs.appendFileSync(path.join(directory, 'installer.exe'), 'tamper');
   assert.throws(() => validateCatalog(directory, catalog), /Changed artifact/);
 });

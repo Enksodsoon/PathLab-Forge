@@ -1,4 +1,5 @@
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.testing.Test
 import org.gradle.jvm.tasks.Jar
@@ -321,6 +322,11 @@ tasks.register<Sync>("stageElectronService") {
     val serviceArchitecture = hostArchitecture
     val serviceOrigin = viewerOrigin.orNull
     val serviceChannel = providers.gradleProperty("pathlab.forge.distributionChannel").orNull
+    inputs.property("distributionChannel", serviceChannel ?: "MISSING")
+    inputs.property("viewerOrigin", serviceOrigin ?: "MISSING")
+    inputs.property("featureCatalogPublicKey", featureCatalogPublicKey.orNull ?: "MISSING")
+    inputs.property("serviceVersion", project.version.toString())
+    inputs.property("servicePlatform", servicePlatform)
     if (serviceChannel == "PRODUCTION") dependsOn("verifyReaderRuntimeBundle")
     into(layout.projectDirectory.dir("desktop/resources/service"))
     from(layout.buildDirectory.dir("install/${project.name}/lib")) { into("lib") }
@@ -330,10 +336,13 @@ tasks.register<Sync>("stageElectronService") {
             "Unsupported packaged service platform: $servicePlatform"
         }
         require(JavaVersion.current() == JavaVersion.VERSION_17) { "Package service with Java 17" }
+        val desktopVersion = (JsonSlurper().parse(file("desktop/package.json")) as Map<*, *>)["version"]
+        require(project.version.toString() == desktopVersion) { "Java and Electron release versions must match" }
         require(serviceChannel in listOf("INTERNAL", "PRODUCTION")) {
             "Explicit pathlab.forge.distributionChannel=INTERNAL or PRODUCTION is required"
         }
         if (serviceChannel == "PRODUCTION") {
+            require(!serviceOrigin.isNullOrBlank()) { "Production requires an explicit official Viewer origin" }
             val encoded = featureCatalogPublicKey.orNull
             require(!encoded.isNullOrBlank()) { "Production requires an approved feature catalog public key" }
             KeyFactory.getInstance("Ed25519").generatePublic(X509EncodedKeySpec(Base64.getDecoder().decode(encoded)))
@@ -341,6 +350,7 @@ tasks.register<Sync>("stageElectronService") {
     }
     doLast {
         val manifest = mutableMapOf<String, Any>(
+            "version" to project.version.toString(),
             "platform" to if (serviceWindows) "win32" else "darwin",
             "arch" to if (serviceArchitecture == "arm64") "arm64" else "x64",
             "internalValidation" to (serviceChannel == "INTERNAL"),
@@ -385,10 +395,19 @@ tasks.register("distributionDependencies") {
     }
 }
 
+tasks.register<Exec>("signElectronService") {
+    group = "distribution"
+    description = "Signs the native production service before final byte inventory; trusted identities required."
+    dependsOn("stageElectronService")
+    environment("PATH", frontendPath)
+    commandLine("node", "scripts/sign-distribution-service.cjs", "desktop/resources/service", "build/distribution-inputs/service-signature.json")
+}
+
 tasks.register<Exec>("distributionInventory") {
     group = "distribution"
     description = "Creates clean-commit source and staged-byte receipts, explicitly NON_REDISTRIBUTABLE."
     dependsOn("stageElectronService", "distributionDependencies")
+    if (providers.gradleProperty("pathlab.forge.distributionChannel").orNull == "PRODUCTION") dependsOn("signElectronService")
     environment("PATH", frontendPath)
     commandLine("node", "scripts/distribution.cjs", "inventory", "build/distribution-inputs",
         "desktop/resources/service", "${if (hostWindows) "win32" else "darwin"}-${if (hostArchitecture == "arm64") "arm64" else "x64"}")
