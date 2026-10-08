@@ -401,8 +401,8 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/features/[a-z0-9][a-z0-9-]{1,63}")
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 uninstallFeature(exchange, path);
-            } else if (path.equals("/api/study/drafts") || path.equals("/api/study/import")
-                    || path.matches("/api/study/drafts/[0-9a-fA-F-]{36}(/duplicate|/history|/recover|/preview|/review|/approve|/questions|/export)?")) {
+            } else if (path.equals("/api/study/drafts") || path.equals("/api/study/import") || path.equals("/api/study/viewer/slides")
+                    || path.matches("/api/study/drafts/[0-9a-fA-F-]{36}(/duplicate|/history|/recover|/preview|/review|/approve|/questions|/export|/publish)?")) {
                 studyAuthoring(exchange, path);
             } else if (path.equals("/api/analysis/runs") || path.matches("/api/analysis/runs/[0-9a-fA-F-]{36}(/cancel|/export|/review)?")) {
                 analysisRuns(exchange, path);
@@ -536,6 +536,8 @@ public final class ForgeServer implements AutoCloseable {
                         exchange,
                         path.substring(
                                 "/api/datasets/".length(), path.length() - "/convert".length()));
+            } else if (path.matches("/api/datasets/[^/]+/teaching") && "POST".equals(exchange.getRequestMethod())) {
+                convertDataset(exchange, path.substring("/api/datasets/".length(), path.length() - "/teaching".length()), true);
             } else if (path.matches("/api/datasets/[^/]+/cancel")
                     && "POST".equals(exchange.getRequestMethod())) {
                 cancelConversion(
@@ -747,7 +749,11 @@ public final class ForgeServer implements AutoCloseable {
                 }
             }
             Object result;
-            if (path.equals("/api/study/import") && "POST".equals(method)) {
+            if (path.equals("/api/study/viewer/slides") && "GET".equals(method)) {
+                var key = teachingConnection();
+                result = viewerStudy(key, "GET", "/api/v2/desktop/study/authoring/slides", new byte[0]);
+                if (!((com.fasterxml.jackson.databind.JsonNode) result).isArray()) throw new IOException("Viewer teaching discovery response must be an array");
+            } else if (path.equals("/api/study/import") && "POST".equals(method)) {
                 result = "csv".equals(body.path("format").asText()) ? studyService.importCsv(body.path("text").asText()) : studyService.importDraft(body.path("text").asText());
             } else if (parts.length == 4 && "GET".equals(method)) result = studyService.listDrafts();
             else if (parts.length == 4 && "POST".equals(method)) result = studyService.createDraft(body.path("name").asText(), body.path("definition").isObject() ? body.path("definition").toString() : "", "{}");
@@ -773,6 +779,7 @@ public final class ForgeServer implements AutoCloseable {
                     case "review" -> studyService.reviewTask(id, revision, checksum, body.path("taskId").asText());
                     case "approve" -> studyService.approve(id, revision, checksum);
                     case "questions" -> studyService.importQuestions(id, revision, body.path("format").asText(), body.path("text").asText(), body.path("slideId").asText());
+                    case "publish" -> publishStudy(id, revision, checksum);
                     default -> throw new IllegalArgumentException("Unsupported Study action");
                 };
                 else throw new IllegalArgumentException("Unsupported Study method");
@@ -781,6 +788,40 @@ public final class ForgeServer implements AutoCloseable {
         } catch (IllegalArgumentException | IllegalStateException | IOException error) {
             respond(exchange, 409, "application/json", "{\"error\":\"study_action_failed\",\"detail\":" + json(error.getMessage()) + "}");
         }
+    }
+
+    private String teachingConnection() throws IOException {
+        var key = viewerPairingService.connectionKey();
+        if (key.isBlank() || !viewerPairingService.status().scopes().contains("study-packs:write")
+                || !key.equals(viewerPairingService.connectionKey())) throw new IOException("Pair with current teaching authority and study-packs:write before publishing");
+        return key;
+    }
+    private com.fasterxml.jackson.databind.JsonNode viewerStudy(String key, String method, String path, byte[] body) throws IOException {
+        try (var response = viewerPairingService.requestBound(key, method, path, java.util.Map.of("Content-Type", "application/json"), body)) {
+            var bytes = response.body().readNBytes(org.pathlab.forge.study.StudyPackContract.MAX_PACK_BYTES + 1);
+            if (bytes.length > org.pathlab.forge.study.StudyPackContract.MAX_PACK_BYTES) throw new IOException("Viewer teaching response exceeds size limit");
+            if (!key.equals(viewerPairingService.connectionKey())) throw new IOException("Viewer account changed during teaching request");
+            var value = org.pathlab.forge.study.StudyPackCanonicalJson.mapper().readTree(bytes);
+            if (response.status() < 200 || response.status() >= 300) {
+                throw new IOException("Viewer teaching request rejected (" + response.status() + "); drafts remain local. "
+                        + (value == null ? "Reconnect and retry" : value.path("error").asText("Review permissions, privacy and slide hashes")));
+            }
+            if (value == null) throw new IOException("Viewer teaching response was empty");
+            return value;
+        }
+    }
+    private com.fasterxml.jackson.databind.JsonNode publishStudy(String id, long revision, String checksum) throws IOException {
+        var current = studyService.getDraft(id);
+        if (current.revision() != revision) throw new IllegalStateException("Draft changed since publication was requested");
+        var approved = studyExport(id, "approved", checksum);
+        var key = teachingConnection(); var bytes = approved.getBytes(StandardCharsets.UTF_8);
+        var validation = viewerStudy(key, "POST", "/api/v2/desktop/study/packs/validate", bytes);
+        if (!checksum.equals(validation.path("checksum").asText())) throw new IOException("Viewer canonical checksum differs; resolve the contract mismatch before publishing");
+        var checked = studyService.getDraft(id);
+        if (checked.revision() != revision || !checksum.equals(checked.approvedChecksum())) throw new IllegalStateException("Draft changed while Viewer validated it");
+        var published = viewerStudy(key, "POST", "/api/v2/desktop/study/packs", bytes);
+        if (!checksum.equals(published.path("checksum").asText())) throw new IOException("Viewer publication acknowledgement checksum differs; reconcile this immutable version before retrying");
+        return published;
     }
 
     private String studyExport(String id, String format, String checksum) throws IOException {
@@ -1889,6 +1930,9 @@ public final class ForgeServer implements AutoCloseable {
     }
 
     private void convertDataset(HttpExchange exchange, String id) throws IOException {
+        convertDataset(exchange, id, false);
+    }
+    private void convertDataset(HttpExchange exchange, String id, boolean teaching) throws IOException {
         if (!requireWrite(exchange)) {
             return;
         }
@@ -1897,7 +1941,7 @@ public final class ForgeServer implements AutoCloseable {
                     exchange,
                     202,
                     "application/json",
-                    datasetJson(conversionService.start(id)));
+                    datasetJson(teaching ? conversionService.startTeaching(id) : conversionService.start(id)));
         } catch (IllegalArgumentException error) {
             respond(exchange, 404, "application/json", "{\"error\":\"dataset_not_found\"}");
         } catch (IllegalStateException error) {

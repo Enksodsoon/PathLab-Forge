@@ -1,6 +1,15 @@
 import type { StudyDraftRecord } from './StudyAuthoring'
 import type { DeterministicRun, DeterministicRequest, DeterministicReview } from './DeterministicTools'
 import type { BatchSummary, BatchReport } from './BatchReports'
+import type { StudySlide } from './StudyAuthoring'
+
+export const teachingSlides = async (): Promise<StudySlide[]> => {
+  const slides = await request<Array<{ id: string; displayName: string; sha256: string }>>('/api/study/viewer/slides')
+  if (!Array.isArray(slides) || slides.some((slide) => !slide.id || !slide.displayName || !/^[a-f0-9]{64}$/.test(slide.sha256))) throw new Error('Viewer teaching slide identities are invalid')
+  return slides.map((slide) => ({ viewerSlideId: slide.id, displayName: slide.displayName, sha256: slide.sha256 }))
+}
+export const publishStudy = (id: string, revision: number, checksum: string) => request<{ id: string; checksum: string }>(`/api/study/drafts/${encodeURIComponent(id)}/publish`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision, checksum }) })
+export const generateTeachingArtifact = (id: string) => request<Dataset>(`/api/datasets/${encodeURIComponent(id)}/teaching`, { method: 'POST' })
 
 export const batches = () => request<BatchSummary[]>('/api/batches?limit=50')
 export const createBatch = (datasetIds: string[]) => request<BatchSummary>('/api/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetIds }) })

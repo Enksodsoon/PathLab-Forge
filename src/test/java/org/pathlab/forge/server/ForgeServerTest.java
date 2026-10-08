@@ -59,6 +59,12 @@ final class ForgeServerTest {
             assertEquals(409, staleCancel.statusCode());
             assertEquals(409, client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts/" + id + "/export?format=approved&checksum=unapproved")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
             assertEquals(405, client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/import")).GET().build(), HttpResponse.BodyHandlers.ofString()).statusCode());
+            var noTeaching = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/viewer/slides")).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(409, noTeaching.statusCode()); assertTrue(noTeaching.body().contains("teaching authority"));
+            var unapproved = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/study/drafts/" + id + "/publish"))
+                    .header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"revision\":2,\"checksum\":\"unapproved\"}")).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(409, unapproved.statusCode()); assertTrue(unapproved.body().contains("Draft changed since approval"));
         }
         try (var server = startEphemeral()) {
             var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();

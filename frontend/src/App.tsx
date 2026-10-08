@@ -55,7 +55,7 @@ import type {
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer, type AnalysisOverlayShape } from './SlideViewer'
 import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
-import { StudyAuthoring, type StudyDraftRecord } from './StudyAuthoring'
+import { StudyAuthoring, type StudyDraftRecord, type StudySlide } from './StudyAuthoring'
 import { BatchReports, type BatchSummary } from './BatchReports'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
@@ -129,6 +129,7 @@ export function App() {
   const [studyOpen, setStudyOpen] = useState(false)
   const [studyLoaded, setStudyLoaded] = useState(false)
   const [studyDrafts, setStudyDrafts] = useState<StudyDraftRecord[]>([])
+  const [teachingSlides, setTeachingSlides] = useState<StudySlide[]>([])
   const [studyError, setStudyError] = useState('')
   const [studyExport, setStudyExport] = useState<api.ExportState>()
   const [featureOpen, setFeatureOpen] = useState(false)
@@ -152,6 +153,7 @@ export function App() {
     remoteEpoch.current++
     setRemoteLibrary({ items: [], folders: [], conflicts: [] }); setSelectedRemoteId(''); setRemoteRename(undefined)
     setRemoteSyncReady(false); setRemoteLastChecked(undefined); setViewer(null)
+    setTeachingSlides([])
   }
   const adoptConnection = (next: ViewerConnection | undefined) => {
     const identity = next?.connected ? JSON.stringify([next.viewerUrl, next.deviceName, next.connectionRevision || '']) : ''
@@ -1140,8 +1142,17 @@ export function App() {
         <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Study authoring workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setStudyOpen(false) } }}>
           <button type="button" aria-label="Close Study authoring" onClick={() => setStudyOpen(false)}><X aria-hidden="true" /></button>
           <p role="status">Teaching slide preview is unavailable until a verified local teaching source is associated. Drafts remain editable offline; faculty review and publication are unavailable.</p>
+          {selected ? <div><p>Teaching delivery creates a separate static-DZI artifact. Existing OME artifacts and original pixels are retained; Viewer privacy review remains required.</p>
+            <button type="button" disabled={!QUEUEABLE_STATUSES.has(selected.status) || selected.selectedSeries < 0} onClick={() => {
+              void api.generateTeachingArtifact(selected.id).then(async () => { await refresh(); setNotice('Teaching DZI generation queued; inspect and approve its independent artifact before delivery') }).catch((cause) => setStudyError(message(cause)))
+            }}>Generate Teaching DZI for {selected.displayName}</button></div> : null}
           {studyError ? <p role="alert">{studyError}</p> : null}
+          {connection?.scopes.includes('study-packs:write') ? <button type="button" onClick={() => {
+            const epoch = remoteEpoch.current
+            void api.teachingSlides().then((slides) => { if (epoch === remoteEpoch.current) setTeachingSlides(slides) }).catch((cause) => { if (epoch === remoteEpoch.current) setStudyError(message(cause)) })
+          }}>Refresh eligible teaching slides from Viewer</button> : null}
           {!studyLoaded ? <button type="button" onClick={() => void openStudy()}>Retry loading drafts</button> : <StudyAuthoring drafts={studyDrafts}
+            slides={teachingSlides}
             onLoad={api.studyDraft} onCreate={(name) => rememberStudy(api.createStudyDraft(name))}
             onSave={(draft, revision) => rememberStudy(api.saveStudyDraft(draft, revision))}
             onDuplicate={(id, name, nextVersion) => rememberStudy(api.duplicateStudyDraft(id, name, nextVersion))}
@@ -1151,7 +1162,12 @@ export function App() {
             onApprove={(id, revision, checksum) => rememberStudy(api.approveStudyDraft(id, revision, checksum))}
             onImport={(format, text) => rememberStudy(api.importStudyDraft(format, text))}
             onImportQuestions={(id, revision, format, text, slideId) => rememberStudy(api.importStudyQuestions(id, revision, format, text, slideId))}
-            onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }} canPreviewSlide={() => false} />}
+            onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }} canPreviewSlide={() => false}
+            onPublish={connection?.scopes.includes('study-packs:write') ? async (checksum) => {
+              const draft = studyDrafts.find((item) => item.approvedChecksum === checksum)
+              if (!draft) throw new Error('Reload the exact approved draft before publishing')
+              return api.publishStudy(draft.id, draft.revision, checksum)
+            } : undefined} />}
           {studyExport ? <div aria-label="Study native export"><p role="status">{studyExport.detail}</p>
             {['COPYING', 'VERIFYING'].includes(studyExport.status) ? <button type="button" onClick={() => void api.cancelExport(studyExport.id).then((next) => { if (next.id === studyExport.id) setStudyExport(next) }).catch((cause) => setStudyError(message(cause)))}>Cancel Study export</button> : null}
             {studyExport.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(studyExport.destination)}>Reveal Study export</button> : null}</div> : null}
