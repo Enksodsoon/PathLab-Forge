@@ -210,6 +210,7 @@ public record ReaderRuntimeManifest(
 
     private static boolean verifiedRegularFile(Path root, Path path) throws IOException {
         if (!Files.isSymbolicLink(path)) return Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS);
+        if (!currentPlatform().startsWith("macos-")) return false;
         if (!"APPROVED".equals(review(root).get("macos.file-symlinks.status"))) return false;
         var relative = root.relativize(path);
         if (relative.getNameCount() < 2) return false;
