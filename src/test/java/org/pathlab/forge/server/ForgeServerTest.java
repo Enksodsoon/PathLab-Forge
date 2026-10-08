@@ -20,6 +20,71 @@ final class ForgeServerTest {
     @TempDir
     Path temp;
 
+    @Test void offlineTeachingAssociationLoadsFrozenPixelsAndApprovesOnlyReviewedTasks() throws Exception {
+        var mapper = org.pathlab.forge.study.StudyPackCanonicalJson.mapper();
+        var datasetId = java.util.UUID.randomUUID().toString();
+        var artifactId = java.util.UUID.randomUUID().toString();
+        var managed = temp.resolve("managed-0");
+        var directory = java.nio.file.Files.createDirectories(managed.resolve(datasetId).resolve("artifacts").resolve(artifactId));
+        var derivative = java.nio.file.Files.createDirectories(directory.resolve("derivative"));
+        var dzi = "<Image xmlns=\"http://schemas.microsoft.com/deepzoom/2008\" Format=\"jpg\" Overlap=\"1\" TileSize=\"512\"><Size Width=\"1\" Height=\"1\"/></Image>";
+        java.nio.file.Files.writeString(derivative.resolve("slide.dzi"), dzi);
+        var tile = java.nio.file.Files.createDirectories(derivative.resolve("slide_files/0")).resolve("0_0.jpg");
+        var image = new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        javax.imageio.ImageIO.write(image, "jpg", tile.toFile());
+        javax.imageio.ImageIO.write(image, "jpg", derivative.resolve("thumbnail.jpg").toFile());
+        var packaged = org.pathlab.forge.packageformat.PreparedPackageBuilder.build(derivative, 1, 1,
+                new org.pathlab.forge.packageformat.PackageMetadata(artifactId, "config", "source", 0,
+                        0, 0, 1, 1, 1, 0, 0, "", "actual-staging-ome", "test"), directory.resolve("slide.plslide"));
+        var artifact = new org.pathlab.forge.conversion.ArtifactRevision(artifactId, datasetId, "config", "source", 1,
+                org.pathlab.forge.conversion.ArtifactRevisionStatus.READY, org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2,
+                directory.resolve("missing.ome.tif").toString(), derivative.toString(), packaged.path().toString(), "", packaged.sha256(), 1, 1, "", 0, 0, "Synthetic", "");
+        new org.pathlab.forge.conversion.ArtifactRevisionRepository(managed).save(artifact);
+        var stamp = org.pathlab.forge.conversion.ArtifactIntegrityStamp.class.getDeclaredMethod("write", org.pathlab.forge.conversion.ArtifactRevision.class);
+        stamp.setAccessible(true); stamp.invoke(null, artifact);
+        var definition = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(getClass().getResourceAsStream("/study/viewer-v1.json"));
+        var localId = "local:" + datasetId;
+        for (var slide : definition.path("slides")) { ((com.fasterxml.jackson.databind.node.ObjectNode) slide).put("viewerSlideId", localId).put("sha256", ""); }
+        for (var task : definition.path("tasks")) ((com.fasterxml.jackson.databind.node.ObjectNode) task).put("slideId", localId);
+        try (var server = startEphemeral()) {
+            var client = HttpClient.newBuilder().cookieHandler(new CookieManager(null, CookiePolicy.ACCEPT_ALL)).build();
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(), HttpResponse.BodyHandlers.ofString());
+            var csrf = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(), HttpResponse.BodyHandlers.ofString()).headers().firstValue("X-Forge-CSRF").orElseThrow();
+            var draft = mapper.readTree(studyPost(server, client, csrf, "/api/study/drafts", mapper.createObjectNode().put("name", "Offline faculty").set("definition", definition)).body());
+            var path = "/api/study/drafts/" + draft.path("id").asText();
+            var associated = studyPost(server, client, csrf, path + "/associate", mapper.createObjectNode().put("revision", draft.path("revision").asLong()).put("referenceId", localId).put("datasetId", datasetId).put("artifactRevision", artifactId));
+            assertEquals(200, associated.statusCode(), associated.body()); draft = mapper.readTree(associated.body());
+            var preview = studyPost(server, client, csrf, path + "/preview", mapper.createObjectNode().put("revision", draft.path("revision").asLong()));
+            assertEquals(200, preview.statusCode(), preview.body()); draft = mapper.readTree(preview.body());
+            var previewPath = "/api/datasets/" + datasetId + "/artifacts/" + artifactId + "/teaching-preview/slide.dzi";
+            java.nio.file.Files.writeString(derivative.resolve("slide.dzi"), "loose content changed");
+            var pixels = client.send(HttpRequest.newBuilder(server.baseUri().resolve(previewPath)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, pixels.statusCode(), pixels.body()); assertEquals(dzi, pixels.body());
+            for (var task : draft.path("definition").path("tasks")) {
+                var review = mapper.createObjectNode().put("revision", draft.path("revision").asLong()).put("checksum", draft.path("previewChecksum").asText()).put("taskId", task.path("id").asText());
+                var proof = mapper.createObjectNode().put("previewChecksum", draft.path("previewChecksum").asText()).put("slideId", localId).put("datasetId", datasetId).put("artifactRevision", artifactId).put("packageSha256", "a".repeat(64));
+                review.set("pixels", proof);
+                assertEquals(409, studyPost(server, client, csrf, path + "/review", review).statusCode());
+                proof.put("packageSha256", packaged.sha256());
+                var reviewed = studyPost(server, client, csrf, path + "/review", review);
+                assertEquals(200, reviewed.statusCode(), reviewed.body()); draft = mapper.readTree(reviewed.body());
+            }
+            var approved = studyPost(server, client, csrf, path + "/approve", mapper.createObjectNode().put("revision", draft.path("revision").asLong()).put("checksum", draft.path("previewChecksum").asText()));
+            assertEquals(200, approved.statusCode(), approved.body());
+            var approvedChecksum = mapper.readTree(approved.body()).path("approvedChecksum").asText();
+            var export = client.send(HttpRequest.newBuilder(server.baseUri().resolve(path + "/export?format=approved&checksum=" + approvedChecksum)).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals("pathlab.study-local-approved/1", mapper.readTree(export.body()).path("schema").asText());
+            java.nio.file.Files.writeString(packaged.path().resolveSibling("slide.plslide.index"), "altered index");
+            var changed = client.send(HttpRequest.newBuilder(server.baseUri().resolve(previewPath)).header("If-None-Match", pixels.headers().firstValue("ETag").orElseThrow()).GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(409, changed.statusCode(), "Integrity must be checked before returning 304");
+        }
+    }
+
+    private static HttpResponse<String> studyPost(ForgeServer server, HttpClient client, String csrf, String path, com.fasterxml.jackson.databind.JsonNode body) throws Exception {
+        return client.send(HttpRequest.newBuilder(server.baseUri().resolve(path)).header("Origin", server.baseUri().toString()).header("X-Forge-CSRF", csrf)
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(), HttpResponse.BodyHandlers.ofString());
+    }
+
     @Test void studyRoutesPreserveOfflineDraftsAndRejectStaleWritesAfterRestart() throws Exception {
         var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
         String id;

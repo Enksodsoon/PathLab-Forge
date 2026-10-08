@@ -56,6 +56,8 @@ import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer, type AnalysisOverlayShape } from './SlideViewer'
 import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
 import { StudyAuthoring, type StudyDraftRecord, type StudySlide } from './StudyAuthoring'
+import { TeachingSlidePreview } from './TeachingSlidePreview'
+import { teachingAssociationFor, captureTeachingTarget } from './teachingAssociations'
 import { BatchReports, type BatchSummary } from './BatchReports'
 import type { MaskChannel } from './AnalysisMaskOverlay'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
@@ -177,6 +179,7 @@ export function App() {
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
   analysisContext.current = `${selected?.id}|${selected?.viewRevision}|${selected?.configurationRevision}`
   const overlayRun = analysisRuns.find((run) => run.id === analysisOverlay?.runId)
+  const inspectorVisible = inspectorOpen && Boolean(libraryMode === 'viewer' ? remoteLibrary.items.length : selected)
   const selectedRemote = remoteLibrary.items.find((item) => item.id === selectedRemoteId)
     ?? remoteLibrary.items[0]
   const cropDraft = selected ? cropDrafts[selected.id] : undefined
@@ -270,9 +273,9 @@ export function App() {
   useEffect(() => {
     const inspector = document.querySelector<HTMLElement>('.pathlab-viewer-inspector')
     if (!inspector) return
-    inspector.inert = !inspectorOpen
-    inspector.setAttribute('aria-hidden', inspectorOpen ? 'false' : 'true')
-  }, [inspectorOpen])
+    inspector.inert = !inspectorVisible
+    inspector.setAttribute('aria-hidden', inspectorVisible ? 'false' : 'true')
+  }, [inspectorVisible])
 
   const refresh = useCallback(async () => {
     try {
@@ -890,13 +893,13 @@ export function App() {
       <div className={[
         'forge-canvas-host',
         navigatorOpen ? '' : 'navigator-collapsed',
-        inspectorOpen ? '' : 'inspector-collapsed',
+        inspectorVisible ? '' : 'inspector-collapsed',
       ].filter(Boolean).join(' ')}>
         <ViewerCanvasShell
           rail={rail}
           railExpanded={railExpanded}
           navigatorOpen={navigatorOpen}
-          inspectorOpen={inspectorOpen}
+          inspectorOpen={inspectorVisible}
           navigator={(
             <SlideNavigator
               datasets={datasets}
@@ -947,7 +950,7 @@ export function App() {
               slide={selectedRemote}
               viewer={viewer}
               onViewer={setViewer}
-              inspectorOpen={inspectorOpen}
+              inspectorOpen={inspectorVisible}
               onInspector={() => setInspectorOpen((current) => !current)}
             />
           ) : (
@@ -971,7 +974,7 @@ export function App() {
               selectedAnnotationId={selectedAnnotationId}
               onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
               onUpdateAnnotation={(id, geometry) => void updateLocalAnnotation(id, { geometry })}
-              inspectorOpen={inspectorOpen}
+              inspectorOpen={inspectorVisible}
               onInspector={() => setInspectorOpen((current) => !current)}
             />
           )}
@@ -1176,7 +1179,7 @@ export function App() {
       {studyOpen || studyLoaded ? <div className="forge-dialog-backdrop" role="presentation" style={studyOpen ? undefined : { display: 'none' }}>
         <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Study authoring workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setStudyOpen(false) } }}>
           <button type="button" aria-label="Close Study authoring" onClick={() => setStudyOpen(false)}><X aria-hidden="true" /></button>
-          <p role="status">Teaching slide preview is unavailable until a verified local teaching source is associated. Drafts remain editable offline; faculty review and publication are unavailable.</p>
+          <p>Associate each slide with its exact local Teaching DZI artifact. Local preview and approval work offline; resolve delivered Viewer identities and approve again before publication.</p>
           {selected ? <div><p>Teaching delivery creates a separate static-DZI artifact. Existing OME artifacts and original pixels are retained; Viewer privacy review remains required.</p>
             <button type="button" disabled={!QUEUEABLE_STATUSES.has(selected.status) || selected.selectedSeries < 0} onClick={() => {
               void api.generateTeachingArtifact(selected.id).then(async () => { await refresh(); setNotice('Teaching DZI generation queued; inspect and approve its independent artifact before delivery') }).catch((cause) => setStudyError(message(cause)))
@@ -1190,17 +1193,28 @@ export function App() {
             void api.teachingSlides().then((slides) => { if (epoch === remoteEpoch.current) setTeachingSlides(slides) }).catch((cause) => { if (epoch === remoteEpoch.current) setStudyError(message(cause)) })
           }}>Refresh eligible teaching slides from Viewer</button> : null}
           {!studyLoaded ? <button type="button" onClick={() => void openStudy()}>Retry loading drafts</button> : <StudyAuthoring drafts={studyDrafts}
-            slides={teachingSlides}
+            slides={[...teachingSlides, ...datasets.map((dataset) => ({ viewerSlideId: `local:${dataset.id}`, displayName: `${dataset.displayName} (local draft)`, sha256: '' }))]}
+            teachingArtifacts={Object.entries(artifactByDataset).flatMap(([datasetId, artifacts]) => artifacts.filter((artifact) => artifact.format === 'PREPARED_DZI_V2' && ['READY', 'APPROVED'].includes(artifact.status)).map((artifact) => ({ datasetId, artifactRevision: artifact.id, displayName: `${datasets.find((dataset) => dataset.id === datasetId)?.displayName || datasetId} · ${artifact.name}` })))}
+            onAssociateTeachingSlide={(id, revision, referenceId, datasetId, artifactRevision) => rememberStudy(api.associateTeachingSlide(id, revision, referenceId, datasetId, artifactRevision))}
+            renderSlide={(slide, onLocation, onPixelsLoaded, draft) => {
+              const association = teachingAssociationFor(slide, draft.associations)
+              return association && slide ? <TeachingSlidePreview association={association} slideId={slide.viewerSlideId} previewChecksum={draft.previewChecksum} onLocation={onLocation} onPixelsLoaded={onPixelsLoaded} /> : <p role="status">Select an exact local teaching artifact before reviewing these pixels.</p>
+            }}
+            onCaptureSpatial={async (slide, draft) => {
+              const association = teachingAssociationFor(slide, draft.associations), roi = selectedAnnotations.find((annotation) => annotation.id === selectedAnnotationId)
+              if (!association || !selected || !roi) throw new Error('Select a saved source rectangle and associate the exact teaching artifact first.')
+              return captureTeachingTarget(roi, selected.id, selected.sourceFingerprint, association)
+            }}
             onLoad={api.studyDraft} onCreate={(name) => rememberStudy(api.createStudyDraft(name))}
             onSave={(draft, revision) => rememberStudy(api.saveStudyDraft(draft, revision))}
             onDuplicate={(id, name, nextVersion) => rememberStudy(api.duplicateStudyDraft(id, name, nextVersion))}
             onHistory={api.studyHistory} onRecover={(id, historical, revision) => rememberStudy(api.recoverStudyDraft(id, historical, revision))}
             onPreview={(id, revision) => rememberStudy(api.previewStudyDraft(id, revision))}
-            onReviewTask={(id, revision, checksum, taskId) => rememberStudy(api.reviewStudyTask(id, revision, checksum, taskId))}
+            onReviewTask={(id, revision, checksum, taskId, pixels) => rememberStudy(api.reviewStudyTask(id, revision, checksum, taskId, pixels))}
             onApprove={(id, revision, checksum) => rememberStudy(api.approveStudyDraft(id, revision, checksum))}
             onImport={(format, text) => rememberStudy(api.importStudyDraft(format, text))}
             onImportQuestions={(id, revision, format, text, slideId) => rememberStudy(api.importStudyQuestions(id, revision, format, text, slideId))}
-            onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }} canPreviewSlide={() => false}
+            onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }}
             onPublish={connection?.scopes.includes('study-packs:write') ? async (checksum) => {
               const draft = studyDrafts.find((item) => item.approvedChecksum === checksum)
               if (!draft) throw new Error('Reload the exact approved draft before publishing')
@@ -1334,7 +1348,7 @@ function ForgeProductRail({
       <div className="library-rail-utilities" aria-label="Account actions">
         <section className="library-storage-meter" aria-label={`Storage, ${formatBytes(storage.usableBytes)} available`}>
           <div className="library-storage-copy"><span>Storage</span><strong>{formatBytes(storage.usableBytes)} available</strong></div>
-          <p>{storage.managedUsage ? `${storage.managedUsage.complete ? '' : 'At least '}${formatBytes(storage.managedUsage.bytes)} managed file data · ${storage.managedUsage.files} files · scanned ${new Date(storage.managedUsage.measuredAt).toLocaleTimeString()}` : 'Measuring managed file data…'}</p>
+          <p className="library-storage-copy">{storage.managedUsage ? `${storage.managedUsage.complete ? '' : 'At least '}${formatBytes(storage.managedUsage.bytes)} managed file data · ${storage.managedUsage.files} files · scanned ${new Date(storage.managedUsage.measuredAt).toLocaleTimeString()}` : 'Measuring managed file data…'}</p>
           <div className="library-storage-track" role="meter" aria-label="Usable storage remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}><span style={{ width: `${remaining}%` }} /></div>
         </section>
         <button type="button" aria-label={`${theme === 'dark' ? 'Dark' : 'Light'} theme. Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={onTheme}>

@@ -56,7 +56,7 @@ public final class DataRootLock implements AutoCloseable {
         requireSafePath(root);
     }
 
-    static void requireSafePath(Path path) throws IOException {
+    public static void requireSafePath(Path path) throws IOException {
         for (var part = path.toAbsolutePath().normalize(); part != null; part = part.getParent()) {
             if (Files.isSymbolicLink(part)) throw new IOException("Forge maintenance refuses symbolic links: " + part);
             if (Files.exists(part, java.nio.file.LinkOption.NOFOLLOW_LINKS)

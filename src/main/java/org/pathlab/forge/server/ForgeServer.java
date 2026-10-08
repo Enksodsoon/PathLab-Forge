@@ -418,7 +418,7 @@ public final class ForgeServer implements AutoCloseable {
                     && "DELETE".equals(exchange.getRequestMethod())) {
                 uninstallFeature(exchange, path);
             } else if (path.equals("/api/study/drafts") || path.equals("/api/study/import") || path.equals("/api/study/viewer/slides")
-                    || path.matches("/api/study/drafts/[0-9a-fA-F-]{36}(/duplicate|/history|/recover|/preview|/review|/approve|/questions|/export|/publish)?")) {
+                    || path.matches("/api/study/drafts/[0-9a-fA-F-]{36}(/duplicate|/history|/recover|/preview|/review|/approve|/associate|/questions|/export|/publish)?")) {
                 studyAuthoring(exchange, path);
             } else if (path.equals("/api/analysis/runs") || path.matches("/api/analysis/runs/[0-9a-fA-F-]{36}(/cancel|/export|/review|/cores|/core-analysis)?")) {
                 analysisRuns(exchange, path);
@@ -575,6 +575,8 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/ome-preview/.+")
                     && "GET".equals(exchange.getRequestMethod())) {
                 artifactOmePreviewResource(exchange, path);
+            } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/teaching-preview/.+") && "GET".equals(exchange.getRequestMethod())) {
+                teachingPreviewResource(exchange,path);
             } else if (path.matches("/api/datasets/[^/]+/artifacts/[^/]+/derivative/.+")
                     && "GET".equals(exchange.getRequestMethod())) {
                 artifactDerivativeResource(exchange, path);
@@ -793,11 +795,12 @@ public final class ForgeServer implements AutoCloseable {
                 } else if ("POST".equals(method)) result = switch (action) {
                     case "duplicate" -> studyService.duplicate(id, body.path("name").asText(), body.path("nextVersion").asBoolean());
                     case "recover" -> studyService.recover(id, body.path("historicalRevision").asLong(), revision);
-                    case "preview" -> studyService.preview(id, revision);
-                    case "review" -> studyService.reviewTask(id, revision, checksum, body.path("taskId").asText());
-                    case "approve" -> studyService.approve(id, revision, checksum);
+                    case "preview" -> { validateTeachingAssociations(id); yield studyService.preview(id, revision); }
+                    case "review" -> { validateTeachingAssociations(id); yield studyService.reviewTask(id, revision, checksum, body.path("taskId").asText(), mapper.treeToValue(body.path("pixels"), org.pathlab.forge.study.StudyAuthoringService.LoadedPixels.class)); }
+                    case "approve" -> { validateTeachingAssociations(id); yield studyService.approve(id, revision, checksum); }
+                    case "associate" -> associateTeachingSlide(id, revision, body.path("referenceId").asText(), body.path("datasetId").asText(), body.path("artifactRevision").asText());
                     case "questions" -> studyService.importQuestions(id, revision, body.path("format").asText(), body.path("text").asText(), body.path("slideId").asText());
-                    case "publish" -> publishStudy(id, revision, checksum);
+                    case "publish" -> { validateTeachingAssociations(id); yield publishStudy(id, revision, checksum); }
                     default -> throw new IllegalArgumentException("Unsupported Study action");
                 };
                 else throw new IllegalArgumentException("Unsupported Study method");
@@ -805,6 +808,55 @@ public final class ForgeServer implements AutoCloseable {
             respond(exchange, 200, "application/json", mapper.writeValueAsString(result));
         } catch (IllegalArgumentException | IllegalStateException | IOException error) {
             respond(exchange, 409, "application/json", "{\"error\":\"study_action_failed\",\"detail\":" + json(error.getMessage()) + "}");
+        }
+    }
+
+    private org.pathlab.forge.study.StudyDraft associateTeachingSlide(String draftId, long revision,
+            String referenceId, String datasetId, String artifactId) throws IOException {
+        var artifact = conversionService.savedRevision(datasetId,artifactId)
+            .orElseThrow(() -> new IllegalArgumentException("Teaching artifact was not found"));
+        String viewerId = "";
+        var delivery = viewerPairingService.deliveryForArtifact(artifactId);
+        if (delivery.isPresent()) {
+            var job = delivery.get();
+            if (java.util.Set.of(org.pathlab.forge.viewer.ViewerDeliveryState.IMAGE_READY,
+                org.pathlab.forge.viewer.ViewerDeliveryState.SYNCING_RESULTS,
+                org.pathlab.forge.viewer.ViewerDeliveryState.COMPLETE).contains(job.state())
+                && job.artifactSha256().equals(artifact.packageSha256()) && !job.remoteSlideId().isBlank()) viewerId = job.remoteSlideId();
+        }
+        if (!referenceId.startsWith("local:") && !referenceId.equals(viewerId))
+            throw new IllegalStateException("Deliver this exact Teaching package into the current Viewer connection before binding its slide identity");
+        var binding = org.pathlab.forge.study.TeachingSlideAssociation.fromArtifact(referenceId,viewerId,artifact);
+        binding.validate(artifact);
+        return studyService.associateTeachingSlide(draftId,revision,referenceId,binding);
+    }
+
+    private void validateTeachingAssociations(String id) throws IOException {
+        var draft = studyService.getDraft(id);
+        for (var slide : draft.definition().path("slides")) {
+            var binding = studyService.teachingAssociation(id,slide.path("viewerSlideId").asText());
+            var artifact = conversionService.savedRevision(binding.datasetId(),binding.artifactRevision())
+                .orElseThrow(() -> new IllegalStateException("The associated teaching artifact is missing"));
+            binding.validate(artifact);
+        }
+    }
+
+    private void teachingPreviewResource(HttpExchange exchange, String path) throws IOException {
+        if (!requireAuthenticated(exchange)) return;
+        var remainder = path.substring("/api/datasets/".length());
+        var artifactAt = remainder.indexOf("/artifacts/");
+        var previewAt = remainder.indexOf("/teaching-preview/");
+        try {
+            var artifact = conversionService.savedRevision(remainder.substring(0,artifactAt),
+                remainder.substring(artifactAt+"/artifacts/".length(),previewAt))
+                .orElseThrow(() -> new IllegalArgumentException("Teaching artifact was not found"));
+            var relative = remainder.substring(previewAt+"/teaching-preview/".length());
+            var bytes = org.pathlab.forge.study.TeachingSlideAssociation.readPreview(artifact,relative);
+            // Verify immutable package/index even for a conditional request; loose tiles never supply faculty pixels.
+            if (immutableNotModified(exchange,artifact.packageSha256()+"|"+relative)) return;
+            respond(exchange,200,relative.endsWith(".dzi") ? "application/xml; charset=utf-8" : "image/jpeg",bytes);
+        } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
+            respond(exchange,409,"application/json","{\"error\":\"teaching_preview_unavailable\",\"detail\":"+json(failure.getMessage())+"}");
         }
     }
 

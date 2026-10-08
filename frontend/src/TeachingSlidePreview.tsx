@@ -1,6 +1,6 @@
 import OpenSeadragon from 'openseadragon'
 import { useEffect, useRef, useState } from 'react'
-import { artifactDziUrl } from './api'
+import { teachingPreviewUrl } from './api'
 import { PREVIEW_IMAGE_LOADER_LIMIT, PREVIEW_MAX_TILE_CACHE } from './viewerConfig'
 import type { TeachingAssociation, TeachingPixels } from './teachingAssociations'
 
@@ -19,7 +19,7 @@ export function TeachingSlidePreview({ association, slideId, previewChecksum, on
     setLoaded(false); setError(''); callbacks.current.onPixelsLoaded(null)
     if (!element.current || !previewChecksum || ![association.referenceId, association.viewerSlideId].includes(slideId)) return
     let disposed = false, failed = false, tileCount = 0, frame = 0
-    const viewer = OpenSeadragon({ element: element.current, tileSources: artifactDziUrl(association.datasetId, association.artifactRevision),
+    const viewer = OpenSeadragon({ element: element.current, tileSources: teachingPreviewUrl(association.datasetId, association.artifactRevision),
       showNavigationControl: false, imageLoaderLimit: PREVIEW_IMAGE_LOADER_LIMIT, maxImageCacheCount: PREVIEW_MAX_TILE_CACHE,
       loadTilesWithAjax: true, gestureSettingsMouse: { clickToZoom: false }, gestureSettingsTouch: { clickToZoom: false } })
     viewerRef.current = viewer

@@ -10,6 +10,34 @@ import org.pathlab.forge.packageformat.PackageEntryIndex;
 import org.pathlab.forge.study.TeachingSlideAssociation;
 
 final class TeachingSlideAssociationTest {
+    @Test void previewsEntriesFromTheActualPreparedPackageBuilder() throws Exception {
+        var root = Files.createTempDirectory("teaching-built-package");
+        var datasetId = java.util.UUID.randomUUID().toString();
+        var revisionId = java.util.UUID.randomUUID().toString();
+        var directory = Files.createDirectories(root.resolve(datasetId).resolve("artifacts").resolve(revisionId));
+        var derivative = Files.createDirectories(directory.resolve("derivative"));
+        var dzi = "<Image xmlns=\"http://schemas.microsoft.com/deepzoom/2008\" Format=\"jpg\" Overlap=\"1\" TileSize=\"512\"><Size Width=\"1\" Height=\"1\"/></Image>";
+        Files.writeString(derivative.resolve("slide.dzi"), dzi);
+        var tile = Files.createDirectories(derivative.resolve("slide_files/0")).resolve("0_0.jpg");
+        var image = new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        javax.imageio.ImageIO.write(image, "jpg", tile.toFile());
+        javax.imageio.ImageIO.write(image, "jpg", derivative.resolve("thumbnail.jpg").toFile());
+        var packageFile = directory.resolve("slide.plslide");
+        org.pathlab.forge.packageformat.PreparedPackageBuilder.build(derivative, 1, 1,
+                new org.pathlab.forge.packageformat.PackageMetadata(revisionId, "config", "source", 0,
+                        0, 0, 1, 1, 1, 0, 0, "", "actual-staging-ome", "test"), packageFile);
+        var sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(packageFile)));
+        var revision = new ArtifactRevision(revisionId, datasetId, "config", "source", 1, ArtifactRevisionStatus.READY,
+                ArtifactRevisionFormat.PREPARED_DZI_V2, directory.resolve("missing.ome.tif").toString(), derivative.toString(),
+                packageFile.toString(), "", sha, 1, 1, "", 0, 0, "Synthetic", "");
+        ArtifactIntegrityStamp.write(revision);
+        TeachingSlideAssociation.fromArtifact("local:" + datasetId, "", revision).validate(revision);
+        assertEquals(dzi, new String(TeachingSlideAssociation.readPreview(revision, "slide.dzi"), java.nio.charset.StandardCharsets.UTF_8));
+        assertArrayEquals(Files.readAllBytes(tile), TeachingSlideAssociation.readPreview(revision, "slide_files/0/0_0.jpg"));
+        Files.writeString(derivative.resolve("slide.dzi"), "loose content changed");
+        assertEquals(dzi, new String(TeachingSlideAssociation.readPreview(revision, "slide.dzi"), java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     @Test void immutableManifestBindingSurvivesReloadAndRejectsWrongHashOrModifiedPackage() throws Exception {
         var root = Files.createTempDirectory("teaching-binding");
         var datasetId = "ca38d59a-08ce-44a2-aaf2-cb96bd147bdf";
@@ -26,8 +54,8 @@ final class TeachingSlideAssociationTest {
         var packageFile = directory.resolve("slide.plslide"); Files.write(packageFile, payload.toByteArray());
         var indexFile = packageFile.resolveSibling("slide.plslide.index");
         new PackageEntryIndex(Map.of("manifest.json", new PackageEntryIndex.Entry(0, manifest.length),
-                "slide.dzi", new PackageEntryIndex.Entry(manifest.length, dzi.length),
-                "slide_files/0/0_0.jpg", new PackageEntryIndex.Entry(manifest.length + dzi.length, tile.length)))
+                "derivative/slide.dzi", new PackageEntryIndex.Entry(manifest.length, dzi.length),
+                "derivative/slide_files/0/0_0.jpg", new PackageEntryIndex.Entry(manifest.length + dzi.length, tile.length)))
                 .write(packageFile.resolveSibling("slide.plslide.index"));
         var sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload.toByteArray()));
         var revision = new ArtifactRevision(revisionId, datasetId, "config", "source", 1, ArtifactRevisionStatus.READY,
@@ -47,11 +75,11 @@ final class TeachingSlideAssociationTest {
             assertThrows(IllegalArgumentException.class, () -> TeachingSlideAssociation.readPreview(revision, path));
         }
         var originalIndex = Files.readString(indexFile);
-        Files.writeString(indexFile, "slide.dzi|9223372036854775807|32\n");
+        Files.writeString(indexFile, "derivative/slide.dzi|9223372036854775807|32\n");
         assertThrows(IllegalStateException.class, () -> TeachingSlideAssociation.readPreview(revision, "slide.dzi"), "Changed index stamp must fail before reading");
         ArtifactIntegrityStamp.write(revision);
         assertThrows(java.io.IOException.class, () -> TeachingSlideAssociation.readPreview(revision, "slide.dzi"), "Range cannot overflow or escape the package");
-        Files.writeString(indexFile, "slide.dzi|0|33554433\n"); ArtifactIntegrityStamp.write(revision);
+        Files.writeString(indexFile, "derivative/slide.dzi|0|33554433\n"); ArtifactIntegrityStamp.write(revision);
         assertThrows(java.io.IOException.class, () -> TeachingSlideAssociation.readPreview(revision, "slide.dzi"), "Entry allocation is bounded to 32 MiB");
         Files.writeString(indexFile, "x".repeat(513) + "\n"); ArtifactIntegrityStamp.write(revision);
         assertThrows(java.io.IOException.class, () -> TeachingSlideAssociation.readPreview(revision, "slide.dzi"), "A single index line cannot consume unbounded memory");

@@ -69,7 +69,7 @@ public record TeachingSlideAssociation(String referenceId, String viewerSlideId,
                 || !relative.matches("slide\\.dzi|slide_files/\\d{1,10}/\\d{1,10}_\\d{1,10}\\.jpg")) {
             throw new IllegalArgumentException("Invalid teaching preview entry");
         }
-        return readPackageEntry(revision, relative, 32 * 1024 * 1024);
+        return readPackageEntry(revision, "derivative/" + relative, 32 * 1024 * 1024);
     }
 
     private static byte[] readPackageEntry(ArtifactRevision revision, String relative, int maximumBytes) throws IOException {
@@ -84,10 +84,9 @@ public record TeachingSlideAssociation(String referenceId, String viewerSlideId,
                 || !root.getParent().getParent().getFileName().toString().equals(revision.datasetId())) {
             throw new IOException("Teaching payload paths do not belong to this saved artifact");
         }
-        for (var directory : java.util.List.of(root, root.getParent(), root.getParent().getParent())) {
-            if (Files.isSymbolicLink(directory)) throw new IOException("Teaching payload directory cannot be a symbolic link");
-        }
+        org.pathlab.forge.runtime.DataRootLock.requireSafePath(root);
         for (var file : java.util.List.of(packagePath, indexPath, stampPath)) {
+            org.pathlab.forge.runtime.DataRootLock.requireSafePath(file);
             if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Teaching payload component is missing or linked");
         }
         if (Files.size(stampPath) > 64 * 1024 || Files.size(indexPath) > 128L * 1024 * 1024) throw new IOException("Teaching integrity metadata exceeds its bound");

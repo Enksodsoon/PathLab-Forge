@@ -1,6 +1,7 @@
 import type { StudyDraftRecord } from './StudyAuthoring'
 import type { DeterministicRun, DeterministicRequest, DeterministicReview } from './DeterministicTools'
 import type { BatchSummary, BatchReport } from './BatchReports'
+import type { TeachingPixels } from './teachingAssociations'
 import type { StudySlide } from './StudyAuthoring'
 
 export const teachingSlides = async (): Promise<StudySlide[]> => {
@@ -665,7 +666,7 @@ export const duplicateStudyDraft = (id: string, name: string, nextVersion: boole
 export const studyHistory = (id: string) => request<StudyDraftRecord[]>(`${studyPath(id)}/history`)
 export const recoverStudyDraft = (id: string, historicalRevision: number, revision: number) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/recover`, { historicalRevision, revision })
 export const previewStudyDraft = (id: string, revision: number) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/preview`, { revision })
-export const reviewStudyTask = (id: string, revision: number, checksum: string, taskId: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/review`, { revision, checksum, taskId })
+export const reviewStudyTask = (id: string, revision: number, checksum: string, taskId: string, pixels: TeachingPixels) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/review`, { revision, checksum, taskId, pixels })
 export const approveStudyDraft = (id: string, revision: number, checksum: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/approve`, { revision, checksum })
 export const importStudyDraft = (format: 'json' | 'csv', text: string) => studyWrite<StudyDraftRecord>('/api/study/import', { format, text })
 export const importStudyQuestions = (id: string, revision: number, format: string, text: string, slideId: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/questions`, { revision, format, text, slideId })
@@ -676,3 +677,6 @@ export const exportStudy = (draftId: string, format: 'json' | 'csv' | 'approved'
 export const cancelViewerOfflineDownload = (id: string) => request<void>(`/api/viewer/slides/${encodeURIComponent(id)}/offline/cancel`, { method: 'POST' })
 
 export const uploadTeachingArtifact = (id: string) => request<ViewerUpload>(`/api/datasets/${encodeURIComponent(id)}/teaching-upload`, { method: 'POST' })
+
+export const associateTeachingSlide = (id: string, revision: number, referenceId: string, datasetId: string, artifactRevision: string) => studyWrite<StudyDraftRecord>(`${studyPath(id)}/associate`, { revision, referenceId, datasetId, artifactRevision })
+export const teachingPreviewUrl = (datasetId: string, artifactRevision: string) => `/api/datasets/${encodeURIComponent(datasetId)}/artifacts/${encodeURIComponent(artifactRevision)}/teaching-preview/slide.dzi`
