@@ -180,6 +180,23 @@ final class DataUpgradeRecoveryTest {
         }
     }
 
+    @Test void sameVersionRestartChecksOrphanWalAfterACompletedReceipt() throws Exception {
+        byte[] wal;
+        try (var connection = database(root.resolve("forge.db")); var lock = DataRootLock.acquire(root)) {
+            assertFalse(connection.isClosed());
+            DataUpgradeRecovery.prepare(ForgePaths.at(root), lock, "1.0.0").orElseThrow();
+            wal = Files.readAllBytes(root.resolve("forge.db-wal"));
+            assertTrue(wal.length > 0);
+        }
+        Files.delete(root.resolve("forge.db"));
+        Files.write(root.resolve("forge.db-wal"), wal);
+        try (var lock = DataRootLock.acquire(root)) {
+            assertThrows(DataUpgradeRecovery.Failure.class, () -> DataUpgradeRecovery.prepare(ForgePaths.at(root), lock, "1.0.0"));
+            assertArrayEquals(wal, Files.readAllBytes(root.resolve("forge.db-wal")));
+            assertFalse(Files.exists(root.resolve("forge.db")));
+        }
+    }
+
     @Test void orphanedWalCannotBeSilentlyReplacedByANewDatabase() throws Exception {
         Files.writeString(root.resolve("forge.db-wal"), "retain interrupted data");
         try (var lock = DataRootLock.acquire(root)) {

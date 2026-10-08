@@ -74,6 +74,9 @@ public final class DataUpgradeRecovery {
                 }
             }
         }
+        // Validate path/sidecar safety on every start, including an unchanged installed version.
+        // Otherwise SQLite may recreate a missing main database over a surviving committed WAL.
+        var databases = databases(root);
         if (version == null) {
             if (!maximum.isEmpty()) throw new Failure(VERSION_REQUIRED, "A versionless development build cannot open installed Forge data", null);
             return Optional.empty();
@@ -85,7 +88,6 @@ public final class DataUpgradeRecovery {
             if (compared == 0) return Optional.empty();
         }
         if (historyCount >= MAX_RECEIPTS) throw new IOException("Forge backup history is full; preserve it before operator maintenance");
-        var databases = databases(root);
         long total = 0;
         for (var database : databases) {
             try (var connection = readOnly(database)) {
