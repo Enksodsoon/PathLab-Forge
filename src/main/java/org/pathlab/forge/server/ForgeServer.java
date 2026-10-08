@@ -133,6 +133,23 @@ public final class ForgeServer implements AutoCloseable {
                 CredentialStore.platformDefault(),
                 new SqliteViewerDeliveryStore(
                         managedRoot.toAbsolutePath().normalize().getParent().resolve("forge.db")));
+        viewerPairingService.setAcceptedAnalysisProvider(revision -> {
+            var dataset = repository.find(revision.datasetId()).orElseThrow(() -> new IOException("Analysis source is unavailable"));
+            if (!dataset.configurationRevision().equals(revision.configurationRevision())
+                    || !dataset.sourceFingerprint().equals(revision.sourceFingerprint())) {
+                throw new IOException("Select and approve the current source/view before delivering its results");
+            }
+            var scope = annotationScope(dataset);
+            var accepted = new java.util.ArrayList<org.pathlab.forge.viewer.PrivateResultsBundleBuilder.AcceptedAnalysis>();
+            for (var run : analysisService.list(dataset.id())) {
+                if (!"SUCCEEDED".equals(run.status()) || run.stale() || run.provenance().series() != scope.series()
+                        || run.provenance().z() != scope.z() || run.provenance().t() != scope.t()
+                        || !run.provenance().viewRevision().equals(scope.viewRevision())) continue;
+                var review = analysisService.review(run.id());
+                if (review.revision() > 0) accepted.add(new org.pathlab.forge.viewer.PrivateResultsBundleBuilder.AcceptedAnalysis(run, review, scope.viewRevision()));
+            }
+            return List.copyOf(accepted);
+        });
         dataRoot = managedRoot.toAbsolutePath().normalize().getParent();
         viewerSyncService = new ViewerSyncService(
                 viewerPairingService, new SqliteViewerSyncStore(dataRoot.resolve("viewer-sync.db")),
@@ -2944,8 +2961,9 @@ public final class ForgeServer implements AutoCloseable {
                 + ",\"finishedAt\":" + job.finishedAt() + "}";
     }
 
-    private static String viewerConnectionJson(ViewerConnection connection) {
+    private String viewerConnectionJson(ViewerConnection connection) throws IOException {
         return "{\"connected\":" + connection.connected()
+                + ",\"connectionRevision\":" + json(viewerPairingService.connectionKey())
                 + ",\"viewerUrl\":" + json(connection.viewerUrl())
                 + ",\"deviceName\":" + json(connection.deviceName())
                 + ",\"conversionMode\":" + json("OME_DYNAMIC_V1")
