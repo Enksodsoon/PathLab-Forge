@@ -60,11 +60,13 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         if (roi.series() < 0 || roi.z() < 0 || roi.t() < 0 || roi.viewRevision().isBlank()) {
             throw new IllegalArgumentException("Analysis ROI must have an exact series/Z/T view scope");
         }
+        requireNativeView(dataset, roi);
         if (!request.tool().equals("registration")) new RoiMask(roi.type(), roi.geometry()).bounds();
         var secondary = new TreeMap<String, String>();
         if (request.tool().equals("registration")) {
             var targetDataset = datasets.find(request.targetDatasetId()).orElseThrow(() -> new IllegalArgumentException("Target dataset was not found"));
             var target = annotation(request.targetDatasetId(), request.targetAnnotationId());
+            requireNativeView(targetDataset, target);
             if (target.series() < 0 || target.z() < 0 || target.t() < 0 || target.viewRevision().isBlank()) throw new IllegalArgumentException("Target must have an exact plane scope");
             ClassicalAnalysis.affine(landmarks(request.sourceLandmarks()), landmarks(request.targetLandmarks()));
             secondary.put("targetDatasetId", request.targetDatasetId()); secondary.put("targetAnnotationId", target.id());
@@ -110,7 +112,62 @@ public final class DeterministicAnalysisService implements AutoCloseable {
         }
         return get(id);
     }
-    public String exportJson(String id) throws IOException { return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(get(id)); }
+    public String exportJson(String id) throws IOException { return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("run",get(id), "review", review(id))); }
+    public int activeCount() { return active.size(); }
+
+    public AnalysisReview review(String id) throws IOException {
+        var saved = store.review(id);
+        if (saved.isPresent()) return saved.get();
+        var run = get(id);
+        var rawObjects = run.outputs().getOrDefault("cores", run.outputs().getOrDefault("objects", List.of()));
+        List<PathObject> objects = mapper.convertValue(rawObjects, mapper.getTypeFactory().constructCollectionType(List.class, PathObject.class));
+        var vector = run.outputs().getOrDefault("opticalDensityVector", List.of());
+        List<Double> stain = mapper.convertValue(vector, mapper.getTypeFactory().constructCollectionType(List.class, Double.class));
+        return new AnalysisReview(id, 0, objects, stain);
+    }
+
+    public synchronized AnalysisReview saveReview(String id, AnalysisReview requested) throws IOException {
+        var run = get(id);
+        if (!run.status().equals("SUCCEEDED") || run.stale()) throw new IllegalStateException("Only current completed runs can be reviewed");
+        var previous = review(id);
+        if (!id.equals(requested.runId()) || requested.revision() != previous.revision()) throw new IllegalStateException("Analysis review revision changed");
+        if (requested.objects().size() != previous.objects().size()) throw new IllegalArgumentException("Reject a candidate using accepted=false; preserve its provenance");
+        var ids = new java.util.HashSet<String>();
+        var corrected = new java.util.ArrayList<PathObject>();
+        var bounds = requested.objects().isEmpty() ? null : new RoiMask(run.provenance().annotationType(), run.provenance().annotationGeometry()).bounds();
+        for (var object : requested.objects()) {
+            var original = previous.objects().stream().filter(item -> item.id().equals(object.id())).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown derived object"));
+            if (!ids.add(object.id()) || !object.sourceRunId().equals(id) || !object.datasetId().equals(run.datasetId())
+                    || !object.parentId().equals(run.annotationId()) || object.kind() != original.kind()
+                    || object.classification().length() > 120 || object.revision() != original.revision()) throw new IllegalArgumentException("Derived object identity/revision is invalid");
+            var type = object.kind() == PathObject.Kind.TMA_CORE ? "rectangle" : "point";
+            GeometryMeasurements.validate(type, object.geometry());
+            for (var point : object.geometry().split(";")) {
+                var coordinates = point.split(","); var x = Double.parseDouble(coordinates[0]); var y = Double.parseDouble(coordinates[1]);
+                if (x < bounds.x() || y < bounds.y() || x > (long) bounds.x() + bounds.width() || y > (long) bounds.y() + bounds.height()) {
+                    throw new IllegalArgumentException("Reviewed objects must remain within the run ROI; redraw the ROI to extend coverage");
+                }
+            }
+            var properties = new TreeMap<>(original.properties());
+            for (var flag : List.of("missing", "accepted", "reviewRequired")) {
+                var value = object.properties().get(flag);
+                if (value != null && !Set.of("true", "false").contains(value)) throw new IllegalArgumentException("Review flags must be true or false");
+                if (value != null) properties.put(flag, value);
+            }
+            corrected.add(new PathObject(object.id(), object.datasetId(), object.parentId(), object.kind(), object.geometry(), object.classification(), id, properties, original.revision() + 1));
+        }
+        var stain = requested.stainVector();
+        if (!stain.isEmpty()) {
+            if (!run.tool().equals("stain_vector") || stain.size() != 3 || stain.stream().anyMatch(value -> value == null || !Double.isFinite(value) || value < 0)) throw new IllegalArgumentException("Manual OD vector must contain three finite nonnegative components");
+            var length = Math.sqrt(stain.stream().mapToDouble(value -> value * value).sum());
+            if (!Double.isFinite(length) || length <= 0) throw new IllegalArgumentException("Manual OD vector has zero/invalid length");
+            stain = stain.stream().map(value -> value / length).toList();
+        }
+        var saved = new AnalysisReview(id, previous.revision() + 1, corrected, stain);
+        store.saveReview(saved, previous.revision());
+        return saved;
+    }
 
     private void execute(AnalysisRun initial, Request request) {
         var run = initial;
@@ -140,6 +197,7 @@ public final class DeterministicAnalysisService implements AutoCloseable {
                 outputs = process(request, region, pixels, run.id());
             }
             checkCancelled();
+            if (!toolEnabled.test(run.tool())) throw new IllegalStateException("Tool pack was disabled during analysis; outputs were not accepted");
             if (stale(run)) throw new IllegalStateException("Source or ROI changed during analysis; rerun on current inputs");
             store.update(changed(run, "SUCCEEDED", "Research-only local result; inspect before use", outputs));
         } catch (InterruptedException | java.util.concurrent.CancellationException error) {
@@ -251,6 +309,11 @@ public final class DeterministicAnalysisService implements AutoCloseable {
                 || !roi.get().geometry().equals(run.provenance().annotationGeometry())
                 || !roi.get().viewRevision().equals(run.provenance().viewRevision())
                 || !dataset.get().runtimeFingerprint().equals(run.provenance().runtimeFingerprint());
+        if (dataset.isPresent()) changed |= !org.pathlab.forge.library.DatasetSourceInventory.matchesSnapshot(
+                Path.of(dataset.get().sourcePath()), dataset.get().sourceInventory());
+        if (dataset.isPresent() && roi.isPresent()) {
+            try { requireNativeView(dataset.get(), roi.get()); } catch (IllegalArgumentException | IOException error) { changed = true; }
+        }
         var target = run.provenance().secondaryInputs();
         if (!target.isEmpty()) {
             var targetDataset = datasets.find(target.get("targetDatasetId"));
@@ -259,8 +322,29 @@ public final class DeterministicAnalysisService implements AutoCloseable {
                     || !targetDataset.get().sourceFingerprint().equals(target.get("targetSourceFingerprint"))
                     || !hash(targetDataset.get().sourceInventory()).equals(target.get("targetInventorySha256"))
                     || targetRoi.get().revision() != Long.parseLong(target.get("targetAnnotationRevision"));
+            if (targetDataset.isPresent()) changed |= !org.pathlab.forge.library.DatasetSourceInventory.matchesSnapshot(
+                    Path.of(targetDataset.get().sourcePath()), targetDataset.get().sourceInventory());
+            if (targetDataset.isPresent() && targetRoi.isPresent()) {
+                try { requireNativeView(targetDataset.get(), targetRoi.get()); } catch (IllegalArgumentException | IOException error) { changed = true; }
+            }
         }
         return changed;
+    }
+
+    private void requireNativeView(org.pathlab.forge.library.LocalDataset dataset, AnnotationRecord roi) throws IOException {
+        if (dataset.viewDefinitionJson().isBlank()) {
+            if (roi.series() != dataset.selectedSeries() || roi.z() != 0 || roi.t() != 0
+                    || !roi.viewRevision().equals(dataset.configurationRevision())) {
+                throw new IllegalArgumentException("ROI does not match the current native RGB view");
+            }
+            return;
+        }
+        var view = mapper.readValue(dataset.viewDefinitionJson(), org.pathlab.forge.reader.ViewDefinition.class);
+        if (view.profile() != org.pathlab.forge.reader.RenderProfile.PATHOLOGY_STANDARD || view.z().projected() || view.t().projected()
+                || view.series() != roi.series() || view.z().start() != roi.z() || view.t().start() != roi.t()
+                || !view.revision().equals(roi.viewRevision())) {
+            throw new IllegalArgumentException("Analysis requires the exact native RGB slice, not a projection or display composite");
+        }
     }
     private static AnalysisRun changed(AnalysisRun run, String status, String detail, Map<String, Object> outputs) {
         return new AnalysisRun(run.id(), run.datasetId(), run.annotationId(), run.tool(), status, run.createdAt(),

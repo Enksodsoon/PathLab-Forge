@@ -21,6 +21,7 @@ public final class AnalysisRunStore {
         try (var connection = DriverManager.getConnection(url); var statement = connection.createStatement()) {
             statement.execute("PRAGMA busy_timeout=5000");
             statement.execute("CREATE TABLE IF NOT EXISTS analysis_runs (id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, status TEXT NOT NULL, record_json TEXT NOT NULL)");
+            statement.execute("CREATE TABLE IF NOT EXISTS analysis_reviews (run_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, record_json TEXT NOT NULL)");
         } catch (SQLException error) { throw new IOException("Analysis store could not be opened", error); }
         for (var run : list("")) {
             if (!TERMINAL.contains(run.status())) update(new AnalysisRun(
@@ -70,5 +71,33 @@ public final class AnalysisRunStore {
             }
             return List.copyOf(result);
         } catch (SQLException error) { throw new IOException("Analysis runs could not be listed", error); }
+    }
+
+    public synchronized java.util.Optional<AnalysisReview> review(String runId) throws IOException {
+        try (var connection = DriverManager.getConnection(url);
+                var statement = connection.prepareStatement("SELECT record_json FROM analysis_reviews WHERE run_id=?")) {
+            statement.setString(1, runId);
+            try (var rows = statement.executeQuery()) {
+                return rows.next() ? java.util.Optional.of(mapper.readValue(rows.getString(1), AnalysisReview.class)) : java.util.Optional.empty();
+            }
+        } catch (SQLException error) { throw new IOException("Analysis review could not be read", error); }
+    }
+
+    public synchronized void saveReview(AnalysisReview review, long expectedRevision) throws IOException {
+        try (var connection = DriverManager.getConnection(url)) {
+            if (expectedRevision == 0) {
+                try (var statement = connection.prepareStatement("INSERT OR IGNORE INTO analysis_reviews VALUES (?,?,?)")) {
+                    statement.setString(1, review.runId()); statement.setLong(2, review.revision());
+                    statement.setString(3, mapper.writeValueAsString(review));
+                    if (statement.executeUpdate() != 1) throw new IllegalStateException("Analysis review revision changed");
+                }
+            } else {
+                try (var statement = connection.prepareStatement("UPDATE analysis_reviews SET revision=?,record_json=? WHERE run_id=? AND revision=?")) {
+                    statement.setLong(1, review.revision()); statement.setString(2, mapper.writeValueAsString(review));
+                    statement.setString(3, review.runId()); statement.setLong(4, expectedRevision);
+                    if (statement.executeUpdate() != 1) throw new IllegalStateException("Analysis review revision changed");
+                }
+            }
+        } catch (SQLException error) { throw new IOException("Analysis review could not be saved", error); }
     }
 }
