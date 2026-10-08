@@ -3,6 +3,8 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import type { AnnotationRecord } from './api'
+import { AnalysisMaskOverlay, type MaskChannel } from './AnalysisMaskOverlay'
+import type { DeterministicRun } from './DeterministicTools'
 import { geometryText, parseGeometry, shapePath, validGeometry, type AnnotationPoint } from './annotationGeometry'
 import {
   cropFromPoints,
@@ -44,6 +46,7 @@ export const SlideViewer = memo(function SlideViewer({
   onCropChange,
   annotations = [],
   analysisOverlays = [],
+  analysisMask,
   sourceWidth = 1,
   sourceHeight = 1,
   cropX = 0,
@@ -62,6 +65,7 @@ export const SlideViewer = memo(function SlideViewer({
   onCropChange?: (box: CropBox) => void
   annotations?: AnnotationRecord[]
   analysisOverlays?: AnalysisOverlayShape[]
+  analysisMask?: { run: DeterministicRun; channel: MaskChannel }
   sourceWidth?: number
   sourceHeight?: number
   cropX?: number
@@ -574,6 +578,7 @@ export const SlideViewer = memo(function SlideViewer({
               {...common} onPointerDown={(event) => beginEdit(event, annotation, index)} />) : null}
           </g>
         })}
+        {analysisMask ? <AnalysisMaskOverlay outputs={analysisMask.run.outputs} provenance={analysisMask.run.provenance} channel={analysisMask.channel} project={project} /> : null}
         {analysisOverlays.map((shape) => {
           const points = parseGeometry(shape.geometry)
           if (!validGeometry(shape.type, points)) return null

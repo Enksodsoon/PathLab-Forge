@@ -404,7 +404,7 @@ public final class ForgeServer implements AutoCloseable {
             } else if (path.equals("/api/study/drafts") || path.equals("/api/study/import") || path.equals("/api/study/viewer/slides")
                     || path.matches("/api/study/drafts/[0-9a-fA-F-]{36}(/duplicate|/history|/recover|/preview|/review|/approve|/questions|/export|/publish)?")) {
                 studyAuthoring(exchange, path);
-            } else if (path.equals("/api/analysis/runs") || path.matches("/api/analysis/runs/[0-9a-fA-F-]{36}(/cancel|/export|/review)?")) {
+            } else if (path.equals("/api/analysis/runs") || path.matches("/api/analysis/runs/[0-9a-fA-F-]{36}(/cancel|/export|/review|/cores|/core-analysis)?")) {
                 analysisRuns(exchange, path);
             } else if ("/api/analysis/jobs".equals(path)
                     && "POST".equals(exchange.getRequestMethod())) {
@@ -847,7 +847,9 @@ public final class ForgeServer implements AutoCloseable {
             Object result;
             var status = 200;
             if (parts.length == 4 && "GET".equals(method)) {
-                result = analysisService.list(queryValue(exchange, "datasetId", ""));
+                var page = analysisService.page(queryValue(exchange, "datasetId", ""),
+                        Integer.parseInt(queryValue(exchange, "limit", "100")), Integer.parseInt(queryValue(exchange, "offset", "0")));
+                result = "true".equals(queryValue(exchange, "page", "false")) ? page : page.runs();
             } else if (parts.length == 4 && "POST".equals(method)) {
                 result = analysisService.submit(mapper.readValue(boundedAnalysisBody(exchange), DeterministicAnalysisService.Request.class));
                 status = 202;
@@ -859,6 +861,13 @@ public final class ForgeServer implements AutoCloseable {
                 result = analysisService.review(parts[4]);
             } else if (parts.length == 6 && "review".equals(parts[5]) && "PUT".equals(method)) {
                 result = analysisService.saveReview(parts[4], mapper.readValue(boundedAnalysisBody(exchange), AnalysisReview.class));
+            } else if (parts.length == 6 && "cores".equals(parts[5]) && "POST".equals(method)) {
+                var body = mapper.readTree(boundedAnalysisBody(exchange));
+                result = analysisService.persistReviewedTma(parts[4], body.path("reviewRevision").asLong());
+            } else if (parts.length == 6 && "core-analysis".equals(parts[5]) && "POST".equals(method)) {
+                var body = mapper.readTree(boundedAnalysisBody(exchange));
+                var configuration = mapper.convertValue(body.path("configuration"), new com.fasterxml.jackson.core.type.TypeReference<java.util.Map<String, Double>>() {});
+                result = analysisService.submitTmaCore(parts[4], body.path("reviewRevision").asLong(), body.path("coreId").asText(), body.path("tool").asText(), configuration); status = 202;
             } else if (parts.length == 6 && "export".equals(parts[5]) && "GET".equals(method)) {
                 exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"analysis-" + parts[4] + ".json\"");
                 respond(exchange, 200, "application/json", analysisService.exportJson(parts[4]));
@@ -2607,8 +2616,6 @@ public final class ForgeServer implements AutoCloseable {
     private List<AnnotationRecord> annotationsForCurrentView(LocalDataset dataset)
             throws IOException {
         var scope = annotationScope(dataset);
-        annotationRepository.scopeLegacy(dataset.id(), scope.series(), scope.z(), scope.t(),
-                scope.viewRevision());
         return annotationRepository.list(dataset.id()).stream()
                 .filter(annotation -> annotation.series() == scope.series()
                         && annotation.z() == scope.z()

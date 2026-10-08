@@ -57,6 +57,7 @@ import { SlideViewer, type AnalysisOverlayShape } from './SlideViewer'
 import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
 import { StudyAuthoring, type StudyDraftRecord, type StudySlide } from './StudyAuthoring'
 import { BatchReports, type BatchSummary } from './BatchReports'
+import type { MaskChannel } from './AnalysisMaskOverlay'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -95,6 +96,8 @@ export function App() {
   const [activeTool, setActiveTool] = useState('pan')
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
   const [analysisRuns, setAnalysisRuns] = useState<DeterministicRun[]>([])
+  const [analysisHasMore, setAnalysisHasMore] = useState(false)
+  const [analysisMask, setAnalysisMask] = useState<{ context: string; runId: string; channel: MaskChannel }>()
   const [exportRunId, setExportRunId] = useState('')
   const [analysisOverlay, setAnalysisOverlay] = useState<{ context: string; runId: string; shapes: AnalysisOverlayShape[] } | null>(null)
   const [overlayPage, setOverlayPage] = useState(0)
@@ -197,22 +200,30 @@ export function App() {
     ? annotationsByDataset[selected.id] ?? NO_ANNOTATIONS
     : NO_ANNOTATIONS
   const overlayRoi = selectedAnnotations.find((annotation) => annotation.id === overlayRun?.annotationId)
-  const visibleAnalysisOverlays = analysisOverlay?.context === analysisContext.current && overlayRun?.status === 'SUCCEEDED'
+  const currentGeometryView = !viewingRevision || viewingRevision.configurationRevision === selected?.configurationRevision
+  const visibleAnalysisOverlays = currentGeometryView && analysisOverlay?.context === analysisContext.current && overlayRun?.status === 'SUCCEEDED'
     && !overlayRun.stale && overlayRoi?.revision === overlayRun.provenance.annotationRevision
     && overlayRoi.geometry === overlayRun.provenance.annotationGeometry ? analysisOverlay.shapes : []
+  const maskRun = analysisRuns.find((run) => run.id === analysisMask?.runId)
+  const maskRoi = selectedAnnotations.find((annotation) => annotation.id === maskRun?.annotationId)
+  const visibleAnalysisMask = currentGeometryView && analysisMask?.context === analysisContext.current && maskRun?.status === 'SUCCEEDED' && !maskRun.stale
+    && maskRun.datasetId === selected?.id && maskRun.provenance.sourceFingerprint === selected.sourceFingerprint
+    && maskRun.provenance.series === selected.selectedSeries && maskRoi?.series === maskRun.provenance.series
+    && maskRoi.z === maskRun.provenance.z && maskRoi.t === maskRun.provenance.t && maskRoi.viewRevision === maskRun.provenance.viewRevision
+    && maskRoi.revision === maskRun.provenance.annotationRevision && maskRoi.geometry === maskRun.provenance.annotationGeometry
+    ? { run: maskRun, channel: analysisMask.channel } : undefined
   const showAnalysisObjects = async (requested: DeterministicRun) => {
     const context = analysisContext.current
     try {
-      const [runs, review] = await Promise.all([api.analysisRuns(requested.datasetId), api.analysisReview(requested.id)])
+      const [run, review] = await Promise.all([api.analysisRun(requested.id), api.analysisReview(requested.id)])
       if (analysisContext.current !== context) return
-      const run = runs.find((item) => item.id === requested.id)
       if (!run || run.status !== 'SUCCEEDED' || run.stale) throw new Error('Result changed; rerun against the current source and ROI.')
       const shapes = review.objects.map((object) => ({
         id: `${run.id}:${object.id}`, type: object.kind === 'TMA_CORE' ? 'rectangle' : 'point',
         geometry: object.geometry, label: `${object.classification || object.kind} ${object.properties.missing === 'true' ? '(missing)' : object.properties.accepted === 'false' ? '(rejected)' : '(candidate)'}`,
         color: object.properties.missing === 'true' || object.properties.accepted === 'false' ? '#d75667' : '#39c7a3',
       }))
-      setAnalysisRuns(runs); setAnalysisOverlay({ context, runId: run.id, shapes }); setOverlayPage(0); setActiveTool('pan')
+      setAnalysisRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]); setAnalysisOverlay({ context, runId: run.id, shapes }); setOverlayPage(0); setActiveTool('pan')
       setNotice(`Inspecting ${shapes.length} saved objects on the slide. Review corrections in Tools; exports retain every object.`)
     } catch (cause) { if (analysisContext.current === context) setError(message(cause)) }
   }
@@ -347,13 +358,14 @@ export function App() {
   }
 
   const refreshAnalysis = useCallback(async () => {
-    if (selected?.id) setAnalysisRuns(await api.analysisRuns(selected.id))
+    const context = analysisContext.current
+    if (selected?.id) { const runs = await api.analysisRuns(selected.id); if (context === analysisContext.current) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100) } }
   }, [selected?.id])
   useEffect(() => {
     let cancelled = false
     setAnalysisRuns([])
     if (selected?.id) void api.analysisRuns(selected.id).then((runs) => {
-      if (!cancelled) setAnalysisRuns(runs)
+      if (!cancelled) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100) }
     }).catch((error) => { if (!cancelled) setError(message(error)) })
     return () => { cancelled = true }
   }, [selected?.id])
@@ -946,9 +958,10 @@ export function App() {
               onCropChange={setCropDraft}
               annotations={selectedAnnotations}
               analysisOverlays={visibleAnalysisOverlays}
+              analysisMask={visibleAnalysisMask}
               overlayPage={overlayPage}
               onOverlayPage={setOverlayPage}
-              onClearAnalysis={() => setAnalysisOverlay(null)}
+              onClearAnalysis={() => { setAnalysisOverlay(null); setAnalysisMask(undefined) }}
               activeTool={activeTool}
               viewer={viewer}
               onViewer={setViewer}
@@ -1023,12 +1036,32 @@ export function App() {
                   return saved
                 }}
                 onShowObjects={(run) => void showAnalysisObjects(run)}
+                onShowMask={(requested, channel) => {
+                  const context = analysisContext.current
+                  void api.analysisRun(requested.id).then((run) => {
+                    if (context !== analysisContext.current) return
+                    if (run.status !== 'SUCCEEDED' || run.stale) throw new Error('Mask result changed; rerun against the current ROI')
+                    setAnalysisRuns((current) => [run, ...current.filter((item) => item.id !== run.id)])
+                    setAnalysisMask({ context, runId: run.id, channel }); setActiveTool('pan')
+                  }).catch((cause) => { if (context === analysisContext.current) setError(message(cause)) })
+                }}
+                onPersistTma={async (id, revision) => {
+                  const context = analysisContext.current; const saved = await api.persistTma(id, revision)
+                  if (context === analysisContext.current) setAnnotationsByDataset((current) => ({ ...current, [selected.id]: [...(current[selected.id] || []).filter((item) => !saved.some((core) => core.id === item.id)), ...saved] }))
+                  return saved
+                }}
+                onAnalyzeTmaCore={async (id, revision, coreId, tool, configuration) => { const run = await api.analyzeTmaCore(id, revision, coreId, tool, configuration); await refreshAnalysis(); return run }}
                 onLoadTargetAnnotations={api.annotations}
                 onExport={(id) => {
                   if (window.forgeDesktop) setExportRunId(id)
                   else window.location.href = `/api/analysis/runs/${encodeURIComponent(id)}/export`
                 }}
-              />{exportRunId && window.forgeDesktop ? <NativeExport datasetId={selected.id} runId={exportRunId} /> : null}</> : null}
+              />{analysisHasMore ? <button type="button" onClick={() => {
+                const context = analysisContext.current
+                void api.analysisHistory(selected.id, analysisRuns.length).then((page) => {
+                  if (context === analysisContext.current) { setAnalysisRuns((current) => [...current, ...page.runs.filter((run) => !current.some((item) => item.id === run.id))]); setAnalysisHasMore(page.hasMore) }
+                }).catch((cause) => { if (context === analysisContext.current) setError(message(cause)) })
+              }}>Load older analysis runs</button> : null}{exportRunId && window.forgeDesktop ? <NativeExport datasetId={selected.id} runId={exportRunId} /> : null}</> : null}
             />
           )}
           queue={(
@@ -1977,6 +2010,7 @@ function ViewerStage({
   onCropChange,
   annotations,
   analysisOverlays,
+  analysisMask,
   overlayPage,
   onOverlayPage,
   onClearAnalysis,
@@ -1998,6 +2032,7 @@ function ViewerStage({
   onCropChange: (box: CropBox) => void
   annotations: AnnotationRecord[]
   analysisOverlays: AnalysisOverlayShape[]
+  analysisMask?: { run: DeterministicRun; channel: MaskChannel }
   overlayPage: number
   onOverlayPage: (page: number) => void
   onClearAnalysis: () => void
@@ -2044,7 +2079,8 @@ function ViewerStage({
           <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
           <span>{dataset ? `${datasetFormatLabel(dataset.format)} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
-        {analysisOverlays.length ? <button type="button" onClick={onClearAnalysis}>Clear analysis overlay</button> : null}
+        {analysisOverlays.length || analysisMask ? <button type="button" onClick={onClearAnalysis}>Clear analysis overlay</button> : null}
+        {analysisMask ? <span role="status">{analysisMask.channel} threshold mask · source ROI · stride {String(analysisMask.run.outputs.maskSampleStride || 1)}{Number(analysisMask.run.outputs.maskSampleStride || 1) > 1 ? ' sampled lattice' : ''}</span> : null}
         {analysisOverlays.length > 2000 ? <span aria-label="Analysis overlay pages">
           <button type="button" disabled={overlayPage === 0} onClick={() => onOverlayPage(overlayPage - 1)}>Previous objects</button>
           <span>{overlayPage * 2000 + 1}–{Math.min((overlayPage + 1) * 2000, analysisOverlays.length)} of {analysisOverlays.length}</span>
@@ -2075,6 +2111,7 @@ function ViewerStage({
           onCropChange={onCropChange}
           annotations={annotations}
           analysisOverlays={analysisOverlays.slice(overlayPage * 2000, (overlayPage + 1) * 2000)}
+          analysisMask={analysisMask}
           sourceWidth={dataset?.width || 1}
           sourceHeight={dataset?.height || 1}
           cropX={revision && ['READY', 'APPROVED'].includes(revision.status)

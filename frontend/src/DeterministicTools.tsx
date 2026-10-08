@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AnnotationRecord } from './api'
+import { TmaCoreActions } from './TmaCoreActions'
+import type { MaskChannel } from './AnalysisMaskOverlay'
 
 export interface DeterministicRun {
   id: string; datasetId: string; annotationId: string; tool: string; status: string
@@ -38,6 +40,7 @@ const parameters: Record<string, Array<[string, string, number, number, number, 
 export function DeterministicTools({ datasetId, annotations, runs, enabledTools, selectedAnnotationId,
   onSubmit, onCancel, onRefresh, onExport, onShowObjects,
   onLoadReview, onSaveReview, datasets = [], onLoadTargetAnnotations,
+  onShowMask, onPersistTma, onAnalyzeTmaCore,
 }: {
   datasetId: string; annotations: AnnotationRecord[]; runs: DeterministicRun[]; enabledTools: string[]
   selectedAnnotationId?: string
@@ -50,6 +53,9 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
   onSaveReview?: (id: string, review: DeterministicReview) => Promise<DeterministicReview>
   datasets?: Array<{ id: string; displayName: string }>
   onLoadTargetAnnotations?: (datasetId: string) => Promise<AnnotationRecord[]>
+  onShowMask?: (run: DeterministicRun, channel: MaskChannel) => void
+  onPersistTma?: (id: string, reviewRevision: number) => Promise<AnnotationRecord[]>
+  onAnalyzeTmaCore?: (id: string, reviewRevision: number, coreId: string, tool: string, configuration: Record<string, number>) => Promise<unknown>
 }) {
   const [tool, setTool] = useState('he')
   const [roi, setRoi] = useState(selectedAnnotationId || '')
@@ -151,13 +157,20 @@ export function DeterministicTools({ datasetId, annotations, runs, enabledTools,
       </div> : null}
       {typeof selectedRun.outputs.registrationOverlayDataUrl === 'string' ? <label>Target overlay opacity <input type="range" min="0" max="1" step="0.05" value={overlayOpacity} onChange={(event) => setOverlayOpacity(event.target.valueAsNumber)} /></label> : null}
       {typeof selectedRun.outputs.maskBitsetBase64 === 'string' ? <TissueMaskPreview outputs={selectedRun.outputs} /> : null}
+      {onShowMask && selectedRun.status === 'SUCCEEDED' && !selectedRun.stale ? <div aria-label="Inspect masks on slide">
+        {(['tissue', 'hematoxylin', 'eosin'] as MaskChannel[]).filter((channel) => typeof selectedRun.outputs[channel === 'tissue' ? 'maskBitsetBase64' : `${channel}MaskBitsetBase64`] === 'string')
+          .map((channel) => <button type="button" key={channel} onClick={() => onShowMask(selectedRun, channel)}>Inspect {channel} mask on slide</button>)}
+        {Number(selectedRun.outputs.maskSampleStride || 1) > 1 ? <p>H&E masks show sampled pixels at stride {String(selectedRun.outputs.maskSampleStride)}; unsampled pixels are not exact segmentation.</p> : null}
+      </div> : null}
       <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap' }}>{JSON.stringify({ configuration: selectedRun.configuration,
-        outputs: Object.fromEntries(Object.entries(selectedRun.outputs).filter(([key]) => !['previewDataUrl', 'registrationOverlayDataUrl', 'maskBitsetBase64'].includes(key))
+        outputs: Object.fromEntries(Object.entries(selectedRun.outputs).filter(([key]) => !['previewDataUrl', 'registrationOverlayDataUrl', 'maskBitsetBase64', 'hematoxylinMaskBitsetBase64', 'eosinMaskBitsetBase64'].includes(key))
           .map(([key, value]) => [key, Array.isArray(value) && value.length > 20 ? { count: value.length, first20: value.slice(0, 20) } : value])) }, null, 2)}</pre>
       <button type="button" onClick={() => onExport(selectedRun.id)}>Export result and provenance</button>
       {onShowObjects && selectedRun.status === 'SUCCEEDED' && !selectedRun.stale && (selectedRun.outputs.objects || selectedRun.outputs.cores) ? <button type="button" onClick={() => onShowObjects(selectedRun)}>Inspect objects in viewer</button> : null}
       {onLoadReview && onSaveReview && selectedRun.status === 'SUCCEEDED' && ['tma', 'nucleus_candidates', 'stain_vector'].includes(selectedRun.tool)
         ? <ReviewEditor key={selectedRun.id} run={selectedRun} onLoad={onLoadReview} onSave={onSaveReview} /> : null}
+      {selectedRun.tool === 'tma' && onLoadReview && onPersistTma && onAnalyzeTmaCore ? <TmaCoreActions key={`cores:${selectedRun.id}`} run={selectedRun} enabledTools={enabledTools} toolLabels={toolLabels} parameters={parameters}
+        onLoadReview={onLoadReview} onPersist={onPersistTma} onSubmit={onAnalyzeTmaCore} /> : null}
     </article> : <p>No saved analysis runs for this dataset.</p>}
   </section>
 }

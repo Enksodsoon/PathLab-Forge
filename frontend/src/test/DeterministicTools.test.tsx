@@ -57,3 +57,13 @@ it('persists a corrected TMA label/missing flag with the review revision and exp
   fireEvent.click(screen.getByRole('button', { name: 'Export result and provenance' }))
   expect(onExport).toHaveBeenCalledWith('run')
 })
+
+it('offers exact saved H&E mask inspection and labels the sampling limit', () => {
+  const onShowMask = vi.fn()
+  const he = { ...run, tool: 'he', outputs: { hematoxylinMaskBitsetBase64: 'AQ==', maskSampleStride: 4 } }
+  render(<DeterministicTools datasetId="dataset" annotations={annotations} runs={[he]} enabledTools={[]}
+    onSubmit={vi.fn()} onCancel={vi.fn()} onRefresh={vi.fn()} onExport={vi.fn()} onShowMask={onShowMask} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect hematoxylin mask on slide' }))
+  expect(onShowMask).toHaveBeenCalledWith(he, 'hematoxylin')
+  expect(screen.getByText(/unsampled pixels are not exact segmentation/)).toBeVisible()
+})

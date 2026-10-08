@@ -28,6 +28,10 @@ export const exportResult = (kind: 'analysis' | 'measurements', datasetId: strin
   request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ datasetId, runId, kind, destination }) })
 export const analysisRuns = (datasetId: string) => request<DeterministicRun[]>(`/api/analysis/runs?datasetId=${encodeURIComponent(datasetId)}`)
+export const analysisRun = (id: string) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}`)
+export const analysisHistory = (datasetId: string, offset: number) => request<{ runs: DeterministicRun[]; hasMore: boolean; nextOffset: number }>(`/api/analysis/runs?datasetId=${encodeURIComponent(datasetId)}&page=true&limit=100&offset=${offset}`)
+export const persistTma = (id: string, reviewRevision: number) => request<AnnotationRecord[]>(`/api/analysis/runs/${encodeURIComponent(id)}/cores`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewRevision }) })
+export const analyzeTmaCore = (id: string, reviewRevision: number, coreId: string, tool: string, configuration: Record<string, number>) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}/core-analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewRevision, coreId, tool, configuration }) })
 export const submitAnalysis = (value: DeterministicRequest) => request<DeterministicRun>('/api/analysis/runs', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
 export const cancelAnalysis = (id: string) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
@@ -131,6 +135,7 @@ export interface FormatCatalog {
 }
 
 export interface ArtifactRevision {
+  configurationRevision?: string
   id: string
   name?: string
   status: 'CONVERTING' | 'READY' | 'APPROVED' | 'FAILED'
