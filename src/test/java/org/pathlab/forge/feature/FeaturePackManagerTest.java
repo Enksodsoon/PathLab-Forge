@@ -36,8 +36,9 @@ final class FeaturePackManagerTest {
 
     @Test void remainsOfflineAndFailsClosedWithoutSignedContent() throws Exception {
         var manager = new FeaturePackManager(temp);
-        assertEquals(4, manager.list().size());
-        assertEquals("UNAVAILABLE", manager.list().stream().filter(p -> p.id().equals("pretrained-ai")).findFirst().orElseThrow().state());
+        assertEquals(2, manager.list().size());
+        assertEquals(java.util.Set.of("pathology-tools", "classical-analysis"),
+                manager.list().stream().map(FeaturePackDescriptor::id).collect(java.util.stream.Collectors.toSet()));
         assertThrows(IOException.class, () -> manager.install("pathology-tools"));
         assertThrows(IOException.class, () -> manager.uninstall("../outside"));
         var installed = temp.resolve("feature-packs/pathology-tools/1.0.0");

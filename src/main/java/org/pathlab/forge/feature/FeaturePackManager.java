@@ -83,10 +83,6 @@ public final class FeaturePackManager {
         for (var descriptor : installedDescriptors()) known.putIfAbsent(descriptor.id(), descriptor);
         known.putIfAbsent("pathology-tools", unpublished("pathology-tools", "Pathology Tools", "PATHOLOGY"));
         known.putIfAbsent("classical-analysis", unpublished("classical-analysis", "Classical Analysis", "ANALYSIS"));
-        known.put("pretrained-ai", unpublished("pretrained-ai", "Pretrained AI", "AI")
-                .withState("UNAVAILABLE", "No approved pretrained model is published"));
-        known.put("training-lab", unpublished("training-lab", "Training Lab", "TRAINING")
-                .withState("UNAVAILABLE", "Training is not published in the non-AI catalog"));
         return known.values().stream().map(this::installedState).sorted(Comparator.comparing(FeaturePackDescriptor::id)).toList();
     }
 

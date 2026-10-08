@@ -96,7 +96,13 @@ vi.mock('../api', () => ({
     `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/ome-preview/slide.dzi`,
   approve: vi.fn(),
   annotations: vi.fn(async () => []),
+  analysisRuns: vi.fn(async () => []),
+  submitAnalysis: vi.fn(),
+  cancelAnalysis: vi.fn(),
+  analysisReview: vi.fn(),
+  saveAnalysisReview: vi.fn(),
   createAnnotation: vi.fn(),
+  updateAnnotation: vi.fn(),
   deleteAnnotation: vi.fn(),
   features: vi.fn(async () => ({ features: [
     {
@@ -159,11 +165,11 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('button', { name: 'Viewer library' })).toBeVisible()
 })
 
-test('keeps optional features offline until Feature Center is opened', async () => {
+test('reads cached feature metadata without refreshing the remote catalog', async () => {
   render(<App />)
 
   expect(await screen.findByRole('button', { name: 'Feature Center' })).toBeVisible()
-  expect(api.features).not.toHaveBeenCalled()
+  expect(api.features).not.toHaveBeenCalledWith(true)
   fireEvent.click(screen.getByRole('button', { name: 'Feature Center' }))
 
   expect(await screen.findByRole('heading', { name: 'Feature Center' })).toBeVisible()

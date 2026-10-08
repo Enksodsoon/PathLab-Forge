@@ -21,6 +21,9 @@ public final class ReaderRuntimeLocator {
 
     static List<Path> candidateDataRoots(Path dataRoot) {
         var roots = new ArrayList<Path>();
+        var installed = System.getProperty("pathlab.forge.readerDataRoot", "").trim();
+        if (!installed.isEmpty()) roots.add(Path.of(installed).toAbsolutePath().normalize());
+        if (Boolean.getBoolean("pathlab.forge.runtime.requireProduction")) return List.copyOf(roots);
         roots.add(dataRoot.toAbsolutePath().normalize());
         var appPath = System.getProperty("jpackage.app-path", "").trim();
         if (!appPath.isEmpty()) {

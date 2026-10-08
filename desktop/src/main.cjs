@@ -17,7 +17,7 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
 } else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  let window, service, origin, desktopSecret, quitting = false, stopped = false;
+  let window, service, origin, desktopSecret, quitting = false, stopped = false, checkingQuit = false;
   const selected = new Set();
   const externalOrigins = ['https://github.com'];
   const smoke = process.argv.includes('--forge-smoke-test');
@@ -33,12 +33,35 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
   const focus = () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } };
   app.on('second-instance', focus);
   app.on('activate', focus);
-  app.on('window-all-closed', () => app.quit());
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', event => {
-    quitting = true;
     if (!service || stopped) return;
     event.preventDefault();
-    // Closing stdin lets Java drain and close its queue and repository before exit.
+    if (!quitting) { void requestQuit(); return; }
+  });
+  async function requestQuit() {
+    if (checkingQuit || quitting) return;
+    checkingQuit = true;
+    try {
+      if (origin && desktopSecret) {
+        const headers = { 'X-Forge-Desktop-Secret': desktopSecret };
+        const response = await fetch(`${origin}/api/desktop/lifecycle`, { headers, signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw new Error('Unable to check active work');
+        const work = await response.json();
+        if (work.active > 0) {
+          const answer = await dialog.showMessageBox(window, { type: 'question', title: 'Quit PathLab Forge?',
+            message: 'Work is active. Quit will stop it safely; unfinished items can be retried after restart.',
+            buttons: ['Stay', 'Stop safely and quit'], defaultId: 0, cancelId: 0 });
+          if (answer.response !== 1) return;
+        }
+        const paused = await fetch(`${origin}/api/desktop/lifecycle`, { method: 'POST', headers, signal: AbortSignal.timeout(5000) });
+        if (!paused.ok) throw new Error('Unable to preserve queue state');
+      }
+    } catch (error) {
+      dialog.showErrorBox('Unable to quit safely', error.message); return;
+    } finally { checkingQuit = false; }
+    quitting = true;
+    // Closing stdin interrupts bounded work while preserving durable records.
     service.stdin.end();
     const timer = setTimeout(() => {
       if (process.platform === 'darwin') {
@@ -46,7 +69,7 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
       } else service.kill();
     }, 10000);
     timer.unref();
-  });
+  }
 
   const trusted = event => {
     if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
@@ -151,12 +174,19 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
     window.webContents.on('will-redirect', (event, url) => { if (!localUrl(url, origin)) event.preventDefault(); });
     window.webContents.on('will-attach-webview', event => event.preventDefault());
     window.webContents.on('render-process-gone', () => { if (!quitting) { dialog.showErrorBox('PathLab Forge', 'The desktop view stopped. Reopen Forge to recover your work.'); app.quit(); } });
-    window.on('close', () => {
+    window.on('close', event => {
       try {
         fs.writeFileSync(`${preferencesFile}.partial`, JSON.stringify(windowState(window.getNormalBounds())));
         fs.renameSync(`${preferencesFile}.partial`, preferencesFile);
       } catch { /* A preferences failure must not prevent service shutdown. */ }
+      if (!quitting) {
+        event.preventDefault();
+        if (process.platform === 'darwin') window.hide();
+        else app.quit();
+      }
     });
+    app.setAboutPanelOptions({ applicationName: 'PathLab Forge', applicationVersion: app.getVersion(),
+      copyright: 'Non-AI local slide preparation and teaching tools' });
     const command = value => window.webContents.send('forge:command', value);
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
@@ -165,6 +195,7 @@ if (process.argv.some(value => /^--squirrel-(install|updated|uninstall|obsolete)
       { role: 'editMenu' },
       { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
       { role: 'windowMenu' },
+      { label: 'Help', submenu: [{ label: 'About PathLab Forge', click: () => app.showAboutPanel() }] },
     ]));
     await window.loadURL(record.launchUrl);
     window.show();

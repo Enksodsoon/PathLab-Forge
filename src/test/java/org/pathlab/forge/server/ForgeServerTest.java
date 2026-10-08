@@ -21,6 +21,51 @@ final class ForgeServerTest {
     Path temp;
 
     @Test
+    void desktopPathsRequireMainProcessGrantAndAppCannotMintItsOwnSession() throws Exception {
+        var previous = System.getProperty("pathlab.forge.desktop");
+        System.setProperty("pathlab.forge.desktop", "true");
+        try (var server = startEphemeral()) {
+            var cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+            var client = HttpClient.newBuilder().cookieHandler(cookies).build();
+            var app = client.send(HttpRequest.newBuilder(server.appUri())
+                    .header("Sec-Fetch-Site", "same-origin").header("Sec-Fetch-Mode", "navigate")
+                    .header("Sec-Fetch-Dest", "document").GET().build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, app.statusCode());
+            client.send(HttpRequest.newBuilder(server.launchUri()).GET().build(), HttpResponse.BodyHandlers.ofString());
+            var session = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/session")).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+            var source = temp.resolve("selected.tif");
+            java.nio.file.Files.write(source, new byte[] {'I', 'I', 42, 0});
+            var payload = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
+                    java.util.Map.of("paths", java.util.List.of(source.toString()), "purpose", "import"));
+            var denied = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/desktop/selections"))
+                    .POST(HttpRequest.BodyPublishers.ofString(payload)).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, denied.statusCode());
+            var guessedImport = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/v2/desktop/imports"))
+                    .header("Origin", server.baseUri().toString())
+                    .header("X-Forge-CSRF", session.headers().firstValue("X-Forge-CSRF").orElseThrow())
+                    .POST(HttpRequest.BodyPublishers.ofString(payload)).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(422, guessedImport.statusCode());
+            assertTrue(guessedImport.body().contains("native dialog"));
+            var granted = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/desktop/selections"))
+                    .header("X-Forge-Desktop-Secret", server.desktopSecret())
+                    .POST(HttpRequest.BodyPublishers.ofString(payload)).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(204, granted.statusCode());
+            var deniedQuit = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/desktop/lifecycle"))
+                    .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, deniedQuit.statusCode());
+            var approvedQuit = client.send(HttpRequest.newBuilder(server.baseUri().resolve("/api/desktop/lifecycle"))
+                    .header("X-Forge-Desktop-Secret", server.desktopSecret())
+                    .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, approvedQuit.statusCode());
+            assertTrue(approvedQuit.body().contains("\"paused\":true"));
+        } finally {
+            if (previous == null) System.clearProperty("pathlab.forge.desktop");
+            else System.setProperty("pathlab.forge.desktop", previous);
+        }
+    }
+
+    @Test
     void boundsHttpWorkersToDetectedProcessors() {
         assertEquals(6, ForgeServer.recommendedHttpWorkers(6));
         assertEquals(8, ForgeServer.recommendedHttpWorkers(24));

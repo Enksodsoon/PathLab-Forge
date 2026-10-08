@@ -54,6 +54,7 @@ import type {
 } from './api'
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
 import { SlideViewer } from './SlideViewer'
+import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -90,6 +91,8 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [railExpanded, setRailExpanded] = useState(false)
   const [activeTool, setActiveTool] = useState('pan')
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
+  const [analysisRuns, setAnalysisRuns] = useState<DeterministicRun[]>([])
   const [cropDrafts, setCropDrafts] = useState<Record<string, CropBox>>(() => {
     try {
       return JSON.parse(window.localStorage.getItem('pathlab-forge-crop-drafts-v1') || '{}')
@@ -216,6 +219,7 @@ export function App() {
         setCapabilities(initialCapabilities)
         setSelectedId(initialDatasets[0]?.id || '')
         setNotice(initialDatasets.length ? 'Local workspace restored' : 'Choose a slide to begin')
+        void api.features().then((result) => setFeatures(result.features)).catch(() => undefined)
         void api.getViewerConnection().then((next) => {
           setConnection(next)
           if (next.viewerUrl) setViewerUrl(next.viewerUrl)
@@ -279,6 +283,18 @@ export function App() {
     }
   }
 
+  const refreshAnalysis = useCallback(async () => {
+    if (selected?.id) setAnalysisRuns(await api.analysisRuns(selected.id))
+  }, [selected?.id])
+  useEffect(() => {
+    let cancelled = false
+    setAnalysisRuns([])
+    if (selected?.id) void api.analysisRuns(selected.id).then((runs) => {
+      if (!cancelled) setAnalysisRuns(runs)
+    }).catch((error) => { if (!cancelled) setError(message(error)) })
+    return () => { cancelled = true }
+  }, [selected?.id])
+
   const handleSelectedImport = async (paths: string[]) => {
     if (!paths.length) return
     setImportError('')
@@ -329,6 +345,15 @@ export function App() {
       setImporting(false)
     }
   }
+
+  useEffect(() => window.forgeDesktop?.onCommand((command) => {
+    if (command === 'open-sources') setImportOpen(true)
+    if (command === 'open-directory') {
+      void window.forgeDesktop?.selectDirectory().then((path) => {
+        if (path) void handleProjectImport(path)
+      }).catch((error) => setError(message(error)))
+    }
+  }))
 
   const removeDataset = async () => {
     if (!removeTarget) return
@@ -619,6 +644,7 @@ export function App() {
       const created = await api.createAnnotation(selected.id, {
         type: activeTool,
         geometry,
+        configurationRevision: selected.configurationRevision,
         label: activeTool === 'text' ? 'Text annotation' : '',
       })
       setAnnotationsByDataset((current) => ({
@@ -647,6 +673,17 @@ export function App() {
     }
   }
 
+  const updateLocalAnnotation = async (id: string, values: { geometry?: string; label?: string; color?: string }) => {
+    if (!selected) return
+    const annotation = selectedAnnotations.find((item) => item.id === id)
+    if (!annotation) return
+    try {
+      const updated = await api.updateAnnotation(selected.id, annotation, values)
+      setAnnotationsByDataset((current) => ({ ...current,
+        [selected.id]: (current[selected.id] || []).map((item) => item.id === id ? updated : item) }))
+    } catch (failure) { setError(message(failure)) }
+  }
+
   useEffect(() => {
     if (!viewerUpload || !['UPLOADING', 'VERIFYING_OME', 'SYNCING_RESULTS', 'RETRYING']
       .includes(viewerUpload.state)) return
@@ -660,9 +697,9 @@ export function App() {
   }, [viewerUpload?.state])
 
   const storage = useMemo(() => ({
-    usableBytes: Math.max(0, 512 * 1024 ** 3 - datasets.reduce((sum, item) => sum + item.sourceBytes, 0)),
-    effectiveCapacityBytes: 512 * 1024 ** 3,
-  }), [datasets])
+    usableBytes: capabilities?.usableBytes ?? 0,
+    effectiveCapacityBytes: capabilities?.effectiveCapacityBytes ?? 0,
+  }), [capabilities])
 
   const loadFeatures = async (catalogRefresh = false) => {
     setFeatureLoading(true)
@@ -802,6 +839,9 @@ export function App() {
               viewer={viewer}
               onViewer={setViewer}
               onCreateAnnotation={createLocalAnnotation}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
+              onUpdateAnnotation={(id, geometry) => void updateLocalAnnotation(id, { geometry })}
               inspectorOpen={inspectorOpen}
               onInspector={() => setInspectorOpen((current) => !current)}
             />
@@ -850,11 +890,24 @@ export function App() {
               onUpload={uploadApproved}
               onRemove={() => selected && setRemoveTarget(selected)}
               onDeleteAnnotation={deleteLocalAnnotation}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
+              onUpdateAnnotation={updateLocalAnnotation}
               viewingRevisionId={viewingRevision?.id || ''}
               onViewRevision={viewRevision}
               onViewSource={viewSource}
               onRenameRevision={renameRevision}
               onDeleteRevision={deleteRevision}
+              tools={selected ? <DeterministicTools datasetId={selected.id} annotations={selectedAnnotations}
+                selectedAnnotationId={selectedAnnotationId} datasets={datasets} runs={analysisRuns}
+                enabledTools={features.filter((pack) => pack.state === 'INSTALLED').flatMap((pack) => pack.id === 'pathology-tools'
+                  ? ['he', 'stain_vector', 'normalize_preview', 'tma'] : pack.id === 'classical-analysis'
+                    ? ['tissue', 'qc', 'nucleus_candidates', 'registration'] : [])}
+                onSubmit={api.submitAnalysis} onCancel={api.cancelAnalysis} onRefresh={refreshAnalysis}
+                onLoadReview={api.analysisReview} onSaveReview={api.saveAnalysisReview}
+                onLoadTargetAnnotations={api.annotations}
+                onExport={(id) => { window.location.href = `/api/analysis/runs/${encodeURIComponent(id)}/export` }}
+              /> : null}
             />
           )}
           queue={(
@@ -865,6 +918,13 @@ export function App() {
               onClearError={() => setError('')}
               onQueueReady={() => void queueReadySlides()}
               onOpen={() => setInspectorOpen(false)}
+              paused={capabilities?.queuePaused === true}
+              onPause={() => {
+                void api.setQueuePaused(capabilities?.queuePaused !== true).then((state) => {
+                  setCapabilities((current) => current && ({ ...current, queuePaused: state.paused }))
+                  setNotice(state.paused ? 'Queue paused · current item finishes safely' : 'Queue resumed')
+                }).catch((failure) => setError(message(failure)))
+              }}
             />
           )}
         />
@@ -892,6 +952,10 @@ export function App() {
         </button>
       ) : null}
       {importOpen ? (
+        window.forgeDesktop ? <NativeImportDialog busy={importing} error={importError}
+          onSources={(paths) => void handleSelectedImport(paths)}
+          onDirectory={(path) => void handleProjectImport(path)}
+          onClose={() => { if (!importing) setImportOpen(false) }} /> :
         <ImportDialog
           path={importPath}
           busy={importing}
@@ -1099,7 +1163,7 @@ function FeatureCenter({
       <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-labelledby="feature-center-title">
         <span>Optional capabilities</span>
         <h2 id="feature-center-title">Feature Center</h2>
-        <p>Forge stays small. Approved pathology and research tools install only when requested.</p>
+        <p>Approved deterministic pathology tools install only when requested.</p>
         <div className="forge-feature-list">
           {features.map((feature) => (
             <article key={feature.id}>
@@ -1724,6 +1788,9 @@ function ViewerStage({
   viewer,
   onViewer,
   onCreateAnnotation,
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onUpdateAnnotation,
   inspectorOpen,
   onInspector,
 }: {
@@ -1738,6 +1805,9 @@ function ViewerStage({
   viewer: OpenSeadragon.Viewer | null
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
   onCreateAnnotation: (geometry: string) => void
+  selectedAnnotationId: string
+  onSelectAnnotation: (id: string) => void
+  onUpdateAnnotation: (id: string, geometry: string) => void
   inspectorOpen: boolean
   onInspector: () => void
 }) {
@@ -1810,6 +1880,9 @@ function ViewerStage({
             ? revision.downsample ?? dataset?.downsample ?? 1
             : 0}
           onCreate={onCreateAnnotation}
+          selectedAnnotationId={selectedAnnotationId}
+          onSelect={onSelectAnnotation}
+          onUpdate={onUpdateAnnotation}
           onReady={onViewer}
         />
       ) : inspecting && dataset ? (
@@ -1907,6 +1980,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
 }
 
 function Inspector({
+  tools,
   dataset,
   series,
   revisions,
@@ -1931,12 +2005,16 @@ function Inspector({
   onUpload,
   onRemove,
   onDeleteAnnotation,
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onUpdateAnnotation,
   viewingRevisionId,
   onViewRevision,
   onViewSource,
   onRenameRevision,
   onDeleteRevision,
 }: {
+  tools?: ReactNode
   dataset?: Dataset
   series: SeriesInfo[]
   revisions: ArtifactRevision[]
@@ -1961,13 +2039,16 @@ function Inspector({
   onUpload: () => void
   onRemove: () => void
   onDeleteAnnotation: (annotationId: string) => void
+  selectedAnnotationId: string
+  onSelectAnnotation: (id: string) => void
+  onUpdateAnnotation: (id: string, values: { label?: string; color?: string }) => Promise<void>
   viewingRevisionId: string
   onViewRevision: (revisionId: string) => void
   onViewSource: () => void
   onRenameRevision: (revisionId: string, name: string) => Promise<void>
   onDeleteRevision: (revisionId: string) => Promise<void>
 }) {
-  const [section, setSection] = useState<'export' | 'annotations' | 'history'>('export')
+  const [section, setSection] = useState<'export' | 'annotations' | 'history' | 'tools'>('export')
   if (!dataset) return <div className="forge-inspector-empty">Slide details appear here.</div>
   const current = revisions.find((revision) => revision.id === dataset.currentArtifactRevision)
   return (
@@ -1985,12 +2066,13 @@ function Inspector({
         </button>
       </header>
       <div className="forge-inspector-tabs" role="tablist">
-        {(['export', 'annotations', 'history'] as const).map((item) => (
+        {(['export', 'annotations', 'history', 'tools'] as const).map((item) => (
           <button type="button" role="tab" aria-selected={section === item} key={item} onClick={() => setSection(item)}>
-            {item === 'export' ? 'Crop & export' : item === 'annotations' ? 'Annotations' : 'History'}
+            {item === 'export' ? 'Crop & export' : item === 'annotations' ? 'Annotations' : item === 'tools' ? 'Tools' : 'History'}
           </button>
         ))}
       </div>
+      {section === 'tools' ? tools : null}
       {section === 'export' ? (
         <ExportInspector
           dataset={dataset}
@@ -2029,12 +2111,18 @@ function Inspector({
             <div className="forge-annotation-list" aria-label="Annotation objects">
               {annotations.map((annotation, index) => (
                 <article key={annotation.id}>
-                  <span><strong>{annotation.label || annotation.type}</strong><small>Object {index + 1}</small></span>
+                  <button type="button" aria-pressed={selectedAnnotationId === annotation.id} onClick={() => onSelectAnnotation(annotation.id)}><strong>{annotation.label || annotation.type}</strong><small>Object {index + 1}</small></button>
                   <button type="button" onClick={() => onDeleteAnnotation(annotation.id)}>Delete</button>
                 </article>
               ))}
             </div>
           ) : null}
+          {annotations.find((item) => item.id === selectedAnnotationId) ? (
+            <AnnotationDetails key={selectedAnnotationId} datasetId={dataset.id}
+              annotation={annotations.find((item) => item.id === selectedAnnotationId)!}
+              onSave={onUpdateAnnotation} />
+          ) : null}
+          <a href={`/api/datasets/${encodeURIComponent(dataset.id)}/measurements.csv`} download>Export measurements CSV</a>
           <p className="forge-help">Editable annotation records remain source-anchored. Crop exports transform only intersecting geometry.</p>
         </section>
       ) : null}
@@ -2355,6 +2443,35 @@ function MultidimensionalViewControls({ dataset, image, onUpdate }: {
   </fieldset>
 }
 
+function NativeArtifactExport({ datasetId, revision }: { datasetId: string; revision: ArtifactRevision }) {
+  const [state, setState] = useState<api.ExportState>()
+  const [error, setError] = useState('')
+  const active = state && ['COPYING', 'VERIFYING'].includes(state.status)
+  useEffect(() => {
+    if (!active) return
+    const timer = window.setTimeout(() => {
+      void api.exportState().then(setState).catch((error) => setError(message(error)))
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [active, state])
+  const save = async (kind: 'ome' | 'package') => {
+    setError('')
+    try {
+      const name = (revision.name || 'slide').replace(/[\x00-\x1f/\\:]/g, '_')
+      const destination = await window.forgeDesktop?.selectExportDestination(`${name}${kind === 'ome' ? '.ome.tif' : '.plslide'}`)
+      if (destination) setState(await api.exportArtifact(datasetId, revision.id, kind, destination))
+    } catch (error) { setError(message(error)) }
+  }
+  return <div aria-label="Native export">
+    <button type="button" disabled={Boolean(active)} onClick={() => void save('ome')}>Save verified OME as…</button>
+    {revision.format !== 'OME_DYNAMIC_V1' ? <button type="button" disabled={Boolean(active)} onClick={() => void save('package')}>Save package as…</button> : null}
+    {state ? <p role="status">{state.detail} · {formatBytes(state.completedBytes)} / {formatBytes(state.totalBytes)}</p> : null}
+    {active ? <button type="button" onClick={() => void api.cancelExport().then(setState)}>Cancel export</button> : null}
+    {state?.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(state.destination)}>Reveal exported file</button> : null}
+    {error ? <p role="alert">{error}</p> : null}
+  </div>
+}
+
 function ExportInspector({
   dataset,
   series,
@@ -2647,6 +2764,7 @@ function ExportInspector({
               ? 'Validated and approved · ready for private Viewer delivery'
               : 'Validated locally · approve to enable private Viewer delivery'}</small>}
           </>
+          {window.forgeDesktop ? <NativeArtifactExport datasetId={dataset.id} revision={readyCurrent} /> : null}
         </section>
       ) : null}
       {!series.length ? (
@@ -2857,6 +2975,57 @@ function ExportInspector({
   )
 }
 
+function NativeImportDialog({ busy, error, onSources, onDirectory, onClose }: {
+  busy: boolean; error: string; onSources: (paths: string[]) => void
+  onDirectory: (path: string) => void; onClose: () => void
+}) {
+  const [failure, setFailure] = useState('')
+  const choose = async (directory: boolean) => {
+    try {
+      if (directory) {
+        const path = await window.forgeDesktop!.selectDirectory()
+        if (path) onDirectory(path)
+      } else onSources(await window.forgeDesktop!.selectSources())
+    } catch (error) { setFailure(message(error)) }
+  }
+  return <div className="forge-dialog-backdrop">
+    <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="native-import-title">
+      <h2 id="native-import-title">Import local slides</h2>
+      <p>Choose source files or a folder using your operating system.</p>
+      <button type="button" disabled={busy} onClick={() => void choose(false)}>Choose slide files</button>
+      <button type="button" disabled={busy} onClick={() => void choose(true)}>Choose slide folder</button>
+      {error || failure ? <p role="alert">{error || failure}</p> : null}
+      <button type="button" disabled={busy} onClick={onClose}>Close</button>
+    </section>
+  </div>
+}
+
+function AnnotationDetails({ datasetId, annotation, onSave }: {
+  datasetId: string; annotation: AnnotationRecord
+  onSave: (id: string, values: { label?: string; color?: string }) => Promise<void>
+}) {
+  const [label, setLabel] = useState(annotation.label)
+  const [color, setColor] = useState(annotation.color)
+  const [measurements, setMeasurements] = useState<Record<string, number>>({})
+  const [failure, setFailure] = useState('')
+  useEffect(() => {
+    let active = true
+    void api.annotationMeasurements(datasetId, annotation.id).then((result) => {
+      if (active) { setMeasurements(result.values); setFailure('') }
+    }).catch((error) => { if (active) setFailure(message(error)) })
+    return () => { active = false }
+  }, [datasetId, annotation.id, annotation.revision])
+  return <form onSubmit={(event) => { event.preventDefault(); void onSave(annotation.id, { label, color }) }}>
+    <label>Annotation label<input value={label} maxLength={240} onChange={(event) => setLabel(event.target.value)} /></label>
+    <label>Annotation color<input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label>
+    <button type="submit">Save annotation</button>
+    {failure ? <p role="alert">{failure}</p> : null}
+    <dl aria-label="Annotation measurements">{Object.entries(measurements).map(([metric, value]) => (
+      <div key={metric}><dt>{metric}</dt><dd>{value.toLocaleString(undefined, { maximumFractionDigits: 3 })}</dd></div>
+    ))}</dl>
+  </form>
+}
+
 function QueueDock({
   datasets,
   notice,
@@ -2864,6 +3033,8 @@ function QueueDock({
   onClearError,
   onQueueReady,
   onOpen,
+  paused,
+  onPause,
 }: {
   datasets: Dataset[]
   notice: string
@@ -2871,6 +3042,8 @@ function QueueDock({
   onClearError: () => void
   onQueueReady: () => void
   onOpen: () => void
+  paused: boolean
+  onPause: () => void
 }) {
   const [queueOpen, setQueueOpen] = useState(false)
   const queueButtonRef = useRef<HTMLButtonElement>(null)
@@ -2902,10 +3075,11 @@ function QueueDock({
     <>
       <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
         <span className="forge-queue-mark" />
-        <strong>{active.length
+        <strong>{paused ? 'Queue paused' : active.length
           ? `${convertingSlides.length ? `Converting ${convertingSlides.length}` : 'Starting'} · ${queued.length} queued`
           : 'Queue ready'}</strong>
         <span>{notice}</span>
+        <button type="button" onClick={onPause}>{paused ? 'Resume queue' : 'Pause queue'}</button>
         {queueItems.length ? <button ref={queueButtonRef} type="button" aria-haspopup="dialog" aria-expanded={queueOpen} onClick={() => { onOpen(); setQueueOpen(true) }}>View queue · {queueItems.length}</button> : null}
         {converting && phase ? (
           <label className="forge-queue-progress">

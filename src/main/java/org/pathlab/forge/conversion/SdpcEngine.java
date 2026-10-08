@@ -31,6 +31,10 @@ public final class SdpcEngine implements ConversionEngine {
     private final Map<Path, Slide> slides = new ConcurrentHashMap<>();
 
     public static SdpcEngine discover(Path dataRoot) {
+        if (Boolean.getBoolean("pathlab.forge.runtime.requireProduction")) {
+            return new SdpcEngine(org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "sdpc")
+                    .orElse(null));
+        }
         var configured = System.getProperty("pathlab.forge.sdpcRuntime");
         if (configured == null || configured.isBlank()) configured = System.getenv("PATHLAB_FORGE_SDPC_RUNTIME");
         var root = configured == null || configured.isBlank()
@@ -41,10 +45,10 @@ public final class SdpcEngine implements ConversionEngine {
     }
 
     SdpcEngine(Path runtimeRoot) {
-        this.runtimeRoot = runtimeRoot.toAbsolutePath().normalize();
-        var library = this.runtimeRoot.resolve("DecodeSdpcDll.dll");
+        this.runtimeRoot = runtimeRoot == null ? null : runtimeRoot.toAbsolutePath().normalize();
+        var library = this.runtimeRoot == null ? null : this.runtimeRoot.resolve("DecodeSdpcDll.dll");
         SdpcApi loaded = null;
-        if (Files.isRegularFile(library)) {
+        if (library != null && Files.isRegularFile(library)) {
             try {
                 NativeLibrary.addSearchPath("DecodeSdpcDll", this.runtimeRoot.toString());
                 loaded = Native.load(library.toString(), SdpcApi.class,

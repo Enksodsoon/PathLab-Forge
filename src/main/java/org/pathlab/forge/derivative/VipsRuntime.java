@@ -26,6 +26,10 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     public static VipsRuntime discover(Path dataRoot) {
+        if (Boolean.getBoolean("pathlab.forge.runtime.requireProduction")) {
+            return new VipsRuntime(org.pathlab.forge.runtime.ReaderRuntimeLocator
+                    .componentRoot(dataRoot, "vips").map(VipsRuntime::findExecutable).orElse(null));
+        }
         var candidates = new ArrayList<Path>();
         var configured = System.getProperty("pathlab.forge.vips");
         if (configured == null || configured.isBlank()) {

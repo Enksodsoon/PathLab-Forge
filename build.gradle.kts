@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "org.pathlab"
-version = "0.1.0-SNAPSHOT"
+version = "1.0.0-rc.1"
 
 repositories {
     mavenCentral()
@@ -157,6 +157,7 @@ tasks.withType<Test>().configureEach {
 }
 
 tasks.withType<Jar>().configureEach {
+    manifest.attributes["Implementation-Version"] = project.version.toString()
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
 }

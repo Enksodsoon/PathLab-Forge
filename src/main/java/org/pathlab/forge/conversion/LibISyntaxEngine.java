@@ -39,6 +39,14 @@ public final class LibISyntaxEngine implements ConversionEngine {
     private final Map<Path, Metadata> metadata = new ConcurrentHashMap<>();
 
     public static LibISyntaxEngine discover(Path dataRoot) {
+        if (Boolean.getBoolean("pathlab.forge.runtime.requireProduction")) {
+            var approved = org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "isyntax");
+            var root = approved.orElse(dataRoot.resolve("disabled-isyntax"));
+            var python = root.resolve(System.getProperty("os.name", "").startsWith("Windows")
+                    ? "python.exe" : "bin/python3");
+            return new LibISyntaxEngine(approved.isPresent() ? python : null, root,
+                    root.resolve("isyntax_bridge_v1.py"));
+        }
         var configuredRoot = configured("pathlab.forge.isyntaxRuntime", "PATHLAB_FORGE_ISYNTAX_RUNTIME");
         var root = configuredRoot == null
                 ? org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "isyntax")

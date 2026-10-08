@@ -1,38 +1,17 @@
-# Active Task — Modular Capability Release
+# Active release — Windows/macOS non-AI Forge
 
-Supersedes the completed direct-OME release-candidate brief by explicit
-product-owner direction on 2026-08-11.
+Product-owner approved 2026-10-08. Supersedes old milestone stop rules and AI/training plans. Historical measurements remain historical, not release acceptance.
 
-## Fixed endpoint
+Java17/React/SQLite streaming core; Electron desktop lifecycle; bundled approved Java/readers. Windows10 22H2/11 x64, macOS14+ Intel/arm; advertise only qualified platforms. 1.0.0-rc.N then 1.0.0; manual signed full-installer upgrades via authenticated Viewer. No background updater.
 
-Deliver a lightweight Forge base plus a signed, offline-by-default Feature
-Center. The base owns WSI inspection, direct preview, annotations, geometry
-measurements, conversion, validation and upload. Optional Pathology Tools and
-Classical Analysis packs are downloaded only after an explicit user action.
+Include local discovery/viewing/qualified channels ZT, correct geometry/measurements, deterministic tools, durable batches, private owned libraries, secure sync/genuine offline copies, non-AI Feature Center and offline Study authoring. Normal direct OME; separately selected static-DZI Teaching delivery. Viewer owns identities, privacy, publication/courses/learner records. Exclude AI/models/training/Evidence Mentor/TRACE-SIM/diagnosis/research. Dormant Viewer AI stays disabled.
 
-AI is not a core feature. Forge bundles no weights or training runtime. At most
-one separately downloaded pretrained research model may be published after
-license, provenance, resource and deterministic self-test gates pass. Training
-Lab is a separate advanced pack using user-provided labelled data.
+One active conversion/upload, bounded analysis/streaming. Preserve sources/artifacts/drafts/database. Owner-private org libraries require explicit grants. Keep existing role capabilities and Viewer Apache license; target Forge GPL3-or-later subject to exact dependency review. Unapproved binaries/placeholders confer no approval.
 
-## Milestones
+M0 baseline/contracts -> M1 ownership compatibility + M2 desktop + M3 runtime + M4 correctness -> M5 batch recovery/M6 tools/M7 packs/M8 teaching/M9 sync -> ownership activation -> M10 installers/downloads -> actual-artifact acceptance -> protected release/live verification.
 
-1. Remove redundant preview work and finish adaptive runtime limits.
-2. Add signed catalog, staged installation, self-test, rollback and uninstall.
-3. Add bounded raw-region, PathObject, measurement and analysis-run contracts.
-4. Add the Pathology Tools pack boundary: hierarchy, H&E, stains and TMA.
-5. Add the Classical Analysis pack boundary: tissue/cells/classifier/QC/registration.
-6. Add the optional pretrained-AI and Training Lab availability gates.
-7. Add explicit private Viewer synchronization with conflict-safe verification.
+Focused codex worktrees, three workers maximum plus integration. Shared schemas/server/startup/release contracts have one owner. Reproduce defects and run focused/full tests, UI production build, repository checks. Independent reviews for ownership/native privileges/migrations/transfers. Integrated exact-head checks required; worker green is insufficient.
 
-## Stop rule
+All advertised journeys need actual evidence: mandatory OME/SVS/VSI, correct calibrated geometry, ten-slide mixed batch, pause/cancel/restart/disk-full, immutable deterministic results, offline authoring/publication, uncached offline viewing, cross-owner denial, revoked permissions, safe transfers, tamper/wrong-architecture, upgrade/rollback/download ranges. Sign/timestamp Windows, nested Mac signing/notarization/staple, exact inventory/notices/corresponding source, immutable private authenticated catalog.
 
-Stop after these seven milestones and their local validation report. Do not add
-third-party plugins, arbitrary scripting, a dependency solver, cloud services,
-microservices, distributed workers, additional models, merge or deployment.
-
-New conversions use only the measured `ome-dynamic-v1` direct path. The governed
-same-slide release-candidate comparison found it 46.67% faster and 72.96% smaller
-than prepared-v2. Existing prepared artifacts remain readable, but Forge does not
-select or retry into that larger route. Image-quality gates, artifact reuse,
-privacy and resumable upload remain regression contracts.
+Clean Windows10/11, Intel/Apple Silicon artifact tests plus NVDA/VoiceOver/keyboard/scaling/process-tree measurements required. Signing identities/Mac capacity/lawful slides/runtime rights/deployment/backup access are blockers until verified. No purchases/new cloud spend automatic. Completion means shipped verified artifacts, not code or unit tests. RELEASE_PROGRESS.md records evidence.

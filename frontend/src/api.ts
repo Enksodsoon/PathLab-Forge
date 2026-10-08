@@ -1,3 +1,19 @@
+import type { DeterministicRun, DeterministicRequest, DeterministicReview } from './DeterministicTools'
+
+export interface ExportState { id: string; status: string; completedBytes: number; totalBytes: number; destination: string; detail: string }
+export const exportState = () => request<ExportState>('/api/exports')
+export const cancelExport = () => request<ExportState>('/api/exports/cancel', { method: 'POST' })
+export const exportArtifact = (datasetId: string, revisionId: string, kind: 'ome' | 'package', destination: string) =>
+  request<ExportState>('/api/exports', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ datasetId, revisionId, kind, destination }) })
+export const analysisRuns = (datasetId: string) => request<DeterministicRun[]>(`/api/analysis/runs?datasetId=${encodeURIComponent(datasetId)}`)
+export const submitAnalysis = (value: DeterministicRequest) => request<DeterministicRun>('/api/analysis/runs', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
+export const cancelAnalysis = (id: string) => request<DeterministicRun>(`/api/analysis/runs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+export const analysisReview = (id: string) => request<DeterministicReview>(`/api/analysis/runs/${encodeURIComponent(id)}/review`)
+export const saveAnalysisReview = (id: string, review: DeterministicReview) => request<DeterministicReview>(`/api/analysis/runs/${encodeURIComponent(id)}/review`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(review) })
+
 export interface Dataset {
   id: string
   displayName: string
@@ -256,9 +272,18 @@ export async function capabilities() {
     downsamples: number[]
     activeConversions?: number
     queuedConversions?: number
+    queuePaused?: boolean
+    usableBytes?: number
+    effectiveCapacityBytes?: number
     maximumConcurrentConversions?: number
     projectFolderImport?: boolean
   }>('/api/capabilities')
+}
+
+export async function setQueuePaused(paused: boolean) {
+  return request<{ paused: boolean; active: number; queued: number }>(
+    `/api/queue?paused=${paused}`, { method: 'POST' },
+  )
 }
 
 export async function importProjectFolder(path?: string) {
@@ -506,13 +531,14 @@ export async function annotations(id: string) {
 
 export async function createAnnotation(
   id: string,
-  values: { type: string; geometry: string; label?: string; color?: string },
+  values: { type: string; geometry: string; label?: string; color?: string; configurationRevision?: string },
 ) {
   const query = new URLSearchParams({
     type: values.type.replaceAll('-', '_'),
     geometry: values.geometry,
     label: values.label || '',
     color: values.color || '#f3b33d',
+    configurationRevision: values.configurationRevision || '',
   })
   return request<AnnotationRecord>(
     `/api/datasets/${encodeURIComponent(id)}/annotations?${query}`,
@@ -524,6 +550,17 @@ export async function deleteAnnotation(id: string, annotationId: string) {
   return request<void>(
     `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}`,
     { method: 'DELETE' },
+  )
+}
+
+export async function updateAnnotation(id: string, annotation: AnnotationRecord,
+  values: { geometry?: string; label?: string; color?: string }) {
+  const query = new URLSearchParams({ geometry: values.geometry ?? annotation.geometry,
+    label: values.label ?? annotation.label, color: values.color ?? annotation.color,
+    revision: String(annotation.revision) })
+  return request<AnnotationRecord>(
+    `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotation.id)}?${query}`,
+    { method: 'PATCH' },
   )
 }
 
@@ -544,7 +581,7 @@ export async function uninstallFeature(id: string) {
 }
 
 export async function annotationMeasurements(id: string, annotationId: string) {
-  return request<{ annotationId: string; units: 'pixels'; values: Record<string, number> }>(
+  return request<{ annotationId: string; units: 'pixels' | 'pixels-and-micrometres'; values: Record<string, number> }>(
     `/api/datasets/${encodeURIComponent(id)}/annotations/${encodeURIComponent(annotationId)}/measurements`,
   )
 }

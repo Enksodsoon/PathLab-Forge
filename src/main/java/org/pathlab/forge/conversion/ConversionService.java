@@ -112,6 +112,14 @@ public final class ConversionService implements AutoCloseable {
                 .count();
     }
 
+    public boolean queuePaused() { return repository.queuePaused(); }
+
+    public synchronized void setQueuePaused(boolean paused) throws IOException {
+        // Persist before changing admission; running work completes its current item.
+        repository.setQueuePaused(paused);
+        if (!paused) dispatchQueuedSafely();
+    }
+
     static int recommendedConcurrentConversions(int logicalProcessors, long processTreeLimitBytes) {
         return 1;
     }
@@ -953,9 +961,17 @@ public final class ConversionService implements AutoCloseable {
         var cropWidth = preserveConfiguration ? dataset.cropWidth() : selected.width();
         var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
         var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
-        repository.save(dataset.withExportConfiguration(
-                nextStatus,
-                nextStatus == DatasetStatus.VERIFYING_SOURCE
+        repository.update(dataset.id(), current -> {
+            var effectiveStatus = nextStatus == DatasetStatus.VERIFYING_SOURCE
+                    && !current.sourceFingerprint().isBlank()
+                    ? DatasetStatus.READY_TO_CONVERT : nextStatus;
+            if (nextStatus == DatasetStatus.VERIFYING_SOURCE
+                    && java.util.Set.of(DatasetStatus.FAILED, DatasetStatus.NEEDS_COMPANIONS).contains(current.status())) {
+                effectiveStatus = current.status();
+            }
+            return current.withExportConfiguration(
+                effectiveStatus,
+                effectiveStatus == DatasetStatus.VERIFYING_SOURCE
                         ? series.size() + " image series found; source verification is still running"
                         : cacheHit
                         ? series.size() + " image series loaded instantly from verified cache"
@@ -968,7 +984,8 @@ public final class ConversionService implements AutoCloseable {
                 cropX,
                 cropY,
                 cropWidth,
-                cropHeight));
+                cropHeight);
+        });
     }
 
     public LocalDataset selectSeries(String id, int seriesIndex, double downsample)
@@ -1048,6 +1065,19 @@ public final class ConversionService implements AutoCloseable {
         }
         return engine.readRgbRegion(
                 Path.of(dataset.sourcePath()), dataset.selectedSeries(), x, y, width, height);
+    }
+
+    public RgbRegion readRgbRegion(String id, int series, int z, int t,
+            int x, int y, int width, int height) throws IOException {
+        var dataset = requireDataset(id);
+        verifySourceFingerprint(dataset);
+        var info = requireSeriesInfo(id, series);
+        if (!info.isRgbPlane() || x < 0 || y < 0 || width < 1 || height < 1
+                || (long) x + width > info.width() || (long) y + height > info.height()
+                || z < 0 || z >= info.sizeZ() || t < 0 || t >= info.sizeT()) {
+            throw new IllegalArgumentException("Analysis requires an exact supported native RGB plane and bounded ROI");
+        }
+        return engine.readRgbRegion(Path.of(dataset.sourcePath()), series, z, t, x, y, width, height);
     }
 
     public LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
@@ -1187,6 +1217,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void dispatchQueued() throws IOException {
+        if (repository.queuePaused()) return;
         while (activeConversionCount() < maximumConcurrentConversions) {
             var entry = repository.listQueueEntries().stream()
                     .filter(item -> !activeConversions.containsKey(item.datasetId()))
@@ -1472,6 +1503,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void cleanupCancelledRevision(LocalDataset dataset) throws IOException {
+        if (dataset.currentArtifactRevision().isBlank()) return;
         var revision = artifactRepository
                 .find(dataset.id(), dataset.currentArtifactRevision())
                 .orElse(null);

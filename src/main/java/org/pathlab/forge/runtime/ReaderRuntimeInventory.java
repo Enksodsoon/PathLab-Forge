@@ -71,7 +71,7 @@ public final class ReaderRuntimeInventory {
             if (!ReaderRuntimeManifest.currentPlatform().equals(manifest.platform())) {
                 return List.of(invalid("WRONG_ARCHITECTURE", "Reader runtime targets another platform"));
             }
-            manifest.verify(root, false);
+            manifest.verify(root, Boolean.getBoolean("pathlab.forge.runtime.requireProduction"));
             return manifest.components().stream().map(component -> {
                 var pending = component.included() && !"APPROVED".equals(component.reviewStatus());
                 return new Status(component.id(), component.included(), "PACKAGED", component.version(),

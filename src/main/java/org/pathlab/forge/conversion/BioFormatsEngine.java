@@ -51,6 +51,10 @@ public final class BioFormatsEngine implements ConversionEngine {
     }
 
     public static BioFormatsEngine discover(Path dataRoot) {
+        if (Boolean.getBoolean("pathlab.forge.runtime.requireProduction")) {
+            return new BioFormatsEngine(org.pathlab.forge.runtime.ReaderRuntimeLocator
+                    .componentRoot(dataRoot, "bftools").map(BioFormatsEngine::findRuntime).orElse(null));
+        }
         var candidates = new ArrayList<Path>();
         var configured = System.getProperty("pathlab.forge.bftools");
         if (configured == null || configured.isBlank()) {

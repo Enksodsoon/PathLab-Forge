@@ -19,6 +19,30 @@ public final class SqliteDatasetRepository implements DatasetRepository, AutoClo
     private static final int SCHEMA_VERSION = 4;
     private final Connection connection;
 
+    @Override
+    public synchronized boolean queuePaused() {
+        try (var query = connection.prepareStatement(
+                "SELECT value FROM forge_meta WHERE key='queue_paused'");
+                var rows = query.executeQuery()) {
+            return rows.next() && "true".equals(rows.getString(1));
+        } catch (SQLException error) {
+            throw new IllegalStateException("Unable to read queue pause state", error);
+        }
+    }
+
+    @Override
+    public synchronized void setQueuePaused(boolean paused) throws IOException {
+        try (var update = connection.prepareStatement("""
+                INSERT INTO forge_meta(key,value) VALUES ('queue_paused',?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """)) {
+            update.setString(1, Boolean.toString(paused));
+            update.executeUpdate();
+        } catch (SQLException error) {
+            throw new IOException("Unable to persist queue pause state", error);
+        }
+    }
+
     public SqliteDatasetRepository(Path database, Path legacyProperties) throws IOException {
         try {
             var normalized = database.toAbsolutePath().normalize();
