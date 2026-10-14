@@ -17,8 +17,20 @@ import {
 import {
   MAX_ZOOM_PIXEL_RATIO,
   PREVIEW_IMAGE_LOADER_LIMIT,
+  PREVIEW_IMAGE_LOADER_PER_VIEWER_LIMIT,
   PREVIEW_MAX_TILE_CACHE,
+  PREVIEW_TILE_CACHE_PER_VIEWER,
 } from './viewerConfig'
+import { createRegisteredOpenSeadragonViewer } from './viewerResourceBudget'
+
+// OpenSeadragon creates its overview navigator as a second Viewer. It inherits
+// library defaults instead of the parent canvas settings, so bound those
+// defaults to the same Forge preview budgets before any viewer is constructed.
+if (OpenSeadragon.DEFAULT_SETTINGS) {
+  OpenSeadragon.DEFAULT_SETTINGS.imageLoaderLimit = PREVIEW_IMAGE_LOADER_PER_VIEWER_LIMIT
+  OpenSeadragon.DEFAULT_SETTINGS.maxImageCacheCount = PREVIEW_TILE_CACHE_PER_VIEWER
+}
+let viewerInstanceSequence = 0
 
 interface ViewerPointerEvent {
   position: OpenSeadragon.Point
@@ -166,19 +178,22 @@ export const SlideViewer = memo(function SlideViewer({
   }
 
   useEffect(() => {
-    if (!elementRef.current) return
+    const container = elementRef.current
+    if (!container) return
+    const viewerInstanceId = ++viewerInstanceSequence
+    container.dataset.viewerInstanceId = String(viewerInstanceId)
     setLoading(true)
     setLoadError('')
-    const viewer = OpenSeadragon({
-      element: elementRef.current,
+    const { viewer, release: releaseResourceBudget } = createRegisteredOpenSeadragonViewer('workspace-primary', () => OpenSeadragon({
+      element: container,
       tileSources: `${tileSource}${tileSource.includes('?') ? '&' : '?'}viewerCache=${sourceEpoch}`,
       showNavigator: true,
       navigatorPosition: 'BOTTOM_RIGHT',
       animationTime: 0.18,
       blendTime: 0,
       immediateRender: true,
-      imageLoaderLimit: PREVIEW_IMAGE_LOADER_LIMIT,
-      maxImageCacheCount: PREVIEW_MAX_TILE_CACHE,
+      imageLoaderLimit: PREVIEW_IMAGE_LOADER_PER_VIEWER_LIMIT,
+      maxImageCacheCount: PREVIEW_TILE_CACHE_PER_VIEWER,
       maxTilesPerFrame: 2,
       maxZoomPixelRatio: MAX_ZOOM_PIXEL_RATIO,
       zoomPerClick: 1.8,
@@ -187,9 +202,17 @@ export const SlideViewer = memo(function SlideViewer({
       constrainDuringPan: true,
       prefixUrl: '',
       showNavigationControl: false,
-    })
+    }))
     viewerRef.current = viewer
     viewer.addOnceHandler('open', () => {
+      const primaryCache = viewer.tileCache as unknown as { _maxCacheItemCount?: number }
+      const overviewCache = viewer.navigator?.tileCache as unknown as { _maxCacheItemCount?: number } | undefined
+      Object.assign(elementRef.current?.dataset ?? {}, {
+        effectivePrimaryLoaderJobs: String(PREVIEW_IMAGE_LOADER_PER_VIEWER_LIMIT),
+        effectiveOverviewLoaderJobs: String(PREVIEW_IMAGE_LOADER_PER_VIEWER_LIMIT),
+        effectivePrimaryTileCache: String(primaryCache._maxCacheItemCount ?? 0),
+        effectiveOverviewTileCache: String(overviewCache?._maxCacheItemCount ?? 0),
+      })
       onReady?.(viewer)
     })
     viewer.addOnceHandler('tile-loaded', () => {
@@ -209,6 +232,7 @@ export const SlideViewer = memo(function SlideViewer({
     return () => {
       viewerRef.current = null
       viewer.destroy()
+      releaseResourceBudget()
       onReady?.(null)
     }
   }, [onReady, sourceEpoch, tileSource])
@@ -554,7 +578,11 @@ export const SlideViewer = memo(function SlideViewer({
   return (
     <div className="forge-osd-shell">
       {brushError ? <p role="alert">{brushError}</p> : null}
-      <div className="forge-osd" ref={elementRef} data-testid="forge-osd" />
+      <div className="forge-osd" ref={elementRef} data-testid="forge-osd"
+        data-image-loader-limit={PREVIEW_IMAGE_LOADER_PER_VIEWER_LIMIT}
+        data-image-loader-budget={PREVIEW_IMAGE_LOADER_LIMIT}
+        data-max-tile-cache-count={PREVIEW_TILE_CACHE_PER_VIEWER}
+        data-max-tile-cache-budget={PREVIEW_MAX_TILE_CACHE} />
       <svg aria-label="Slide annotations" data-projection={projectionEpoch}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' }}>
         {annotations.map((annotation) => {

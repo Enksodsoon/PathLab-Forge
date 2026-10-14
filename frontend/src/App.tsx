@@ -38,7 +38,7 @@ import {
   Wrench,
   X,
 } from '@phosphor-icons/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { FormEvent, ReactNode, Ref } from 'react'
 import type OpenSeadragon from 'openseadragon'
 import { renderSVG } from 'uqr'
@@ -61,6 +61,7 @@ import { teachingAssociationFor, captureTeachingTarget } from './teachingAssocia
 import { BatchReports, type BatchSummary } from './BatchReports'
 import type { MaskChannel } from './AnalysisMaskOverlay'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
+import { createResponsivePanelsState, isPanelDocked, isPanelOpen, responsivePanelsReducer, type ResponsivePanel } from './responsivePanels'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -68,7 +69,6 @@ const CANCELLABLE_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCES', ...CONVERSI
 const QUEUEABLE_STATUSES = new Set(['READY', 'READY_TO_CONVERT', 'CONVERSION_READY', 'FAILED', 'CANCELLED'])
 const NO_ANNOTATIONS: AnnotationRecord[] = []
 const DEFAULT_LOCAL_FOLDER = 'Unfiled'
-const isCompactWorkspace = () => typeof window !== 'undefined' && window.innerWidth <= 1180
 
 function viewerVisibility(slide?: Pick<api.ViewerRemoteItem, 'state' | 'visibility'>) {
   if (slide?.visibility) return slide.visibility === 'published' ? 'Published' : 'Private'
@@ -90,10 +90,22 @@ export function App() {
   const [seriesByDataset, setSeriesByDataset] = useState<Record<string, SeriesInfo[]>>({})
   const [artifactByDataset, setArtifactByDataset] = useState<Record<string, ArtifactRevision[]>>({})
   const [viewingRevisionByDataset, setViewingRevisionByDataset] = useState<Record<string, string>>({})
-  const [navigatorOpen, setNavigatorOpen] = useState(
-    () => typeof window === 'undefined' || window.innerWidth > 960,
-  )
-  const [inspectorOpen, setInspectorOpen] = useState(true)
+  const [panels, dispatchPanels] = useReducer(responsivePanelsReducer, typeof window === 'undefined' ? 1440 : window.innerWidth, createResponsivePanelsState)
+  const panelsRef = useRef(panels)
+  panelsRef.current = panels
+  const pendingResponsiveFocus = useRef<ResponsivePanel | null>(null)
+  const previousPanelVisibility = useRef<{ navigator: boolean; inspector: boolean } | null>(null)
+  const updatePanels = (action: Parameters<typeof responsivePanelsReducer>[1]) => {
+    panelsRef.current = responsivePanelsReducer(panelsRef.current, action)
+    dispatchPanels(action)
+  }
+  const closePanel = (panel: ResponsivePanel) => {
+    const root = document.querySelector<HTMLElement>(panel === 'navigator' ? '#library-navigator' : '.pathlab-viewer-inspector')
+    if (root && document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) pendingResponsiveFocus.current = panel
+    updatePanels({ type: 'close', panel })
+  }
+  const navigatorOpen = isPanelOpen(panels, 'navigator')
+  const inspectorPreferenceOpen = isPanelOpen(panels, 'inspector')
   const [railExpanded, setRailExpanded] = useState(false)
   const [activeTool, setActiveTool] = useState('pan')
   const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
@@ -181,7 +193,7 @@ export function App() {
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
   analysisContext.current = `${selected?.id}|${selected?.viewRevision}|${selected?.configurationRevision}`
   const overlayRun = analysisRuns.find((run) => run.id === analysisOverlay?.runId)
-  const inspectorVisible = inspectorOpen && Boolean(libraryMode === 'viewer' ? remoteLibrary.items.length : selected)
+  const inspectorVisible = inspectorPreferenceOpen && Boolean(libraryMode === 'viewer' ? remoteLibrary.items.length : selected)
   const selectedRemote = remoteLibrary.items.find((item) => item.id === selectedRemoteId)
     ?? remoteLibrary.items[0]
   const cropDraft = selected ? cropDrafts[selected.id] : undefined
@@ -273,11 +285,74 @@ export function App() {
   }, [folderByDataset])
 
   useEffect(() => {
+    const onResize = () => {
+      const before = panelsRef.current
+      const width = window.innerWidth
+      if (width === before.width) return
+      const next = responsivePanelsReducer(before, { type: 'resize', width })
+      const active = document.activeElement
+      for (const panel of ['navigator', 'inspector'] as const) {
+        if (isPanelOpen(before, panel) && !isPanelOpen(next, panel)
+          && active instanceof HTMLElement && active.closest(panel === 'navigator' ? '#library-navigator' : '.pathlab-viewer-inspector')) {
+          pendingResponsiveFocus.current = panel
+        }
+      }
+      updatePanels({ type: 'resize', width })
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useEffect(() => {
+    const navigator = document.getElementById('library-navigator')
     const inspector = document.querySelector<HTMLElement>('.pathlab-viewer-inspector')
-    if (!inspector) return
+    if (!navigator || !inspector) return
+    navigator.inert = !navigatorOpen
+    navigator.setAttribute('aria-hidden', navigatorOpen ? 'false' : 'true')
     inspector.inert = !inspectorVisible
     inspector.setAttribute('aria-hidden', inspectorVisible ? 'false' : 'true')
-  }, [inspectorVisible])
+    const previous = previousPanelVisibility.current ?? { navigator: navigatorOpen, inspector: inspectorVisible }
+    const focusInto = (root: HTMLElement) => {
+      root.setAttribute('tabindex', '-1')
+      const first = root.querySelector<HTMLElement>('button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([type="hidden"]):not([disabled]), [tabindex="0"]')
+      ;(first ?? root).focus({ preventScroll: true })
+    }
+    if (navigatorOpen && !previous.navigator && !isPanelDocked('navigator', panels.width)) focusInto(navigator)
+    if (inspectorVisible && !previous.inspector && !isPanelDocked('inspector', panels.width)) focusInto(inspector)
+    const restore = pendingResponsiveFocus.current
+    if (restore && !isPanelOpen(panels, restore)) {
+      const replacement = restore === 'navigator'
+        ? document.querySelector<HTMLElement>(libraryMode === 'viewer' ? '[aria-label="Viewer library"]' : '[aria-label="Local library"]')
+          ?? document.querySelector<HTMLElement>('[aria-label="Local library"]')
+        : document.querySelector<HTMLElement>('.pathlab-viewer-stage button[aria-controls="forge-slide-inspector"]')
+      if (replacement && replacement.getClientRects().length) replacement.focus({ preventScroll: true })
+      pendingResponsiveFocus.current = null
+    }
+    previousPanelVisibility.current = { navigator: navigatorOpen, inspector: inspectorVisible }
+  }, [navigatorOpen, inspectorVisible, panels.width, libraryMode])
+
+  useEffect(() => {
+    const surfaces: Array<{ panel: ResponsivePanel; element: HTMLElement | null; visible: boolean }> = [
+      { panel: 'navigator', element: document.getElementById('library-navigator'), visible: navigatorOpen },
+      { panel: 'inspector', element: document.querySelector<HTMLElement>('.pathlab-viewer-inspector'), visible: inspectorVisible },
+    ]
+    const listeners = surfaces.flatMap(({ panel, element, visible }) => {
+      if (!element || !visible || isPanelDocked(panel, panels.width)) return []
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return
+        const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+          .find((candidate) => candidate !== element && !candidate.contains(element) && candidate.getClientRects().length > 0)
+        if (modal) return
+        event.preventDefault()
+        event.stopPropagation()
+        if (document.activeElement instanceof HTMLElement && element.contains(document.activeElement)) pendingResponsiveFocus.current = panel
+        updatePanels({ type: 'close', panel })
+      }
+      element.addEventListener('keydown', onKeyDown, true)
+      return [{ element, onKeyDown }]
+    })
+    return () => listeners.forEach(({ element, onKeyDown }) => element.removeEventListener('keydown', onKeyDown, true))
+  }, [navigatorOpen, inspectorVisible, panels.width])
 
   const refresh = useCallback(async () => {
     try {
@@ -545,7 +620,7 @@ export function App() {
 
   const syncViewer = async (revealLibrary = true) => {
     let epoch = remoteEpoch.current
-    if (revealLibrary) { setLibraryMode('viewer'); setNavigatorOpen(true); if (isCompactWorkspace()) setInspectorOpen(false) }
+    if (revealLibrary) { setLibraryMode('viewer'); updatePanels({ type: 'open', panel: 'navigator' }) }
     try {
       const next = await api.getViewerConnection()
       if (epoch !== remoteEpoch.current) return
@@ -899,8 +974,7 @@ export function App() {
       onToggleExpanded={() => setRailExpanded((current) => !current)}
       onLocalLibrary={() => {
         setLibraryMode('local')
-        setNavigatorOpen(true)
-        if (isCompactWorkspace()) setInspectorOpen(false)
+        updatePanels({ type: 'open', panel: 'navigator' })
       }}
       onViewerLibrary={() => void syncViewer()}
       onImport={() => { setImportError(''); setImportOpen(true) }}
@@ -940,10 +1014,7 @@ export function App() {
               folderByDataset={folderByDataset}
               onSelect={(id) => {
                 setSelectedId(id)
-                if (isCompactWorkspace()) {
-                  setNavigatorOpen(false)
-                  setInspectorOpen(true)
-                }
+                if (panels.width <= 1200) updatePanels({ type: 'open', panel: 'inspector' })
               }}
               onChecked={setSelectedDatasetIds}
               onCreateFolder={(name) => setLocalFolders((current) => current.includes(name) ? current : [...current, name])}
@@ -966,8 +1037,7 @@ export function App() {
               }}
               onResolveConflict={(id, field, resolution) => void remoteAction(() => api.resolveViewerConflict(id, field, resolution), true)}
               onCollapse={() => {
-                setNavigatorOpen(false)
-                window.requestAnimationFrame(() => navigatorButtonRef.current?.focus())
+                closePanel('navigator')
               }}
             />
           )}
@@ -977,7 +1047,7 @@ export function App() {
               viewer={viewer}
               onViewer={setViewer}
               inspectorOpen={inspectorVisible}
-              onInspector={() => setInspectorOpen((current) => !current)}
+              onInspector={() => updatePanels({ type: 'toggle', panel: 'inspector' })}
             />
           ) : (
             <ViewerStage
@@ -1002,14 +1072,14 @@ export function App() {
               onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
               onUpdateAnnotation={(id, geometry) => void updateLocalAnnotation(id, { geometry })}
               inspectorOpen={inspectorVisible}
-              onInspector={() => setInspectorOpen((current) => !current)}
+              onInspector={() => updatePanels({ type: 'toggle', panel: 'inspector' })}
             />
           )}
           inspector={libraryMode === 'viewer' ? (
             <RemoteInspector
               slide={selectedRemote}
               folders={remoteLibrary.folders}
-              onCollapse={() => setInspectorOpen(false)}
+              onCollapse={() => closePanel('inspector')}
               onKeepOffline={(id) => void remoteAction(() => api.keepViewerSlideOffline(id))}
               onCancelOffline={(id) => void remoteAction(() => api.cancelViewerOfflineDownload(id))}
               onRemoveOffline={(id) => void remoteAction(() => api.removeViewerSlideOffline(id))}
@@ -1036,7 +1106,7 @@ export function App() {
                 setCropEditing(editing)
                 if (editing) setActiveTool('pan')
               }}
-              onCollapse={() => setInspectorOpen(false)}
+              onCollapse={() => closePanel('inspector')}
               onInspect={inspect}
               onConfigure={updateConfiguration}
               onUpdateView={updateViewDefinition}
@@ -1103,7 +1173,7 @@ export function App() {
               isError={Boolean(error)}
               onClearError={() => setError('')}
               onQueueReady={() => void queueReadySlides()}
-              onOpen={() => setInspectorOpen(false)}
+              onOpen={() => closePanel('inspector')}
               paused={capabilities?.queuePaused === true}
               onPause={() => {
                 void api.setQueuePaused(capabilities?.queuePaused !== true).then((state) => {
@@ -1223,9 +1293,9 @@ export function App() {
             slides={[...teachingSlides, ...datasets.map((dataset) => ({ viewerSlideId: `local:${dataset.id}`, displayName: `${dataset.displayName} (local draft)`, sha256: '' }))]}
             teachingArtifacts={Object.entries(artifactByDataset).flatMap(([datasetId, artifacts]) => artifacts.filter((artifact) => artifact.format === 'PREPARED_DZI_V2' && ['READY', 'APPROVED'].includes(artifact.status)).map((artifact) => ({ datasetId, artifactRevision: artifact.id, displayName: `${datasets.find((dataset) => dataset.id === datasetId)?.displayName || datasetId} · ${artifact.name}` })))}
             onAssociateTeachingSlide={(id, revision, referenceId, datasetId, artifactRevision) => rememberStudy(api.associateTeachingSlide(id, revision, referenceId, datasetId, artifactRevision))}
-            renderSlide={(slide, onLocation, onPixelsLoaded, draft) => {
+            renderSlide={(slide, onLocation, onPixelsLoaded, draft, selectedLocation) => {
               const association = teachingAssociationFor(slide, draft.associations)
-              return association && slide ? <TeachingSlidePreview association={association} slideId={slide.viewerSlideId} previewChecksum={draft.previewChecksum} onLocation={onLocation} onPixelsLoaded={onPixelsLoaded} /> : <p role="status">Select an exact local teaching artifact before reviewing these pixels.</p>
+              return association && slide ? <TeachingSlidePreview association={association} slideId={slide.viewerSlideId} previewChecksum={draft.previewChecksum} onLocation={onLocation} onPixelsLoaded={onPixelsLoaded} selectedLocation={selectedLocation} /> : <p role="status">Select an exact local teaching artifact before reviewing these pixels.</p>
             }}
             onCaptureSpatial={async (slide, draft) => {
               const association = teachingAssociationFor(slide, draft.associations), roi = selectedAnnotations.find((annotation) => annotation.id === selectedAnnotationId)
@@ -1348,7 +1418,7 @@ function ForgeProductRail({
   return (
     <aside className="library-app-rail" aria-label="Product navigation" data-canvas-region="icon-rail">
       <div className="library-rail-brand">
-        <div className="brand brand-library" aria-label="PathLab Forge">
+        <div className="brand brand-library" role="img" aria-label="PathLab Forge">
           <span className="brand-mark brand-mark-layers">
             <svg aria-hidden="true" viewBox="0 0 32 32" fill="none">
               <path data-tissue-layer d="M4.5 10.1 16 4.4l11.5 5.7L16 15.8 4.5 10.1Z" fill="currentColor" opacity=".34" />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { pixelsMatch, type TeachingPixels } from './teachingAssociations'
 
 export interface StudySource { title: string; url: string }
@@ -34,7 +34,8 @@ export interface StudyAuthoringProps {
   onAssociateTeachingSlide?: (id: string, revision: number, referenceId: string, datasetId: string, artifactRevision: string) => Promise<StudyDraftRecord>
   canPreviewSlide?: (slide: StudySlide | undefined) => boolean
   renderSlide?: (slide: StudySlide | undefined, onLocation: (x: number, y: number) => void,
-    onPixelsLoaded: (pixels: TeachingPixels | null) => void, draft: StudyDraftRecord) => ReactNode
+    onPixelsLoaded: (pixels: TeachingPixels | null) => void, draft: StudyDraftRecord,
+    selectedLocation?: { x: number; y: number }) => ReactNode
   onCaptureSpatial?: (slide: StudySlide | undefined, draft: StudyDraftRecord) => Promise<{ targetX: number; targetY: number; targetWidth: number; targetHeight: number }>
 }
 const content = (draft: StudyDraftRecord) => JSON.stringify([draft.name, draft.definition, draft.associations])
@@ -218,9 +219,9 @@ function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, 
   const [feedback, setFeedback] = useState('')
   useEffect(() => { setSelectedOption(''); setFeedback('') }, [task.id, draft.previewChecksum])
   return <article aria-label="Exact faculty preview"><h3>Faculty preview {index + 1} of {draft.definition.tasks.length}</h3><p>Checksum: {draft.previewChecksum}</p>
-    <p>{task.prompt}</p>{renderSlide?.(draft.definition.slides.find((slide) => slide.viewerSlideId === task.slideId), (x, y) => setLocation({ x, y }), onPixelsLoaded, draft)}
+    <p>{task.prompt}</p>{renderSlide?.(draft.definition.slides.find((slide) => slide.viewerSlideId === task.slideId), (x, y) => setLocation({ x, y }), onPixelsLoaded, draft, location)}
     {task.type === 'multiple-choice' ? <fieldset><legend>Try the authored choices</legend>{task.options?.map((choice, at) => <label key={at}><input type="radio" name={`preview-${task.id}`} checked={selectedOption === choice} onChange={() => setSelectedOption(choice)} />{choice}</label>)}</fieldset>
-      : <div><label>Preview x <input type="number" min="0" max="1" step=".001" value={location.x} onChange={(event) => setLocation({ ...location, x: event.target.valueAsNumber })} /></label><label>Preview y <input type="number" min="0" max="1" step=".001" value={location.y} onChange={(event) => setLocation({ ...location, y: event.target.valueAsNumber })} /></label></div>}
+      : <div><label>Preview x <input type="number" min="0" max="1" step=".01" aria-label="Preview X coordinate" value={location.x} onKeyDown={(event) => adjustPreviewCoordinate(event, 'x', location, setLocation)} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) setLocation((current) => ({ ...current, x: Math.max(0, Math.min(1, value)) })) }} /></label><label>Preview y <input type="number" min="0" max="1" step=".01" aria-label="Preview Y coordinate" value={location.y} onKeyDown={(event) => adjustPreviewCoordinate(event, 'y', location, setLocation)} onChange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) setLocation((current) => ({ ...current, y: Math.max(0, Math.min(1, value)) })) }} /></label></div>}
     <button type="button" onClick={() => { try { const score = scoreStudyTask(task, { selectedOption, ...location }); setFeedback(score.correct ? 'Matches the faculty key.' : 'Does not match the faculty key.') } catch (cause) { setFeedback(message(cause)) } }}>Check authored scoring</button>
     {feedback ? <p role="status">{feedback}</p> : null}
     <p>Faculty key: {task.type === 'multiple-choice' ? task.answerKey : `${task.targetX}, ${task.targetY}; ${task.targetWidth} × ${task.targetHeight}; tolerance ${task.tolerance}`}</p>
@@ -230,6 +231,16 @@ function FacultyPreview({ draft, task, index, onIndex, renderSlide, onReviewed, 
     <button type="button" disabled={busy || !slideReady} onClick={onReviewed}>I reviewed this task, key, hints and sources</button>
     <button type="button" disabled={index === 0} onClick={() => onIndex(index - 1)}>Previous task</button><button type="button" disabled={index + 1 >= draft.definition.tasks.length} onClick={() => onIndex(index + 1)}>Next task</button>
   </article>
+}
+
+function adjustPreviewCoordinate(event: KeyboardEvent<HTMLInputElement>, axis: 'x' | 'y', location: { x: number; y: number }, setLocation: (location: { x: number; y: number }) => void) {
+  const direction = event.key === 'ArrowRight' && axis === 'x' || event.key === 'ArrowDown' && axis === 'y' ? 1
+    : event.key === 'ArrowLeft' && axis === 'x' || event.key === 'ArrowUp' && axis === 'y' ? -1 : 0
+  if (!direction) return
+  event.preventDefault()
+  const increment = event.shiftKey ? .1 : .01
+  const value = Math.max(0, Math.min(1, Math.round((location[axis] + direction * increment) * 100) / 100))
+  setLocation({ ...location, [axis]: value })
 }
 export function scoreStudyTask(task: StudyTask, submission: { selectedOption?: string; x?: number; y?: number }) {
   if (task.type === 'multiple-choice') {
