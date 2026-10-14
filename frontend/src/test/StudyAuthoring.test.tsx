@@ -45,3 +45,26 @@ it('requires actual matching loaded pixels and revokes review when the preview f
   fireEvent.click(screen.getByRole('button', { name: 'Pixels failed' }))
   expect(screen.getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeDisabled()
 })
+
+it('moves spatial preview coordinates by hundredths and tenths with keyboard controls', () => {
+  const spatialDraft: StudyDraftRecord = { ...draft, definition: { ...draft.definition, tasks: [{
+    id: 'spatial', type: 'spatial', slideId: 'slide', prompt: 'Select a landmark', options: [],
+    targetX: .2, targetY: .2, targetWidth: .1, targetHeight: .1, tolerance: .05,
+    answerKey: '', hints: [], explanation: '', sources: [],
+  }] } }
+  render(<StudyAuthoring {...props(vi.fn())} drafts={[spatialDraft]} canPreviewSlide={() => true}
+    renderSlide={() => <div role="group" aria-label="Rendered teaching fixture" />} />)
+  const x = screen.getByRole('spinbutton', { name: 'Preview X coordinate' })
+  const y = screen.getByRole('spinbutton', { name: 'Preview Y coordinate' })
+  fireEvent.keyDown(x, { key: 'ArrowRight' })
+  expect(x).toHaveValue(.51)
+  fireEvent.keyDown(x, { key: 'ArrowRight', shiftKey: true })
+  expect(x).toHaveValue(.61)
+  fireEvent.keyDown(y, { key: 'ArrowUp' })
+  expect(y).toHaveValue(.49)
+  fireEvent.keyDown(y, { key: 'ArrowDown', shiftKey: true })
+  expect(y).toHaveValue(.59)
+  fireEvent.change(x, { target: { value: '1' } })
+  fireEvent.keyDown(x, { key: 'ArrowRight', shiftKey: true })
+  expect(x).toHaveValue(1)
+})

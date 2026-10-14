@@ -177,6 +177,8 @@ vi.mock('../api', () => ({
 beforeEach(() => {
   localStorage.clear()
   document.documentElement.dataset.theme = 'light'
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 })
   vi.mocked(api.getViewerConnection).mockResolvedValue({
     connected: false,
     viewerUrl: '',
@@ -521,6 +523,7 @@ test('labels legacy Viewer slides without presenting zero bytes as downloadable 
       offlineComplete: false }],
     folders: [], conflicts: [],
   })
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1000 })
   render(<App />)
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
 

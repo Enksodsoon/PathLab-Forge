@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-14
+goal: Correct layout, input, focus, image geometry, and resource behavior across
+  supported displays without changing public APIs or saved data.
