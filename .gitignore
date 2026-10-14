@@ -41,6 +41,8 @@ Thumbs.db
 *.plslide
 *_files/
 *.dzi
+!frontend/e2e/fixtures/teaching-landmarks/landmarks_files/
+!frontend/e2e/fixtures/teaching-landmarks/landmarks_files/**
 
 # Runtime and packaging
 /runtime/

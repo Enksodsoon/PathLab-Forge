@@ -170,6 +170,8 @@ test('keeps one viewer and bounded loader settings through twenty alternating re
   const tiles = await installFixture(page, testInfo)
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.goto('/assets/')
+  await expect.poll(() => tiles.requests).toBeGreaterThan(0)
+  await expect(page.locator('.forge-preview-loading')).toBeHidden({ timeout: 20_000 })
   const viewer = page.getByTestId('forge-osd')
   const primaryViewer = viewer.locator(':scope > .openseadragon-container')
   const overviewViewer = viewer.locator('.navigator .openseadragon-container')

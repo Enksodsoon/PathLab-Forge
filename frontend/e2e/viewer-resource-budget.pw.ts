@@ -107,6 +107,21 @@ async function resourceSnapshot(page: Page) {
   return page.evaluate(() => window.__forgeViewerResourceSnapshot?.() || null)
 }
 
+async function waitForSettledLoaders(page: Page, fixture: Awaited<ReturnType<typeof installOverlapFixture>>) {
+  let previousTileRequests = -1
+  let stableSamples = 0
+  await expect.poll(async () => {
+    const snapshot = await resourceSnapshot(page)
+    const idle = snapshot && snapshot.viewers.every((viewer) => viewer.jobsInProgress === 0)
+      && snapshot.activeLoaderJobs === 0 && snapshot.queuedLoaderJobs === 0
+      && snapshot.waitingLoaders === 0 && snapshot.scheduledLoaders === 0
+    if (!idle || fixture.tileRequests !== previousTileRequests) stableSamples = 0
+    else stableSamples++
+    previousTileRequests = fixture.tileRequests
+    return stableSamples >= 3
+  }, { timeout: 20_000, intervals: [250] }).toBe(true)
+}
+
 function expectResourceBounds(snapshot: ResourceSnapshot) {
   expect(snapshot.viewerCount).toBeLessThanOrEqual(3)
   expect(snapshot.activeLoaderJobs).toBeLessThanOrEqual(2)
@@ -236,12 +251,8 @@ test('bounds all concurrent workspace and Study preview viewers while resize pre
 
   await expect.poll(() => fixture.activeTiles, { timeout: 20_000 }).toBe(0)
   await expect.poll(() => fixture.teachingTileRequests, { timeout: 20_000 }).toBeGreaterThan(0)
-  await expect.poll(async () => {
-    const snapshot = await resourceSnapshot(page)
-    return snapshot && snapshot.queuedLoaderJobs === 0 && snapshot.waitingLoaders === 0 && snapshot.scheduledLoaders === 0
-      ? 0 : (snapshot?.queuedLoaderJobs || 1)
-  }, { timeout: 20_000 }).toBe(0)
   await expect(dialog.getByText('Exact associated teaching pixels loaded. Inspect every question location before reviewing.')).toBeVisible()
+  await waitForSettledLoaders(page, fixture)
   const settled = await resourceSnapshot(page) as ResourceSnapshot
   expectResourceBounds(settled)
   expect(settled.activeLoaderJobs).toBe(0)
@@ -303,11 +314,8 @@ test('replaces the main slide while source tile requests are held and retires th
   fixture.releaseTiles()
   await expect.poll(() => fixture.activeTiles, { timeout: 20_000 }).toBe(0)
   await expect.poll(() => fixture.replacementTileRequests, { timeout: 20_000 }).toBeGreaterThan(0)
-  await expect.poll(async () => {
-    const snapshot = await resourceSnapshot(page)
-    return snapshot?.viewers.find((viewer) => viewer.role === 'workspace-primary')?.jobsInProgress ?? -1
-  }, { timeout: 20_000 }).toBe(0)
   await expect.poll(async () => (await resourceSnapshot(page))?.trackedViewerCount ?? -1, { timeout: 20_000 }).toBe(2)
+  await waitForSettledLoaders(page, fixture)
   const settled = await resourceSnapshot(page) as ResourceSnapshot
   expectResourceBounds(settled)
   expect(settled.activeLoaderJobs).toBe(0)
