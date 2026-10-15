@@ -27,6 +27,7 @@ import org.pathlab.forge.conversion.ArtifactIntegrityStamp;
 import org.pathlab.forge.conversion.ArtifactRevision;
 
 public final class ViewerPairingService implements AutoCloseable, ViewerAuthorizedClient {
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private static final int LEGACY_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024;
     private static final int MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
@@ -50,8 +51,16 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         thread.setDaemon(true);
         return thread;
     });
+    @FunctionalInterface
+    public interface AcceptedAnalysisProvider {
+        List<PrivateResultsBundleBuilder.AcceptedAnalysis> acceptedFor(ArtifactRevision revision) throws IOException;
+    }
+    private volatile AcceptedAnalysisProvider acceptedAnalysisProvider = revision -> List.of();
+    public void setAcceptedAnalysisProvider(AcceptedAnalysisProvider provider) { acceptedAnalysisProvider = java.util.Objects.requireNonNull(provider); }
+
     private PendingPairing pending;
     private volatile ActiveUpload activeUpload;
+    private volatile String uploadScopeKey = "";
     private volatile ViewerUploadStatus uploadStatus = ViewerUploadStatus.idle();
 
     public ViewerPairingService(CredentialStore credentialStore) {
@@ -125,6 +134,8 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     }
 
     public synchronized ViewerConnection exchange() throws IOException {
+        if (uploadRunning()) throw new IOException("Finish or cancel the current delivery before changing Viewer accounts");
+        activeUpload = null;
         if (pending == null) {
             throw new IllegalStateException("Start Viewer pairing first");
         }
@@ -145,7 +156,9 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 "PathLab Forge on Windows",
                 strings(response.body(), "scopes"));
         pending = null;
-        return result;
+        var verified = status();
+        if (connectionKey().isEmpty()) throw new IOException("Viewer pairing requires verified organization, user and credential identity");
+        return verified;
     }
 
     public synchronized ViewerConnection status() throws IOException {
@@ -153,12 +166,9 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (stored.isEmpty()) {
             return new ViewerConnection(false, defaultOrigin, "", List.of());
         }
-        var separator = stored.get().indexOf('\n');
-        if (separator <= 0 || separator == stored.get().length() - 1) {
-            throw new IOException("Stored Viewer credential is invalid");
-        }
-        var base = validateBase(stored.get().substring(0, separator));
-        var token = stored.get().substring(separator + 1);
+        var parsedCredential = parseStoredCredential(stored.get());
+        var base = parsedCredential.base();
+        var token = parsedCredential.token();
         var request = HttpRequest.newBuilder(base.resolve("/api/v1/desktop/credential"))
                 .timeout(Duration.ofSeconds(15))
                 .header("Authorization", "Bearer " + token)
@@ -170,6 +180,16 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             return new ViewerConnection(false, base.toString(), "", List.of());
         }
         requireStatus(response, 200, "Viewer credential status failed");
+        var identity = JSON.readTree(response.body());
+        if (java.util.stream.Stream.of("organizationId", "userId", "credentialId").allMatch(field -> identity.path(field).isTextual() && !identity.path(field).textValue().isBlank()) && !identity.path("revoked").asBoolean(false)) {
+            credentialStore.write(JSON.writeValueAsString(java.util.Map.of("origin", base.toString(), "token", token,
+                    "organizationId", identity.path("organizationId").asText(), "userId", identity.path("userId").asText(),
+                    "credentialId", identity.path("credentialId").asText())));
+        } else {
+            credentialStore.write(base + "\n" + token);
+            throw new IOException("Viewer credential lacks verified organization, user and credential identity");
+        }
+        if (connectionKey().isEmpty()) throw new IOException("Viewer credential lacks verified organization, user and credential identity");
         return new ViewerConnection(
                 true,
                 base.toString(),
@@ -201,6 +221,18 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             int cropHeight,
             double downsample)
             throws IOException {
+        return startUpload(displayName, revision, annotations, cropX, cropY, cropWidth, cropHeight, downsample, false);
+    }
+
+    public synchronized ViewerUploadStatus startTeachingUpload(String displayName, ArtifactRevision revision,
+            List<AnnotationRecord> annotations, int cropX, int cropY, int cropWidth, int cropHeight,
+            double downsample) throws IOException {
+        return startUpload(displayName, revision, annotations, cropX, cropY, cropWidth, cropHeight, downsample, true);
+    }
+
+    private ViewerUploadStatus startUpload(String displayName, ArtifactRevision revision,
+            List<AnnotationRecord> annotations, int cropX, int cropY, int cropWidth, int cropHeight,
+            double downsample, boolean teaching) throws IOException {
         if (Set.of("UPLOADING", "VERIFYING_OME", "SYNCING_RESULTS", "RETRYING")
                 .contains(uploadStatus.state())) {
             throw new IllegalStateException("A Viewer upload is already active");
@@ -209,8 +241,14 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (credential == null) {
             throw new IllegalStateException("Connect to Viewer before uploading");
         }
+        status();
+        bindDeliveryAccount();
+        if (connectionKey().isEmpty()) throw new IOException("Viewer must provide verified organization, user and credential identity before delivery");
+        uploadScopeKey = connectionKey();
         var capabilities = viewerCapabilities(credential);
-        var dynamic = capabilities.supportsDynamicOme()
+        if (revision.status() != org.pathlab.forge.conversion.ArtifactRevisionStatus.APPROVED)
+            throw new IllegalStateException("Approve the exact verified artifact before delivery");
+        var dynamic = !teaching && capabilities.supportsDynamicOme()
                 && "ome-dynamic-v1".equals(revision.omeProfile())
                 && revision.format()
                         == org.pathlab.forge.conversion.ArtifactRevisionFormat.OME_DYNAMIC_V1
@@ -218,20 +256,33 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 && Files.isRegularFile(Path.of(revision.omePath()))
                 && ArtifactIntegrityStamp.matchesOme(revision)
                 && capabilities.accepts(Files.size(Path.of(revision.omePath())));
-        if (!dynamic) {
+        var prepared = teaching && capabilities.ingestModes().contains("prepared-v2")
+                && revision.format() == org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2
+                && ArtifactIntegrityStamp.matches(revision)
+                && capabilities.accepts(Files.size(Path.of(revision.packagePath())));
+        if (!dynamic && !prepared) {
             throw new IllegalStateException(
-                    "Viewer delivery requires the verified ome-dynamic-v1 artifact");
+                    teaching ? "Teaching delivery requires an approved verified prepared-v2 artifact"
+                        : "Viewer delivery requires the verified ome-dynamic-v1 artifact");
         }
-        var artifactPath = Path.of(revision.omePath());
-        var integrityMatches = ArtifactIntegrityStamp.matchesOme(revision);
+        var artifactPath = Path.of(dynamic ? revision.omePath() : revision.packagePath());
+        var integrityMatches = dynamic ? ArtifactIntegrityStamp.matchesOme(revision) : ArtifactIntegrityStamp.matches(revision);
         if (!Files.isRegularFile(artifactPath) || !integrityMatches) {
             throw new IllegalStateException(dynamic
                     ? "Approved OME-TIFF hash no longer matches"
                     : "Approved package hash no longer matches");
         }
         var total = Files.size(artifactPath);
-        var manifestSha256 = "";
-        var uploadMode = "OME_DYNAMIC";
+        var manifestSha256 = dynamic ? "" : sha256Text(tarText(artifactPath, "manifest.json", 16 * 1024 * 1024));
+        var uploadMode = dynamic ? "OME_DYNAMIC" : "PREPARED_V2";
+        var latest = deliveryStore.findLatestByArtifact(revision.id());
+        if (latest.isPresent() && latest.get().state() == ViewerDeliveryState.COMPLETE) {
+            var completed = latest.get();
+            uploadStatus = new ViewerUploadStatus("COMPLETE",revision.id(),completed.resultBytes(),completed.resultBytes(),
+                    completed.remoteSlideId(),completed.artifactSha256(),uploadMode,"This exact artifact delivery is already complete");
+            return uploadStatus;
+        }
+        activeUpload = null;
         var existingJob = deliveryStore.resumable().stream()
                 .filter(job -> job.artifactRevisionId().equals(revision.id()))
                 .filter(job -> job.viewerOrigin().equals(credential.base().toString()))
@@ -239,7 +290,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         ViewerDeliveryJob job;
         if (existingJob.isPresent()) {
             job = existingJob.get();
-            if (!job.artifactSha256().equalsIgnoreCase(revision.omeSha256())
+            if (!job.artifactSha256().equalsIgnoreCase(revision.viewerSlideSha256())
                     || job.artifactBytes() != total) {
                 throw new IllegalStateException("Persisted delivery artifact no longer matches");
             }
@@ -251,7 +302,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         } else {
             job = ViewerDeliveryJob.queued(
                     UUID.randomUUID().toString(), revision.datasetId(), revision.id(),
-                    revision.omeSha256(), total, credential.base().toString(), Instant.now());
+                    revision.viewerSlideSha256(), total, credential.base().toString(), Instant.now());
             deliveryStore.save(job);
         }
         uploadStatus = new ViewerUploadStatus(
@@ -281,11 +332,21 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     }
 
     public ViewerUploadStatus uploadStatus() {
+        try { if (!uploadScopeKey.isEmpty() && !uploadScopeKey.equals(connectionKey())) return ViewerUploadStatus.idle(); }
+        catch (IOException error) { return ViewerUploadStatus.idle(); }
         return uploadStatus;
+    }
+
+    public java.util.Optional<ViewerDeliveryJob> deliveryForArtifact(String revisionId) throws IOException {
+        if (connectionKey().isEmpty()) return java.util.Optional.empty();
+        bindDeliveryAccount();
+        return deliveryStore.findLatestByArtifact(revisionId);
     }
 
     public boolean hasResumableDelivery(String artifactRevisionId) {
         try {
+            if (connectionKey().isEmpty()) return false;
+            bindDeliveryAccount();
             return deliveryStore.resumable().stream()
                     .anyMatch(job -> job.artifactRevisionId().equals(artifactRevisionId));
         } catch (IOException unavailable) {
@@ -294,6 +355,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     }
 
     public synchronized ViewerUploadStatus cancelUpload() throws IOException {
+        if (!uploadScopeKey.isEmpty() && !uploadScopeKey.equals(connectionKey())) throw new IOException("Viewer account changed; previous delivery cannot be cancelled with this credential");
         var session = activeUpload;
         if (session == null) {
             return uploadStatus;
@@ -316,7 +378,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         activeUpload = null;
         uploadStatus = new ViewerUploadStatus(
                 "CANCELLED", job.artifactRevisionId(), job.confirmedOffset(), job.artifactBytes(),
-                "", "", "OME_DYNAMIC", "Private delivery cancelled; local artifact retained");
+                "", "", session.uploadMode(), "Private delivery cancelled; local artifact retained");
         return uploadStatus;
     }
 
@@ -345,8 +407,10 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             double downsample) {
         try {
             var length = Files.size(artifactPath);
+            capabilities = viewerCapabilities(credential);
+            if (!dynamic && (!capabilities.ingestModes().contains("prepared-v2") || !capabilities.accepts(length)))
+                throw new IOException("Viewer prepared ingest capability changed before upload creation");
             if (dynamic) {
-                capabilities = viewerCapabilities(credential);
                 if (!capabilities.supportsDynamicOme() || !capabilities.accepts(length)) {
                     throw new IOException(
                             "Viewer direct OME capability changed before upload creation");
@@ -381,12 +445,19 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                                 + ",\"packageSha256\":\"" + revision.packageSha256()
                                 + "\",\"manifestSha256\":\"" + manifestSha256 + "\""
                                 + derivativeDeclaration + "}";
-                var create = sendJson(
-                        credential.base().resolve(dynamic
-                                ? "/api/v1/desktop/ome-ingests"
-                                : "/api/v1/desktop/ingests"),
-                        createBody,
-                        "Bearer " + credential.token());
+                var pendingJob = deliveryStore.resumable().stream()
+                        .filter(job -> job.artifactRevisionId().equals(revision.id()))
+                        .findFirst().orElseThrow(() -> new IOException("Delivery intent is missing"));
+                if (pendingJob.detail().startsWith("CREATE_REQUEST_PENDING") && !capabilities.ingestCreateIdempotency())
+                    throw new IOException("Viewer lacks negotiated create acknowledgement reconciliation; existing intent retained");
+                deliveryStore.save(pendingJob.withState(ViewerDeliveryState.QUEUED,
+                        "CREATE_REQUEST_PENDING: awaiting exact ingest acknowledgement", Instant.now()));
+                var createRequest = HttpRequest.newBuilder(credential.base().resolve(dynamic
+                        ? "/api/v1/desktop/ome-ingests" : "/api/v1/desktop/ingests"))
+                        .timeout(Duration.ofSeconds(30)).header("Content-Type", "application/json")
+                        .header("Authorization", "Bearer " + credential.token());
+                if (capabilities.ingestCreateIdempotency()) createRequest.header("Idempotency-Key", pendingJob.id());
+                var create = send(createRequest.POST(HttpRequest.BodyPublishers.ofString(createBody)).build());
                 requireStatus(create, 201, dynamic
                         ? "Viewer could not create the direct OME ingest"
                         : "Viewer could not create the prepared ingest");
@@ -402,7 +473,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         .orElseThrow(() -> new IOException("Delivery job was not persisted"));
                 session = new ActiveUpload(
                         revision.id(),
-                        credential.base().resolve(string(create.body(), "uploadUrl")),
+                        sameOriginUri(credential.base(), string(create.body(), "uploadUrl")),
                         uploadMode,
                         persisted.id(),
                         ingestId);
@@ -451,7 +522,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         response,
                         List.of(200, 202),
                         "Viewer rejected an upload chunk");
-                offset += read;
+                offset = acknowledgedOffset(response, transport, offset + read);
                 persistOffset(session.jobId(), offset,
                         offset == length
                                 ? ViewerDeliveryState.VERIFYING_OME
@@ -483,7 +554,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                     var statusResponse = send(statusRequest);
                     requireStatus(
                             statusResponse, 200, "Viewer could not recover ingest finalization");
-                    if (statusResponse.body().contains("\"status\":\"ready_private\"")) {
+                    if ("ready_private".equals(string(statusResponse.body(), "status"))) {
                         var slideId = string(statusResponse.body(), "slideId");
                         var slideSha256 = stringOrEmpty(statusResponse.body(), "slideSha256");
                         var expectedSha256 = dynamic
@@ -522,7 +593,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         activeUpload = null;
                         break;
                     }
-                    if (statusResponse.body().contains("\"status\":\"failed\"")) {
+                    if ("failed".equals(string(statusResponse.body(), "status"))) {
                         throw new IOException(
                                 "Viewer finalization failed: "
                                         + stringOrEmpty(statusResponse.body(), "errorCode"));
@@ -557,7 +628,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         uploadStatus = new ViewerUploadStatus(
                                 "RETRYING", revision.id(), uploadStatus.uploadedBytes(),
                                 uploadStatus.totalBytes(), uploadStatus.viewerSlideId(),
-                                uploadStatus.viewerSlideSha256(), "OME_DYNAMIC",
+                                uploadStatus.viewerSlideSha256(), uploadStatus.uploadMode(),
                                 "Connection interrupted; resuming from Viewer offset");
                         Thread.sleep(waitMillis);
                         upload(credential, capabilities, displayName, revision, artifactPath,
@@ -574,6 +645,13 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 }
             }
             var state = "PAUSED";
+            if (session == null) {
+                try {
+                    var intent = deliveryStore.resumable().stream().filter(job -> job.artifactRevisionId().equals(revision.id())).findFirst();
+                    if (intent.isPresent()) deliveryStore.save(intent.get().withState(ViewerDeliveryState.PAUSED,
+                            intent.get().detail().startsWith("CREATE_REQUEST_PENDING") ? intent.get().detail() + ": " + detail : detail, Instant.now()));
+                } catch (IOException ignored) { state = "FAILED"; }
+            }
             if (session != null) {
                 try {
                     var job = deliveryStore.find(session.jobId()).orElseThrow();
@@ -618,6 +696,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             int cropWidth,
             int cropHeight,
             double downsample) throws IOException {
+        var uploadMode = revision.format() == org.pathlab.forge.conversion.ArtifactRevisionFormat.PREPARED_DZI_V2 ? "PREPARED_V2" : "OME_DYNAMIC";
         var credentialRequest = HttpRequest.newBuilder(
                         credential.base().resolve("/api/v1/desktop/credential"))
                 .timeout(Duration.ofSeconds(30))
@@ -629,44 +708,45 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                 || !strings(credentialResponse.body(), "scopes").contains("results:sync")) {
             uploadStatus = new ViewerUploadStatus(
                     "IMAGE_READY", revision.id(), readyJob.artifactBytes(), readyJob.artifactBytes(),
-                    readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                    readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                     "Private image is ready; reconnect once to enable structured result sync");
             return;
         }
-        var transformed = annotations.stream().map(annotation ->
-                        AnnotationTransformer.transform(
-                                        annotation.geometry(), cropX, cropY, cropWidth, cropHeight,
-                                        downsample)
-                                .map(geometry -> new AnnotationRecord(
-                                        annotation.id(), annotation.type(), geometry,
-                                        annotation.label(), annotation.color(), annotation.createdAt(),
-                                        annotation.parentId(), annotation.classification(),
-                                        annotation.updatedAt(), annotation.revision())))
-                .flatMap(java.util.Optional::stream)
-                .toList();
-        var sidecar = Path.of(revision.omePath()).resolveSibling(
-                revision.id() + ".plresults");
-        var bundle = new PrivateResultsBundleBuilder().build(
-                sidecar, revision.id(), revision.omeSha256(), transformed);
+        var sidecar = Path.of(revision.omePath()).resolveSibling(revision.id() + "." + readyJob.id() + ".plresults");
+        PrivateResultsBundleBuilder.Result bundle;
+        if (!readyJob.resultSha256().isBlank()) {
+            if (!Files.isRegularFile(sidecar, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.size(sidecar) != readyJob.resultBytes() || !PrivateResultsBundleBuilder.sha256(sidecar).equalsIgnoreCase(readyJob.resultSha256()))
+                throw new IOException("Saved result delivery payload changed or is missing; exact intent retained");
+            bundle = new PrivateResultsBundleBuilder.Result(sidecar,readyJob.resultBytes(),readyJob.resultSha256());
+        } else {
+            bundle = new PrivateResultsBundleBuilder().build(sidecar,revision,annotations,
+                    acceptedAnalysisProvider.acceptedFor(revision),cropX,cropY,cropWidth,cropHeight,downsample);
+            // Freeze the payload identity before creating a remote result reservation. A lost
+            // create acknowledgement must retry these bytes even if local reviews later change.
+            readyJob = readyJob.withResults("",bundle.sha256(),bundle.bytes(),ViewerDeliveryState.IMAGE_READY,
+                    "Verified result intent saved before reservation",Instant.now());
+            deliveryStore.save(readyJob);
+        }
         var create = sendJson(
                 credential.base().resolve("/api/v2/desktop/slides/"
                         + readyJob.remoteSlideId() + "/result-deliveries"),
                 "{\"artifactRevisionId\":\"" + escape(revision.id())
-                        + "\",\"slideSha256\":\"" + revision.omeSha256()
+                        + "\",\"slideSha256\":\"" + revision.viewerSlideSha256()
                         + "\",\"payloadLength\":" + bundle.bytes()
                         + ",\"payloadSha256\":\"" + bundle.sha256()
                         + "\",\"schema\":\"pathlab-private-results/v1\"}",
                 "Bearer " + credential.token());
         requireStatus(create, 201, "Viewer could not reserve private result delivery");
         var deliveryId = string(create.body(), "id");
-        var uploadUri = credential.base().resolve(string(create.body(), "uploadUrl"));
+        var uploadUri = sameOriginUri(credential.base(), string(create.body(), "uploadUrl"));
         var syncing = readyJob.withResults(
                 deliveryId, bundle.sha256(), bundle.bytes(),
                 ViewerDeliveryState.SYNCING_RESULTS, "Syncing structured results", Instant.now());
         deliveryStore.save(syncing);
         uploadStatus = new ViewerUploadStatus(
                 "SYNCING_RESULTS", revision.id(), 0, bundle.bytes(),
-                readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                 "Private view ready; syncing structured results");
         var transport = new ResumableUploadSession(
                 this::send, uploadUri, credential.token(), capabilities.uploadChunkBytes());
@@ -674,24 +754,29 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         requireStatus(headResponse, 200, "Viewer could not resume private results");
         var offset = headResponse.headers().firstValueAsLong("Upload-Offset").orElseThrow(
                 () -> new IOException("Viewer omitted the result upload offset"));
+        if (offset < 0 || offset > bundle.bytes()) throw new IOException("Viewer returned an invalid result offset");
         while (offset < bundle.bytes()) {
             var length = transport.nextChunkLength(bundle.bytes() - offset);
             var response = transport.patch(bundle.path(), offset, bundle.bytes() - offset);
             requireStatus(response, List.of(200, 202), "Viewer rejected a result chunk");
-            offset += length;
+            offset = acknowledgedOffset(response, transport, offset + length);
             uploadStatus = new ViewerUploadStatus(
                     "SYNCING_RESULTS", revision.id(), offset, bundle.bytes(),
-                    readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                    readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                     "Private view ready; syncing structured results");
-            if (offset == bundle.bytes() && !response.body().contains("\"status\":\"complete\"")) {
-                throw new IOException("Viewer did not apply the private result bundle");
-            }
         }
+        var statusRequest = HttpRequest.newBuilder(credential.base().resolve("/api/v2/desktop/slides/"
+                + readyJob.remoteSlideId() + "/result-deliveries/" + deliveryId))
+                .timeout(Duration.ofSeconds(30)).header("Authorization", "Bearer " + credential.token()).GET().build();
+        var finalStatus = send(statusRequest);
+        requireStatus(finalStatus, 200, "Viewer result acknowledgement is unavailable");
+        if (!"complete".equals(string(finalStatus.body(), "status")))
+            throw new IOException("Viewer has not confirmed complete structured results");
         deliveryStore.save(syncing.withState(
                 ViewerDeliveryState.COMPLETE, "Private image and results are complete", Instant.now()));
         uploadStatus = new ViewerUploadStatus(
                 "COMPLETE", revision.id(), bundle.bytes(), bundle.bytes(),
-                readyJob.remoteSlideId(), revision.omeSha256(), "OME_DYNAMIC",
+                readyJob.remoteSlideId(), revision.viewerSlideSha256(), uploadMode,
                 "Private image and structured results are complete");
     }
 
@@ -719,7 +804,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             int cropHeight,
             double downsample)
             throws IOException {
-        if (!"READY_PRIVATE".equals(uploadStatus.state())
+        if (!Set.of("IMAGE_READY", "COMPLETE").contains(uploadStatus().state())
                 || uploadStatus.viewerSlideId().isBlank()
                 || !uploadStatus.artifactRevisionId().equals(revision.id())) {
             throw new IllegalStateException("Upload this exact artifact before synchronizing annotations");
@@ -792,13 +877,12 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         var layerId = UUID.nameUUIDFromBytes(
                         ("pathlab-forge-layer:" + revision.id()).getBytes(StandardCharsets.UTF_8))
                 .toString();
+        var serialized = transformed.stream().map(annotation -> annotationOperation(
+                annotation, layerId, revision.outputWidth(), revision.outputHeight())).toList();
         var baseVersion = 0;
         for (var start = 0; start < transformed.size(); start += 50) {
             var end = Math.min(start + 50, transformed.size());
-            var operations = transformed.subList(start, end).stream()
-                    .map(annotation -> annotationOperation(
-                            annotation, layerId, revision.outputWidth(), revision.outputHeight()))
-                    .collect(java.util.stream.Collectors.joining(","));
+            var operations = String.join(",", serialized.subList(start, end));
             var ensureLayer = start == 0
                     ? ",\"ensureLayer\":{\"id\":\"" + layerId
                             + "\",\"name\":\"Layer 1\",\"sortOrder\":0,"
@@ -827,7 +911,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (integer(verification.body(), "total") != transformed.size()) {
             throw new IOException("Viewer annotation persistence count did not match");
         }
-        if (!verification.body().contains("\"visible\":true")) {
+        if (!JSON.readTree(verification.body()).path("visible").asBoolean(false)) {
             throw new IOException("Viewer annotation layer visibility was not preserved");
         }
     }
@@ -846,6 +930,7 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
 
     private static String geometryJson(
             String type, String geometry, String label, int width, int height) {
+        if ("roi_mask".equals(type)) throw new IllegalArgumentException("Contour masks require private result delivery; legacy Viewer annotation sync cannot preserve holes");
         var points = Arrays.stream(geometry.split(";"))
                 .map(value -> value.split(",", -1))
                 .map(value -> new double[] {
@@ -900,36 +985,77 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         return send(builder.POST(HttpRequest.BodyPublishers.ofString(body)).build());
     }
 
+    private static long acknowledgedOffset(HttpResponse<String> response, ResumableUploadSession transport, long expected) throws IOException {
+        var value = response.headers().firstValueAsLong("Upload-Offset");
+        if (value.isEmpty()) value = transport.head().headers().firstValueAsLong("Upload-Offset");
+        if (value.isEmpty() || value.getAsLong() != expected)
+            throw new IOException("Viewer did not acknowledge the expected upload offset");
+        return value.getAsLong();
+    }
+
     private HttpResponse<String> send(HttpRequest request) throws IOException {
+        boolean ownedTransfer = Thread.currentThread().getName().equals("pathlab-forge-viewer-upload");
+        if (ownedTransfer && ("CANCELLED".equals(uploadStatus.state()) || !uploadScopeKey.equals(connectionKey()))) throw new IOException("Viewer account changed during delivery");
         try {
-            var response = client.send(
-                    request,
-                    responseInfo -> {
-                        if (responseInfo.headers()
-                                .firstValueAsLong("Content-Length")
-                                .orElse(0)
-                                > MAX_RESPONSE_BYTES) {
-                            return HttpResponse.BodySubscribers.replacing("");
-                        }
-                        return HttpResponse.BodySubscribers.mapping(
-                                HttpResponse.BodySubscribers.ofByteArray(),
-                                bytes -> {
-                                    if (bytes.length > MAX_RESPONSE_BYTES) {
-                                        return "";
-                                    }
-                                    return new String(bytes, StandardCharsets.UTF_8);
-                                });
-                    });
-            if (response.body().isEmpty()
-                    && response.statusCode() != 204
-                    && !"HEAD".equals(request.method())) {
-                throw new IOException("Viewer response was empty or too large");
+            var response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            String body;
+            try (var input = response.body()) {
+                var bytes = input.readNBytes(MAX_RESPONSE_BYTES + 1);
+                if (bytes.length > MAX_RESPONSE_BYTES) throw new IOException("Viewer response is too large");
+                body = new String(bytes, StandardCharsets.UTF_8);
             }
-            return response;
+            if (ownedTransfer && ("CANCELLED".equals(uploadStatus.state()) || !uploadScopeKey.equals(connectionKey()))) throw new IOException("Viewer account changed during delivery");
+            if (body.isEmpty() && response.statusCode() != 204 && !"HEAD".equals(request.method()))
+                throw new IOException("Viewer response was empty");
+            final String boundedBody = body;
+            return new HttpResponse<String>() {
+                public int statusCode() { return response.statusCode(); }
+                public HttpRequest request() { return response.request(); }
+                public java.util.Optional<HttpResponse<String>> previousResponse() { return java.util.Optional.empty(); }
+                public java.net.http.HttpHeaders headers() { return response.headers(); }
+                public String body() { return boundedBody; }
+                public java.util.Optional<javax.net.ssl.SSLSession> sslSession() { return response.sslSession(); }
+                public URI uri() { return response.uri(); }
+                public HttpClient.Version version() { return response.version(); }
+            };
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new IOException("Viewer request was interrupted", error);
         }
+    }
+
+    public record ConnectionIdentity(String origin, String organizationId, String userId, String credentialId, String key) {}
+
+    public ConnectionIdentity connectionIdentity() throws IOException {
+        var stored = storedCredential();
+        if (stored == null) return new ConnectionIdentity("", "", "", "", "");
+        return connectionIdentity(stored);
+    }
+
+    private static ConnectionIdentity connectionIdentity(StoredCredential stored) {
+        var organization = stored.organizationId();
+        var user = stored.userId();
+        var credential = stored.credentialId();
+        if (organization.isBlank() || user.isBlank() || credential.isBlank())
+            return new ConnectionIdentity(stored.base().toString(), organization, user, credential, "");
+        var material = stored.base() + "\n" + organization + "\n" + user + "\n" + credential + "\n" + stored.token();
+        try {
+            var key = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(material.getBytes(StandardCharsets.UTF_8)));
+            return new ConnectionIdentity(stored.base().toString(), organization, user, credential, key);
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    public String connectionOrigin() throws IOException { var identity = connectionIdentity(); return identity.key().isEmpty() ? "" : identity.origin(); }
+
+    @Override public String connectionKey() throws IOException { return connectionIdentity().key(); }
+
+    private boolean uploadRunning() { return Set.of("UPLOADING", "VERIFYING_OME", "SYNCING_RESULTS", "RETRYING").contains(uploadStatus.state()); }
+
+    private void bindDeliveryAccount() throws IOException {
+        var key = connectionKey();
+        if (uploadRunning() && !uploadScopeKey.equals(key)) throw new IOException("Viewer account changed during delivery");
+        if (!key.isEmpty()) deliveryStore.bindConnection(key);
     }
 
     private StoredCredential storedCredential() throws IOException {
@@ -937,13 +1063,24 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         if (stored.isEmpty()) {
             return null;
         }
-        var separator = stored.get().indexOf('\n');
-        if (separator <= 0 || separator == stored.get().length() - 1) {
+        return parseStoredCredential(stored.get());
+    }
+
+    private static StoredCredential parseStoredCredential(String stored) throws IOException {
+        if (stored.startsWith("{")) {
+            var document = JSON.readTree(stored);
+            var token = document.path("token").asText("");
+            if (token.isBlank()) throw new IOException("Stored Viewer credential is invalid");
+            return new StoredCredential(validateBase(document.path("origin").asText("")), token,
+                    document.path("organizationId").asText(""), document.path("userId").asText(""), document.path("credentialId").asText(""));
+        }
+        var separator = stored.indexOf('\n');
+        if (separator <= 0 || separator == stored.length() - 1) {
             throw new IOException("Stored Viewer credential is invalid");
         }
         return new StoredCredential(
-                validateBase(stored.get().substring(0, separator)),
-                stored.get().substring(separator + 1));
+                validateBase(stored.substring(0, separator)),
+                stored.substring(separator + 1), "", "", "");
     }
 
     private static String tarText(Path archive, String expected, int maximum)
@@ -963,19 +1100,24 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
                         .replace("\0", "")
                         .trim();
                 var size = Long.parseLong(sizeText, 8);
-                if (size > Integer.MAX_VALUE) {
-                    throw new IOException("Prepared package control entry is too large");
-                }
-                var bytes = input.readNBytes((int) size);
-                input.skipNBytes((512 - size % 512) % 512);
+                if (size < 0) throw new IOException("Prepared package control entry has invalid size");
                 if (name.equals(expected)) {
-                    if (bytes.length > maximum) {
+                    if (size > maximum) {
                         throw new IOException("Prepared package control entry is too large");
                     }
-                    return new String(bytes, StandardCharsets.US_ASCII);
+                    var bytes = input.readNBytes((int) size);
+                    if (bytes.length != size) throw new IOException("Prepared package control entry is truncated");
+                    return new String(bytes, StandardCharsets.UTF_8);
                 }
+                input.skipNBytes(size);
+                input.skipNBytes((512 - size % 512) % 512);
             }
         }
+    }
+
+    private static String sha256Text(String text) throws IOException {
+        try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8))); }
+        catch (java.security.NoSuchAlgorithmException impossible) { throw new IOException(impossible); }
     }
 
     private ViewerCapabilities viewerCapabilities(StoredCredential credential) throws IOException {
@@ -997,6 +1139,14 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
         } catch (IOException | IllegalArgumentException error) {
             return ViewerCapabilities.legacy();
         }
+    }
+
+    private static URI sameOriginUri(URI base, String location) throws IOException {
+        var resolved = base.resolve(location);
+        if (!base.getScheme().equalsIgnoreCase(resolved.getScheme()) || !base.getHost().equalsIgnoreCase(resolved.getHost())
+                || base.getPort() != resolved.getPort() || resolved.getUserInfo() != null)
+            throw new IOException("Viewer upload location escaped the bound origin");
+        return resolved;
     }
 
     private static long optionalLong(String json, String key) {
@@ -1022,11 +1172,28 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     @Override
     public ViewerHttpResponse request(String method, String path, java.util.Map<String, String> headers,
             byte[] body) throws IOException {
+        var credential = storedCredential();
+        if (credential == null) throw new IllegalStateException("Connect to Viewer first");
+        return requestWithCredential(credential, method, path, headers, body);
+    }
+
+    @Override public ViewerHttpResponse requestBound(String expectedKey, String method, String path,
+            java.util.Map<String, String> headers, byte[] body) throws IOException {
+        var credential = storedCredential();
+        if (expectedKey.isBlank() || credential == null || !expectedKey.equals(connectionIdentity(credential).key()))
+            throw new IOException("Viewer account changed");
+        var response = requestWithCredential(credential, method, path, headers, body);
+        if (!expectedKey.equals(connectionKey())) { response.close(); throw new IOException("Viewer account changed"); }
+        return response;
+    }
+
+    private ViewerHttpResponse requestWithCredential(StoredCredential credential, String method, String path,
+            java.util.Map<String, String> headers, byte[] body) throws IOException {
         if (!path.startsWith("/api/") || path.contains("..")) {
             throw new IllegalArgumentException("Viewer API path is invalid");
         }
-        var credential = storedCredential();
-        if (credential == null) throw new IllegalStateException("Connect to Viewer first");
+        if (headers.keySet().stream().anyMatch(name -> name.equalsIgnoreCase("Authorization")))
+            throw new IllegalArgumentException("Viewer authorization is owned by the captured credential");
         var builder = HttpRequest.newBuilder(credential.base().resolve(path))
                 .timeout(Duration.ofMinutes(5))
                 .header("Authorization", "Bearer " + credential.token());
@@ -1081,49 +1248,31 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
     }
 
     private static String string(String json, String key) throws IOException {
-        var pattern = Pattern.compile(
-                "\"" + Pattern.quote(key) + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
-        var match = pattern.matcher(json);
-        if (!match.find()) {
-            throw new IOException("Viewer response omitted " + key);
-        }
-        return match.group(1)
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\");
+        var value = JSON.readTree(json).get(key);
+        if (value == null || !value.isTextual()) throw new IOException("Viewer response omitted " + key);
+        return value.asText();
     }
 
     private static List<String> strings(String json, String key) throws IOException {
-        var pattern = Pattern.compile(
-                "\"" + Pattern.quote(key) + "\"\\s*:\\s*\\[([^]]*)]");
-        var match = pattern.matcher(json);
-        if (!match.find()) {
-            throw new IOException("Viewer response omitted " + key);
+        var value = JSON.readTree(json).get(key);
+        if (value == null || !value.isArray()) throw new IOException("Viewer response omitted " + key);
+        var result = new ArrayList<String>();
+        for (var item : value) {
+            if (!item.isTextual()) throw new IOException("Viewer returned invalid " + key);
+            result.add(item.asText());
         }
-        var values = new ArrayList<String>();
-        var item = Pattern.compile("\"([^\"]+)\"").matcher(match.group(1));
-        while (item.find()) {
-            values.add(item.group(1));
-        }
-        return List.copyOf(values);
+        return List.copyOf(result);
     }
 
     private static int integer(String json, String key) throws IOException {
-        var pattern = Pattern.compile(
-                "\"" + Pattern.quote(key) + "\"\\s*:\\s*(\\d+)");
-        var match = pattern.matcher(json);
-        if (!match.find()) {
-            throw new IOException("Viewer response omitted " + key);
-        }
-        return Integer.parseInt(match.group(1));
+        var value = JSON.readTree(json).get(key);
+        if (value == null || !value.canConvertToInt() || !value.isIntegralNumber()) throw new IOException("Viewer response omitted " + key);
+        return value.intValue();
     }
 
     private static String stringOrEmpty(String json, String key) throws IOException {
-        if (Pattern.compile(
-                        "\"" + Pattern.quote(key) + "\"\\s*:\\s*null")
-                .matcher(json)
-                .find()) {
-            return "";
-        }
+        var value = JSON.readTree(json).get(key);
+        if (value == null || value.isNull()) return "";
         return string(json, key);
     }
 
@@ -1133,13 +1282,17 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
 
     private record PendingPairing(URI base, String deviceCode, String deviceSecret) {}
 
-    private record StoredCredential(URI base, String token) {}
+    private record StoredCredential(URI base, String token, String organizationId, String userId, String credentialId) {}
 
     private record ActiveUpload(
             String revisionId, URI uploadUri, String uploadMode, String jobId, String ingestId) {}
 
     private static final class VolatileViewerDeliveryStore implements ViewerDeliveryStore {
-        private final java.util.Map<String, ViewerDeliveryJob> jobs = new java.util.LinkedHashMap<>();
+        private java.util.Map<String, ViewerDeliveryJob> jobs = new java.util.LinkedHashMap<>();
+        private final java.util.Map<String, java.util.Map<String, ViewerDeliveryJob>> accounts = new java.util.HashMap<>();
+        @Override public synchronized void bindConnection(String key) {
+            jobs = accounts.computeIfAbsent(key, ignored -> new java.util.LinkedHashMap<>());
+        }
 
         @Override
         public synchronized void save(ViewerDeliveryJob job) {
@@ -1156,12 +1309,16 @@ public final class ViewerPairingService implements AutoCloseable, ViewerAuthoriz
             return jobs.values().stream()
                     .filter(job -> switch (job.state()) {
                         case QUEUED, UPLOADING_OME, VERIFYING_OME, IMAGE_READY,
-                                SYNCING_RESULTS, RETRYING -> true;
+                                SYNCING_RESULTS, RETRYING, PAUSED -> true;
                         default -> false;
                     })
                     .toList();
         }
 
+        @Override public synchronized java.util.Optional<ViewerDeliveryJob> findLatestByArtifact(String revisionId) {
+            return jobs.values().stream().filter(job -> job.artifactRevisionId().equals(revisionId))
+                    .max(java.util.Comparator.comparing(ViewerDeliveryJob::updatedAt));
+        }
         @Override
         public void close() {}
     }

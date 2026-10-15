@@ -110,8 +110,13 @@ public final class ReaderSession {
         inFlight.clear();
     }
 
-    public record TileKey(int series, int level, int tileX, int tileY) {
+    public record TileKey(int series, int level, int tileX, int tileY, String viewRevision) {
+        public TileKey(int series, int level, int tileX, int tileY) {
+            this(series, level, tileX, tileY, "");
+        }
+
         public TileKey {
+            viewRevision = java.util.Objects.requireNonNull(viewRevision);
             if (series < 0 || level < 0 || tileX < 0 || tileY < 0) {
                 throw new IllegalArgumentException("Tile coordinates must not be negative");
             }

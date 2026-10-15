@@ -21,9 +21,12 @@ import java.util.stream.Collectors;
 
 public final class SqliteViewerSyncStore implements ViewerSyncStore {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private final Connection connection;
+    private Connection connection;
+    private final Path databaseBase;
+    private String boundKey = "";
 
     public SqliteViewerSyncStore(Path database) throws IOException {
+        databaseBase = database.toAbsolutePath().normalize();
         try {
             var normalized = database.toAbsolutePath().normalize();
             Files.createDirectories(normalized.getParent());
@@ -55,6 +58,10 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
                         "TEXT NOT NULL DEFAULT ''");
                 ensureColumn(connection, "viewer_sync_records", "metadata_json",
                         "TEXT NOT NULL DEFAULT '{}'");
+                ensureColumn(connection, "viewer_sync_records", "intended_values", "TEXT NOT NULL DEFAULT '{}'");
+                ensureColumn(connection, "viewer_sync_records", "download_state", "TEXT NOT NULL DEFAULT 'NONE'");
+                ensureColumn(connection, "viewer_sync_records", "offline_path", "TEXT NOT NULL DEFAULT ''");
+                ensureColumn(connection, "viewer_sync_records", "download_detail", "TEXT NOT NULL DEFAULT ''");
                 statement.execute("""
                         CREATE TABLE IF NOT EXISTS viewer_sync_state (
                           singleton INTEGER PRIMARY KEY CHECK(singleton=1), cursor INTEGER NOT NULL)
@@ -67,6 +74,7 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
                           detected_at TEXT NOT NULL, unresolved INTEGER NOT NULL,
                           PRIMARY KEY(slide_id,field))
                         """);
+                ensureColumn(connection, "viewer_sync_conflicts", "base_revision", "INTEGER NOT NULL DEFAULT 0");
             }
         } catch (SQLException error) {
             throw new IOException("Unable to open Viewer sync store", error);
@@ -82,6 +90,17 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
         }
         connection.createStatement().execute(
                 "ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    }
+
+    @Override
+    public synchronized void bindConnection(String key) throws IOException {
+        if (key == null || !key.matches("[0-9a-f]{64}")) throw new IOException("Viewer connection identity is unavailable");
+        if (key.equals(boundKey)) return;
+        var replacement = new SqliteViewerSyncStore(databaseBase.resolveSibling(databaseBase.getFileName() + "." + key + ".db"));
+        try { connection.close(); }
+        catch (SQLException error) { replacement.close(); throw new IOException("Unable to switch Viewer account store", error); }
+        connection = replacement.connection;
+        boundKey = key;
     }
 
     @Override
@@ -122,29 +141,32 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
 
     @Override
     public synchronized void replaceRemoteSlides(List<ViewerRemoteSlide> slides) throws IOException {
+        boolean ownsTransaction;
+        try { ownsTransaction = connection.getAutoCommit(); }
+        catch (SQLException error) { throw new IOException("Unable to inspect sync transaction", error); }
         try {
-            connection.setAutoCommit(false);
+            if (ownsTransaction) connection.setAutoCommit(false);
             var ids = slides.stream().map(ViewerRemoteSlide::id).toList();
             var placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
             var staleWhere = ids.isEmpty() ? "" : " WHERE slide_id NOT IN (" + placeholders + ")";
-            try (var deleteConflicts = connection.prepareStatement(
-                    "DELETE FROM viewer_sync_conflicts" + staleWhere);
-                    var deleteSlides = connection.prepareStatement(
-                            "DELETE FROM viewer_sync_records" + staleWhere)) {
+            try (var mark = connection.prepareStatement("UPDATE viewer_sync_records SET status='remote_removed'" + staleWhere);
+                    var delete = connection.prepareStatement("DELETE FROM viewer_sync_records" +
+                            (ids.isEmpty() ? " WHERE " : staleWhere + " AND ") + "download_state != 'READY' AND intended_values='{}'")) {
                 for (int index = 0; index < ids.size(); index++) {
-                    deleteConflicts.setString(index + 1, ids.get(index));
-                    deleteSlides.setString(index + 1, ids.get(index));
+                    mark.setString(index + 1, ids.get(index)); delete.setString(index + 1, ids.get(index));
                 }
-                deleteConflicts.executeUpdate();
-                deleteSlides.executeUpdate();
+                mark.executeUpdate(); delete.executeUpdate();
+            }
+            try (var conflicts = connection.prepareStatement("DELETE FROM viewer_sync_conflicts WHERE slide_id NOT IN (SELECT slide_id FROM viewer_sync_records)")) {
+                conflicts.executeUpdate();
             }
             for (var slide : slides) upsertRemote(slide);
-            connection.commit();
+            if (ownsTransaction) connection.commit();
         } catch (SQLException | IOException error) {
-            try { connection.rollback(); } catch (SQLException ignored) { }
+            if (ownsTransaction) try { connection.rollback(); } catch (SQLException ignored) { }
             throw new IOException("Unable to replace remote slide snapshot", error);
         } finally {
-            try { connection.setAutoCommit(true); } catch (SQLException error) {
+            try { if (ownsTransaction) connection.setAutoCommit(true); } catch (SQLException error) {
                 throw new IOException("Unable to restore sync store transaction mode", error);
             }
         }
@@ -152,8 +174,11 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
 
     @Override
     public synchronized void replaceFolders(List<ViewerRemoteFolder> folders) throws IOException {
+        boolean ownsTransaction;
+        try { ownsTransaction = connection.getAutoCommit(); }
+        catch (SQLException error) { throw new IOException("Unable to inspect sync transaction", error); }
         try {
-            connection.setAutoCommit(false);
+            if (ownsTransaction) connection.setAutoCommit(false);
             try (var delete = connection.prepareStatement("DELETE FROM viewer_remote_folders")) {
                 delete.executeUpdate();
             }
@@ -168,12 +193,12 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
                 }
                 insert.executeBatch();
             }
-            connection.commit();
+            if (ownsTransaction) connection.commit();
         } catch (SQLException error) {
-            try { connection.rollback(); } catch (SQLException ignored) { }
+            if (ownsTransaction) try { connection.rollback(); } catch (SQLException ignored) { }
             throw new IOException("Unable to save remote folders", error);
         } finally {
-            try { connection.setAutoCommit(true); } catch (SQLException error) {
+            try { if (ownsTransaction) connection.setAutoCommit(true); } catch (SQLException error) {
                 throw new IOException("Unable to restore sync store transaction mode", error);
             }
         }
@@ -231,7 +256,12 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     public synchronized void clearDirty(String slideId, Set<String> fields) throws IOException {
         var remaining = new LinkedHashSet<>(find(slideId).orElseThrow().dirtyFields());
         remaining.removeAll(fields);
-        update(slideId, "dirty_fields", encodeFields(remaining));
+        var values = new java.util.LinkedHashMap<>(find(slideId).orElseThrow().intendedValues());
+        for (var field : fields) values.remove(field);
+        try (var statement = connection.prepareStatement("UPDATE viewer_sync_records SET dirty_fields=?,intended_values=? WHERE slide_id=?")) {
+            statement.setString(1, encodeFields(remaining)); statement.setString(2, JSON.writeValueAsString(values));
+            statement.setString(3, slideId); requireUpdated(statement.executeUpdate(), slideId);
+        } catch (SQLException error) { throw new IOException("Unable to clear intended Viewer edits", error); }
     }
 
     @Override
@@ -240,7 +270,7 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
         if (bytes < 0) throw new IllegalArgumentException("Download size must be non-negative");
         try (var statement = connection.prepareStatement("""
                 UPDATE viewer_sync_records SET partial_path=?,download_bytes=?,download_offset=0,
-                download_sha256=? WHERE slide_id=?
+                download_sha256=?,download_state='DOWNLOADING',download_detail='' WHERE slide_id=?
                 """)) {
             statement.setString(1, partialPath.toAbsolutePath().normalize().toString());
             statement.setLong(2, bytes);
@@ -265,7 +295,7 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     public synchronized void clearDownload(String slideId) throws IOException {
         try (var statement = connection.prepareStatement("""
                 UPDATE viewer_sync_records SET partial_path='',download_bytes=0,
-                download_offset=0,download_sha256='' WHERE slide_id=?
+                download_offset=0,download_sha256='',download_state='NONE',offline_path='',download_detail='' WHERE slide_id=?
                 """)) {
             statement.setString(1, slideId);
             requireUpdated(statement.executeUpdate(), slideId);
@@ -298,10 +328,10 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
     @Override
     public synchronized void recordConflict(ViewerSyncConflict conflict) throws IOException {
         try (var statement = connection.prepareStatement("""
-                INSERT INTO viewer_sync_conflicts VALUES (?,?,?,?,?,?,?)
+                INSERT INTO viewer_sync_conflicts (slide_id,field,local_value,remote_value,remote_revision,detected_at,unresolved,base_revision) VALUES (?,?,?,?,?,?,?,?)
                 ON CONFLICT(slide_id,field) DO UPDATE SET local_value=excluded.local_value,
                   remote_value=excluded.remote_value,remote_revision=excluded.remote_revision,
-                  detected_at=excluded.detected_at,unresolved=excluded.unresolved
+                  detected_at=excluded.detected_at,unresolved=excluded.unresolved,base_revision=excluded.base_revision
                 """)) {
             statement.setString(1, conflict.slideId());
             statement.setString(2, conflict.field());
@@ -310,6 +340,7 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
             statement.setLong(5, conflict.remoteRevision());
             statement.setString(6, conflict.detectedAt().toString());
             statement.setInt(7, conflict.unresolved() ? 1 : 0);
+            statement.setLong(8, conflict.baseRevision());
             statement.executeUpdate();
         } catch (SQLException error) {
             throw new IOException("Unable to save Viewer sync conflict", error);
@@ -325,7 +356,7 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
             while (rows.next()) {
                 conflicts.add(new ViewerSyncConflict(rows.getString("slide_id"), rows.getString("field"),
                         rows.getString("local_value"), rows.getString("remote_value"),
-                        rows.getLong("remote_revision"), Instant.parse(rows.getString("detected_at")),
+                        rows.getLong("base_revision"), rows.getLong("remote_revision"), Instant.parse(rows.getString("detected_at")),
                         rows.getInt("unresolved") != 0));
             }
             return List.copyOf(conflicts);
@@ -378,7 +409,45 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
         var path = row.getString("partial_path");
         return new ViewerSyncRecord(remote, decodeFields(row.getString("dirty_fields")),
                 path.isBlank() ? Path.of("") : Path.of(path), row.getLong("download_bytes"),
-                row.getLong("download_offset"), row.getString("download_sha256"));
+                row.getLong("download_offset"), row.getString("download_sha256"),
+                stringMap(row.getString("intended_values")), row.getString("download_state"),
+                Path.of(row.getString("offline_path")), row.getString("download_detail"));
+    }
+
+    private static Map<String, String> stringMap(String json) throws SQLException {
+        try { return JSON.readValue(json, new TypeReference<>() {}); }
+        catch (IOException error) { throw new SQLException("Invalid intended metadata", error); }
+    }
+
+    @Override public synchronized void saveIntendedMetadata(String slideId, Map<String, String> values) throws IOException {
+        var current = find(slideId).orElseThrow(() -> new IOException("Unknown remote slide"));
+        var merged = new java.util.LinkedHashMap<>(current.intendedValues()); merged.putAll(values);
+        var dirty = new LinkedHashSet<>(current.dirtyFields()); dirty.addAll(values.keySet());
+        try (var statement = connection.prepareStatement("UPDATE viewer_sync_records SET intended_values=?,dirty_fields=? WHERE slide_id=?")) {
+            statement.setString(1, JSON.writeValueAsString(merged)); statement.setString(2, encodeFields(dirty));
+            statement.setString(3, slideId); requireUpdated(statement.executeUpdate(), slideId);
+        } catch (SQLException error) { throw new IOException("Unable to persist intended Viewer metadata", error); }
+    }
+
+    @Override public synchronized void downloadState(String slideId, String state, Path offlinePath, String detail) throws IOException {
+        if (!Set.of("NONE", "DOWNLOADING", "VERIFYING", "READY", "FAILED", "CANCELLED").contains(state)) throw new IllegalArgumentException("Invalid offline state");
+        try (var statement = connection.prepareStatement("UPDATE viewer_sync_records SET download_state=?,offline_path=?,download_detail=? WHERE slide_id=?")) {
+            statement.setString(1, state); statement.setString(2, offlinePath.toString()); statement.setString(3, detail);
+            statement.setString(4, slideId); requireUpdated(statement.executeUpdate(), slideId);
+        } catch (SQLException error) { throw new IOException("Unable to persist offline state", error); }
+    }
+
+    @Override public synchronized void replaceSnapshot(List<ViewerRemoteSlide> slides, List<ViewerRemoteFolder> folders, long cursor) throws IOException {
+        try {
+            connection.setAutoCommit(false);
+            replaceRemoteSlides(slides); replaceFolders(folders); saveCursor(cursor);
+            connection.commit();
+        } catch (SQLException | IOException error) {
+            try { connection.rollback(); } catch (SQLException ignored) { }
+            throw new IOException("Unable to commit Viewer snapshot and cursor", error);
+        } finally {
+            try { connection.setAutoCommit(true); } catch (SQLException error) { throw new IOException("Unable to restore sync transaction", error); }
+        }
     }
 
     private static String encodeFields(Set<String> fields) {

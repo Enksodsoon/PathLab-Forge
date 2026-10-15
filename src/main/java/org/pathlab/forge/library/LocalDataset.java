@@ -29,7 +29,12 @@ public record LocalDataset(
         String sourceInventory,
         String configurationRevision,
         String currentArtifactRevision,
-        String approvedArtifactRevision) {
+        String approvedArtifactRevision,
+        String readerEngine,
+        String readerId,
+        String formatName,
+        String runtimeFingerprint,
+        String viewDefinitionJson) {
     public LocalDataset {
         id = requireText(id, "id");
         displayName = requireText(displayName, "displayName");
@@ -50,6 +55,11 @@ public record LocalDataset(
                 Objects.requireNonNull(currentArtifactRevision, "currentArtifactRevision");
         approvedArtifactRevision =
                 Objects.requireNonNull(approvedArtifactRevision, "approvedArtifactRevision");
+        readerEngine = Objects.requireNonNull(readerEngine, "readerEngine");
+        readerId = Objects.requireNonNull(readerId, "readerId");
+        formatName = Objects.requireNonNull(formatName, "formatName");
+        runtimeFingerprint = Objects.requireNonNull(runtimeFingerprint, "runtimeFingerprint");
+        viewDefinitionJson = Objects.requireNonNull(viewDefinitionJson, "viewDefinitionJson");
         if (selectedSeries < -1 || width < 0 || height < 0 || downsample <= 0
                 || estimatedOutputBytes < 0 || cropX < 0 || cropY < 0
                 || cropWidth < 0 || cropHeight < 0
@@ -92,7 +102,25 @@ public record LocalDataset(
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                format.name(),
+                "",
                 "");
+    }
+
+    public LocalDataset(
+            String id, String displayName, String sourcePath, long sourceBytes,
+            DatasetFormat format, DatasetStatus status, String detail, String outputPath,
+            String sha256, int selectedSeries, int width, int height, double downsample,
+            long estimatedOutputBytes, int cropX, int cropY, int cropWidth, int cropHeight,
+            String sourceFingerprint, String sourceInventory, String configurationRevision,
+            String currentArtifactRevision, String approvedArtifactRevision) {
+        this(id, displayName, sourcePath, sourceBytes, format, status, detail, outputPath, sha256,
+                selectedSeries, width, height, downsample, estimatedOutputBytes, cropX, cropY,
+                cropWidth, cropHeight, sourceFingerprint, sourceInventory, configurationRevision,
+                currentArtifactRevision, approvedArtifactRevision, "", "", format.name(), "", "");
     }
 
     public LocalDataset withPreparation(
@@ -120,7 +148,8 @@ public record LocalDataset(
                 sourceInventory,
                 configurationRevision,
                 currentArtifactRevision,
-                approvedArtifactRevision);
+                approvedArtifactRevision,
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
     }
 
     public LocalDataset withSourceIdentity(
@@ -151,7 +180,8 @@ public record LocalDataset(
                 nextInventory,
                 configurationRevision,
                 currentArtifactRevision,
-                approvedArtifactRevision);
+                approvedArtifactRevision,
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
     }
 
     public LocalDataset withConversion(
@@ -187,7 +217,8 @@ public record LocalDataset(
                 sourceInventory,
                 configurationRevision,
                 currentArtifactRevision,
-                approvedArtifactRevision);
+                approvedArtifactRevision,
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
     }
 
     public LocalDataset withExportConfiguration(
@@ -236,7 +267,8 @@ public record LocalDataset(
                 sourceInventory,
                 nextConfigurationRevision,
                 unchanged ? currentArtifactRevision : "",
-                unchanged ? approvedArtifactRevision : "");
+                unchanged ? approvedArtifactRevision : "",
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
     }
 
     public LocalDataset withArtifactRevision(
@@ -268,7 +300,8 @@ public record LocalDataset(
                 sourceInventory,
                 configurationRevision,
                 nextArtifactRevision,
-                "");
+                "",
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
     }
 
     public LocalDataset withApprovedArtifact(String revisionId) {
@@ -298,7 +331,8 @@ public record LocalDataset(
                 sourceInventory,
                 configurationRevision,
                 currentArtifactRevision,
-                revisionId);
+                revisionId,
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
     }
 
     public LocalDataset withArtifactPointers(
@@ -335,7 +369,42 @@ public record LocalDataset(
                 sourceInventory,
                 configurationRevision,
                 nextCurrentRevision,
-                nextApprovedRevision);
+                nextApprovedRevision,
+                readerEngine, readerId, formatName, runtimeFingerprint, viewDefinitionJson);
+    }
+
+    public LocalDataset withReaderMetadata(
+            String nextReaderEngine,
+            String nextReaderId,
+            String nextFormatName,
+            String nextRuntimeFingerprint,
+            String nextViewDefinitionJson) {
+        return new LocalDataset(
+                id, displayName, sourcePath, sourceBytes, format, status, detail, outputPath, sha256,
+                selectedSeries, width, height, downsample, estimatedOutputBytes, cropX, cropY,
+                cropWidth, cropHeight, sourceFingerprint, sourceInventory, configurationRevision,
+                currentArtifactRevision, approvedArtifactRevision, nextReaderEngine, nextReaderId,
+                nextFormatName, nextRuntimeFingerprint, nextViewDefinitionJson);
+    }
+
+    public LocalDataset withViewDefinition(String nextViewDefinitionJson, String viewRevision) {
+        Objects.requireNonNull(nextViewDefinitionJson, "nextViewDefinitionJson");
+        viewRevision = requireText(viewRevision, "viewRevision");
+        var baseRevision = configurationRevision.isBlank()
+                ? configurationRevision(sourceFingerprint, sourcePath, sourceBytes, selectedSeries,
+                        cropX, cropY, cropWidth, cropHeight, downsample)
+                : configurationRevision;
+        var nextConfigurationRevision = sha256(baseRevision + "|" + viewRevision);
+        var unchanged = nextViewDefinitionJson.equals(viewDefinitionJson);
+        return new LocalDataset(
+                id, displayName, sourcePath, sourceBytes, format, status, detail,
+                unchanged ? outputPath : "", unchanged ? sha256 : "", selectedSeries, width,
+                height, downsample, estimatedOutputBytes, cropX, cropY, cropWidth, cropHeight,
+                sourceFingerprint, sourceInventory,
+                unchanged ? configurationRevision : nextConfigurationRevision,
+                unchanged ? currentArtifactRevision : "",
+                unchanged ? approvedArtifactRevision : "",
+                readerEngine, readerId, formatName, runtimeFingerprint, nextViewDefinitionJson);
     }
 
     private static String requireText(String value, String name) {
@@ -365,10 +434,13 @@ public record LocalDataset(
                 + "|" + cropWidth
                 + "|" + cropHeight
                 + "|" + Double.toString(downsample);
+        return sha256(identity);
+    }
+
+    private static String sha256(String identity) {
         try {
-            var digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(
-                    digest.digest(identity.getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException("SHA-256 is unavailable", error);
         }

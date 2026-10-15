@@ -13,6 +13,9 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.pathlab.forge.conversion.ConversionRequest;
+import org.pathlab.forge.reader.DatasetProbe;
+import org.pathlab.forge.reader.ReaderDescriptor;
+import org.pathlab.forge.reader.RuntimeCatalog;
 
 public final class VipsRuntime implements DerivativeEngine {
     private static final Duration OPERATION_TIMEOUT = Duration.ofHours(24);
@@ -23,6 +26,10 @@ public final class VipsRuntime implements DerivativeEngine {
     }
 
     public static VipsRuntime discover(Path dataRoot) {
+        if (Boolean.getBoolean("pathlab.forge.runtime.requireProduction")) {
+            return new VipsRuntime(org.pathlab.forge.runtime.ReaderRuntimeLocator
+                    .componentRoot(dataRoot, "vips").map(VipsRuntime::findExecutable).orElse(null));
+        }
         var candidates = new ArrayList<Path>();
         var configured = System.getProperty("pathlab.forge.vips");
         if (configured == null || configured.isBlank()) {
@@ -31,6 +38,8 @@ public final class VipsRuntime implements DerivativeEngine {
         if (configured != null && !configured.isBlank()) {
             candidates.add(Path.of(configured));
         }
+        org.pathlab.forge.runtime.ReaderRuntimeLocator.componentRoot(dataRoot, "vips")
+                .ifPresent(candidates::add);
         candidates.add(dataRoot.resolve("runtime").resolve("vips"));
         candidates.add(Path.of(
                 System.getProperty("user.home"),
@@ -212,6 +221,61 @@ public final class VipsRuntime implements DerivativeEngine {
         return Math.max(1, completeStoredLevels - 1);
     }
 
+    public java.util.Optional<RuntimeCatalog> runtimeCatalog() {
+        if (!available()) return java.util.Optional.empty();
+        try {
+            var output = run(List.of("-l", "foreign"));
+            var pattern = java.util.regex.Pattern.compile(
+                    "(?m)^\\s*VipsForeignLoad\\w+File \\(([^)]+)\\), ([^\\r\\n]+)");
+            var matcher = pattern.matcher(output);
+            var formats = new ArrayList<ReaderDescriptor>();
+            while (matcher.find()) {
+                var loader = matcher.group(1);
+                var description = matcher.group(2).replaceAll(",.*$", "").trim();
+                var extensionMatcher = java.util.regex.Pattern.compile("\\.([A-Za-z0-9]+)")
+                        .matcher(matcher.group(2));
+                var extensions = new ArrayList<String>();
+                while (extensionMatcher.find()) extensions.add(
+                        extensionMatcher.group(1).toLowerCase(java.util.Locale.ROOT));
+                formats.add(new ReaderDescriptor(
+                        "LIBVIPS", loader, description, extensions,
+                        false, loader.contains("tiff") || loader.contains("openslide"),
+                        false, true));
+            }
+            var identity = description() + "\n" + formats.stream()
+                    .map(format -> format.readerId() + "=" + String.join(",", format.extensions()))
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            return java.util.Optional.of(new RuntimeCatalog(description(), sha256(identity), formats));
+        } catch (IOException error) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    public DatasetProbe.Result probe(Path source) throws IOException {
+        requireAvailable();
+        var header = executable.resolveSibling(
+                java.io.File.separatorChar == '\\' ? "vipsheader.exe" : "vipsheader");
+        var loader = lastNonblankLine(runCommand(
+                List.of(header.toString(), "-f", "vips-loader", source.toString()))).trim();
+        if (loader.isBlank()) throw new IOException("libvips did not identify an image loader");
+        var descriptor = runtimeCatalog().stream().flatMap(catalog -> catalog.formats().stream())
+                .filter(format -> format.readerId().equals(loader)).findFirst()
+                .orElse(new ReaderDescriptor(
+                        "LIBVIPS", loader, loader, List.of(), false,
+                        loader.contains("tiff") || loader.contains("openslide"), false, true));
+        var fingerprint = runtimeCatalog().map(RuntimeCatalog::fingerprint).orElse("0".repeat(64));
+        return new DatasetProbe.Result(descriptor, descriptor.displayName(), List.of(source), fingerprint);
+    }
+
+    private static String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest
+                    .getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException(error);
+        }
+    }
+
     static int maximumStoredSubifds(
             int width, int height, OmeDynamicProfile profile) {
         int levels = 0;
@@ -318,17 +382,17 @@ public final class VipsRuntime implements DerivativeEngine {
         var paddedJoin = pyramidalOme.resolveSibling("joined-resized.partial.tif");
         try {
             Files.deleteIfExists(paddedJoin);
-            boolean uniformTargetHeights = true;
+            var sourceHeights = new ArrayList<Integer>(regions.size());
+            for (var region : regions) {
+                sourceHeights.add(imageDimension(region, "height"));
+            }
+            boolean uniformTargetHeights = uniformRegionHeights(sourceHeights);
             if (downsample != 1.0) {
                 deleteTree(resizedRoot);
                 Files.createDirectories(resizedRoot);
                 var resized = new ArrayList<Path>(regions.size());
-                var sourceHeights = new ArrayList<Integer>(regions.size());
-                for (var region : regions) {
-                    sourceHeights.add(imageDimension(region, "height"));
-                }
                 var targetHeights = targetRegionHeights(sourceHeights, height);
-                uniformTargetHeights = targetHeights.stream().distinct().count() == 1;
+                uniformTargetHeights = uniformRegionHeights(targetHeights);
                 for (var index = 0; index < regions.size(); index++) {
                     var targetHeight = targetHeights.get(index);
                     var output = resizedRoot.resolve("region-%02d.tif".formatted(index));
@@ -589,11 +653,20 @@ public final class VipsRuntime implements DerivativeEngine {
         Files.createDirectories(output.toAbsolutePath().normalize().getParent());
         run(List.of(
                 "thumbnail",
-                source + "[page=" + seriesIndex + "]",
+                sourcePage(source, seriesIndex),
                 output + "[Q=82,strip]",
                 Integer.toString(maxDimension),
                 "--size",
                 "down"));
+    }
+
+    static boolean uniformRegionHeights(List<Integer> heights) {
+        return !heights.isEmpty() && heights.stream().distinct().count() == 1;
+    }
+
+    static String sourcePage(Path source, int seriesIndex) {
+        if (seriesIndex < 0) throw new IllegalArgumentException("Series index must not be negative");
+        return seriesIndex == 0 ? source.toString() : source + "[page=" + seriesIndex + "]";
     }
 
     @Override

@@ -38,7 +38,7 @@ import {
   Wrench,
   X,
 } from '@phosphor-icons/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { FormEvent, ReactNode, Ref } from 'react'
 import type OpenSeadragon from 'openseadragon'
 import { renderSVG } from 'uqr'
@@ -53,8 +53,15 @@ import type {
   ViewerPairing,
 } from './api'
 import { estimateCropOutput, isFullSlideCrop, type CropBox } from './crop'
-import { SlideViewer } from './SlideViewer'
+import { SlideViewer, type AnalysisOverlayShape } from './SlideViewer'
+import { DeterministicTools, type DeterministicRun } from './DeterministicTools'
+import { StudyAuthoring, type StudyDraftRecord, type StudySlide } from './StudyAuthoring'
+import { TeachingSlidePreview } from './TeachingSlidePreview'
+import { teachingAssociationFor, captureTeachingTarget } from './teachingAssociations'
+import { BatchReports, type BatchSummary } from './BatchReports'
+import type { MaskChannel } from './AnalysisMaskOverlay'
 import { DIRECT_PREVIEW_VERSION } from './viewerConfig'
+import { createResponsivePanelsState, isPanelDocked, isPanelOpen, responsivePanelsReducer, type ResponsivePanel } from './responsivePanels'
 
 const ACTIVE_STATUSES = new Set(['VERIFYING_SOURCE', 'INSPECTING', 'QUEUED', 'WAITING_RESOURCES', 'CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
 const CONVERSION_STATUSES = new Set(['CONVERTING', 'OPTIMIZING_OME', 'VALIDATING', 'GENERATING_DZI', 'DZI_READY'])
@@ -62,7 +69,6 @@ const CANCELLABLE_STATUSES = new Set(['QUEUED', 'WAITING_RESOURCES', ...CONVERSI
 const QUEUEABLE_STATUSES = new Set(['READY', 'READY_TO_CONVERT', 'CONVERSION_READY', 'FAILED', 'CANCELLED'])
 const NO_ANNOTATIONS: AnnotationRecord[] = []
 const DEFAULT_LOCAL_FOLDER = 'Unfiled'
-const isCompactWorkspace = () => typeof window !== 'undefined' && window.innerWidth <= 1180
 
 function viewerVisibility(slide?: Pick<api.ViewerRemoteItem, 'state' | 'visibility'>) {
   if (slide?.visibility) return slide.visibility === 'published' ? 'Published' : 'Private'
@@ -84,12 +90,33 @@ export function App() {
   const [seriesByDataset, setSeriesByDataset] = useState<Record<string, SeriesInfo[]>>({})
   const [artifactByDataset, setArtifactByDataset] = useState<Record<string, ArtifactRevision[]>>({})
   const [viewingRevisionByDataset, setViewingRevisionByDataset] = useState<Record<string, string>>({})
-  const [navigatorOpen, setNavigatorOpen] = useState(
-    () => typeof window === 'undefined' || window.innerWidth > 960,
-  )
-  const [inspectorOpen, setInspectorOpen] = useState(true)
+  const [panels, dispatchPanels] = useReducer(responsivePanelsReducer, typeof window === 'undefined' ? 1440 : window.innerWidth, createResponsivePanelsState)
+  const panelsRef = useRef(panels)
+  panelsRef.current = panels
+  const pendingResponsiveFocus = useRef<ResponsivePanel | null>(null)
+  const previousPanelVisibility = useRef<{ navigator: boolean; inspector: boolean } | null>(null)
+  const updatePanels = (action: Parameters<typeof responsivePanelsReducer>[1]) => {
+    panelsRef.current = responsivePanelsReducer(panelsRef.current, action)
+    dispatchPanels(action)
+  }
+  const closePanel = (panel: ResponsivePanel) => {
+    const root = document.querySelector<HTMLElement>(panel === 'navigator' ? '#library-navigator' : '.pathlab-viewer-inspector')
+    if (root && document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) pendingResponsiveFocus.current = panel
+    updatePanels({ type: 'close', panel })
+  }
+  const navigatorOpen = isPanelOpen(panels, 'navigator')
+  const inspectorPreferenceOpen = isPanelOpen(panels, 'inspector')
   const [railExpanded, setRailExpanded] = useState(false)
   const [activeTool, setActiveTool] = useState('pan')
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState('')
+  const [analysisRuns, setAnalysisRuns] = useState<DeterministicRun[]>([])
+  const [analysisHasMore, setAnalysisHasMore] = useState(false)
+  const [analysisNextOffset, setAnalysisNextOffset] = useState(0)
+  const [analysisMask, setAnalysisMask] = useState<{ context: string; runId: string; channel: MaskChannel }>()
+  const [exportRunId, setExportRunId] = useState('')
+  const [analysisOverlay, setAnalysisOverlay] = useState<{ context: string; runId: string; shapes: AnalysisOverlayShape[] } | null>(null)
+  const [overlayPage, setOverlayPage] = useState(0)
+  const analysisContext = useRef('')
   const [cropDrafts, setCropDrafts] = useState<Record<string, CropBox>>(() => {
     try {
       return JSON.parse(window.localStorage.getItem('pathlab-forge-crop-drafts-v1') || '{}')
@@ -117,18 +144,56 @@ export function App() {
   const [selectedRemoteId, setSelectedRemoteId] = useState('')
   const [remoteRename, setRemoteRename] = useState<{ id: string; current: string; value: string }>()
   const [annotationsByDataset, setAnnotationsByDataset] = useState<Record<string, AnnotationRecord[]>>({})
+  const [studyOpen, setStudyOpen] = useState(false)
+  const [studyLoaded, setStudyLoaded] = useState(false)
+  const [studyDrafts, setStudyDrafts] = useState<StudyDraftRecord[]>([])
+  const [teachingSlides, setTeachingSlides] = useState<StudySlide[]>([])
+  const [studyError, setStudyError] = useState('')
+  const [studyExport, setStudyExport] = useState<api.ExportState>()
   const [featureOpen, setFeatureOpen] = useState(false)
   const [features, setFeatures] = useState<api.FeaturePack[]>([])
   const [featureLoading, setFeatureLoading] = useState(false)
+  const [featureProgress, setFeatureProgress] = useState<api.FeatureProgress>()
   const [libraryMode, setLibraryMode] = useState<'local' | 'viewer'>('local')
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([])
   const [localFolders, setLocalFolders] = useState<string[]>(() => readStored('pathlab-forge-folders-v1', [DEFAULT_LOCAL_FOLDER]))
   const [folderByDataset, setFolderByDataset] = useState<Record<string, string>>(() => readStored('pathlab-forge-folder-map-v1', {}))
   const [batchRemoveIds, setBatchRemoveIds] = useState<string[]>([])
+  const [savedBatches, setSavedBatches] = useState<BatchSummary[]>([])
+  const [batchNextOffset, setBatchNextOffset] = useState(0)
+  const [batchHasOlder, setBatchHasOlder] = useState(false)
+  const [batchReportsOpen, setBatchReportsOpen] = useState(false)
+  const [batchExportRequest, setBatchExportRequest] = useState<{ id: string; format: 'csv' | 'json' }>()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const navigatorButtonRef = useRef<HTMLButtonElement>(null)
+  const remoteEpoch = useRef(0)
+  const connectionIdentity = useRef('')
 
+  const clearRemote = () => {
+    remoteEpoch.current++
+    setRemoteLibrary({ items: [], folders: [], conflicts: [] }); setSelectedRemoteId(''); setRemoteRename(undefined)
+    setRemoteSyncReady(false); setRemoteLastChecked(undefined); setViewer(null)
+    setTeachingSlides([])
+  }
+  const adoptConnection = (next: ViewerConnection | undefined) => {
+    const identity = next?.connected ? JSON.stringify([next.viewerUrl, next.deviceName, next.connectionRevision || '']) : ''
+    if (identity !== connectionIdentity.current) { clearRemote(); connectionIdentity.current = identity }
+    setConnection(next)
+  }
+  const remoteAction = async (operation: () => Promise<unknown>, synchronize = false, successNotice = '') => {
+    const epoch = remoteEpoch.current
+    setError('')
+    try {
+      await operation()
+      if (epoch !== remoteEpoch.current) return
+      const library = await (synchronize ? api.syncViewerLibrary() : api.viewerLibrary())
+      if (epoch === remoteEpoch.current) { setRemoteLibrary(library); if (successNotice) setNotice(successNotice) }
+    } catch (cause) { if (epoch === remoteEpoch.current) setError(viewerConnectionMessage(cause)) }
+  }
   const selected = datasets.find((item) => item.id === selectedId) ?? datasets[0]
+  analysisContext.current = `${selected?.id}|${selected?.viewRevision}|${selected?.configurationRevision}`
+  const overlayRun = analysisRuns.find((run) => run.id === analysisOverlay?.runId)
+  const inspectorVisible = inspectorPreferenceOpen && Boolean(libraryMode === 'viewer' ? remoteLibrary.items.length : selected)
   const selectedRemote = remoteLibrary.items.find((item) => item.id === selectedRemoteId)
     ?? remoteLibrary.items[0]
   const cropDraft = selected ? cropDrafts[selected.id] : undefined
@@ -152,6 +217,34 @@ export function App() {
   const selectedAnnotations = selected
     ? annotationsByDataset[selected.id] ?? NO_ANNOTATIONS
     : NO_ANNOTATIONS
+  const overlayRoi = selectedAnnotations.find((annotation) => annotation.id === overlayRun?.annotationId)
+  const currentGeometryView = !viewingRevision || viewingRevision.configurationRevision === selected?.configurationRevision
+  const visibleAnalysisOverlays = currentGeometryView && analysisOverlay?.context === analysisContext.current && overlayRun?.status === 'SUCCEEDED'
+    && !overlayRun.stale && overlayRoi?.revision === overlayRun.provenance.annotationRevision
+    && overlayRoi.geometry === overlayRun.provenance.annotationGeometry ? analysisOverlay.shapes : []
+  const maskRun = analysisRuns.find((run) => run.id === analysisMask?.runId)
+  const maskRoi = selectedAnnotations.find((annotation) => annotation.id === maskRun?.annotationId)
+  const visibleAnalysisMask = currentGeometryView && analysisMask?.context === analysisContext.current && maskRun?.status === 'SUCCEEDED' && !maskRun.stale
+    && maskRun.datasetId === selected?.id && maskRun.provenance.sourceFingerprint === selected.sourceFingerprint
+    && maskRun.provenance.series === selected.selectedSeries && maskRoi?.series === maskRun.provenance.series
+    && maskRoi.z === maskRun.provenance.z && maskRoi.t === maskRun.provenance.t && maskRoi.viewRevision === maskRun.provenance.viewRevision
+    && maskRoi.revision === maskRun.provenance.annotationRevision && maskRoi.geometry === maskRun.provenance.annotationGeometry
+    ? { run: maskRun, channel: analysisMask.channel } : undefined
+  const showAnalysisObjects = async (requested: DeterministicRun) => {
+    const context = analysisContext.current
+    try {
+      const [run, review] = await Promise.all([api.analysisRun(requested.id), api.analysisReview(requested.id)])
+      if (analysisContext.current !== context) return
+      if (!run || run.status !== 'SUCCEEDED' || run.stale) throw new Error('Result changed; rerun against the current source and ROI.')
+      const shapes = review.objects.map((object) => ({
+        id: `${run.id}:${object.id}`, type: object.kind === 'TMA_CORE' ? 'rectangle' : 'point',
+        geometry: object.geometry, label: `${object.classification || object.kind} ${object.properties.missing === 'true' ? '(missing)' : object.properties.accepted === 'false' ? '(rejected)' : '(candidate)'}`,
+        color: object.properties.missing === 'true' || object.properties.accepted === 'false' ? '#d75667' : '#39c7a3',
+      }))
+      setAnalysisRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]); setAnalysisOverlay({ context, runId: run.id, shapes }); setOverlayPage(0); setActiveTool('pan')
+      setNotice(`Inspecting ${shapes.length} saved objects on the slide. Review corrections in Tools; exports retain every object.`)
+    } catch (cause) { if (analysisContext.current === context) setError(message(cause)) }
+  }
 
   useEffect(() => {
     if (!selected || selected.width <= 0 || selected.height <= 0) {
@@ -192,11 +285,74 @@ export function App() {
   }, [folderByDataset])
 
   useEffect(() => {
+    const onResize = () => {
+      const before = panelsRef.current
+      const width = window.innerWidth
+      if (width === before.width) return
+      const next = responsivePanelsReducer(before, { type: 'resize', width })
+      const active = document.activeElement
+      for (const panel of ['navigator', 'inspector'] as const) {
+        if (isPanelOpen(before, panel) && !isPanelOpen(next, panel)
+          && active instanceof HTMLElement && active.closest(panel === 'navigator' ? '#library-navigator' : '.pathlab-viewer-inspector')) {
+          pendingResponsiveFocus.current = panel
+        }
+      }
+      updatePanels({ type: 'resize', width })
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  useEffect(() => {
+    const navigator = document.getElementById('library-navigator')
     const inspector = document.querySelector<HTMLElement>('.pathlab-viewer-inspector')
-    if (!inspector) return
-    inspector.inert = !inspectorOpen
-    inspector.setAttribute('aria-hidden', inspectorOpen ? 'false' : 'true')
-  }, [inspectorOpen])
+    if (!navigator || !inspector) return
+    navigator.inert = !navigatorOpen
+    navigator.setAttribute('aria-hidden', navigatorOpen ? 'false' : 'true')
+    inspector.inert = !inspectorVisible
+    inspector.setAttribute('aria-hidden', inspectorVisible ? 'false' : 'true')
+    const previous = previousPanelVisibility.current ?? { navigator: navigatorOpen, inspector: inspectorVisible }
+    const focusInto = (root: HTMLElement) => {
+      root.setAttribute('tabindex', '-1')
+      const first = root.querySelector<HTMLElement>('button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([type="hidden"]):not([disabled]), [tabindex="0"]')
+      ;(first ?? root).focus({ preventScroll: true })
+    }
+    if (navigatorOpen && !previous.navigator && !isPanelDocked('navigator', panels.width)) focusInto(navigator)
+    if (inspectorVisible && !previous.inspector && !isPanelDocked('inspector', panels.width)) focusInto(inspector)
+    const restore = pendingResponsiveFocus.current
+    if (restore && !isPanelOpen(panels, restore)) {
+      const replacement = restore === 'navigator'
+        ? document.querySelector<HTMLElement>(libraryMode === 'viewer' ? '[aria-label="Viewer library"]' : '[aria-label="Local library"]')
+          ?? document.querySelector<HTMLElement>('[aria-label="Local library"]')
+        : document.querySelector<HTMLElement>('.pathlab-viewer-stage button[aria-controls="forge-slide-inspector"]')
+      if (replacement && replacement.getClientRects().length) replacement.focus({ preventScroll: true })
+      pendingResponsiveFocus.current = null
+    }
+    previousPanelVisibility.current = { navigator: navigatorOpen, inspector: inspectorVisible }
+  }, [navigatorOpen, inspectorVisible, panels.width, libraryMode])
+
+  useEffect(() => {
+    const surfaces: Array<{ panel: ResponsivePanel; element: HTMLElement | null; visible: boolean }> = [
+      { panel: 'navigator', element: document.getElementById('library-navigator'), visible: navigatorOpen },
+      { panel: 'inspector', element: document.querySelector<HTMLElement>('.pathlab-viewer-inspector'), visible: inspectorVisible },
+    ]
+    const listeners = surfaces.flatMap(({ panel, element, visible }) => {
+      if (!element || !visible || isPanelDocked(panel, panels.width)) return []
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return
+        const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+          .find((candidate) => candidate !== element && !candidate.contains(element) && candidate.getClientRects().length > 0)
+        if (modal) return
+        event.preventDefault()
+        event.stopPropagation()
+        if (document.activeElement instanceof HTMLElement && element.contains(document.activeElement)) pendingResponsiveFocus.current = panel
+        updatePanels({ type: 'close', panel })
+      }
+      element.addEventListener('keydown', onKeyDown, true)
+      return [{ element, onKeyDown }]
+    })
+    return () => listeners.forEach(({ element, onKeyDown }) => element.removeEventListener('keydown', onKeyDown, true))
+  }, [navigatorOpen, inspectorVisible, panels.width])
 
   const refresh = useCallback(async () => {
     try {
@@ -210,14 +366,17 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    const bootstrapEpoch = remoteEpoch.current
     void api.bootstrap()
       .then(([initialDatasets, initialCapabilities]) => {
         setDatasets(initialDatasets)
         setCapabilities(initialCapabilities)
         setSelectedId(initialDatasets[0]?.id || '')
         setNotice(initialDatasets.length ? 'Local workspace restored' : 'Choose a slide to begin')
+        void api.features().then((result) => setFeatures(result.features)).catch(() => undefined)
         void api.getViewerConnection().then((next) => {
-          setConnection(next)
+          if (bootstrapEpoch !== remoteEpoch.current) return
+          adoptConnection(next)
           if (next.viewerUrl) setViewerUrl(next.viewerUrl)
         }).catch(() => undefined)
         void refresh()
@@ -279,6 +438,19 @@ export function App() {
     }
   }
 
+  const refreshAnalysis = useCallback(async () => {
+    const context = analysisContext.current
+    if (selected?.id) { const runs = await api.analysisRuns(selected.id); if (context === analysisContext.current) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100); setAnalysisNextOffset(runs.length) } }
+  }, [selected?.id])
+  useEffect(() => {
+    let cancelled = false
+    setAnalysisRuns([])
+    if (selected?.id) void api.analysisRuns(selected.id).then((runs) => {
+      if (!cancelled) { setAnalysisRuns(runs); setAnalysisHasMore(runs.length === 100); setAnalysisNextOffset(runs.length) }
+    }).catch((error) => { if (!cancelled) setError(message(error)) })
+    return () => { cancelled = true }
+  }, [selected?.id])
+
   const handleSelectedImport = async (paths: string[]) => {
     if (!paths.length) return
     setImportError('')
@@ -286,8 +458,7 @@ export function App() {
     try {
       let next: { datasets: Dataset[] } | undefined
       for (const selectedPath of paths) next = await api.importDataset(selectedPath)
-      if (!next) return
-      finishImport(next)
+      if (next) finishImport(next)
     } catch (nextError) {
       const detail = message(nextError)
       setImportError(detail)
@@ -330,6 +501,15 @@ export function App() {
       setImporting(false)
     }
   }
+
+  useEffect(() => window.forgeDesktop?.onCommand((command) => {
+    if (command === 'open-sources') setImportOpen(true)
+    if (command === 'open-directory') {
+      void window.forgeDesktop?.selectDirectory().then((path) => {
+        if (path) void handleProjectImport(path)
+      }).catch((error) => setError(message(error)))
+    }
+  }))
 
   const removeDataset = async () => {
     if (!removeTarget) return
@@ -382,6 +562,18 @@ export function App() {
     }
   }
 
+  const updateViewDefinition = async (view: api.ViewDefinition) => {
+    if (!selected) return
+    try {
+      const updated = await api.updateView(selected.id, view)
+      setDatasets((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setNotice('Series, axes, channels, and render profile saved')
+    } catch (nextError) {
+      setError(message(nextError))
+      throw nextError
+    }
+  }
+
   const beginConversion = async () => {
     if (!selected) return
     try {
@@ -397,16 +589,23 @@ export function App() {
     const selectedIds = new Set(ids)
     const candidates = datasets.filter((item) => selectedIds.has(item.id) && QUEUEABLE_STATUSES.has(item.status))
     if (!candidates.length) return
-    setNotice(`Preparing ${candidates.length} slides for the adaptive queue…`)
-    for (const candidate of candidates) {
-      try {
-        if (candidate.selectedSeries < 0) await api.inspectDataset(candidate.id)
-        await api.convert(candidate.id)
-      } catch (nextError) {
-        setError(`${candidate.displayName}: ${message(nextError)}`)
-      }
-    }
-    await refresh()
+    setNotice(`Saving ${candidates.length} slides to the durable queue…`)
+    try {
+      const batch = await api.createBatch(candidates.map((candidate) => candidate.id))
+      setSavedBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)])
+      setBatchReportsOpen(true); await refresh()
+      setNotice(`Saved ${batch.items.length}-slide batch; inspect per-slide outcomes and retry without replacing completed artifacts`)
+    } catch (cause) { setError(message(cause)) }
+  }
+  const readBatchReport = useCallback(api.batchReport, [])
+  const openBatchReports = async () => {
+    setBatchReportsOpen(true)
+    try { const page = await api.batches(); setSavedBatches(page); setBatchNextOffset(page.length); setBatchHasOlder(page.length === 50) } catch (cause) { setError(message(cause)) }
+  }
+  const loadOlderBatches = async () => {
+    const page = await api.batches(batchNextOffset)
+    setSavedBatches((current) => [...current, ...page.filter((item) => !current.some((existing) => existing.id === item.id))])
+    setBatchNextOffset((current) => current + page.length); setBatchHasOlder(page.length === 50)
   }
 
   const removeSelectedDatasets = async () => {
@@ -420,42 +619,46 @@ export function App() {
   }
 
   const syncViewer = async (revealLibrary = true) => {
-    if (revealLibrary) {
-      setLibraryMode('viewer')
-      setNavigatorOpen(true)
-      if (isCompactWorkspace()) setInspectorOpen(false)
-    }
+    let epoch = remoteEpoch.current
+    if (revealLibrary) { setLibraryMode('viewer'); updatePanels({ type: 'open', panel: 'navigator' }) }
     try {
       const next = await api.getViewerConnection()
-      setConnection(next)
+      if (epoch !== remoteEpoch.current) return
+      adoptConnection(next)
+      epoch = remoteEpoch.current
+      const libraryEpoch = remoteEpoch.current
       if (next.connected) {
-        setRemoteLibrary(await api.syncViewerLibrary())
-        setRemoteSyncReady(true)
-        setRemoteLastChecked(Date.now())
-      } else {
-        setRemoteSyncReady(false)
-      }
-      setNotice(next.connected
-        ? 'Viewer library synchronized'
-        : 'Connect to PathLab Viewer before opening its private library')
-      if (!next.connected) connect()
+        const library = await api.syncViewerLibrary()
+        if (libraryEpoch !== remoteEpoch.current) return
+        setRemoteLibrary(library); setRemoteSyncReady(true); setRemoteLastChecked(Date.now())
+      } else { clearRemote(); connect() }
+      setNotice(next.connected ? 'Viewer library synchronized' : 'Connect to PathLab Viewer before opening its private library')
     } catch (nextError) {
-      setRemoteSyncReady(false)
-      setError(viewerConnectionMessage(nextError))
+      if (epoch !== remoteEpoch.current) return
+      setRemoteSyncReady(false); setError(viewerConnectionMessage(nextError))
     }
   }
-
   useEffect(() => {
     if (libraryMode !== 'viewer' || !connection?.connected) return
+    let epoch = remoteEpoch.current
+    let stopped = false, pending = false
     const timer = window.setInterval(() => {
-      void api.syncViewerLibrary().then((next) => {
-        setRemoteLibrary(next)
-        setRemoteSyncReady(true)
-        setRemoteLastChecked(Date.now())
-      }).catch(() => setRemoteSyncReady(false))
+      if (pending || stopped) return
+      pending = true
+      void (async () => {
+        const currentConnection = await api.getViewerConnection()
+        if (stopped || epoch !== remoteEpoch.current) return undefined
+        adoptConnection(currentConnection); epoch = remoteEpoch.current
+        if (!currentConnection.connected) return undefined
+        return api.syncViewerLibrary()
+      })().then((next) => {
+        if (!next || stopped || epoch !== remoteEpoch.current) return
+        setRemoteLibrary(next); setRemoteSyncReady(true); setRemoteLastChecked(Date.now())
+      }).catch(() => { if (!stopped && epoch === remoteEpoch.current) setRemoteSyncReady(false) }).finally(() => { pending = false })
     }, 5_000)
-    return () => window.clearInterval(timer)
-  }, [libraryMode, connection?.connected])
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [libraryMode, connection?.connected, connection?.viewerUrl, connection?.deviceName, connection?.connectionRevision])
+  useEffect(() => { setExportRunId(''); setAnalysisOverlay(null) }, [selected?.id, selected?.viewRevision, selected?.configurationRevision])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -528,33 +731,37 @@ export function App() {
   const connect = () => setPairingOpen(true)
 
   const beginPairing = async () => {
+    clearRemote(); connectionIdentity.current = ''; setConnection(undefined)
+    const epoch = remoteEpoch.current
     try {
       setError('')
       const next = await api.startViewerPairing(viewerUrl)
+      if (epoch !== remoteEpoch.current) return
       setPairing(next)
       setNotice(`Waiting for Viewer approval of ${next.userCode}`)
     } catch (nextError) {
-      setError(viewerConnectionMessage(nextError))
+      if (epoch === remoteEpoch.current) setError(viewerConnectionMessage(nextError))
     }
   }
 
   useEffect(() => {
     if (!pairing) return undefined
     let stopped = false
+    const epoch = remoteEpoch.current
     let busy = false
     const poll = async () => {
       if (busy || stopped) return
       busy = true
       try {
         const next = await api.exchangeViewerPairing()
-        if (stopped) return
-        setConnection(next)
+        if (stopped || epoch !== remoteEpoch.current) return
+        adoptConnection(next)
         setViewerUrl(next.viewerUrl)
         setPairing(undefined)
         setPairingOpen(false)
         setNotice('PathLab Viewer connected with a revocable desktop credential')
       } catch (nextError) {
-        if (stopped) return
+        if (stopped || epoch !== remoteEpoch.current) return
         const normalized = message(nextError).toLowerCase()
         if (!normalized.includes('pairing_pending') && !normalized.includes('not approved yet')) {
           setError(viewerConnectionMessage(nextError))
@@ -575,9 +782,10 @@ export function App() {
   }, [pairing])
 
   const disconnectViewer = async () => {
+    clearRemote(); connectionIdentity.current = ''; setConnection(undefined); setPairing(undefined); setViewerUpload(undefined)
     try {
       await api.revokeViewerConnection()
-      setConnection(undefined)
+      adoptConnection(undefined)
       setPairing(undefined)
       setViewerUpload(undefined)
       setPairingOpen(false)
@@ -608,6 +816,7 @@ export function App() {
       const created = await api.createAnnotation(selected.id, {
         type: activeTool,
         geometry,
+        configurationRevision: selected.configurationRevision,
         label: activeTool === 'text' ? 'Text annotation' : '',
       })
       setAnnotationsByDataset((current) => ({
@@ -636,6 +845,25 @@ export function App() {
     }
   }
 
+  const updateLocalAnnotation = async (id: string, values: { geometry?: string; label?: string; color?: string }) => {
+    if (!selected) return
+    const annotation = selectedAnnotations.find((item) => item.id === id)
+    if (!annotation) return
+    try {
+      const updated = await api.updateAnnotation(selected.id, annotation, values)
+      setAnnotationsByDataset((current) => ({ ...current,
+        [selected.id]: (current[selected.id] || []).map((item) => item.id === id ? updated : item) }))
+    } catch (failure) { setError(message(failure)) }
+  }
+
+  const composeLocalBrush = async (parentId: string, operation: 'brush_add' | 'brush_subtract', geometry: string, revision: number) => {
+    if (!selected) return
+    try {
+      const updated = await api.composeBrush(selected.id, parentId, operation, geometry, revision, selected.configurationRevision)
+      setAnnotationsByDataset((current) => ({ ...current, [selected.id]: (current[selected.id] || []).map((item) => item.id === parentId ? updated : item) }))
+    } catch (failure) { setError(message(failure)) }
+  }
+
   useEffect(() => {
     if (!viewerUpload || !['UPLOADING', 'VERIFYING_OME', 'SYNCING_RESULTS', 'RETRYING']
       .includes(viewerUpload.state)) return
@@ -649,9 +877,10 @@ export function App() {
   }, [viewerUpload?.state])
 
   const storage = useMemo(() => ({
-    usableBytes: Math.max(0, 512 * 1024 ** 3 - datasets.reduce((sum, item) => sum + item.sourceBytes, 0)),
-    effectiveCapacityBytes: 512 * 1024 ** 3,
-  }), [datasets])
+    managedUsage: capabilities?.managedUsage,
+    usableBytes: capabilities?.usableBytes ?? 0,
+    effectiveCapacityBytes: capabilities?.effectiveCapacityBytes ?? 0,
+  }), [capabilities])
 
   const loadFeatures = async (catalogRefresh = false) => {
     setFeatureLoading(true)
@@ -669,12 +898,35 @@ export function App() {
     void loadFeatures()
   }
 
-  const changeFeature = async (feature: api.FeaturePack) => {
+  const importFeature = async () => {
     setFeatureLoading(true)
     try {
-      if (feature.state === 'INSTALLED') await api.disableFeature(feature.id)
-      else if (feature.state === 'DISABLED') await api.uninstallFeature(feature.id)
-      else await api.installFeature(feature.id)
+      const files = await window.forgeDesktop?.selectFeatureFiles()
+      if (!files) return
+      await api.importFeature(files)
+      setFeatures((await api.features()).features)
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setFeatureLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!featureOpen || !featureLoading) return
+    const timer = window.setInterval(() => {
+      void api.featureProgress().then(setFeatureProgress).catch((error) => setError(message(error)))
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [featureOpen, featureLoading])
+
+  const changeFeature = async (feature: api.FeaturePack, action: api.FeatureAction, version = '') => {
+    setFeatureLoading(true)
+    try {
+      if (action === 'disable') await api.disableFeature(feature.id)
+      else if (action === 'uninstall') await api.uninstallFeature(feature.id)
+      else if (action === 'install') await api.installFeature(feature.id)
+      else await api.featureAction(feature.id, action, version)
       setFeatures((await api.features()).features)
     } catch (nextError) {
       setError(message(nextError))
@@ -682,6 +934,34 @@ export function App() {
       setFeatureLoading(false)
     }
   }
+
+  const rememberStudy = async (operation: Promise<StudyDraftRecord>) => {
+    const saved = await operation
+    setStudyDrafts((current) => [saved, ...current.filter((value) => value.id !== saved.id)])
+    return saved
+  }
+  const openStudy = async () => {
+    setStudyOpen(true); setStudyError('')
+    try { setStudyDrafts(await api.studyDrafts()); setStudyLoaded(true) }
+    catch (cause) { setStudyError(message(cause)) }
+  }
+  const exportAuthoredStudy = async (id: string, format: 'json' | 'csv' | 'approved', checksum = '') => {
+    setStudyError('')
+    try {
+      if (window.forgeDesktop) {
+        const destination = await window.forgeDesktop.selectExportDestination(`study-pack.${format === 'csv' ? 'csv' : 'json'}`)
+        if (destination) setStudyExport(await api.exportStudy(id, format, checksum, destination))
+      } else {
+        const link = document.createElement('a'); link.href = api.studyExportUrl(id, format, checksum); link.download = `study-pack.${format === 'csv' ? 'csv' : 'json'}`; link.click()
+      }
+    } catch (cause) { setStudyError(message(cause)) }
+  }
+  useEffect(() => {
+    if (!studyExport || !['COPYING', 'VERIFYING'].includes(studyExport.status)) return
+    let stopped = false
+    const timer = window.setTimeout(() => { void api.exportState().then((next) => { if (stopped) return; if (next.id === studyExport.id) setStudyExport(next); else setStudyError('This export status was replaced by another job.') }).catch((cause) => setStudyError(message(cause))) }, 500)
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [studyExport])
 
   const rail = (
     <ForgeProductRail
@@ -694,12 +974,12 @@ export function App() {
       onToggleExpanded={() => setRailExpanded((current) => !current)}
       onLocalLibrary={() => {
         setLibraryMode('local')
-        setNavigatorOpen(true)
-        if (isCompactWorkspace()) setInspectorOpen(false)
+        updatePanels({ type: 'open', panel: 'navigator' })
       }}
       onViewerLibrary={() => void syncViewer()}
       onImport={() => { setImportError(''); setImportOpen(true) }}
       onFeatures={openFeatures}
+      onStudy={() => void openStudy()}
       onTheme={toggleTheme}
       onSecurity={connect}
       onSignOut={connect}
@@ -713,13 +993,13 @@ export function App() {
       <div className={[
         'forge-canvas-host',
         navigatorOpen ? '' : 'navigator-collapsed',
-        inspectorOpen ? '' : 'inspector-collapsed',
+        inspectorVisible ? '' : 'inspector-collapsed',
       ].filter(Boolean).join(' ')}>
         <ViewerCanvasShell
           rail={rail}
           railExpanded={railExpanded}
           navigatorOpen={navigatorOpen}
-          inspectorOpen={inspectorOpen}
+          inspectorOpen={inspectorVisible}
           navigator={(
             <SlideNavigator
               datasets={datasets}
@@ -734,10 +1014,7 @@ export function App() {
               folderByDataset={folderByDataset}
               onSelect={(id) => {
                 setSelectedId(id)
-                if (isCompactWorkspace()) {
-                  setNavigatorOpen(false)
-                  setInspectorOpen(true)
-                }
+                if (panels.width <= 1200) updatePanels({ type: 'open', panel: 'inspector' })
               }}
               onChecked={setSelectedDatasetIds}
               onCreateFolder={(name) => setLocalFolders((current) => current.includes(name) ? current : [...current, name])}
@@ -750,23 +1027,17 @@ export function App() {
               onImport={() => { setImportError(''); setImportOpen(true) }}
               onConnect={connect}
               onSync={() => void syncViewer(false)}
-              onKeepOffline={(id) => void api.keepViewerSlideOffline(id).then(() => {
-                setNotice('Offline download started; verified activation will happen in the background')
-              }).catch((nextError) => setError(message(nextError)))}
-              onRemoveOffline={(id) => void api.removeViewerSlideOffline(id)
-                .then(() => api.viewerLibrary()).then(setRemoteLibrary)
-                .catch((nextError) => setError(message(nextError)))}
+              onKeepOffline={(id) => void remoteAction(() => api.keepViewerSlideOffline(id), false, 'Offline download started; verified activation will happen in the background')}
+              onCancelOffline={(id) => void remoteAction(() => api.cancelViewerOfflineDownload(id))}
+              onRemoveOffline={(id) => void remoteAction(() => api.removeViewerSlideOffline(id))}
               onRenameRemote={(id, current) => setRemoteRename({ id, current, value: current })}
               selectedRemoteId={selectedRemote?.id || ''}
               onSelectRemote={(id) => {
                 setSelectedRemoteId(id)
               }}
-              onResolveConflict={(id, field, resolution) => void api.resolveViewerConflict(id, field, resolution)
-                .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
-                .catch((nextError) => setError(message(nextError)))}
+              onResolveConflict={(id, field, resolution) => void remoteAction(() => api.resolveViewerConflict(id, field, resolution), true)}
               onCollapse={() => {
-                setNavigatorOpen(false)
-                window.requestAnimationFrame(() => navigatorButtonRef.current?.focus())
+                closePanel('navigator')
               }}
             />
           )}
@@ -775,8 +1046,8 @@ export function App() {
               slide={selectedRemote}
               viewer={viewer}
               onViewer={setViewer}
-              inspectorOpen={inspectorOpen}
-              onInspector={() => setInspectorOpen((current) => !current)}
+              inspectorOpen={inspectorVisible}
+              onInspector={() => updatePanels({ type: 'toggle', panel: 'inspector' })}
             />
           ) : (
             <ViewerStage
@@ -787,25 +1058,32 @@ export function App() {
               cropEditing={cropEditing}
               onCropChange={setCropDraft}
               annotations={selectedAnnotations}
+              analysisOverlays={visibleAnalysisOverlays}
+              analysisMask={visibleAnalysisMask}
+              overlayPage={overlayPage}
+              onOverlayPage={setOverlayPage}
+              onClearAnalysis={() => { setAnalysisOverlay(null); setAnalysisMask(undefined) }}
               activeTool={activeTool}
               viewer={viewer}
               onViewer={setViewer}
               onCreateAnnotation={createLocalAnnotation}
-              inspectorOpen={inspectorOpen}
-              onInspector={() => setInspectorOpen((current) => !current)}
+              onComposeBrush={composeLocalBrush}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
+              onUpdateAnnotation={(id, geometry) => void updateLocalAnnotation(id, { geometry })}
+              inspectorOpen={inspectorVisible}
+              onInspector={() => updatePanels({ type: 'toggle', panel: 'inspector' })}
             />
           )}
           inspector={libraryMode === 'viewer' ? (
             <RemoteInspector
               slide={selectedRemote}
               folders={remoteLibrary.folders}
-              onCollapse={() => setInspectorOpen(false)}
-              onKeepOffline={(id) => void api.keepViewerSlideOffline(id)}
-              onRemoveOffline={(id) => void api.removeViewerSlideOffline(id)
-                .then(() => api.viewerLibrary()).then(setRemoteLibrary)}
-              onMove={(id, folderId) => void api.updateViewerSlideMetadata(id, { folderId })
-                .then(() => api.syncViewerLibrary()).then(setRemoteLibrary)
-                .catch((nextError) => setError(message(nextError)))}
+              onCollapse={() => closePanel('inspector')}
+              onKeepOffline={(id) => void remoteAction(() => api.keepViewerSlideOffline(id))}
+              onCancelOffline={(id) => void remoteAction(() => api.cancelViewerOfflineDownload(id))}
+              onRemoveOffline={(id) => void remoteAction(() => api.removeViewerSlideOffline(id))}
+              onMove={(id, folderId) => void remoteAction(() => api.updateViewerSlideMetadata(id, { folderId }), true)}
             />
           ) : (
             <Inspector
@@ -828,9 +1106,10 @@ export function App() {
                 setCropEditing(editing)
                 if (editing) setActiveTool('pan')
               }}
-              onCollapse={() => setInspectorOpen(false)}
+              onCollapse={() => closePanel('inspector')}
               onInspect={inspect}
               onConfigure={updateConfiguration}
+              onUpdateView={updateViewDefinition}
               onConvert={beginConversion}
               onCancel={() => selected && void api.cancel(selected.id).then(() => refresh())}
               onApprove={approveCurrent}
@@ -838,11 +1117,53 @@ export function App() {
               onUpload={uploadApproved}
               onRemove={() => selected && setRemoveTarget(selected)}
               onDeleteAnnotation={deleteLocalAnnotation}
+              selectedAnnotationId={selectedAnnotationId}
+              onSelectAnnotation={(id) => { setSelectedAnnotationId(id); setActiveTool('select') }}
+              onUpdateAnnotation={updateLocalAnnotation}
               viewingRevisionId={viewingRevision?.id || ''}
               onViewRevision={viewRevision}
               onViewSource={viewSource}
               onRenameRevision={renameRevision}
               onDeleteRevision={deleteRevision}
+              tools={selected ? <><DeterministicTools datasetId={selected.id} annotations={selectedAnnotations}
+                selectedAnnotationId={selectedAnnotationId} datasets={datasets} runs={analysisRuns}
+                enabledTools={features.filter((pack) => pack.state === 'INSTALLED').flatMap((pack) => pack.id === 'pathology-tools'
+                  ? ['he', 'stain_vector', 'normalize_preview', 'tma'] : pack.id === 'classical-analysis'
+                    ? ['tissue', 'qc', 'nucleus_candidates', 'registration'] : [])}
+                onSubmit={api.submitAnalysis} onCancel={api.cancelAnalysis} onRefresh={refreshAnalysis}
+                onLoadReview={api.analysisReview} onSaveReview={async (id, review) => {
+                  const saved = await api.saveAnalysisReview(id, review)
+                  const run = analysisRuns.find((item) => item.id === id)
+                  if (run && analysisOverlay?.runId === id) await showAnalysisObjects(run)
+                  return saved
+                }}
+                onShowObjects={(run) => void showAnalysisObjects(run)}
+                onShowMask={(requested, channel) => {
+                  const context = analysisContext.current
+                  void api.analysisRun(requested.id).then((run) => {
+                    if (context !== analysisContext.current) return
+                    if (run.status !== 'SUCCEEDED' || run.stale) throw new Error('Mask result changed; rerun against the current ROI')
+                    setAnalysisRuns((current) => [run, ...current.filter((item) => item.id !== run.id)])
+                    setAnalysisMask({ context, runId: run.id, channel }); setActiveTool('pan')
+                  }).catch((cause) => { if (context === analysisContext.current) setError(message(cause)) })
+                }}
+                onPersistTma={async (id, revision) => {
+                  const context = analysisContext.current; const saved = await api.persistTma(id, revision)
+                  if (context === analysisContext.current) setAnnotationsByDataset((current) => ({ ...current, [selected.id]: [...(current[selected.id] || []).filter((item) => !saved.some((core) => core.id === item.id)), ...saved] }))
+                  return saved
+                }}
+                onAnalyzeTmaCore={async (id, revision, coreId, tool, configuration) => { const run = await api.analyzeTmaCore(id, revision, coreId, tool, configuration); await refreshAnalysis(); return run }}
+                onLoadTargetAnnotations={api.annotations}
+                onExport={(id) => {
+                  if (window.forgeDesktop) setExportRunId(id)
+                  else window.location.href = `/api/analysis/runs/${encodeURIComponent(id)}/export`
+                }}
+              />{analysisHasMore ? <button type="button" onClick={() => {
+                const context = analysisContext.current
+                void api.analysisHistory(selected.id, analysisNextOffset).then((page) => {
+                  if (context === analysisContext.current) { setAnalysisRuns((current) => [...current, ...page.runs.filter((run) => !current.some((item) => item.id === run.id))]); setAnalysisHasMore(page.hasMore); setAnalysisNextOffset(page.nextOffset) }
+                }).catch((cause) => { if (context === analysisContext.current) setError(message(cause)) })
+              }}>Load older analysis runs</button> : null}{exportRunId && window.forgeDesktop ? <NativeExport datasetId={selected.id} runId={exportRunId} /> : null}</> : null}
             />
           )}
           queue={(
@@ -852,21 +1173,35 @@ export function App() {
               isError={Boolean(error)}
               onClearError={() => setError('')}
               onQueueReady={() => void queueReadySlides()}
-              onOpen={() => setInspectorOpen(false)}
+              onOpen={() => closePanel('inspector')}
+              paused={capabilities?.queuePaused === true}
+              onPause={() => {
+                void api.setQueuePaused(capabilities?.queuePaused !== true).then((state) => {
+                  setCapabilities((current) => current && ({ ...current, queuePaused: state.paused }))
+                  setNotice(state.paused ? 'Queue paused · current item finishes safely' : 'Queue resumed')
+                }).catch((failure) => setError(message(failure)))
+              }}
             />
           )}
         />
       </div>
+      <button type="button" className="forge-viewer-sync-launcher forge-download" onClick={() => void openBatchReports()}>Saved batch reports</button>
+      {batchReportsOpen ? <div className="forge-dialog-backdrop" role="presentation"><section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Saved batch workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setBatchReportsOpen(false) } }}>
+        <button type="button" aria-label="Close batch reports" onClick={() => setBatchReportsOpen(false)}><X aria-hidden="true" /></button>
+        <BatchReports batches={savedBatches} onLoadOlder={batchHasOlder ? loadOlderBatches : undefined} onReport={readBatchReport} onRetry={api.retryBatchItem} onCancel={api.cancelBatch} onExport={(id, format) => {
+          if (window.forgeDesktop) setBatchExportRequest({ id, format })
+          else { const link = document.createElement('a'); link.href = `/api/batches/${encodeURIComponent(id)}/export?format=${format}`; link.download = `batch-${id}.${format}`; link.click() }
+        }} />
+        {batchExportRequest ? <NativeExport key={`${batchExportRequest.id}:${batchExportRequest.format}`} datasetId="" batchId={batchExportRequest.id} batchFormat={batchExportRequest.format} /> : null}
+      </section></div> : null}
       {connection?.connected && viewerUpload?.viewerSlideId
         && ['IMAGE_READY', 'SYNCING_RESULTS', 'COMPLETE'].includes(viewerUpload.state) ? (
-        <a
+        <ExternalViewerLink
           className="forge-viewer-sync-launcher"
           href={`${connection.viewerUrl.replace(/\/$/, '')}/admin/preview/${encodeURIComponent(viewerUpload.viewerSlideId)}`}
-          target="_blank"
-          rel="noreferrer"
         >
           Open private slide in Viewer
-        </a>
+        </ExternalViewerLink>
       ) : null}
       {viewerUpload && ['UPLOADING', 'VERIFYING_OME', 'RETRYING'].includes(viewerUpload.state) ? (
         <button
@@ -880,6 +1215,10 @@ export function App() {
         </button>
       ) : null}
       {importOpen ? (
+        window.forgeDesktop ? <NativeImportDialog busy={importing} error={importError}
+          onSources={(paths) => void handleSelectedImport(paths)}
+          onDirectory={(path) => void handleProjectImport(path)}
+          onClose={() => { if (!importing) setImportOpen(false) }} /> :
         <ImportDialog
           path={importPath}
           busy={importing}
@@ -920,14 +1259,9 @@ export function App() {
               setRemoteRename(undefined)
               return
             }
-            void api.updateViewerSlideMetadata(remoteRename.id, { displayName })
-              .then(() => api.syncViewerLibrary())
-              .then((next) => {
-                setRemoteLibrary(next)
-                setRemoteRename(undefined)
-                setNotice('Viewer slide name synchronized')
-              })
-              .catch((nextError) => setError(message(nextError)))
+            const id = remoteRename.id
+            void remoteAction(() => api.updateViewerSlideMetadata(id, { displayName }), true, 'Viewer slide name synchronized')
+            setRemoteRename(undefined)
           }}
           onClose={() => setRemoteRename(undefined)}
         />
@@ -939,12 +1273,64 @@ export function App() {
           onClose={() => setBatchRemoveIds([])}
         />
       ) : null}
+      {studyOpen || studyLoaded ? <div className="forge-dialog-backdrop" role="presentation" style={studyOpen ? undefined : { display: 'none' }}>
+        <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-label="Study authoring workspace" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setStudyOpen(false) } }}>
+          <button type="button" aria-label="Close Study authoring" onClick={() => setStudyOpen(false)}><X aria-hidden="true" /></button>
+          <p>Associate each slide with its exact local Teaching DZI artifact. Local preview and approval work offline; resolve delivered Viewer identities and approve again before publication.</p>
+          {selected ? <div><p>Teaching delivery creates a separate static-DZI artifact. Existing OME artifacts and original pixels are retained; Viewer privacy review remains required.</p>
+            <button type="button" disabled={!QUEUEABLE_STATUSES.has(selected.status) || selected.selectedSeries < 0} onClick={() => {
+              void api.generateTeachingArtifact(selected.id).then(async () => { await refresh(); setNotice('Teaching DZI generation queued; inspect and approve its independent artifact before delivery') }).catch((cause) => setStudyError(message(cause)))
+            }}>Generate Teaching DZI for {selected.displayName}</button>
+            <button type="button" disabled={!connection?.connected || currentRevision?.format !== 'PREPARED_DZI_V2' || currentRevision?.status !== 'APPROVED' || currentRevision?.id !== selected.approvedArtifactRevision} onClick={() => {
+              void api.uploadTeachingArtifact(selected.id).then((next) => { setViewerUpload(next); setNotice(next.detail) }).catch((cause) => setStudyError(message(cause)))
+            }}>Deliver approved Teaching DZI to Viewer</button></div> : null}
+          {studyError ? <p role="alert">{studyError}</p> : null}
+          {connection?.scopes.includes('study-packs:write') ? <button type="button" onClick={() => {
+            const epoch = remoteEpoch.current
+            void api.teachingSlides().then((slides) => { if (epoch === remoteEpoch.current) setTeachingSlides(slides) }).catch((cause) => { if (epoch === remoteEpoch.current) setStudyError(message(cause)) })
+          }}>Refresh eligible teaching slides from Viewer</button> : null}
+          {!studyLoaded ? <button type="button" onClick={() => void openStudy()}>Retry loading drafts</button> : <StudyAuthoring drafts={studyDrafts}
+            slides={[...teachingSlides, ...datasets.map((dataset) => ({ viewerSlideId: `local:${dataset.id}`, displayName: `${dataset.displayName} (local draft)`, sha256: '' }))]}
+            teachingArtifacts={Object.entries(artifactByDataset).flatMap(([datasetId, artifacts]) => artifacts.filter((artifact) => artifact.format === 'PREPARED_DZI_V2' && ['READY', 'APPROVED'].includes(artifact.status)).map((artifact) => ({ datasetId, artifactRevision: artifact.id, displayName: `${datasets.find((dataset) => dataset.id === datasetId)?.displayName || datasetId} · ${artifact.name}` })))}
+            onAssociateTeachingSlide={(id, revision, referenceId, datasetId, artifactRevision) => rememberStudy(api.associateTeachingSlide(id, revision, referenceId, datasetId, artifactRevision))}
+            renderSlide={(slide, onLocation, onPixelsLoaded, draft, selectedLocation) => {
+              const association = teachingAssociationFor(slide, draft.associations)
+              return association && slide ? <TeachingSlidePreview association={association} slideId={slide.viewerSlideId} previewChecksum={draft.previewChecksum} onLocation={onLocation} onPixelsLoaded={onPixelsLoaded} selectedLocation={selectedLocation} /> : <p role="status">Select an exact local teaching artifact before reviewing these pixels.</p>
+            }}
+            onCaptureSpatial={async (slide, draft) => {
+              const association = teachingAssociationFor(slide, draft.associations), roi = selectedAnnotations.find((annotation) => annotation.id === selectedAnnotationId)
+              if (!association || !selected || !roi) throw new Error('Select a saved source rectangle and associate the exact teaching artifact first.')
+              return captureTeachingTarget(roi, selected.id, selected.sourceFingerprint, association)
+            }}
+            onLoad={api.studyDraft} onCreate={(name) => rememberStudy(api.createStudyDraft(name))}
+            onSave={(draft, revision) => rememberStudy(api.saveStudyDraft(draft, revision))}
+            onDuplicate={(id, name, nextVersion) => rememberStudy(api.duplicateStudyDraft(id, name, nextVersion))}
+            onHistory={api.studyHistory} onRecover={(id, historical, revision) => rememberStudy(api.recoverStudyDraft(id, historical, revision))}
+            onPreview={(id, revision) => rememberStudy(api.previewStudyDraft(id, revision))}
+            onReviewTask={(id, revision, checksum, taskId, pixels) => rememberStudy(api.reviewStudyTask(id, revision, checksum, taskId, pixels))}
+            onApprove={(id, revision, checksum) => rememberStudy(api.approveStudyDraft(id, revision, checksum))}
+            onImport={(format, text) => rememberStudy(api.importStudyDraft(format, text))}
+            onImportQuestions={(id, revision, format, text, slideId) => rememberStudy(api.importStudyQuestions(id, revision, format, text, slideId))}
+            onExport={(id, format, checksum) => { void exportAuthoredStudy(id, format, checksum) }}
+            onPublish={connection?.scopes.includes('study-packs:write') ? async (checksum) => {
+              const draft = studyDrafts.find((item) => item.approvedChecksum === checksum)
+              if (!draft) throw new Error('Reload the exact approved draft before publishing')
+              return api.publishStudy(draft.id, draft.revision, checksum)
+            } : undefined} />}
+          {studyExport ? <div aria-label="Study native export"><p role="status">{studyExport.detail}</p>
+            {['COPYING', 'VERIFYING'].includes(studyExport.status) ? <button type="button" onClick={() => void api.cancelExport(studyExport.id).then((next) => { if (next.id === studyExport.id) setStudyExport(next) }).catch((cause) => setStudyError(message(cause)))}>Cancel Study export</button> : null}
+            {studyExport.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(studyExport.destination)}>Reveal Study export</button> : null}</div> : null}
+        </section>
+      </div> : null}
       {featureOpen ? (
         <FeatureCenter
           features={features}
           loading={featureLoading}
           onRefresh={() => void loadFeatures(true)}
-          onChange={(feature) => void changeFeature(feature)}
+          onImport={window.forgeDesktop?.selectFeatureFiles ? () => void importFeature() : undefined}
+          onChange={(feature, action, version) => void changeFeature(feature, action, version)}
+          progress={featureProgress}
+          onCancel={() => featureProgress?.id && void api.featureAction(featureProgress.id, 'cancel').catch((error) => setError(message(error)))}
           onClose={() => setFeatureOpen(false)}
         />
       ) : null}
@@ -1001,6 +1387,7 @@ function ForgeProductRail({
   onViewerLibrary,
   onImport,
   onFeatures,
+  onStudy,
   onTheme,
   onSecurity,
   onSignOut,
@@ -1010,7 +1397,7 @@ function ForgeProductRail({
   expanded: boolean
   navigatorOpen: boolean
   navigatorButtonRef: Ref<HTMLButtonElement>
-  storage: { usableBytes: number; effectiveCapacityBytes: number }
+  storage: { usableBytes: number; effectiveCapacityBytes: number; managedUsage?: { bytes: number; files: number; complete: boolean; measuredAt: number } | null }
   mode: 'local' | 'viewer'
   theme: 'light' | 'dark'
   onToggleExpanded: () => void
@@ -1018,6 +1405,7 @@ function ForgeProductRail({
   onViewerLibrary: () => void
   onImport: () => void
   onFeatures: () => void
+  onStudy: () => void
   onTheme: () => void
   onSecurity: () => void
   onSignOut: () => void
@@ -1030,7 +1418,7 @@ function ForgeProductRail({
   return (
     <aside className="library-app-rail" aria-label="Product navigation" data-canvas-region="icon-rail">
       <div className="library-rail-brand">
-        <div className="brand brand-library" aria-label="PathLab Forge">
+        <div className="brand brand-library" role="img" aria-label="PathLab Forge">
           <span className="brand-mark brand-mark-layers">
             <svg aria-hidden="true" viewBox="0 0 32 32" fill="none">
               <path data-tissue-layer d="M4.5 10.1 16 4.4l11.5 5.7L16 15.8 4.5 10.1Z" fill="currentColor" opacity=".34" />
@@ -1052,11 +1440,13 @@ function ForgeProductRail({
           <CloudArrowUp aria-hidden="true" /><span>Viewer library</span>
         </button>
         <button type="button" aria-label="Import" onClick={onImport}><UploadSimple aria-hidden="true" /><span>Import</span></button>
+        <button type="button" aria-label="Study Pack authoring" onClick={onStudy}><FileText aria-hidden="true" /><span>Study authoring</span></button>
         <button type="button" aria-label="Feature Center" onClick={onFeatures}><Wrench aria-hidden="true" /><span>Feature Center</span></button>
       </nav>
       <div className="library-rail-utilities" aria-label="Account actions">
         <section className="library-storage-meter" aria-label={`Storage, ${formatBytes(storage.usableBytes)} available`}>
           <div className="library-storage-copy"><span>Storage</span><strong>{formatBytes(storage.usableBytes)} available</strong></div>
+          <p className="library-storage-copy">{storage.managedUsage ? `${storage.managedUsage.complete ? '' : 'At least '}${formatBytes(storage.managedUsage.bytes)} managed file data · ${storage.managedUsage.files} files · scanned ${new Date(storage.managedUsage.measuredAt).toLocaleTimeString()}` : 'Measuring managed file data…'}</p>
           <div className="library-storage-track" role="meter" aria-label="Usable storage remaining" aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining}><span style={{ width: `${remaining}%` }} /></div>
         </section>
         <button type="button" aria-label={`${theme === 'dark' ? 'Dark' : 'Light'} theme. Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} onClick={onTheme}>
@@ -1070,16 +1460,22 @@ function ForgeProductRail({
 }
 
 function FeatureCenter({
+  progress,
+  onCancel,
   features,
   loading,
   onRefresh,
+  onImport,
   onChange,
   onClose,
 }: {
   features: api.FeaturePack[]
   loading: boolean
+  progress?: api.FeatureProgress
+  onCancel: () => void
   onRefresh: () => void
-  onChange: (feature: api.FeaturePack) => void
+  onImport?: () => void
+  onChange: (feature: api.FeaturePack, action: api.FeatureAction, version?: string) => void
   onClose: () => void
 }) {
   return (
@@ -1087,29 +1483,45 @@ function FeatureCenter({
       <section className="forge-connect-dialog forge-feature-center" role="dialog" aria-modal="true" aria-labelledby="feature-center-title">
         <span>Optional capabilities</span>
         <h2 id="feature-center-title">Feature Center</h2>
-        <p>Forge stays small. Approved pathology and research tools install only when requested.</p>
+        <p>Approved deterministic pathology tools install only when requested.</p>
         <div className="forge-feature-list">
           {features.map((feature) => (
             <article key={feature.id}>
               <div>
                 <small>{feature.kind}{feature.pretrained ? ' · pretrained' : ''}{feature.trainingOnly ? ' · training only' : ''}</small>
                 <strong>{feature.name}</strong>
+                <small>Active: {feature.activeVersion || 'none'} · Available: {feature.version || 'unpublished'}</small>
                 <p>{feature.detail}</p>
                 {feature.downloadBytes ? <span>{formatBytes(feature.downloadBytes)} download · {formatBytes(feature.installedBytes)} installed</span> : null}
               </div>
               <button
                 type="button"
                 disabled={loading || !['AVAILABLE', 'INSTALLED', 'DISABLED'].includes(feature.state)}
-                onClick={() => onChange(feature)}
+                onClick={() => onChange(feature, feature.state === 'INSTALLED' ? 'disable' : feature.state === 'DISABLED' ? 'enable' : 'install')}
               >
-                {feature.state === 'INSTALLED' ? 'Disable' : feature.state === 'DISABLED' ? 'Uninstall' : feature.state === 'AVAILABLE' ? 'Install' : feature.state.replaceAll('_', ' ').toLowerCase()}
+                {feature.state === 'INSTALLED' ? 'Disable' : feature.state === 'DISABLED' ? 'Enable' : feature.state === 'AVAILABLE' ? 'Install' : feature.state.replaceAll('_', ' ').toLowerCase()}
               </button>
+              {['INSTALLED', 'DISABLED'].includes(feature.state) ? <>
+                <button type="button" disabled={loading} onClick={() => onChange(feature, 'uninstall')}>Uninstall</button>
+                {(feature.installedVersions?.length || 0) > 1 ? <>
+                  <button type="button" disabled={loading} onClick={() => onChange(feature, 'rollback')}>Roll back</button>
+                  <label>Active version <select value={feature.activeVersion || ''} disabled={loading}
+                    onChange={(event) => onChange(feature, 'activate', event.target.value)}>
+                    {feature.installedVersions?.map((version) => <option key={version} value={version}>{version}</option>)}
+                  </select></label>
+                </> : null}
+                {feature.version && feature.activeVersion && feature.version !== feature.activeVersion ?
+                  <button type="button" disabled={loading} onClick={() => onChange(feature, 'install')}>Install catalog version {feature.version}</button> : null}
+              </> : null}
             </article>
           ))}
           {!features.length ? <p role="status">{loading ? 'Checking installed features…' : 'No features are published.'}</p> : null}
         </div>
         <button type="button" disabled={loading} onClick={onRefresh}>Refresh signed catalog</button>
-        <small>No catalog request is made during normal startup.</small>
+        {onImport ? <button type="button" disabled={loading} onClick={onImport}>Import signed feature pack</button> : null}
+        {progress ? <p role="status">{progress.phase} · {progress.detail} · {formatBytes(progress.completedBytes)} / {formatBytes(progress.totalBytes)}</p> : null}
+        {progress && !['IDLE', 'COMPLETE', 'FAILED', 'CANCELLED'].includes(progress.phase) ? <button type="button" onClick={onCancel}>Cancel install</button> : null}
+        <small>Startup reads verified local metadata. Remote refresh and installation happen only when requested.</small>
         <button className="forge-dialog-close" type="button" onClick={onClose}>Close</button>
       </section>
     </div>
@@ -1168,6 +1580,8 @@ function ImportDialog({
   const [browserBusy, setBrowserBusy] = useState(false)
   const [browserError, setBrowserError] = useState('')
   const [showBrowserPath, setShowBrowserPath] = useState(false)
+  const [formatCatalog, setFormatCatalog] = useState<api.FormatCatalog>()
+  const [formatQuery, setFormatQuery] = useState('')
   const closeRef = useRef(onClose)
   closeRef.current = onClose
 
@@ -1178,6 +1592,12 @@ function ImportDialog({
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [])
+
+  useEffect(() => {
+    if (typeof api.formats === 'function') {
+      void api.formats().then(setFormatCatalog).catch(() => undefined)
+    }
   }, [])
 
   const openDirectory = async (nextPath?: string) => {
@@ -1272,15 +1692,29 @@ function ImportDialog({
         <div className="forge-import-sources">
           <button ref={chooseFilesRef} className="forge-import-source primary" type="button" disabled={busy} onClick={() => openBrowser('files')}>
             <FileText aria-hidden="true" />
-            <span><strong>Choose slide files</strong><small>SVS, OME-TIFF or VSI</small></span>
+            <span><strong>Choose slide files</strong><small>WSI, microscopy, and ordinary images</small></span>
             <UploadSimple aria-hidden="true" />
           </button>
           <button className="forge-import-source" type="button" disabled={busy} onClick={() => openBrowser('folder')}>
             <FolderOpen aria-hidden="true" />
-            <span><strong>Choose project folder</strong><small>Find supported slides recursively</small></span>
+            <span><strong>Choose project folder</strong><small>Probe candidate files recursively</small></span>
             <CaretRight aria-hidden="true" />
           </button>
         </div>
+        <details className="forge-format-center">
+          <summary><Database aria-hidden="true" /><span><strong>Format Center</strong><small>Live installed-reader catalog · best effort</small></span></summary>
+          <div>
+            <label htmlFor="forge-format-search">Filter formats</label>
+            <input id="forge-format-search" type="search" value={formatQuery} onChange={(event) => setFormatQuery(event.target.value)} placeholder="CZI, NDPI, JPEG…" />
+            <p>{formatCatalog ? `${formatCatalog.formats.length} reader formats · ${formatCatalog.runtimeVersion}` : 'Reading installed capabilities…'}</p>
+            <ul>
+              {formatCatalog?.formats.filter((format) => `${format.displayName} ${format.extensions.join(' ')}`.toLowerCase().includes(formatQuery.trim().toLowerCase())).slice(0, 80).map((format) => (
+                <li key={`${format.engine}:${format.readerId}`}><strong>{format.displayName}</strong><span>{format.extensions.length ? format.extensions.map((extension) => `.${extension}`).join(', ') : 'Content detection'}</span>{format.multidimensional ? <small>Z/C/T</small> : null}</li>
+              ))}
+            </ul>
+            <small>Selectable means the bundled runtime will probe the file. Vendor variants, codecs, corruption, and missing companions can still prevent opening.</small>
+          </div>
+        </details>
         <div className="forge-dialog-divider"><span>Or use a local path</span></div>
         <div className="forge-import-path">
           <label htmlFor="forge-import-path">Local slide path</label>
@@ -1299,7 +1733,7 @@ function ImportDialog({
         </div>
         {error ? <div className="forge-import-error" role="alert"><Info /><span><strong>Could not import this path</strong>{error}</span></div> : null}
         <footer className="forge-import-footer">
-          <small>VSI companion ETS files are grouped automatically.</small>
+          <small>Reader-reported companion files stay in place and are grouped automatically.</small>
           <button className="forge-dialog-close" type="button" disabled={busy} onClick={onClose}>Cancel</button>
         </footer>
         </>}
@@ -1386,9 +1820,9 @@ function ViewerPairingDialog({
               data-value={pairing.verificationUrlComplete}
               dangerouslySetInnerHTML={{ __html: qr }}
             />
-            <a className="forge-primary" href={pairing.verificationUrlComplete} target="_blank" rel="noreferrer">
+            <ExternalViewerLink className="forge-primary" href={pairing.verificationUrlComplete}>
               Open Viewer approval
-            </a>
+            </ExternalViewerLink>
             <small>Waiting for approval · expires {new Date(pairing.expiresAt).toLocaleTimeString()}</small>
           </>
         )}
@@ -1419,6 +1853,7 @@ function SlideNavigator({
   onConnect,
   onSync,
   onKeepOffline,
+  onCancelOffline,
   onRemoveOffline,
   onRenameRemote,
   selectedRemoteId,
@@ -1446,6 +1881,7 @@ function SlideNavigator({
   onConnect: () => void
   onSync: () => void
   onKeepOffline: (id: string) => void
+  onCancelOffline: (id: string) => void
   onRemoveOffline: (id: string) => void
   onRenameRemote: (id: string, current: string) => void
   selectedRemoteId: string
@@ -1480,13 +1916,13 @@ function SlideNavigator({
     return next
   })
   const renderRemoteSlide = (item: api.ViewerRemoteItem) => (
-    <article key={item.id} className={`forge-remote-slide ${selectedRemoteId === item.id ? 'active' : ''}`}>
+    <article key={item.id} role="treeitem" aria-selected={selectedRemoteId === item.id} aria-label={item.displayName} className={`forge-remote-slide ${selectedRemoteId === item.id ? 'active' : ''}`}>
       <button className="forge-remote-slide-main" type="button" onClick={() => onSelectRemote(item.id)}>
         <span className="forge-remote-thumbnail"><CloudArrowUp aria-hidden="true" /><img src={item.thumbnailUrl} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true }} /></span>
-        <span className="forge-remote-slide-copy"><strong>{item.displayName}</strong><small>{item.offlineComplete ? 'Available offline' : item.contentBytes > 0 ? formatBytes(item.contentBytes) : 'Viewer-only legacy slide'}</small></span>
+        <span className="forge-remote-slide-copy"><strong>{item.displayName}</strong><small>{offlineReady(item) ? 'Verified offline OME' : ['DOWNLOADING', 'VERIFYING'].includes(item.downloadState || '') ? `Offline ${item.downloadState!.toLowerCase()}` : item.contentBytes > 0 ? formatBytes(item.contentBytes) : 'Viewer-only legacy slide'}</small></span>
       </button>
       <div className="forge-remote-slide-actions">
-        {item.offlineComplete || item.contentBytes > 0 ? <button type="button" aria-label={item.offlineComplete ? 'Remove offline copy' : 'Keep offline'} title={item.offlineComplete ? 'Remove offline copy' : 'Keep offline'} onClick={() => item.offlineComplete ? onRemoveOffline(item.id) : onKeepOffline(item.id)}><CloudArrowDown /><span>{item.offlineComplete ? 'Remove local' : 'Keep offline'}</span></button> : <button className="forge-cloud-only" type="button" aria-label="Offline unavailable" title="Cloud only: this Viewer slide has no downloadable OME content" disabled><CloudArrowUp /><span>Cloud only</span></button>}
+        <OfflineActions slide={item} onKeep={onKeepOffline} onRemove={onRemoveOffline} onCancel={onCancelOffline} />
         <button type="button" aria-label="Rename" title="Rename" onClick={() => onRenameRemote(item.id, item.displayName)}><PencilSimple /><span>Rename</span></button>
       </div>
     </article>
@@ -1499,7 +1935,7 @@ function SlideNavigator({
       .reduce((total, candidate) => total + candidate.items.length + descendantSlideCount(candidate.id), 0)
     const total = group.items.length + descendantSlideCount(group.id)
     return <div className="forge-remote-folder" role="treeitem" aria-expanded={expanded} data-depth={depth} key={group.id}>
-      <button className="forge-remote-folder-toggle" type="button" aria-expanded={expanded} onClick={() => toggleRemoteFolder(group.id)}>
+      <button className="forge-remote-folder-toggle" type="button" aria-expanded={expanded} onKeyDown={(event) => { if (event.key === 'ArrowRight' && !expanded || event.key === 'ArrowLeft' && expanded) { event.preventDefault(); toggleRemoteFolder(group.id) } }} onClick={() => toggleRemoteFolder(group.id)}>
         {expanded ? <CaretDown /> : <CaretRight />}<Folder /><span><strong>{group.name}</strong><small>{total} {total === 1 ? 'slide' : 'slides'}</small></span>
       </button>
       {expanded ? <div className="forge-remote-folder-children" role="group">
@@ -1526,12 +1962,19 @@ function SlideNavigator({
           <span className="visually-hidden">{connection?.connected ? 'Sync changes' : 'Connect to Viewer'}</span>
         </button>
         {connection?.connected && !remoteSyncReady ? <div className="forge-viewer-sync-boundary" role="status"><strong>Viewer unavailable</strong><span>Check the Viewer server, then choose Sync changes.</span></div> : null}
-        <section className="forge-remote-slides" role="tree" aria-label="Synchronized Viewer slides">
+        <section className="forge-remote-slides" role="tree" aria-label="Synchronized Viewer slides" onKeyDown={(event) => {
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+          const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('.forge-remote-folder-toggle, .forge-remote-slide-main'))
+          const index = buttons.indexOf(event.target as HTMLButtonElement)
+          if (index < 0) return
+          event.preventDefault()
+          buttons[event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus()
+        }}>
           <header className="forge-remote-tree-heading"><span>Private files</span><strong>{remoteLibrary.items.length} files</strong></header>
           {remoteGroups.filter((group) => !group.parentId).map((group) => renderRemoteFolder(group))}
           {connection?.connected && remoteLibrary.items.length === 0 ? <p>No private Viewer slides.</p> : null}
         </section>
-        {remoteLibrary.conflicts.map((conflict) => <div className="forge-viewer-sync-boundary forge-conflict" key={`${conflict.slideId}:${conflict.field}`}><strong>Resolve {conflict.field}</strong><span>Both versions are preserved.</span><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'local')}>Keep local</button><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'viewer')}>Keep Viewer</button></div>)}
+        {remoteLibrary.conflicts.map((conflict) => <div className="forge-viewer-sync-boundary forge-conflict" key={`${conflict.slideId}:${conflict.field}`}><strong>Resolve {conflict.field}</strong><dl><dt>Local value</dt><dd>{metadataText(conflict.localValue) || 'Empty'}</dd><dt>Viewer value</dt><dd>{metadataText(conflict.remoteValue) || 'Empty'}</dd><dt>Base revision</dt><dd>{conflict.baseRevision ?? 'Not reported'}</dd><dt>Viewer revision</dt><dd>{conflict.remoteRevision ?? 'Not reported'}</dd></dl><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'local')}>Keep local</button><button type="button" onClick={() => onResolveConflict(conflict.slideId, conflict.field, 'viewer')}>Keep Viewer</button></div>)}
       </div>
     )
   }
@@ -1612,7 +2055,7 @@ function SlideNavigator({
           <div className="forge-empty-nav">
             <Crosshair aria-hidden="true" />
             <strong>No local slides</strong>
-            <span>Import an SVS, OME-TIFF or VSI; Forge finds matching VSI companions.</span>
+            <span>Import any image advertised by the installed readers; companions are grouped automatically.</span>
           </div>
         )}
       </nav>
@@ -1630,7 +2073,7 @@ function RemoteViewerStage({ slide, viewer, onViewer, inspectorOpen, onInspector
   return (
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
       <header className="forge-viewer-header">
-        <div><strong>{slide?.displayName || 'Viewer library'}</strong><span>{slide ? `${viewerVisibility(slide)} Viewer slide · authenticated tile cache` : 'Choose a synchronized slide'}</span></div>
+        <div><strong>{slide?.displayName || 'Viewer library'}</strong><span>{slide ? `${viewerVisibility(slide)} Viewer slide · ${offlineReady(slide) ? 'verified local OME' : 'authenticated tile cache'}` : 'Choose a synchronized slide'}</span></div>
         <button type="button" aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} aria-controls="forge-slide-inspector" aria-expanded={inspectorOpen} title={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'} onClick={onInspector}><SidebarSimple /></button>
       </header>
       {slide ? <SlideViewer tileSource={slide.tileSourceUrl} sourceWidth={slide.width} sourceHeight={slide.height} onReady={onViewer} /> : (
@@ -1646,11 +2089,12 @@ function RemoteViewerStage({ slide, viewer, onViewer, inspectorOpen, onInspector
   )
 }
 
-function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOffline, onMove }: {
+function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onCancelOffline, onRemoveOffline, onMove }: {
   slide?: api.ViewerRemoteItem
   folders: api.ViewerRemoteLibrary['folders']
   onCollapse: () => void
   onKeepOffline: (id: string) => void
+  onCancelOffline: (id: string) => void
   onRemoveOffline: (id: string) => void
   onMove: (id: string, folderId: string) => void
 }) {
@@ -1661,7 +2105,7 @@ function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOf
         <div className="forge-remote-inspector-state"><span className="connected" /><strong>{viewerVisibility(slide)} slide</strong><small>{slide.state.replaceAll('_', ' ')}</small></div>
         <dl className="forge-remote-metadata">
           <div><dt><LockKey aria-hidden="true" />Visibility</dt><dd>{viewerVisibility(slide)}</dd></div>
-          <div><dt><Database aria-hidden="true" />Storage</dt><dd>{slide.offlineComplete ? 'Viewer + device' : 'Viewer'}</dd></div>
+          <div><dt><Database aria-hidden="true" />Storage</dt><dd>{offlineReady(slide) ? 'Viewer + verified device OME' : 'Viewer'}</dd></div>
           <div><dt><FileText aria-hidden="true" />File</dt><dd>{slide.contentBytes > 0 ? formatBytes(slide.contentBytes) : 'Legacy format'}</dd></div>
           <div><dt><Ruler aria-hidden="true" />Dimensions</dt><dd>{slide.width > 0 && slide.height > 0 ? `${slide.width.toLocaleString()} × ${slide.height.toLocaleString()} px` : 'Not reported'}</dd></div>
         </dl>
@@ -1672,7 +2116,7 @@ function RemoteInspector({ slide, folders, onCollapse, onKeepOffline, onRemoveOf
         {metadataText(slide.metadata?.tags) ? <div className="forge-remote-tags"><Tag aria-hidden="true" /><span>{metadataText(slide.metadata?.tags)}</span></div> : null}
         {metadataText(slide.metadata?.caseId) || metadataText(slide.metadata?.organSite) || metadataText(slide.metadata?.stain) ? <div className="forge-remote-context"><Globe aria-hidden="true" /><span>{[slide.metadata?.caseId, slide.metadata?.organSite, slide.metadata?.stain].map(metadataText).filter(Boolean).join(' · ')}</span></div> : null}
         <label className="forge-remote-folder-field"><span>Viewer folder</span><select value={slide.folderId} onChange={(event) => onMove(slide.id, event.target.value)}><option value="">Unfiled</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>
-        {slide.offlineComplete || slide.contentBytes > 0 ? <button className="forge-remote-storage-action" type="button" onClick={() => slide.offlineComplete ? onRemoveOffline(slide.id) : onKeepOffline(slide.id)}>{slide.offlineComplete ? 'Remove offline copy' : 'Keep verified OME offline'}</button> : <div className="forge-remote-legacy-note"><CloudArrowUp /><span><strong>Cloud only</strong><small>This older Viewer slide remains viewable online but has no downloadable OME file.</small></span></div>}
+        <OfflineActions slide={slide} onKeep={onKeepOffline} onRemove={onRemoveOffline} onCancel={onCancelOffline} />
       </section> : null}
     </aside>
   )
@@ -1686,10 +2130,19 @@ function ViewerStage({
   cropEditing,
   onCropChange,
   annotations,
+  analysisOverlays,
+  analysisMask,
+  overlayPage,
+  onOverlayPage,
+  onClearAnalysis,
   activeTool,
   viewer,
   onViewer,
   onCreateAnnotation,
+  onComposeBrush,
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onUpdateAnnotation,
   inspectorOpen,
   onInspector,
 }: {
@@ -1700,10 +2153,19 @@ function ViewerStage({
   cropEditing: boolean
   onCropChange: (box: CropBox) => void
   annotations: AnnotationRecord[]
+  analysisOverlays: AnalysisOverlayShape[]
+  analysisMask?: { run: DeterministicRun; channel: MaskChannel }
+  overlayPage: number
+  onOverlayPage: (page: number) => void
+  onClearAnalysis: () => void
   activeTool: string
   viewer: OpenSeadragon.Viewer | null
   onViewer: (viewer: OpenSeadragon.Viewer | null) => void
   onCreateAnnotation: (geometry: string) => void
+  onComposeBrush?: (parentId: string, operation: 'brush_add' | 'brush_subtract', geometry: string, revision: number) => void
+  selectedAnnotationId: string
+  onSelectAnnotation: (id: string) => void
+  onUpdateAnnotation: (id: string, geometry: string) => void
   inspectorOpen: boolean
   onInspector: () => void
 }) {
@@ -1729,7 +2191,9 @@ function ViewerStage({
         'WAITING_RESOURCES',
         ...CONVERSION_STATUSES,
       ].includes(dataset.status)
-      ? `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}&preview=${DIRECT_PREVIEW_VERSION}`
+      ? dataset.viewRevision
+        ? api.viewDziUrl(dataset.id, dataset.viewRevision)
+        : `/api/datasets/${encodeURIComponent(dataset.id)}/preview/slide.dzi?revision=${encodeURIComponent(previewIdentity)}&preview=${DIRECT_PREVIEW_VERSION}`
       : ''
   return (
     <section id="dzi-viewer" className="forge-stage" aria-label="Whole-slide viewer">
@@ -1738,6 +2202,13 @@ function ViewerStage({
           <strong>{revision?.name || dataset?.displayName || 'PathLab Forge viewer'}</strong>
           <span>{dataset ? `${datasetFormatLabel(dataset.format)} · ${statusLabel(dataset.status)} · ${showingConvertedResult ? 'Converted result' : converting ? 'Viewer unlocks after validation' : 'Original source viewer'}` : 'Choose a local slide from the panel'}</span>
         </div>
+        {analysisOverlays.length || analysisMask ? <button type="button" onClick={onClearAnalysis}>Clear analysis overlay</button> : null}
+        {analysisMask ? <span role="status">{analysisMask.channel} threshold mask · source ROI · stride {String(analysisMask.run.outputs.maskSampleStride || 1)}{Number(analysisMask.run.outputs.maskSampleStride || 1) > 1 ? ' sampled lattice' : ''}</span> : null}
+        {analysisOverlays.length > 2000 ? <span aria-label="Analysis overlay pages">
+          <button type="button" disabled={overlayPage === 0} onClick={() => onOverlayPage(overlayPage - 1)}>Previous objects</button>
+          <span>{overlayPage * 2000 + 1}–{Math.min((overlayPage + 1) * 2000, analysisOverlays.length)} of {analysisOverlays.length}</span>
+          <button type="button" disabled={(overlayPage + 1) * 2000 >= analysisOverlays.length} onClick={() => onOverlayPage(overlayPage + 1)}>Next objects</button>
+        </span> : null}
         <button
           type="button"
           aria-label={inspectorOpen ? 'Collapse slide inspector' : 'Open slide inspector'}
@@ -1762,6 +2233,8 @@ function ViewerStage({
           cropEditing={cropEditing}
           onCropChange={onCropChange}
           annotations={annotations}
+          analysisOverlays={analysisOverlays.slice(overlayPage * 2000, (overlayPage + 1) * 2000)}
+          analysisMask={analysisMask}
           sourceWidth={dataset?.width || 1}
           sourceHeight={dataset?.height || 1}
           cropX={revision && ['READY', 'APPROVED'].includes(revision.status)
@@ -1774,6 +2247,10 @@ function ViewerStage({
             ? revision.downsample ?? dataset?.downsample ?? 1
             : 0}
           onCreate={onCreateAnnotation}
+          onComposeBrush={onComposeBrush}
+          selectedAnnotationId={selectedAnnotationId}
+          onSelect={onSelectAnnotation}
+          onUpdate={onUpdateAnnotation}
           onReady={onViewer}
         />
       ) : inspecting && dataset ? (
@@ -1785,7 +2262,7 @@ function ViewerStage({
         <div className="forge-stage-empty">
           <span className="forge-tissue-mark"><Crosshair /></span>
           <h1>{dataset ? 'Preparing slide preview' : 'Your slides, ready at launch'}</h1>
-          <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import an SVS, OME-TIFF or VSI. The slide panel remains visible so image-series selection and conversion feel like one viewer workflow.'}</p>
+          <p>{dataset ? 'Inspect the image series, set a crop and scale, then convert. The exact result opens here before approval or upload.' : 'Import a WSI, microscopy dataset, or ordinary image. Forge probes the installed readers by content.'}</p>
         </div>
       )}
       {converting && dataset ? (
@@ -1871,6 +2348,7 @@ function ConversionProgress({ dataset, revision }: { dataset: Dataset; revision?
 }
 
 function Inspector({
+  tools,
   dataset,
   series,
   revisions,
@@ -1887,6 +2365,7 @@ function Inspector({
   onCollapse,
   onInspect,
   onConfigure,
+  onUpdateView,
   onConvert,
   onCancel,
   onApprove,
@@ -1894,12 +2373,16 @@ function Inspector({
   onUpload,
   onRemove,
   onDeleteAnnotation,
+  selectedAnnotationId,
+  onSelectAnnotation,
+  onUpdateAnnotation,
   viewingRevisionId,
   onViewRevision,
   onViewSource,
   onRenameRevision,
   onDeleteRevision,
 }: {
+  tools?: ReactNode
   dataset?: Dataset
   series: SeriesInfo[]
   revisions: ArtifactRevision[]
@@ -1916,6 +2399,7 @@ function Inspector({
   onCollapse: () => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
+  onUpdateView: (view: api.ViewDefinition) => Promise<void>
   onConvert: () => void
   onCancel: () => void
   onApprove: () => void
@@ -1923,13 +2407,16 @@ function Inspector({
   onUpload: () => void
   onRemove: () => void
   onDeleteAnnotation: (annotationId: string) => void
+  selectedAnnotationId: string
+  onSelectAnnotation: (id: string) => void
+  onUpdateAnnotation: (id: string, values: { label?: string; color?: string }) => Promise<void>
   viewingRevisionId: string
   onViewRevision: (revisionId: string) => void
   onViewSource: () => void
   onRenameRevision: (revisionId: string, name: string) => Promise<void>
   onDeleteRevision: (revisionId: string) => Promise<void>
 }) {
-  const [section, setSection] = useState<'export' | 'annotations' | 'history'>('export')
+  const [section, setSection] = useState<'export' | 'annotations' | 'history' | 'tools'>('export')
   if (!dataset) return <div className="forge-inspector-empty">Slide details appear here.</div>
   const current = revisions.find((revision) => revision.id === dataset.currentArtifactRevision)
   return (
@@ -1947,12 +2434,13 @@ function Inspector({
         </button>
       </header>
       <div className="forge-inspector-tabs" role="tablist">
-        {(['export', 'annotations', 'history'] as const).map((item) => (
+        {(['export', 'annotations', 'history', 'tools'] as const).map((item) => (
           <button type="button" role="tab" aria-selected={section === item} key={item} onClick={() => setSection(item)}>
-            {item === 'export' ? 'Crop & export' : item === 'annotations' ? 'Annotations' : 'History'}
+            {item === 'export' ? 'Crop & export' : item === 'annotations' ? 'Annotations' : item === 'tools' ? 'Tools' : 'History'}
           </button>
         ))}
       </div>
+      {section === 'tools' ? tools : null}
       {section === 'export' ? (
         <ExportInspector
           dataset={dataset}
@@ -1967,6 +2455,7 @@ function Inspector({
           onCropEditing={onCropEditing}
           onInspect={onInspect}
           onConfigure={onConfigure}
+          onUpdateView={onUpdateView}
           onConvert={onConvert}
           onCancel={onCancel}
           onApprove={onApprove}
@@ -1982,6 +2471,7 @@ function Inspector({
         <section className="forge-inspector-section">
           <div className="forge-section-heading"><h3>Annotations</h3><span>Source coordinates</span></div>
           <AnnotationToolbar activeTool={activeTool} onTool={onTool} />
+          {(dataset.unscopedAnnotationCount || 0) > 0 ? <p role="status">{dataset.unscopedAnnotationCount} legacy annotations have unknown original series/Z/T. Their coordinates remain preserved in the measurement export; redraw on this verified view before editing or analysis. Calibration is unavailable for unscoped records.</p> : null}
           <div className="forge-layer-row">
             <span><i /> Layer 1</span>
             <small>{annotations.length ? `${annotations.length} saved locally` : 'Virtual until first mark'}</small>
@@ -1990,12 +2480,19 @@ function Inspector({
             <div className="forge-annotation-list" aria-label="Annotation objects">
               {annotations.map((annotation, index) => (
                 <article key={annotation.id}>
-                  <span><strong>{annotation.label || annotation.type}</strong><small>Object {index + 1}</small></span>
+                  <button type="button" aria-pressed={selectedAnnotationId === annotation.id} onClick={() => onSelectAnnotation(annotation.id)}><strong>{annotation.label || annotation.type}</strong><small>Object {index + 1}</small></button>
                   <button type="button" onClick={() => onDeleteAnnotation(annotation.id)}>Delete</button>
                 </article>
               ))}
             </div>
           ) : null}
+          {annotations.find((item) => item.id === selectedAnnotationId) ? (
+            <AnnotationDetails key={selectedAnnotationId} datasetId={dataset.id}
+              annotation={annotations.find((item) => item.id === selectedAnnotationId)!}
+              onSave={onUpdateAnnotation} />
+          ) : null}
+          {window.forgeDesktop ? <NativeExport datasetId={dataset.id} /> :
+            <a href={`/api/datasets/${encodeURIComponent(dataset.id)}/measurements.csv`} download>Export measurements CSV</a>}
           <p className="forge-help">Editable annotation records remain source-anchored. Crop exports transform only intersecting geometry.</p>
         </section>
       ) : null}
@@ -2221,6 +2718,142 @@ function RevisionHistory({
   )
 }
 
+const CHANNEL_PALETTE = ['#ffffff', '#ff4d4d', '#45e06f', '#4d8cff', '#ffcf4d', '#d85cff', '#43d9d2']
+
+function initialView(dataset: Dataset, image: SeriesInfo): api.ViewDefinition {
+  if (dataset.viewDefinitionJson) {
+    try {
+      const saved = JSON.parse(dataset.viewDefinitionJson) as api.ViewDefinition
+      if (saved.series === image.index) return saved
+    } catch { /* A legacy or interrupted value falls back deterministically. */ }
+  }
+  const maximum = image.pixelType.includes('16') ? 65535
+    : image.pixelType.includes('32') && !image.pixelType.includes('float') ? 4_294_967_295
+      : image.pixelType.includes('float') || image.pixelType.includes('double') ? 1 : 255
+  return {
+    series: image.index,
+    z: { mode: 'SLICE', start: 0, end: 0 },
+    t: { mode: 'SLICE', start: 0, end: 0 },
+    channels: Array.from({ length: image.channels }, (_, channel) => ({
+      channel,
+      enabled: channel < Math.min(3, image.channels),
+      color: image.rgbPlane ? '#ffffff' : CHANNEL_PALETTE[channel % CHANNEL_PALETTE.length],
+      minimum: 0,
+      maximum,
+    })),
+    profile: image.rgbPlane ? 'PATHOLOGY_STANDARD' : 'DISPLAY_COMPOSITE',
+  }
+}
+
+function MultidimensionalViewControls({ dataset, image, onUpdate }: {
+  dataset: Dataset
+  image: SeriesInfo
+  onUpdate: (view: api.ViewDefinition) => Promise<void>
+}) {
+  const [view, setView] = useState(() => initialView(dataset, image))
+  const [saving, setSaving] = useState(false)
+  const [playing, setPlaying] = useState(false)
+  useEffect(() => {
+    setView(initialView(dataset, image))
+    setPlaying(false)
+  }, [dataset.id, dataset.viewDefinitionJson, image.index])
+  useEffect(() => {
+    if (!playing || image.sizeT < 2 || view.t.mode !== 'SLICE') return
+    const timer = window.setInterval(() => {
+      setView((current) => {
+        const position = (current.t.start + 1) % image.sizeT
+        const next = { ...current, t: { mode: 'SLICE' as const, start: position, end: position } }
+        void onUpdate(next).catch(() => setPlaying(false))
+        return next
+      })
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [playing, image.sizeT, view.t.mode, onUpdate])
+
+  const axis = (name: 'z' | 't', size: number) => {
+    const value = view[name]
+    const label = name.toUpperCase()
+    return <div className="forge-axis-control">
+      <label>{label} render<select value={value.mode} onChange={(event) => {
+        const mode = event.target.value as api.AxisMode
+        setView((current) => {
+          const other = name === 'z' ? 't' : 'z'
+          const nextOther = mode !== 'SLICE' && current[other].mode !== 'SLICE'
+            ? { mode: 'SLICE' as const, start: current[other].start, end: current[other].start }
+            : current[other]
+          return { ...current, [other]: nextOther, [name]: mode === 'SLICE'
+            ? { mode, start: Math.min(current[name].start, size - 1), end: Math.min(current[name].start, size - 1) }
+            : { mode, start: 0, end: size - 1 } }
+        })
+      }}><option value="SLICE">Slice</option><option value="MIN">Minimum</option><option value="MAX">Maximum</option><option value="MEAN">Mean</option></select></label>
+      {value.mode === 'SLICE' ? <label>{label} position<input type="range" min="0" max={size - 1} value={value.start} onChange={(event) => { const position = Number(event.target.value); setView((current) => ({ ...current, [name]: { mode: 'SLICE', start: position, end: position } })) }} /><output>{value.start + 1} / {size}</output></label> : <div className="forge-axis-range"><label>Start<input type="number" min="0" max={value.end} value={value.start} onChange={(event) => setView((current) => ({ ...current, [name]: { ...current[name], start: Math.max(0, Math.min(Number(event.target.value), current[name].end)) } }))} /></label><label>End<input type="number" min={value.start} max={size - 1} value={value.end} onChange={(event) => setView((current) => ({ ...current, [name]: { ...current[name], end: Math.max(current[name].start, Math.min(Number(event.target.value), size - 1)) } }))} /></label></div>}
+    </div>
+  }
+
+  const apply = async () => {
+    setSaving(true)
+    try { await onUpdate(view) } finally { setSaving(false) }
+  }
+  return <fieldset className="forge-multidimensional-controls workflow-only-step-1">
+    <legend>Image view</legend>
+    <p>{image.pixelType} · {image.channels}C · {image.sizeZ}Z · {image.sizeT}T</p>
+    {axis('z', image.sizeZ)}
+    {axis('t', image.sizeT)}
+    {image.sizeT > 1 ? <button type="button" aria-pressed={playing} disabled={view.t.mode !== 'SLICE'} onClick={() => setPlaying((current) => !current)}>{playing ? 'Pause time' : 'Play time (4 fps)'}</button> : null}
+    <div className="forge-channel-controls" aria-label="Channel rendering">
+      {view.channels.map((channel, index) => <div key={channel.channel}>
+        <label><input type="checkbox" checked={channel.enabled} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: event.target.checked } : item) }))} />C{channel.channel + 1}</label>
+        <input aria-label={`Channel ${channel.channel + 1} color`} type="color" value={channel.color} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, color: event.target.value } : item) }))} />
+        <label>Min<input type="number" value={channel.minimum} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, minimum: Number(event.target.value) } : item) }))} /></label>
+        <label>Max<input type="number" value={channel.maximum} onChange={(event) => setView((current) => ({ ...current, channels: current.channels.map((item, itemIndex) => itemIndex === index ? { ...item, maximum: Number(event.target.value) } : item) }))} /></label>
+      </div>)}
+    </div>
+    <button className="forge-primary" type="button" disabled={saving || !view.channels.some((channel) => channel.enabled)} onClick={() => void apply()}>{saving ? 'Rendering view…' : 'Apply image view'}</button>
+    <small>One projected axis at a time. Tile reads and projections are cancellable and resource bounded.</small>
+  </fieldset>
+}
+
+export function NativeExport({ datasetId, revision, runId, batchId, batchFormat = 'json' }: { datasetId: string; revision?: ArtifactRevision; runId?: string; batchId?: string; batchFormat?: 'csv' | 'json' }) {
+  const [state, setState] = useState<api.ExportState>()
+  const [error, setError] = useState('')
+  const selection = `${datasetId}:${revision?.id || ''}:${runId || ''}:${batchId || ''}:${batchFormat}`
+  const selectionRef = useRef(selection); selectionRef.current = selection
+  useEffect(() => { setState(undefined); setError('') }, [datasetId, revision?.id, runId, batchId, batchFormat])
+  const active = state && ['COPYING', 'VERIFYING'].includes(state.status)
+  useEffect(() => {
+    if (!active) return
+    let stopped = false
+    const timer = window.setTimeout(() => {
+      void api.exportState().then((next) => { if (stopped) return; if (next.id === state.id) setState(next); else setError('This export status was replaced by another job. Inspect the destination before retrying.') }).catch((error) => setError(message(error)))
+    }, 500)
+    return () => { stopped = true; window.clearTimeout(timer) }
+  }, [active, state])
+  const save = async (kind: 'ome' | 'package' | 'analysis' | 'measurements' | 'batch') => {
+    setError('')
+    const capturedSelection = selectionRef.current
+    try {
+      const name = (revision?.name || runId || (batchId ? `batch-${batchId}` : 'measurements')).replace(/[\x00-\x1f/\\:]/g, '_')
+      const extension = kind === 'batch' ? `.${batchFormat}` : kind === 'ome' ? '.ome.tif' : kind === 'package' ? '.plslide' : kind === 'analysis' ? '.json' : '.csv'
+      const destination = await window.forgeDesktop?.selectExportDestination(`${name}${extension}`)
+      if (capturedSelection !== selectionRef.current) return
+      if (destination) { const accepted = await (kind === 'ome' || kind === 'package'
+        ? api.exportArtifact(datasetId, revision!.id, kind, destination)
+        : kind === 'batch' ? api.exportBatch(batchId!, batchFormat, destination) : api.exportResult(kind, datasetId, runId || '', destination))
+        if (capturedSelection === selectionRef.current) setState(accepted)
+      }
+    } catch (error) { setError(message(error)) }
+  }
+  return <div aria-label="Native export">
+    <button type="button" disabled={Boolean(active)} onClick={() => void save(batchId ? 'batch' : revision ? 'ome' : runId ? 'analysis' : 'measurements')}>
+      {batchId ? `Save batch ${batchFormat.toUpperCase()} as…` : revision ? 'Save verified OME as…' : runId ? 'Save selected result as…' : 'Save measurements CSV as…'}</button>
+    {revision && revision.format !== 'OME_DYNAMIC_V1' ? <button type="button" disabled={Boolean(active)} onClick={() => void save('package')}>Save package as…</button> : null}
+    {state ? <p role="status">{state.detail} · {formatBytes(state.completedBytes)} / {formatBytes(state.totalBytes)}</p> : null}
+    {active ? <button type="button" onClick={() => void api.cancelExport(state!.id).then((next) => { if (next.id === state!.id) setState(next) }).catch((cause) => setError(message(cause)))}>Cancel export</button> : null}
+    {state?.status === 'COMPLETE' ? <button type="button" onClick={() => void window.forgeDesktop?.revealPath(state.destination)}>Reveal exported file</button> : null}
+    {error ? <p role="alert">{error}</p> : null}
+  </div>
+}
+
 function ExportInspector({
   dataset,
   series,
@@ -2234,6 +2867,7 @@ function ExportInspector({
   onCropEditing,
   onInspect,
   onConfigure,
+  onUpdateView,
   onConvert,
   onCancel,
   onApprove,
@@ -2256,6 +2890,7 @@ function ExportInspector({
   onCropEditing: (editing: boolean) => void
   onInspect: () => void
   onConfigure: (values: Parameters<typeof api.configure>[1]) => Promise<void>
+  onUpdateView: (view: api.ViewDefinition) => Promise<void>
   onConvert: () => void
   onCancel: () => void
   onApprove: () => void
@@ -2464,7 +3099,7 @@ function ExportInspector({
     <section className="forge-inspector-section">
       <ConversionWorkflow currentStep={workflowStep} complete={viewerUpload?.state === 'COMPLETE'}>
       <div className="forge-source-summary workflow-only-step-1">
-        <span>{dataset.format === 'VSI' ? 'VSI with matched ETS' : dataset.format === 'SVS' ? 'SVS whole slide' : 'OME-TIFF'}</span>
+        <span>{dataset.formatName || datasetFormatLabel(dataset.format)}</span>
         <strong>{formatBytes(dataset.sourceBytes)}</strong>
         <code>{dataset.sourceFingerprint ? dataset.sourceFingerprint.slice(0, 16) : 'not fingerprinted'}</code>
       </div>
@@ -2511,6 +3146,7 @@ function ExportInspector({
               ? 'Validated and approved · ready for private Viewer delivery'
               : 'Validated locally · approve to enable private Viewer delivery'}</small>}
           </>
+          {window.forgeDesktop ? <NativeExport datasetId={dataset.id} revision={readyCurrent} /> : null}
         </section>
       ) : null}
       {!series.length ? (
@@ -2527,7 +3163,7 @@ function ExportInspector({
           <fieldset className="forge-series-picker workflow-only-step-1">
             <legend>Image series</legend>
             <div role="list" aria-label="Image series">
-              {series.filter((item) => item.rgbPlane).map((item) => {
+              {series.map((item) => {
                 const active = item.index === Number(draft.series)
                 const name = item.name || `Series ${item.index}`
                 return (
@@ -2560,6 +3196,11 @@ function ExportInspector({
             </div>
             {seriesLoading ? <small role="status">Opening selected series in the viewer…</small> : null}
           </fieldset>
+          {selected && !selected.rgbPlane ? <MultidimensionalViewControls
+            dataset={dataset}
+            image={selected}
+            onUpdate={onUpdateView}
+          /> : null}
           <div className="forge-crop-panel workflow-only-step-2">
             <div className="forge-section-heading">
               <div>
@@ -2716,6 +3357,57 @@ function ExportInspector({
   )
 }
 
+function NativeImportDialog({ busy, error, onSources, onDirectory, onClose }: {
+  busy: boolean; error: string; onSources: (paths: string[]) => void
+  onDirectory: (path: string) => void; onClose: () => void
+}) {
+  const [failure, setFailure] = useState('')
+  const choose = async (directory: boolean) => {
+    try {
+      if (directory) {
+        const path = await window.forgeDesktop!.selectDirectory()
+        if (path) onDirectory(path)
+      } else onSources(await window.forgeDesktop!.selectSources())
+    } catch (error) { setFailure(message(error)) }
+  }
+  return <div className="forge-dialog-backdrop">
+    <section className="forge-connect-dialog" role="dialog" aria-modal="true" aria-labelledby="native-import-title">
+      <h2 id="native-import-title">Import local slides</h2>
+      <p>Choose source files or a folder using your operating system.</p>
+      <button type="button" disabled={busy} onClick={() => void choose(false)}>Choose slide files</button>
+      <button type="button" disabled={busy} onClick={() => void choose(true)}>Choose slide folder</button>
+      {error || failure ? <p role="alert">{error || failure}</p> : null}
+      <button type="button" disabled={busy} onClick={onClose}>Close</button>
+    </section>
+  </div>
+}
+
+function AnnotationDetails({ datasetId, annotation, onSave }: {
+  datasetId: string; annotation: AnnotationRecord
+  onSave: (id: string, values: { label?: string; color?: string }) => Promise<void>
+}) {
+  const [label, setLabel] = useState(annotation.label)
+  const [color, setColor] = useState(annotation.color)
+  const [measurements, setMeasurements] = useState<Record<string, number>>({})
+  const [failure, setFailure] = useState('')
+  useEffect(() => {
+    let active = true
+    void api.annotationMeasurements(datasetId, annotation.id).then((result) => {
+      if (active) { setMeasurements(result.values); setFailure('') }
+    }).catch((error) => { if (active) setFailure(message(error)) })
+    return () => { active = false }
+  }, [datasetId, annotation.id, annotation.revision])
+  return <form onSubmit={(event) => { event.preventDefault(); void onSave(annotation.id, { label, color }) }}>
+    <label>Annotation label<input value={label} maxLength={240} onChange={(event) => setLabel(event.target.value)} /></label>
+    <label>Annotation color<input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label>
+    <button type="submit">Save annotation</button>
+    {failure ? <p role="alert">{failure}</p> : null}
+    <dl aria-label="Annotation measurements">{Object.entries(measurements).map(([metric, value]) => (
+      <div key={metric}><dt>{metric}</dt><dd>{value.toLocaleString(undefined, { maximumFractionDigits: 3 })}</dd></div>
+    ))}</dl>
+  </form>
+}
+
 function QueueDock({
   datasets,
   notice,
@@ -2723,6 +3415,8 @@ function QueueDock({
   onClearError,
   onQueueReady,
   onOpen,
+  paused,
+  onPause,
 }: {
   datasets: Dataset[]
   notice: string
@@ -2730,6 +3424,8 @@ function QueueDock({
   onClearError: () => void
   onQueueReady: () => void
   onOpen: () => void
+  paused: boolean
+  onPause: () => void
 }) {
   const [queueOpen, setQueueOpen] = useState(false)
   const queueButtonRef = useRef<HTMLButtonElement>(null)
@@ -2761,10 +3457,11 @@ function QueueDock({
     <>
       <div className={`forge-queue${isError ? ' error' : ''}`} role="status" aria-live="polite">
         <span className="forge-queue-mark" />
-        <strong>{active.length
+        <strong>{paused ? 'Queue paused' : active.length
           ? `${convertingSlides.length ? `Converting ${convertingSlides.length}` : 'Starting'} · ${queued.length} queued`
           : 'Queue ready'}</strong>
         <span>{notice}</span>
+        <button type="button" onClick={onPause}>{paused ? 'Resume queue' : 'Pause queue'}</button>
         {queueItems.length ? <button ref={queueButtonRef} type="button" aria-haspopup="dialog" aria-expanded={queueOpen} onClick={() => { onOpen(); setQueueOpen(true) }}>View queue · {queueItems.length}</button> : null}
         {converting && phase ? (
           <label className="forge-queue-progress">
@@ -2984,7 +3681,8 @@ function conversionRouteLabel(dataset: Dataset, directOme: boolean) {
 function datasetFormatLabel(format: Dataset['format']) {
   if (format === 'VSI') return 'VSI / ETS'
   if (format === 'SVS') return 'SVS'
-  return 'OME-TIFF'
+  if (format === 'OME_TIFF') return 'OME-TIFF'
+  return format.replaceAll('_', ' ')
 }
 
 function formatRate(value: number, stage?: string) {
@@ -3086,4 +3784,25 @@ function viewerConnectionMessage(error: unknown) {
     return 'Viewer is unreachable. Start Viewer and confirm its web address, then retry.'
   }
   return detail
+}
+
+function offlineReady(slide: api.ViewerRemoteItem) { return slide.offlineComplete && slide.downloadState === 'READY' }
+function OfflineActions({ slide, onKeep, onRemove, onCancel }: { slide: api.ViewerRemoteItem; onKeep: (id: string) => void; onRemove: (id: string) => void; onCancel: (id: string) => void }) {
+  const pending = ['DOWNLOADING', 'VERIFYING'].includes(slide.downloadState || '')
+  const retry = ['FAILED', 'CANCELLED'].includes(slide.downloadState || '')
+  return <div aria-label={`Offline status for ${slide.displayName}`}>
+    {slide.downloadDetail ? <p role="status">{slide.downloadDetail}</p> : null}
+    {pending ? <><p role="status">Offline {slide.downloadState!.toLowerCase()}; verification must finish before this is an offline copy.</p><button type="button" onClick={() => onCancel(slide.id)}>Cancel offline download</button></>
+      : offlineReady(slide) ? <button type="button" aria-label="Remove offline copy" onClick={() => onRemove(slide.id)}><CloudArrowDown aria-hidden="true" /><span>Remove local</span></button>
+      : slide.contentBytes > 0 ? <button type="button" aria-label={retry ? 'Retry offline download' : 'Keep offline'} onClick={() => onKeep(slide.id)}><CloudArrowDown aria-hidden="true" /><span>{retry ? 'Retry offline download' : 'Keep offline'}</span></button>
+      : <button type="button" aria-label="Offline unavailable" disabled><CloudArrowUp aria-hidden="true" /><span>Cloud only</span></button>}
+  </div>
+}
+
+function ExternalViewerLink({ href, className, children }: { href: string; className: string; children: ReactNode }) {
+  const [error, setError] = useState('')
+  if (!window.forgeDesktop) return <a className={className} href={href} target="_blank" rel="noreferrer">{children}</a>
+  return <><button className={className} type="button" onClick={() => {
+    setError(''); void window.forgeDesktop!.openExternal(href).catch((cause) => setError(message(cause)))
+  }}>{children}</button>{error ? <p role="alert">{error}</p> : null}</>
 }

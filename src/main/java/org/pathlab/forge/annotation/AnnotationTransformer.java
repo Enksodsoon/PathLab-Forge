@@ -24,6 +24,7 @@ public final class AnnotationTransformer {
                 || downsample <= 0) {
             throw new IllegalArgumentException("Annotation transform is invalid");
         }
+        if(geometry!=null&&geometry.startsWith(org.pathlab.forge.analysis.MaskContours.PREFIX)){var transformed=org.pathlab.forge.analysis.MaskContours.transform(geometry,cropX,cropY,cropWidth,cropHeight,downsample);return transformed.isEmpty()?Optional.empty():Optional.of(transformed);}
         var points = parse(geometry);
         var minimumX = points.stream().mapToDouble(Point::x).min().orElseThrow();
         var maximumX = points.stream().mapToDouble(Point::x).max().orElseThrow();

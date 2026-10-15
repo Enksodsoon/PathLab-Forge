@@ -199,6 +199,8 @@ class VipsRuntimeTest {
         assertEquals(50_078, heights.stream().mapToInt(Integer::intValue).sum());
         assertEquals(List.of(6_260, 6_260, 6_260, 6_259, 6_260, 6_260, 6_260, 6_259), heights);
         assertTrue(heights.stream().distinct().count() > 1);
+        assertFalse(VipsRuntime.uniformRegionHeights(heights));
+        assertTrue(VipsRuntime.uniformRegionHeights(List.of(512, 512, 512)));
     }
 
     @Test
@@ -213,6 +215,14 @@ class VipsRuntimeTest {
         assertThrows(
                 IOException.class,
                 () -> VipsRuntime.parseIntegerOutput("VIPS-WARNING: no property returned"));
+    }
+
+    @Test
+    void omitsMultipageOptionForTheFirstPageOfOrdinaryImages() {
+        var source = Path.of("image.png");
+
+        assertEquals(source.toString(), VipsRuntime.sourcePage(source, 0));
+        assertEquals(source + "[page=2]", VipsRuntime.sourcePage(source, 2));
     }
 
     private static String escaped(Path path) {

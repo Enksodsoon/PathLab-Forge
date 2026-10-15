@@ -145,26 +145,26 @@ public record RuntimeProfile(
         var processTreeLimit = Math.min(
                 physicalMemoryBytes - Math.min(2 * GIB, physicalMemoryBytes / 4),
                 physicalMemoryBytes * 7 / 10);
-        var pauseBytes = Math.max(768 * MIB, physicalMemoryBytes / 32);
-        var workerStopBytes = Math.max(1_250 * MIB, pauseBytes + 384 * MIB);
+        var pauseBytes = Math.min(physicalMemoryBytes / 8, Math.max(768 * MIB, physicalMemoryBytes / 32));
+        var workerStopBytes = Math.min(physicalMemoryBytes / 4, Math.max(1_250 * MIB, pauseBytes + 384 * MIB));
         var roundedMemoryGiB = Math.max(1, Math.round((double) physicalMemoryBytes / GIB));
         return new RuntimeProfile(
                 logicalProcessors == 6 && roundedMemoryGiB == 8
                         ? "8gb-6core"
                         : "adaptive-%dc-%dgb".formatted(logicalProcessors, roundedMemoryGiB),
                 workers,
-                640 * MIB,
+                Math.min(640 * MIB, processTreeLimit / 3),
                 vipsConcurrency,
                 vipsCacheBytes,
                 Math.min(256, 64 + workers * 16),
                 Math.min(192, 48 + vipsConcurrency * 8),
                 quPathProcessors,
-                quPathHeapBytes,
+                Math.min(quPathHeapBytes, processTreeLimit / 2),
                 previewSessions,
                 previewCacheBytes,
                 directReaders,
                 512 * MIB,
-                Math.max(2 * GIB, processTreeLimit),
+                processTreeLimit,
                 workerStopBytes,
                 pauseBytes);
     }

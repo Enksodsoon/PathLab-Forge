@@ -57,6 +57,11 @@ public final class ConversionService implements AutoCloseable {
             java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final ExecutorService conversionExecutor;
     private final int maximumConcurrentConversions;
+    private volatile boolean queueDispatchEnabled;
+    private volatile Runnable batchMaintenance = () -> {};
+    private String batchPreparationId = "";
+    private Thread batchPreparationThread;
+    private boolean batchPreparationCancelled;
     private final int maximumReaderSessions;
     private final long readerSessionBytes;
     private final java.util.concurrent.ScheduledExecutorService memorySampler =
@@ -71,6 +76,12 @@ public final class ConversionService implements AutoCloseable {
             ConversionEngine engine,
             DerivativeEngine derivativeEngine,
             Path managedRoot) {
+        this(repository, engine, derivativeEngine, managedRoot, false);
+    }
+
+    public ConversionService(DatasetRepository repository, ConversionEngine engine,
+            DerivativeEngine derivativeEngine, Path managedRoot, boolean deferQueueDispatch) {
+        queueDispatchEnabled = !deferQueueDispatch;
         this.repository = repository;
         this.engine = engine;
         this.derivativeEngine = derivativeEngine;
@@ -98,6 +109,44 @@ public final class ConversionService implements AutoCloseable {
                 java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
+    public synchronized void resumeQueueDispatch() {
+        queueDispatchEnabled = true;
+        dispatchQueuedSafely();
+    }
+
+    public void setBatchMaintenance(Runnable callback) { batchMaintenance = java.util.Objects.requireNonNull(callback); }
+
+    public synchronized boolean submitBatchPreparation(String id, Runnable operation) {
+        if (!queueDispatchEnabled || queuePaused() || !batchPreparationId.isBlank()
+                || activeConversionCount() > 0 || !repository.listQueueEntries().isEmpty()
+                || conversionExecutor.isShutdown()) return false;
+        batchPreparationId = id;
+        batchPreparationCancelled = false;
+        conversionExecutor.execute(() -> {
+            try {
+                synchronized (this) {
+                    batchPreparationThread = Thread.currentThread();
+                    if (batchPreparationCancelled) batchPreparationThread.interrupt();
+                }
+                operation.run(); // Metadata readers never run while holding the service monitor.
+            } finally {
+                synchronized (this) {
+                    batchPreparationThread = null;
+                    batchPreparationId = "";
+                }
+                Thread.interrupted();
+                dispatchQueuedSafely();
+            }
+        });
+        return true;
+    }
+
+    public synchronized void cancelBatchPreparation(String id) {
+        if (!id.equals(batchPreparationId)) return;
+        batchPreparationCancelled = true;
+        if (batchPreparationThread != null) batchPreparationThread.interrupt();
+    }
+
     public int maximumConcurrentConversions() {
         return maximumConcurrentConversions;
     }
@@ -110,6 +159,14 @@ public final class ConversionService implements AutoCloseable {
         return (int) repository.listQueueEntries().stream()
                 .filter(entry -> !activeConversions.containsKey(entry.datasetId()))
                 .count();
+    }
+
+    public boolean queuePaused() { return repository.queuePaused(); }
+
+    public synchronized void setQueuePaused(boolean paused) throws IOException {
+        // Persist before changing admission; running work completes its current item.
+        repository.setQueuePaused(paused);
+        if (!paused) dispatchQueuedSafely();
     }
 
     static int recommendedConcurrentConversions(int logicalProcessors, long processTreeLimitBytes) {
@@ -212,6 +269,10 @@ public final class ConversionService implements AutoCloseable {
             }
         }
         return bytes.array();
+    }
+
+    public java.util.Optional<ArtifactRevision> savedRevision(String id, String revisionId) throws IOException {
+        return artifactRepository.find(id, revisionId);
     }
 
     public List<ArtifactRevision> revisions(String id) throws IOException {
@@ -506,6 +567,24 @@ public final class ConversionService implements AutoCloseable {
         } catch (Exception error) {
             throw new IOException("Direct OME preview tile read failed", error);
         }
+    }
+
+    /** Caller must first verify this retained copy and its current account binding. */
+    public DirectTileSource retainedCopyPreview(Path path) throws IOException {
+        return engine.directTileSource(path, 0);
+    }
+
+    public byte[] retainedCopyTile(Path path, String connectionKey, int level, int tileX, int tileY) throws IOException {
+        if (connectionKey.isBlank()) throw new IllegalArgumentException("Verified Viewer connection is required");
+        var attributes = java.nio.file.Files.readAttributes(path, java.nio.file.attribute.BasicFileAttributes.class,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        var key = "offline|" + connectionKey + "|" + path + "|" + attributes.size() + "|" + attributes.lastModifiedTime();
+        var session = ensureReaderSession(key, path);
+        try {
+            return session.tile(new ReaderSession.TileKey(0, level, tileX, tileY),
+                    () -> engine.readDirectTile(path, 0, level, tileX, tileY));
+        } catch (IOException error) { throw error; }
+        catch (Exception error) { throw new IOException("Retained OME tile read failed", error); }
     }
 
     private ArtifactPreviewSource directArtifactSource(String id, String revisionId)
@@ -862,6 +941,7 @@ public final class ConversionService implements AutoCloseable {
 
     private List<SeriesInfo> restoreSeries(String id, LocalDataset dataset)
             throws IOException {
+        if (dataset.selectedSeries() >= 0) verifySourceFingerprint(dataset);
         var existing = inspectedSeries.getOrDefault(id, List.of());
         if (!existing.isEmpty()) {
             return existing;
@@ -869,7 +949,6 @@ public final class ConversionService implements AutoCloseable {
         if (dataset.selectedSeries() < 0) {
             return List.of();
         }
-        verifySourceFingerprint(dataset);
         var cached = seriesMetadataCache.load(id, dataset.sourceFingerprint());
         if (cached.isPresent()) {
             inspectedSeries.put(id, cached.get());
@@ -934,6 +1013,36 @@ public final class ConversionService implements AutoCloseable {
             List<SeriesInfo> series,
             boolean cacheHit,
             DatasetStatus nextStatus) throws IOException {
+        var configuration = inspectedConfiguration(dataset, series, "", nextStatus);
+        repository.update(dataset.id(), current -> {
+            var effectiveStatus = nextStatus == DatasetStatus.VERIFYING_SOURCE
+                    && !current.sourceFingerprint().isBlank()
+                    ? DatasetStatus.READY_TO_CONVERT : nextStatus;
+            if (nextStatus == DatasetStatus.VERIFYING_SOURCE
+                    && java.util.Set.of(DatasetStatus.FAILED, DatasetStatus.NEEDS_COMPANIONS).contains(current.status())) {
+                effectiveStatus = current.status();
+            }
+            return current.withExportConfiguration(
+                effectiveStatus,
+                effectiveStatus == DatasetStatus.VERIFYING_SOURCE
+                        ? series.size() + " image series found; source verification is still running"
+                        : cacheHit
+                        ? series.size() + " image series loaded instantly from verified cache"
+                        : series.size() + " image series found; thumbnails are ready on demand",
+                configuration.selectedSeries(),
+                configuration.width(),
+                configuration.height(),
+                configuration.downsample(),
+                configuration.estimatedOutputBytes(),
+                configuration.cropX(),
+                configuration.cropY(),
+                configuration.cropWidth(),
+                configuration.cropHeight());
+        });
+    }
+
+    private static LocalDataset inspectedConfiguration(LocalDataset dataset, List<SeriesInfo> series,
+            String detail, DatasetStatus status) {
         var previouslySelected = series.stream()
                 .filter(item -> item.index() == dataset.selectedSeries())
                 .filter(SeriesInfo::isRgbPlane)
@@ -953,22 +1062,109 @@ public final class ConversionService implements AutoCloseable {
         var cropWidth = preserveConfiguration ? dataset.cropWidth() : selected.width();
         var cropHeight = preserveConfiguration ? dataset.cropHeight() : selected.height();
         var downsample = preserveConfiguration ? dataset.downsample() : 1.0;
-        repository.save(dataset.withExportConfiguration(
-                nextStatus,
-                nextStatus == DatasetStatus.VERIFYING_SOURCE
-                        ? series.size() + " image series found; source verification is still running"
-                        : cacheHit
-                        ? series.size() + " image series loaded instantly from verified cache"
-                        : series.size() + " image series found; thumbnails are ready on demand",
-                selected.index(),
-                selected.width(),
-                selected.height(),
-                downsample,
-                OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
-                cropX,
-                cropY,
-                cropWidth,
-                cropHeight));
+        return dataset.withExportConfiguration(status, detail, selected.index(), selected.width(),
+                selected.height(), downsample, OutputSizeEstimator.rgbPyramidUpperBound(cropWidth, cropHeight, downsample),
+                cropX, cropY, cropWidth, cropHeight);
+    }
+
+    // The caller owns a durable inspection intent; only short CAS commits touch the dataset repository.
+    public LocalDataset prepareExpected(LocalDataset initial) throws IOException {
+        requireInitialSettings(initial, requireDataset(initial.id()));
+        var before = initialSourceSnapshot(initial);
+        var digest = org.pathlab.forge.library.SourceDigest.compute(before);
+        initialSourceSnapshot(initial);
+        if (!initial.sourceFingerprint().isBlank() && !initial.sourceFingerprint().equals(digest.fingerprint()))
+            throw new IllegalStateException("Batch source content changed before inspection");
+        var current = requireDataset(initial.id());
+        requireInitialSettings(initial, current);
+        if (!current.sourceFingerprint().isBlank() && !current.sourceFingerprint().equals(digest.fingerprint()))
+            throw new IllegalStateException("Batch source verification no longer matches the saved intent");
+        requireNotInterrupted();
+        var verified = initial.withSourceIdentity(DatasetStatus.READY_TO_CONVERT,
+                "Batch source verified", digest.fingerprint(), digest.serializedInventory());
+        if (initial.selectedSeries() >= 0) return verified;
+        if (!initial.viewDefinitionJson().isBlank())
+            throw new IllegalStateException("Select an exact image series before batching this saved view");
+        var cached = seriesMetadataCache.load(initial.id(), verified.sourceFingerprint());
+        var series = cached.isPresent() ? cached.get() : engine.inspect(Path.of(initial.sourcePath()));
+        requireNotInterrupted();
+        if (series.stream().noneMatch(SeriesInfo::isRgbPlane))
+            throw new IllegalStateException("No supported RGB image plane was found for batch conversion");
+        initialSourceSnapshot(initial); // Reject mutations/removal while the external metadata reader ran.
+        requireInitialSettings(initial, requireDataset(initial.id()));
+        var prepared = inspectedConfiguration(verified, series, "Batch inspection settings frozen", DatasetStatus.READY_TO_CONVERT);
+        inspectedSeries.put(initial.id(), series);
+        seriesMetadataCache.save(initial.id(), verified.sourceFingerprint(), series);
+        return prepared;
+    }
+
+    public void validatePreparedSource(LocalDataset prepared) throws IOException {
+        var snapshot = initialSourceSnapshot(prepared);
+        if (!org.pathlab.forge.library.SourceDigest.compute(snapshot).fingerprint().equals(prepared.sourceFingerprint()))
+            throw new IllegalStateException("Batch source content changed after its settings were frozen");
+        initialSourceSnapshot(prepared);
+        requireNotInterrupted();
+    }
+
+    public LocalDataset applyPreparedExpected(LocalDataset initial, LocalDataset prepared) throws IOException {
+        return repository.update(initial.id(), current -> {
+            try {
+                requireExpectedSettings(prepared, current);
+                return current; // Recovery after the dataset CAS was already committed.
+            } catch (IllegalStateException notApplied) {
+                requireInitialSettings(initial, current);
+                if (!current.currentArtifactRevision().equals(initial.currentArtifactRevision())
+                        || !current.approvedArtifactRevision().equals(initial.approvedArtifactRevision()))
+                    throw new IllegalStateException("An artifact changed during batch inspection; review the saved batch intent");
+                if (!current.sourceFingerprint().isBlank()
+                        && !current.sourceFingerprint().equals(prepared.sourceFingerprint()))
+                    throw new IllegalStateException("Source verification changed during batch inspection");
+                var verified = current.withSourceIdentity(DatasetStatus.READY_TO_CONVERT, prepared.detail(),
+                        prepared.sourceFingerprint(), prepared.sourceInventory());
+                return initial.selectedSeries() >= 0 ? verified : verified.withExportConfiguration(
+                        DatasetStatus.READY_TO_CONVERT, prepared.detail(), prepared.selectedSeries(),
+                        prepared.width(), prepared.height(), prepared.downsample(), prepared.estimatedOutputBytes(),
+                        prepared.cropX(), prepared.cropY(), prepared.cropWidth(), prepared.cropHeight());
+            }
+        });
+    }
+
+    private static void requireNotInterrupted() throws IOException {
+        if (Thread.currentThread().isInterrupted()) throw new IOException("Batch inspection interrupted");
+    }
+
+    private static void requireInitialSettings(LocalDataset initial, LocalDataset current) {
+        if (!initial.sourceFingerprint().isBlank()) {
+            requireExpectedSettings(initial, current);
+            return;
+        }
+        if (!metadataInventory(initial.sourceInventory()).equals(metadataInventory(current.sourceInventory())))
+            throw new IllegalStateException("Batch source inventory changed before inspection");
+        requireExpectedSettings(initial, current.withSourceIdentity(current.status(), current.detail(),
+                initial.sourceFingerprint(), initial.sourceInventory()));
+    }
+
+    private static String metadataInventory(String inventory) {
+        return inventory.lines().filter(line -> !line.isBlank()).map(line -> {
+            var fields = line.split("\\|", 5);
+            if (fields.length != 4 && fields.length != 5) throw new IllegalStateException("Batch source inventory is unavailable");
+            return String.join("|", fields[0], fields[1], fields[2], fields[3]);
+        }).collect(java.util.stream.Collectors.joining("\n", "", "\n"));
+    }
+
+    private static org.pathlab.forge.library.SourceSnapshot initialSourceSnapshot(LocalDataset initial) throws IOException {
+        if (initial.sourceInventory().isBlank()) throw new IllegalStateException("Batch source identity is unavailable; restore missing companions and create a new batch");
+        org.pathlab.forge.library.SourceSnapshot snapshot;
+        try {
+            snapshot = initial.format().equals(DatasetFormat.VSI)
+                    ? org.pathlab.forge.library.SourceSnapshot.forVsi(Path.of(initial.sourcePath()))
+                    : org.pathlab.forge.library.SourceSnapshot.fromSerialized(Path.of(initial.sourcePath()), initial.sourceInventory());
+        } catch (org.pathlab.forge.library.DatasetInspectionException failure) {
+            throw new IOException(failure.getMessage(), failure);
+        }
+        if (!snapshot.serialized().equals(metadataInventory(initial.sourceInventory())))
+            throw new IllegalStateException("Batch source or companion files changed before inspection");
+        return snapshot;
     }
 
     public LocalDataset selectSeries(String id, int seriesIndex, double downsample)
@@ -1050,15 +1246,77 @@ public final class ConversionService implements AutoCloseable {
                 Path.of(dataset.sourcePath()), dataset.selectedSeries(), x, y, width, height);
     }
 
-    public LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
+    public RgbRegion readRgbRegion(String id, int series, int z, int t,
+            int x, int y, int width, int height) throws IOException {
         var dataset = requireDataset(id);
-        requestedFormat = selectedConversionFormat(requestedFormat);
-        requestedFormats.put(id, requestedFormat);
-        if (dataset.status() == DatasetStatus.QUEUED
+        verifySourceFingerprint(dataset);
+        var info = requireSeriesInfo(id, series);
+        if (!info.isRgbPlane() || x < 0 || y < 0 || width < 1 || height < 1
+                || (long) x + width > info.width() || (long) y + height > info.height()
+                || z < 0 || z >= info.sizeZ() || t < 0 || t >= info.sizeT()) {
+            throw new IllegalArgumentException("Analysis requires an exact supported native RGB plane and bounded ROI");
+        }
+        return engine.readRgbRegion(Path.of(dataset.sourcePath()), series, z, t, x, y, width, height);
+    }
+
+    @FunctionalInterface
+    public interface Admission { void save(LocalDataset admitted) throws IOException; }
+
+    public synchronized LocalDataset startExpected(
+            LocalDataset expected, ArtifactRevisionFormat format, Admission admission) throws IOException {
+        var current = requireDataset(expected.id());
+        requireExpectedSettings(expected, current);
+        return start(current.id(), format, admission, true, false);
+    }
+
+    static void requireExpectedSettings(LocalDataset expected, LocalDataset current) {
+        if (!expected.configurationRevision().equals(current.configurationRevision())
+                || !expected.sourcePath().equals(current.sourcePath())
+                || expected.sourceBytes() != current.sourceBytes()
+                || !expected.sourceFingerprint().equals(current.sourceFingerprint())
+                || !expected.sourceInventory().equals(current.sourceInventory())
+                || !expected.format().equals(current.format())
+                || expected.selectedSeries() != current.selectedSeries()
+                || expected.width() != current.width() || expected.height() != current.height()
+                || expected.cropX() != current.cropX() || expected.cropY() != current.cropY()
+                || expected.cropWidth() != current.cropWidth() || expected.cropHeight() != current.cropHeight()
+                || Double.compare(expected.downsample(), current.downsample()) != 0
+                || !expected.readerEngine().equals(current.readerEngine())
+                || !expected.readerId().equals(current.readerId())
+                || !expected.runtimeFingerprint().equals(current.runtimeFingerprint())
+                || !expected.viewDefinitionJson().equals(current.viewDefinitionJson())) {
+            throw new IllegalStateException("Batch source or settings changed; restore the saved settings or create a new batch");
+        }
+    }
+
+    public synchronized LocalDataset start(String id, ArtifactRevisionFormat requestedFormat) throws IOException {
+        return start(id, requestedFormat, admitted -> {}, false, false);
+    }
+
+    public synchronized LocalDataset startTeaching(String id) throws IOException {
+        return start(id, ArtifactRevisionFormat.PREPARED_DZI_V2, admitted -> {}, false, true);
+    }
+
+    private LocalDataset start(String id, ArtifactRevisionFormat requestedFormat,
+            Admission admission, boolean fixedSettings, boolean teaching) throws IOException {
+        var dataset = requireDataset(id);
+        requestedFormat = teaching ? ArtifactRevisionFormat.PREPARED_DZI_V2 : selectedConversionFormat(requestedFormat);
+        var existingEntry = repository.listQueueEntries().stream()
+                .filter(entry -> entry.datasetId().equals(id)).findFirst().orElse(null);
+        if (existingEntry != null || activeConversions.containsKey(id)) {
+            if (fixedSettings && dataset.currentArtifactRevision().isBlank()
+                    || (fixedSettings || teaching) && existingEntry != null
+                        && !existingEntry.requestedFormat().equals(requestedFormat.name())) {
+                throw new IllegalStateException("Existing conversion has no matching pinned artifact; wait for it to finish");
+            }
+            admission.save(dataset);
+            return dataset;
+        }
+        if (!fixedSettings && (dataset.status() == DatasetStatus.QUEUED
                 || dataset.status() == DatasetStatus.WAITING_RESOURCES
                 || dataset.status() == DatasetStatus.CONVERTING
                 || dataset.status() == DatasetStatus.OPTIMIZING_OME
-                || dataset.status() == DatasetStatus.VALIDATING) {
+                || dataset.status() == DatasetStatus.VALIDATING)) {
             return dataset;
         }
         if (dataset.selectedSeries() < 0) {
@@ -1068,7 +1326,7 @@ public final class ConversionService implements AutoCloseable {
         var request = request(dataset);
         var secondsBudgetEnabled = Boolean.parseBoolean(
                 System.getProperty("pathlab.forge.secondsBudget.enabled", "false"));
-        if (secondsBudgetEnabled
+        if (!fixedSettings && secondsBudgetEnabled
                 && Boolean.parseBoolean(
                         System.getProperty("pathlab.forge.fastProfile.enabled", "false"))) {
             var fastDownsample = QuPathRuntime.fastProfileDownsample(request);
@@ -1140,6 +1398,7 @@ public final class ConversionService implements AutoCloseable {
                             reusable.id());
             cached = restoreReusableApproval(cached, reusable);
             repository.save(cached);
+            admission.save(cached);
             return cached;
         }
         if (secondsBudgetEnabled) {
@@ -1151,19 +1410,31 @@ public final class ConversionService implements AutoCloseable {
                         .max()
                         .orElse(0L)
                 + 1;
-        repository.saveQueueEntry(new ConversionQueueEntry(
-                dataset.id(),
-                nextPosition,
-                dataset.configurationRevision(),
-                System.currentTimeMillis(),
-                requestedFormat.name(),
-                "Waiting for an available conversion slot"));
         var queued = dataset.withPreparation(
                 DatasetStatus.QUEUED,
-                "Queued #" + nextPosition + " · settings snapshot locked",
-                dataset.outputPath(),
-                dataset.sha256());
+                "Queued #" + nextPosition + " - settings snapshot locked",
+                dataset.outputPath(), dataset.sha256());
+        if (fixedSettings) {
+            var revision = resumableRevision(dataset).orElse(null);
+            if (revision != null && revision.format() != requestedFormat) revision = null;
+            if (revision == null) {
+                revision = artifactRepository.create(dataset, request.outputWidth(), request.outputHeight(), requestedFormat);
+                saveCheckpoint(new StageCheckpointStore(Path.of(revision.omePath()).getParent()),
+                        revision, StageCheckpoint.Stage.SOURCE_VERIFIED, 1, 1);
+            } else if (revision.status() == ArtifactRevisionStatus.FAILED) {
+                revision = revision.restarting();
+                artifactRepository.save(revision);
+            }
+            queued = queued.withArtifactRevision(DatasetStatus.QUEUED, queued.detail(),
+                    dataset.outputPath(), dataset.sha256(), revision.id());
+        }
         repository.save(queued);
+        // The batch manifest owns this identity before any scheduler can see the queue row.
+        admission.save(queued);
+        requestedFormats.put(id, requestedFormat);
+        repository.saveQueueEntry(new ConversionQueueEntry(dataset.id(), nextPosition,
+                dataset.configurationRevision(), System.currentTimeMillis(), requestedFormat.name(),
+                "Waiting for an available conversion slot"));
         progress.put(
                 dataset.id(),
                 new ConversionProgress(
@@ -1187,6 +1458,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void dispatchQueued() throws IOException {
+        if (!queueDispatchEnabled || !batchPreparationId.isBlank() || repository.queuePaused()) return;
         while (activeConversionCount() < maximumConcurrentConversions) {
             var entry = repository.listQueueEntries().stream()
                     .filter(item -> !activeConversions.containsKey(item.datasetId()))
@@ -1212,8 +1484,9 @@ public final class ConversionService implements AutoCloseable {
             try {
                 requestedFormats.put(
                         queued.id(),
-                        selectedConversionFormat(
-                                ArtifactRevisionFormat.valueOf(entry.requestedFormat())));
+                        entry.requestedFormat().equals(ArtifactRevisionFormat.PREPARED_DZI_V2.name())
+                                ? ArtifactRevisionFormat.PREPARED_DZI_V2
+                                : selectedConversionFormat(ArtifactRevisionFormat.valueOf(entry.requestedFormat())));
             } catch (IllegalArgumentException invalidFormat) {
                 repository.deleteQueueEntry(entry.datasetId());
                 repository.save(queued.withPreparation(
@@ -1221,6 +1494,17 @@ public final class ConversionService implements AutoCloseable {
                         "Queued artifact format is unsupported; queue this slide again",
                         queued.outputPath(),
                         queued.sha256()));
+                continue;
+            }
+            try {
+                verifySourceFingerprint(queued);
+            } catch (IOException | IllegalStateException changedSource) {
+                var revision = queued.currentArtifactRevision().isBlank() ? null
+                        : artifactRepository.find(queued.id(), queued.currentArtifactRevision()).orElse(null);
+                if (revision != null) artifactRepository.save(revision.failed(concise(changedSource.getMessage())));
+                repository.save(queued.withPreparation(DatasetStatus.FAILED, concise(changedSource.getMessage()),
+                        queued.outputPath(), queued.sha256()));
+                repository.deleteQueueEntry(queued.id());
                 continue;
             }
             try {
@@ -1251,14 +1535,18 @@ public final class ConversionService implements AutoCloseable {
         DiskPreflight.requireCapacity(
                 Files.getFileStore(managedRoot).getUsableSpace(),
                 peakWorkspace);
-        var requestedFormat = selectedConversionFormat(requestedFormats.getOrDefault(
-                dataset.id(), ArtifactRevisionFormat.OME_DYNAMIC_V1));
+        var requestedFormat = requestedFormats.getOrDefault(
+                dataset.id(), ArtifactRevisionFormat.OME_DYNAMIC_V1);
         var resumable = resumableRevision(dataset).filter(
                 candidate -> candidate.format() == requestedFormat);
         var revision = resumable.isPresent()
                 ? resumable.get()
                 : artifactRepository.create(
                         dataset, request.outputWidth(), request.outputHeight(), requestedFormat);
+        if (revision.status() == ArtifactRevisionStatus.FAILED) {
+            revision = revision.restarting();
+            artifactRepository.save(revision);
+        }
         requestedFormats.remove(dataset.id());
         var directDzi = useDirectDziFromRegions(requestedFormat, dataset, request);
         var profileName = org.pathlab.forge.runtime.RuntimeProfile.system().name();
@@ -1346,6 +1634,33 @@ public final class ConversionService implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    public DirectTileSource directView(String id, org.pathlab.forge.reader.ViewDefinition view)
+            throws IOException {
+        var dataset = requireDataset(id);
+        evictIdleReaderSessions();
+        ensureReaderSession(dataset);
+        return engine.directTileSource(Path.of(dataset.sourcePath()), view);
+    }
+
+    public byte[] directViewTile(
+            String id, org.pathlab.forge.reader.ViewDefinition view,
+            int level, int tileX, int tileY) throws IOException {
+        var dataset = requireDataset(id);
+        evictIdleReaderSessions();
+        var session = ensureReaderSession(dataset);
+        try {
+            return session.tile(
+                    new ReaderSession.TileKey(
+                            view.series(), level, tileX, tileY, view.revision()),
+                    () -> engine.readViewTile(
+                            Path.of(dataset.sourcePath()), view, level, tileX, tileY));
+        } catch (IOException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IOException("Multidimensional tile read failed", error);
+        }
     }
 
     boolean validatesReusableProfile(ArtifactRevision revision, ConversionRequest request) {
@@ -1445,6 +1760,7 @@ public final class ConversionService implements AutoCloseable {
     }
 
     private void cleanupCancelledRevision(LocalDataset dataset) throws IOException {
+        if (dataset.currentArtifactRevision().isBlank()) return;
         var revision = artifactRepository
                 .find(dataset.id(), dataset.currentArtifactRevision())
                 .orElse(null);
@@ -1508,8 +1824,10 @@ public final class ConversionService implements AutoCloseable {
             Files.deleteIfExists(partial);
             Files.deleteIfExists(rendered);
             var request = request(dataset);
+            var savedView = savedView(dataset);
             var useDirectDzi = useDirectDziFromRegions(
                     revision.format(), dataset, request);
+            if (savedView != null) useDirectDzi = false;
             String digest = "";
             var resumeOme = existingCheckpoint != null
                     && !useDirectDzi
@@ -1519,7 +1837,7 @@ public final class ConversionService implements AutoCloseable {
                             >= StageCheckpoint.Stage.OME_VERIFIED.ordinal()
                     && Files.isRegularFile(output);
             if (!resumeOme) {
-                if (shouldUseQuPathWriter(
+                if (savedView == null && shouldUseQuPathWriter(
                         revision.format(), quPathRuntime.supports(dataset.format()))) {
                     repository.save(dataset.withConversion(
                         DatasetStatus.OPTIMIZING_OME,
@@ -1548,10 +1866,10 @@ public final class ConversionService implements AutoCloseable {
                                 Math.min(bytes, projectedBytes),
                                 projectedBytes));
                     finalOmeWritten = true;
-                } else if (dataset.format().isSingleFileTiff()
+                } else if (savedView == null && dataset.format().isSingleFileTiff()
                         && derivativeEngine.supportsOmeRendering()) {
                     derivativeEngine.renderOme(request, rendered);
-                } else if (useParallelRgb(dataset, request)) {
+                } else if (savedView != null || useParallelRgb(dataset, request)) {
                 regionRoot = outputDirectory.resolve("regions.partial");
                 List<Path> regions = null;
                 if (existingCheckpoint != null
@@ -1576,11 +1894,8 @@ public final class ConversionService implements AutoCloseable {
                     }
                     Files.createDirectories(regionRoot);
                     var progressLock = new Object();
-                    regions = engine.convertRegions(
-                            request,
-                            regionRoot,
-                            parallelRgbWorkers(request.source()),
-                            (completed, total) -> {
+                    var viewForRender = savedView;
+                    var progressListener = (java.util.function.BiConsumer<Integer, Integer>) (completed, total) -> {
                                 synchronized (progressLock) {
                                     updateProgress(
                                             dataset.id(),
@@ -1598,7 +1913,12 @@ public final class ConversionService implements AutoCloseable {
                                         throw new java.io.UncheckedIOException(error);
                                     }
                                 }
-                            });
+                            };
+                    regions = viewForRender == null
+                            ? engine.convertRegions(request, regionRoot,
+                                    parallelRgbWorkers(request.source()), progressListener)
+                            : engine.convertViewRegions(request, viewForRender, regionRoot,
+                                    Math.max(1, parallelRgbWorkers(request.source())), progressListener);
                 }
                 saveCheckpoint(
                         checkpoints,
@@ -1662,6 +1982,14 @@ public final class ConversionService implements AutoCloseable {
                 } else if (!finalOmeWritten) {
                     Files.move(rendered, partial, StandardCopyOption.REPLACE_EXISTING);
                 }
+                if (!useDirectDzi && savedView != null) {
+                    org.pathlab.forge.derivative.OmeTiffMetadataInjector.inject(
+                            partial,
+                            request.outputWidth(),
+                            request.outputHeight(),
+                            savedView.revision(),
+                            savedView.profile().name());
+                }
                 if (!useDirectDzi) {
                     repository.save(dataset.withConversion(
                     DatasetStatus.VALIDATING,
@@ -1696,6 +2024,7 @@ public final class ConversionService implements AutoCloseable {
                         request.outputHeight(),
                         request.downsample());
                 digest = sha256(partial);
+                verifySourceFingerprint(dataset);
                 atomicReplace(partial, output);
                 saveCheckpoint(
                         checkpoints,
@@ -1875,7 +2204,9 @@ public final class ConversionService implements AutoCloseable {
                             useDirectDzi
                                     ? "estimated-staging-ome"
                                     : "actual-staging-ome",
-                            "0.1.0-rc");
+                            "0.1.0-rc",
+                            dataset.readerEngine(), dataset.readerId(), dataset.formatName(),
+                            dataset.runtimeFingerprint(), dataset.viewDefinitionJson());
             var stagingOmeBytes = useDirectDzi
                     ? OutputSizeEstimator.compressedOmeTiff(
                                     dataset.cropWidth(),
@@ -2072,6 +2403,7 @@ public final class ConversionService implements AutoCloseable {
     private void maintenanceTick() {
         sampleActiveMemory();
         dispatchQueuedSafely();
+        if (queueDispatchEnabled) batchMaintenance.run();
     }
 
     private boolean useDirectFinalOme(ConversionRequest request) {
@@ -2174,6 +2506,39 @@ public final class ConversionService implements AutoCloseable {
                 derivativeEngine.available(),
                 parallelRgbWorkers(request.source()),
                 request);
+    }
+
+    private static org.pathlab.forge.reader.ViewDefinition savedView(LocalDataset dataset)
+            throws IOException {
+        if (dataset.viewDefinitionJson().isBlank()) return null;
+        try {
+            var node = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(dataset.viewDefinitionJson());
+            var z = node.required("z");
+            var t = node.required("t");
+            var channels = new java.util.ArrayList<org.pathlab.forge.reader.ChannelRender>();
+            for (var channel : node.required("channels")) {
+                channels.add(new org.pathlab.forge.reader.ChannelRender(
+                        channel.required("channel").asInt(),
+                        channel.required("enabled").asBoolean(),
+                        channel.required("color").asText(),
+                        channel.required("minimum").asDouble(),
+                        channel.required("maximum").asDouble()));
+            }
+            return new org.pathlab.forge.reader.ViewDefinition(
+                    node.required("series").asInt(),
+                    new org.pathlab.forge.reader.AxisSelection(
+                            org.pathlab.forge.reader.AxisMode.valueOf(z.required("mode").asText()),
+                            z.required("start").asInt(), z.required("end").asInt()),
+                    new org.pathlab.forge.reader.AxisSelection(
+                            org.pathlab.forge.reader.AxisMode.valueOf(t.required("mode").asText()),
+                            t.required("start").asInt(), t.required("end").asInt()),
+                    channels,
+                    org.pathlab.forge.reader.RenderProfile.valueOf(
+                            node.required("profile").asText()));
+        } catch (RuntimeException error) {
+            throw new IOException("Saved multidimensional view is invalid", error);
+        }
     }
 
     static boolean shouldUseParallelRgb(

@@ -41,6 +41,7 @@ public record SourceDigest(String fingerprint, String serializedInventory) {
             var buffer = new byte[1024 * 1024];
             int read;
             while ((read = input.read(buffer)) != -1) {
+                if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Source digest interrupted");
                 digest.update(buffer, 0, read);
             }
         }

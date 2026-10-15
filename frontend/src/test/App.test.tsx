@@ -40,6 +40,12 @@ vi.mock('../SlideViewer', () => ({
 }))
 
 vi.mock('../api', () => ({
+  batches: vi.fn(async () => []),
+  createBatch: vi.fn(),
+  batchReport: vi.fn(),
+  retryBatchItem: vi.fn(),
+  cancelBatch: vi.fn(),
+  exportBatch: vi.fn(),
   bootstrap: vi.fn(async () => [[], {
     conversionRuntime: 'Bio-Formats test',
     derivativeRuntime: 'libvips test',
@@ -48,7 +54,27 @@ vi.mock('../api', () => ({
     downsamples: [1, 1.5, 2, 4, 8],
   }]),
   datasets: vi.fn(async () => []),
+  studyDrafts: vi.fn(async () => []),
+  teachingSlides: vi.fn(async () => []),
+  publishStudy: vi.fn(),
+  generateTeachingArtifact: vi.fn(),
+  studyDraft: vi.fn(),
+  createStudyDraft: vi.fn(),
+  saveStudyDraft: vi.fn(),
+  duplicateStudyDraft: vi.fn(),
+  studyHistory: vi.fn(),
+  recoverStudyDraft: vi.fn(),
+  previewStudyDraft: vi.fn(),
+  reviewStudyTask: vi.fn(),
+  approveStudyDraft: vi.fn(),
+  importStudyDraft: vi.fn(),
+  importStudyQuestions: vi.fn(),
+  exportStudy: vi.fn(),
+  studyExportUrl: vi.fn(),
   capabilities: vi.fn(),
+  formats: vi.fn(async () => ({
+    policy: 'BEST_EFFORT', runtimeVersion: 'test readers', runtimeFingerprint: 'a'.repeat(64), formats: [],
+  })),
   browseLocalFiles: vi.fn(async () => ({
     path: 'C:\\cases',
     parent: 'C:\\',
@@ -93,7 +119,17 @@ vi.mock('../api', () => ({
     `/api/datasets/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(revision)}/ome-preview/slide.dzi`,
   approve: vi.fn(),
   annotations: vi.fn(async () => []),
+  analysisRuns: vi.fn(async () => []),
+  analysisRun: vi.fn(),
+  analysisHistory: vi.fn(),
+  persistTma: vi.fn(),
+  analyzeTmaCore: vi.fn(),
+  submitAnalysis: vi.fn(),
+  cancelAnalysis: vi.fn(),
+  analysisReview: vi.fn(),
+  saveAnalysisReview: vi.fn(),
   createAnnotation: vi.fn(),
+  updateAnnotation: vi.fn(),
   deleteAnnotation: vi.fn(),
   features: vi.fn(async () => ({ features: [
     {
@@ -104,6 +140,9 @@ vi.mock('../api', () => ({
     },
   ] })),
   installFeature: vi.fn(),
+  importFeature: vi.fn(),
+  featureAction: vi.fn(),
+  featureProgress: vi.fn(async () => ({ id: '', phase: 'IDLE', completedBytes: 0, totalBytes: 0, detail: '' })),
   disableFeature: vi.fn(),
   uninstallFeature: vi.fn(),
   startViewerPairing: vi.fn(async () => ({
@@ -124,6 +163,7 @@ vi.mock('../api', () => ({
   uploadApprovedArtifact: vi.fn(),
   getViewerUpload: vi.fn(),
   cancelViewerUpload: vi.fn(),
+  cancelViewerOfflineDownload: vi.fn(async () => undefined),
   viewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
   syncViewerLibrary: vi.fn(async () => ({ items: [], folders: [], conflicts: [] })),
   keepViewerSlideOffline: vi.fn(async () => ({ state: 'DOWNLOADING' })),
@@ -137,6 +177,8 @@ vi.mock('../api', () => ({
 beforeEach(() => {
   localStorage.clear()
   document.documentElement.dataset.theme = 'light'
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 })
   vi.mocked(api.getViewerConnection).mockResolvedValue({
     connected: false,
     viewerUrl: '',
@@ -156,16 +198,36 @@ test('launches directly into the Viewer Canvas Focus shell', async () => {
   expect(screen.getByRole('button', { name: 'Viewer library' })).toBeVisible()
 })
 
-test('keeps optional features offline until Feature Center is opened', async () => {
+test('reads cached feature metadata without refreshing the remote catalog', async () => {
   render(<App />)
 
   expect(await screen.findByRole('button', { name: 'Feature Center' })).toBeVisible()
-  expect(api.features).not.toHaveBeenCalled()
+  expect(api.features).not.toHaveBeenCalledWith(true)
   fireEvent.click(screen.getByRole('button', { name: 'Feature Center' }))
 
   expect(await screen.findByRole('heading', { name: 'Feature Center' })).toBeVisible()
   expect(api.features).toHaveBeenCalledWith(false)
   expect(screen.getByText('Pathology Tools')).toBeVisible()
+})
+
+test('imports signed native-selected feature files without Viewer pairing and keeps cancellation local', async () => {
+  const previous = window.forgeDesktop
+  const files = { catalogPath: 'C:\\approved\\catalog.json', archivePath: 'C:\\approved\\tools.zip' }
+  const selectFeatureFiles = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(files)
+  window.forgeDesktop = { selectSources: vi.fn(), selectFeatureFiles, selectDirectory: vi.fn(), selectExportDestination: vi.fn(), revealPath: vi.fn(), openExternal: vi.fn(), onCommand: vi.fn(() => () => {}) }
+  vi.mocked(api.importFeature).mockClear()
+  try {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Feature Center' }))
+    const button = await screen.findByRole('button', { name: 'Import signed feature pack' })
+    await waitFor(() => expect(button).toBeEnabled())
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toBeEnabled())
+    expect(api.importFeature).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    await waitFor(() => expect(api.importFeature).toHaveBeenCalledWith(files))
+    expect(api.features).not.toHaveBeenCalledWith(true)
+  } finally { window.forgeDesktop = previous }
 })
 
 test('disables an installed feature without uninstalling its files', async () => {
@@ -254,13 +316,14 @@ test('collapses and restores the slide inspector without losing its state', asyn
 
   render(<App />)
 
-  const inspectorLabel = await screen.findByText('Slide inspector')
+  await screen.findByRole('button', { name: 'Collapse slide inspector' })
+  const inspectorLabel = screen.getByText('Slide inspector')
   const host = inspectorLabel.closest('.forge-canvas-host')
   const inspector = inspectorLabel.closest('aside')
   expect(host).not.toHaveClass('inspector-collapsed')
   expect(inspector).toBeVisible()
 
-  fireEvent.click(within(inspectorLabel.closest('header')!).getByRole('button', {
+  fireEvent.click(await within(inspectorLabel.closest('header')!).findByRole('button', {
     name: 'Collapse slide inspector',
   }))
 
@@ -441,8 +504,11 @@ test('organizes synchronized Viewer slides inside expandable folders', async () 
   fireEvent.click(cases)
   expect(within(slides).queryByText('Case slide')).not.toBeInTheDocument()
   expect(within(slides).getByText('Unfiled slide')).toBeVisible()
-  fireEvent.click(cases)
+  fireEvent.keyDown(cases, { key: 'ArrowRight' })
   expect(within(slides).getByText('Case slide')).toBeVisible()
+  cases.focus()
+  fireEvent.keyDown(cases, { key: 'ArrowDown' })
+  expect(document.activeElement).toHaveClass('forge-remote-slide-main')
 })
 
 test('labels legacy Viewer slides without presenting zero bytes as downloadable content', async () => {
@@ -457,6 +523,7 @@ test('labels legacy Viewer slides without presenting zero bytes as downloadable 
       offlineComplete: false }],
     folders: [], conflicts: [],
   })
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1000 })
   render(<App />)
   fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
 
@@ -545,7 +612,8 @@ test('shows connected account details and revokes only after confirmation', asyn
   expect(api.revokeViewerConnection).not.toHaveBeenCalled()
   fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm disconnect' }))
   expect(api.revokeViewerConnection).toHaveBeenCalledTimes(1)
-  expect(within(dialog).getByText('PathLab Forge on Windows')).toBeVisible()
+  expect(within(dialog).queryByText('PathLab Forge on Windows')).not.toBeInTheDocument()
+  expect(within(dialog).getByRole('heading', { name: 'Connect to Viewer' })).toBeVisible()
 
   finishRevoke()
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Viewer connection' }))
@@ -1213,7 +1281,7 @@ test('uses direct OME stages instead of DZI packaging stages during conversion',
     '/api/datasets/direct-converting/series/0/thumbnail?v=direct-converting-source',
   )
   expect(screen.getByRole('progressbar', { name: 'Direct converting.vsi library conversion progress' })).toHaveValue(33)
-  expect(screen.getByRole('region', { name: 'Conversion workflow' })).toBeVisible()
+  expect(await screen.findByRole('region', { name: 'Conversion workflow' })).toBeVisible()
 })
 
 test('opens a thumbnail queue list before starting ready conversions', async () => {
@@ -1232,6 +1300,8 @@ test('opens a thumbnail queue list before starting ready conversions', async () 
     vsiConversion: true, dziGeneration: true, downsamples: [1, 2, 4],
   }])
   vi.mocked(api.datasets).mockResolvedValue([ready])
+  vi.mocked(api.createBatch).mockResolvedValue({ id: 'saved-batch', createdAt: 1, format: 'OME_DYNAMIC_V1', items: [{ snapshot: { ...ready, sourcePath: 'source.svs' }, artifactRevisionId: 'artifact', state: 'ADMITTED', detail: 'Queued', attempts: 1 }] })
+  vi.mocked(api.batchReport).mockResolvedValue({ batchId: 'saved-batch', createdAt: 1, format: 'OME_DYNAMIC_V1', queuePaused: false, slides: [] })
   render(<App />)
 
   fireEvent.click(await screen.findByRole('button', { name: 'View queue · 1' }))
@@ -1242,7 +1312,8 @@ test('opens a thumbnail queue list before starting ready conversions', async () 
   expect(within(dialog).getByText('Ready to queue')).toBeVisible()
   expect(dialog.querySelector('.forge-queue-thumbnail img')).toHaveAttribute('src', '/api/datasets/queued-preview/series/0/thumbnail?v=queue-source')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Start 1 ready slide' }))
-  await waitFor(() => expect(api.convert).toHaveBeenCalledWith('queued-preview'))
+  await waitFor(() => expect(api.createBatch).toHaveBeenCalledWith(['queued-preview']))
+  expect(await screen.findByRole('dialog', { name: 'Saved batch workspace' })).toBeVisible()
 })
 
 test('opens each workflow step as a focused menu instead of showing one static progress list', async () => {
@@ -1804,4 +1875,95 @@ test('shows one actionable size quality conflict without changing the crop', asy
     'data-tile-source',
     '/api/datasets/compact-conflict/preview/slide.dzi?revision=conflict-config&preview=responsive-v2',
   )
+})
+
+it('opens offline Study authoring from navigation, saves a named draft and keeps unseen pixels unapproved', async () => {
+  const draft = { id: 'study-id', name: 'Offline faculty', revision: 1, associations: {}, issues: [], previewChecksum: 'exact', reviewedTaskIds: ['q'], approvedChecksum: '', updatedAt: 1,
+    definition: { schema: 'pathlab.study-pack/1' as const, packKey: 'pack', version: 1, title: 'Teaching', author: 'Faculty', license: 'CC-BY', provenance: 'Manual', revision: 'r1', languages: ['en'],
+      slides: [{ viewerSlideId: 'slide', sha256: 'a'.repeat(64), displayName: 'Imported teaching reference' }], tasks: [{ id: 'q', type: 'multiple-choice', slideId: 'slide', prompt: 'Supplied question', options: ['A', 'B'], answerKey: 'B', hints: [], explanation: 'Supplied explanation', sources: [{ title: 'Source', url: 'https://example.org' }] }] } }
+  vi.mocked(api.createStudyDraft).mockResolvedValue(draft)
+  vi.mocked(api.saveStudyDraft).mockImplementation(async (value, revision) => ({ ...value, revision: revision + 1 }))
+  render(<App />)
+  fireEvent.click(screen.getByRole('button', { name: 'Study Pack authoring' }))
+  const workspace = await screen.findByRole('dialog', { name: 'Study authoring workspace' })
+  expect(await within(workspace).findByText('Study Pack authoring', { selector: 'h2' })).toBeInTheDocument()
+  fireEvent.change(within(workspace).getByLabelText('Draft name'), { target: { value: 'Offline faculty' } })
+  fireEvent.click(within(workspace).getByRole('button', { name: 'New draft' }))
+  await waitFor(() => expect(api.createStudyDraft).toHaveBeenCalledWith('Offline faculty'))
+  await within(workspace).findByLabelText('Title')
+  expect(within(workspace).getByRole('button', { name: 'Approve this exact version' })).toBeDisabled()
+  expect(within(workspace).getByRole('button', { name: 'I reviewed this task, key, hints and sources' })).toBeDisabled()
+  fireEvent.change(within(workspace).getByLabelText('Title'), { target: { value: 'Offline correction' } })
+  fireEvent.click(within(workspace).getByRole('button', { name: 'Close Study authoring' }))
+  await waitFor(() => expect(api.saveStudyDraft).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ title: 'Offline correction' }), previewChecksum: '' }), 1))
+  expect(screen.queryByRole('dialog', { name: 'Study authoring workspace' })).not.toBeInTheDocument()
+  expect(api.approveStudyDraft).not.toHaveBeenCalled()
+})
+
+it('shows download verification, cancel and conflict values before choosing a resolution', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({ connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Viewer', scopes: ['library:read'], connectionRevision: 'owner-a' })
+  vi.mocked(api.syncViewerLibrary).mockResolvedValue({ items: [{ id: 'pending', displayName: 'Pending verified OME', folderId: '', state: 'ready_private', contentBytes: 100, width: 10, height: 10, thumbnailUrl: '/thumb', tileSourceUrl: '/preview', offlineBytes: 100, offlineComplete: false, downloadState: 'VERIFYING', downloadDetail: 'Checking SHA256' }], folders: [], conflicts: [{ slideId: 'pending', field: 'displayName', localValue: 'Faculty local title', remoteValue: 'Viewer remote title', baseRevision: 3, remoteRevision: 8 }] })
+  render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Viewer library' }))
+  await screen.findByText('Faculty local title')
+  expect(screen.getByText('Viewer remote title')).toBeVisible()
+  expect(screen.getByText('Base revision')).toBeVisible()
+  expect(screen.queryByText('Verified offline OME')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Keep Viewer' }))
+  await waitFor(() => expect(api.resolveViewerConflict).toHaveBeenCalledWith('pending', 'displayName', 'viewer'))
+  fireEvent.click(screen.getAllByRole('button', { name: 'Cancel offline download' })[0])
+  await waitFor(() => expect(api.cancelViewerOfflineDownload).toHaveBeenCalledWith('pending'))
+})
+it('clears old account pixels and ignores a pending library response after disconnect', async () => {
+  vi.mocked(api.getViewerConnection).mockResolvedValue({ connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Same device', scopes: ['library:read'], connectionRevision: 'owner-old' })
+  let finish!: (library: api.ViewerRemoteLibrary) => void
+  vi.mocked(api.syncViewerLibrary).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+  vi.mocked(api.revokeViewerConnection).mockResolvedValue(undefined)
+  render(<App />)
+  await screen.findByRole('button', { name: 'Same device' })
+  fireEvent.click(screen.getByRole('button', { name: 'Viewer library' }))
+  await waitFor(() => expect(finish).toBeDefined())
+  fireEvent.click(screen.getByRole('button', { name: 'Same device' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Disconnect this device' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm disconnect' }))
+  finish({ items: [{ id: 'old', displayName: 'Old private slide', folderId: '', state: 'ready_private', contentBytes: 100, width: 10, height: 10, thumbnailUrl: '/old', tileSourceUrl: '/old.dzi', offlineBytes: 0, offlineComplete: false }], folders: [], conflicts: [] })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Viewer account' })).toBeVisible())
+  expect(screen.queryByText('Old private slide')).not.toBeInTheDocument()
+  expect(document.querySelector('[data-tile-source="/old.dzi"]')).toBeNull()
+})
+
+it('opens Viewer approval through the native approved-origin handler and surfaces rejection', async () => {
+  const previous = window.forgeDesktop
+  const openExternal = vi.fn().mockRejectedValue(new Error('Viewer origin is not approved'))
+  window.forgeDesktop = { selectSources: vi.fn(), selectFeatureFiles: vi.fn(), selectDirectory: vi.fn(), selectExportDestination: vi.fn(), revealPath: vi.fn(), openExternal, onCommand: vi.fn(() => () => {}) }
+  vi.mocked(api.exchangeViewerPairing).mockReset().mockRejectedValue(new Error('pairing_pending'))
+  try {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect Viewer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to PathLab Viewer' }))
+    const open = await screen.findByRole('button', { name: 'Open Viewer approval' })
+    fireEvent.click(open)
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:8010/admin/connect?code=ABCD-EFGH'))
+    expect(await screen.findByText('Viewer origin is not approved')).toHaveAttribute('role', 'alert')
+    expect(screen.queryByRole('link', { name: 'Open Viewer approval' })).not.toBeInTheDocument()
+  } finally { window.forgeDesktop = previous }
+})
+
+it('clears the library on an opaque account revision change at the same Viewer origin and device name', async () => {
+  const connection = { connected: true, viewerUrl: 'https://viewer.example', deviceName: 'Same device', scopes: ['library:read'], connectionRevision: 'owner-a' }
+  vi.mocked(api.getViewerConnection).mockResolvedValue(connection)
+  vi.mocked(api.syncViewerLibrary).mockResolvedValue({ items: [{ id: 'a', displayName: 'Owner A private slide', folderId: '', state: 'ready_private', contentBytes: 100, width: 10, height: 10, thumbnailUrl: '/a', tileSourceUrl: '/a.dzi', offlineBytes: 0, offlineComplete: false }], folders: [], conflicts: [] })
+  render(<App />)
+  await screen.findByRole('button', { name: 'Same device' })
+  fireEvent.click(screen.getByRole('button', { name: 'Viewer library' }))
+  await screen.findByRole('treeitem', { name: 'Owner A private slide' })
+  vi.mocked(api.getViewerConnection).mockResolvedValue({ ...connection, connectionRevision: 'owner-b' })
+  let finish!: (value: api.ViewerRemoteLibrary) => void
+  vi.mocked(api.syncViewerLibrary).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh Viewer connection' }))
+  await waitFor(() => expect(finish).toBeDefined())
+  expect(screen.queryByText('Owner A private slide')).not.toBeInTheDocument()
+  expect(document.querySelector('[data-tile-source="/a.dzi"]')).toBeNull()
+  finish({ items: [], folders: [], conflicts: [] })
+  await screen.findByText('No private Viewer slides.')
 })

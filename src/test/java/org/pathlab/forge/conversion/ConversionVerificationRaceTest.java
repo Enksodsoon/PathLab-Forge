@@ -48,6 +48,31 @@ final class ConversionVerificationRaceTest {
     }
 
     private static ConversionEngine inspectingEngine() {
+        return inspectingEngine(() -> {});
+    }
+
+    @Test
+    void verificationCompletingInsideInspectionCannotBeOverwrittenByTheOldRecord() throws Exception {
+        var source = temporaryDirectory.resolve("race.vsi");
+        Files.write(source, new byte[] {1, 2, 3});
+        Files.write(Files.createDirectories(temporaryDirectory.resolve("race")).resolve("frame.ets"), new byte[] {4, 5, 6});
+        var repository = new PropertiesDatasetRepository(temporaryDirectory.resolve("race.properties"));
+        var pending = new DatasetInspector().inspectFast(source);
+        repository.save(pending);
+        try (var verification = new org.pathlab.forge.library.SourceVerificationService(repository);
+             var service = new ConversionService(repository, inspectingEngine(() -> {
+                 try { verification.await(pending.id()); }
+                 catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+             }), unavailableDerivative(), temporaryDirectory.resolve("managed-race"))) {
+            service.inspectWhileVerifying(pending.id());
+            var saved = repository.find(pending.id()).orElseThrow();
+            assertFalse(saved.sourceFingerprint().isBlank());
+            assertEquals(DatasetStatus.READY_TO_CONVERT, saved.status());
+            assertEquals(4, saved.selectedSeries());
+        }
+    }
+
+    private static ConversionEngine inspectingEngine(Runnable beforeResult) {
         return new ConversionEngine() {
             @Override
             public boolean available() {
@@ -61,6 +86,7 @@ final class ConversionVerificationRaceTest {
 
             @Override
             public List<SeriesInfo> inspect(Path ignored) {
+                beforeResult.run();
                 return List.of(new SeriesInfo(
                         4, "Tissue", 2000, 1000, 3, 1, 1, "uint8", 0.25, 0.25, "µm"));
             }

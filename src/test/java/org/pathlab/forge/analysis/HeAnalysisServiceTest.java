@@ -14,6 +14,11 @@ final class HeAnalysisServiceTest {
         assertEquals(0, result[1], 0.000001);
     }
 
+    @Test void thinRegionsKeepTheSamplingBound() {
+        assertEquals(4, HeAnalysisService.samplingStride(4_194_304, 1));
+        assertEquals(4, HeAnalysisService.samplingStride(1, 4_194_304));
+    }
+
     @Test
     void deterministicPurpleAndPinkPixelsSeparateDifferently() {
         var purple = HeAnalysisService.concentrations(70, 45, 105);

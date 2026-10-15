@@ -18,7 +18,12 @@ final class ViewerTileCacheTest {
     @Test
     void cachesAuthenticatedResourceAndEvictsLeastRecentlyUsedBytes() throws Exception {
         var responses = new ArrayDeque<>(List.of(response("123456"), response("abcdef")));
-        ViewerAuthorizedClient client = (method, path, headers, body) -> responses.removeFirst();
+        ViewerAuthorizedClient client = new ViewerAuthorizedClient() {
+            public String connectionKey() { return "a".repeat(64); }
+            public ViewerHttpResponse request(String method, String path, Map<String, String> headers, byte[] body) {
+                return responses.removeFirst();
+            }
+        };
         var cache = new ViewerTileCache(client, temp, 10);
         var first = cache.get("/api/one").path();
         var second = cache.get("/api/two").path();

@@ -21,6 +21,15 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
     private final Path storePath;
     private final Map<String, LocalDataset> datasets = new LinkedHashMap<>();
     private final Map<String, ConversionQueueEntry> queue = new LinkedHashMap<>();
+    private boolean queuePaused;
+
+    @Override public synchronized boolean queuePaused() { return queuePaused; }
+
+    @Override public synchronized void setQueuePaused(boolean paused) throws IOException {
+        var previous = queuePaused;
+        queuePaused = paused;
+        try { persist(); } catch (IOException error) { queuePaused = previous; throw error; }
+    }
 
     public PropertiesDatasetRepository(Path storePath) throws IOException {
         this.storePath = storePath.toAbsolutePath().normalize();
@@ -95,6 +104,7 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
         try (InputStream input = Files.newInputStream(storePath)) {
             properties.load(input);
         }
+        queuePaused = Boolean.parseBoolean(properties.getProperty("queue.paused", "false"));
         var ids = new ArrayList<String>();
         for (var key : properties.stringPropertyNames()) {
             if (key.startsWith(PREFIX) && key.endsWith(".displayName")) {
@@ -128,7 +138,13 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     properties.getProperty(key + "sourceInventory", ""),
                     properties.getProperty(key + "configurationRevision", ""),
                     properties.getProperty(key + "currentArtifactRevision", ""),
-                    properties.getProperty(key + "approvedArtifactRevision", ""));
+                    properties.getProperty(key + "approvedArtifactRevision", ""),
+                    properties.getProperty(key + "readerEngine", ""),
+                    properties.getProperty(key + "readerId", ""),
+                    properties.getProperty(
+                            key + "formatName", properties.getProperty(key + "format", "")),
+                    properties.getProperty(key + "runtimeFingerprint", ""),
+                    properties.getProperty(key + "viewDefinitionJson", ""));
             if (loaded.status() == DatasetStatus.INSPECTING
                     || loaded.status() == DatasetStatus.CONVERTING
                     || loaded.status() == DatasetStatus.OPTIMIZING_OME
@@ -175,8 +191,14 @@ public final class PropertiesDatasetRepository implements DatasetRepository {
                     key + "currentArtifactRevision", dataset.currentArtifactRevision());
             properties.setProperty(
                     key + "approvedArtifactRevision", dataset.approvedArtifactRevision());
+            properties.setProperty(key + "readerEngine", dataset.readerEngine());
+            properties.setProperty(key + "readerId", dataset.readerId());
+            properties.setProperty(key + "formatName", dataset.formatName());
+            properties.setProperty(key + "runtimeFingerprint", dataset.runtimeFingerprint());
+            properties.setProperty(key + "viewDefinitionJson", dataset.viewDefinitionJson());
         }
         var partial = storePath.resolveSibling(storePath.getFileName() + ".partial");
+        properties.setProperty("queue.paused", Boolean.toString(queuePaused));
         try (OutputStream output = Files.newOutputStream(partial)) {
             properties.store(output, "PathLab Forge local library");
         }

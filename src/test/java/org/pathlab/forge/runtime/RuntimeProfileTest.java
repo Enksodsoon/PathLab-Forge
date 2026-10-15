@@ -50,6 +50,17 @@ final class RuntimeProfileTest {
     }
 
     @Test
+    void smallDeviceLimitsNeverExceedPhysicalCapacity() {
+        var gib = 1024L * 1024 * 1024;
+        var profile = RuntimeProfile.adaptive(2, gib);
+        assertTrue(profile.processTreeLimitBytes() < gib);
+        assertTrue(profile.bioFormatsHeapBytes() < profile.processTreeLimitBytes());
+        assertTrue(profile.quPathHeapBytes() < profile.processTreeLimitBytes());
+        assertTrue(profile.workerStopAvailableBytes() < gib);
+        assertTrue(profile.workerStopAvailableBytes() > profile.pauseAvailableBytes());
+    }
+
+    @Test
     void doesNotTreatHyperthreadsAsIndependentWholeSlideDecoders() {
         assertEquals(5, RuntimeProfile.effectiveCpuParallelism(6));
         assertEquals(6, RuntimeProfile.effectiveCpuParallelism(12));

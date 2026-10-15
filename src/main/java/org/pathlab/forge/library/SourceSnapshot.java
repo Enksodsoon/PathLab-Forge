@@ -39,6 +39,40 @@ public record SourceSnapshot(
         return create(normalized, normalized.getParent(), List.of(normalized));
     }
 
+    public static SourceSnapshot forUsedFiles(Path source, List<Path> usedFiles) throws IOException {
+        var normalized = source.toAbsolutePath().normalize();
+        var root = normalized.getParent();
+        var files = usedFiles.stream().map(path -> path.toAbsolutePath().normalize())
+                .distinct().toList();
+        if (files.isEmpty() || files.size() > MAX_COMPANION_ENTRIES
+                || !files.contains(normalized)) {
+            throw new IOException("Reader-reported dataset inventory is invalid");
+        }
+        for (var file : files) {
+            if (!file.startsWith(root)
+                    || !Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(file)) {
+                throw new IOException("Reader-reported companion escapes the dataset folder");
+            }
+        }
+        return create(normalized, root, files);
+    }
+
+    public static SourceSnapshot fromSerialized(Path source, String serialized) throws IOException {
+        var normalized = source.toAbsolutePath().normalize();
+        var root = normalized.getParent();
+        var files = serialized.lines().filter(line -> !line.isBlank()).map(line -> {
+            var separator = line.indexOf('|');
+            if (separator <= 0) throw new IllegalArgumentException("Invalid source inventory");
+            return root.resolve(line.substring(0, separator)).normalize();
+        }).toList();
+        try {
+            return forUsedFiles(normalized, files);
+        } catch (IllegalArgumentException error) {
+            throw new IOException("Source inventory is invalid", error);
+        }
+    }
+
     public static SourceSnapshot forVsi(Path source)
             throws IOException, DatasetInspectionException {
         var normalized = source.toAbsolutePath().normalize();

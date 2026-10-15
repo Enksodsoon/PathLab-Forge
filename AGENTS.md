@@ -2,7 +2,7 @@
 
 ## Purpose
 
-PathLab Forge is a standalone Windows/macOS desktop application. It performs computationally expensive WSI work locally and connects to PathLab Viewer through a versioned API, resumable tus upload and the `.plslide` package.
+PathLab Forge is a standalone Windows/macOS desktop application. It performs computationally expensive WSI work locally and connects to PathLab Viewer through a versioned desktop API, offset-aware transfer and verified OME artifacts; Teaching delivery explicitly uses static DZI packages.
 
 The separate PathLab Viewer repository owns the server library, storage accounting, package import, private preview, publication grants, folder/collection sharing, Trash, annotations and static delivery.
 
@@ -17,11 +17,11 @@ For every Codex run:
 5. `docs/integration/CURRENT_VIEWER_BASELINE.md` when a task depends on Viewer internals
 6. `docs/compatibility/OS_MATRIX.md` when platform behavior is involved
 
-Do not read or implement every future milestone.
+The approved release plan covers all non-AI milestones. Follow its dependency order and assigned worktree ownership.
 
 ## Current Viewer integration rules
 
-- New desktop APIs belong under `/api/v2/desktop`; tus remains `/api/v1/uploads/`.
+- Reuse the existing offset-aware desktop upload. New desktop contracts belong under `/api/v2/desktop`; retain reviewed compatibility routes where required.
 - Forge local states do not mirror Viewer states one-to-one.
 - Viewer’s MVP prepared flow reuses `uploading → queued → validating → converting → ready_private` and distinguishes the path through `ingest_mode`.
 - Forge uses local `SERVER_PROCESSING` while polling the exact server state separately.
@@ -52,16 +52,16 @@ PathLab Forge does not own:
 - public tile delivery;
 - Viewer library search, collections, sharing or Trash;
 - Viewer annotations;
-- student/teacher workflows;
+- Viewer course authority and learner records; Forge owns offline Study Pack authoring.
 - AI diagnosis;
 - fluorescence analysis;
-- Z-stack or time-series navigation;
+- Unsupported channel, Z-stack or time-series claims; qualified reader views are included.
 - PACS/DICOM integration;
 - automatic public publication by default.
 
 ## Working rules
 
-- Work on exactly one active-plan task.
+- Work on the assigned focused batch within the approved complete release plan.
 - Create a focused `codex/` branch.
 - Use test-driven development for behavior changes.
 - Prefer small interfaces and adapters over direct dependency coupling.
@@ -73,7 +73,7 @@ PathLab Forge does not own:
 - Preserve completed local packages across upload failures.
 - Never reconvert solely because upload failed.
 - Do not invent a Viewer API, schema, thumbnail policy or state transition that conflicts with the reviewed baseline.
-- Commit the completed task, return the required report, and stop.
+- Return commits, focused/full checks and evidence; continue coordinated work until the approved plan is handled.
 
 ## Resource defaults
 

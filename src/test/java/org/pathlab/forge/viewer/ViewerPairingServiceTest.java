@@ -28,6 +28,33 @@ final class ViewerPairingServiceTest {
     @TempDir
     Path temporaryDirectory;
 
+    @Test void boundMutationUsesOneCredentialSnapshotBeforeSending() throws Exception {
+        var seen = new AtomicReference<String>();
+        var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        viewer.createContext("/api/probe", exchange -> {
+            seen.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            exchange.sendResponseHeaders(200, 0); exchange.close();
+        });
+        viewer.start();
+        var base = "http://127.0.0.1:" + viewer.getAddress().getPort();
+        var template = "{\"origin\":\"%s\",\"token\":\"%s\",\"organizationId\":\"org\",\"userId\":\"%s\",\"credentialId\":\"%s\"}";
+        class SwitchingStore implements CredentialStore {
+            int reads; boolean flip;
+            public Optional<String> read() { reads++; var owner = flip && reads >= 3 ? "b" : "a"; return Optional.of(template.formatted(base, "token-" + owner, owner, owner)); }
+            public void write(String value) {} public void delete() {}
+        }
+        var store = new SwitchingStore();
+        try (var service = new ViewerPairingService(store)) {
+            var key = service.connectionKey();
+            assertEquals(1, store.reads);
+            store.reads = 0; store.flip = true;
+            try (var response = service.requestBound(key, "PATCH", "/api/probe", java.util.Map.of(), "private A metadata".getBytes(StandardCharsets.UTF_8))) {
+                assertEquals(200, response.status());
+            }
+            assertEquals("Bearer token-a", seen.get());
+        } finally { viewer.stop(0); }
+    }
+
     @Test
     void retriesTransportFailuresButPausesPermanentViewerValidationFailures() {
         assertTrue(ViewerPairingService.transientFailure("Viewer request failed (503)"));
@@ -53,7 +80,7 @@ final class ViewerPairingServiceTest {
             var connection = service.exchange();
             assertTrue(connection.connected());
             assertEquals(base, connection.viewerUrl());
-            assertTrue(store.read().orElseThrow().endsWith("\ndesktop-token"));
+            assertTrue(store.read().orElseThrow().contains("\"credentialId\":\"credential-one\""));
             assertTrue(service.status().connected());
 
             service.revoke();
@@ -64,20 +91,31 @@ final class ViewerPairingServiceTest {
     }
 
     @Test
-    void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception {
+    void uploadsOnlyTheApprovedOmeWhenViewerAdvertisesDynamicIngest() throws Exception { exerciseApprovedDelivery(false); }
+
+    @Test
+    void teachingUploadsOnlyExplicitPreparedArtifactAndBindsResultsToPackageHash() throws Exception { exerciseApprovedDelivery(true); }
+
+    private void exerciseApprovedDelivery(boolean teaching) throws Exception {
         var receivedCreateBody = new AtomicReference<String>();
+        var createRequests = new AtomicInteger();
         var receivedPayload = new AtomicReference<byte[]>();
         var receivedResults = new AtomicReference<byte[]>();
+        var receivedResultsCreateBody = new AtomicReference<String>();
         var expectedSha = new AtomicReference<String>();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential().replace("\"slides:private:read\"", "\"slides:private:read\",\"results:sync\"")); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/credential")) {
                 respond(exchange, 200, "{\"deviceName\":\"Forge\",\"scopes\":["
                         + "\"desktop:ingest\",\"slides:private:read\",\"results:sync\"]}");
-            } else if (path.equals("/api/v1/desktop/ome-ingests")) {
+            } else if (path.equals(teaching ? "/api/v1/desktop/ingests" : "/api/v1/desktop/ome-ingests")) {
+                createRequests.incrementAndGet();
                 receivedCreateBody.set(new String(
                         exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 respond(exchange, 201, "{\"uploadUrl\":\"/api/v1/desktop/ingests/one/content\"}");
@@ -88,11 +126,13 @@ final class ViewerPairingServiceTest {
                 exchange.close();
             } else if (path.equals("/api/v1/desktop/ingests/one/content")) {
                 receivedPayload.set(exchange.getRequestBody().readAllBytes());
+                acknowledge(exchange, receivedPayload.get().length);
                 respond(exchange, 202, "{\"slideId\":null}");
             } else if (path.equals("/api/v1/desktop/ingests/one")) {
                 respond(exchange, 200, "{\"status\":\"ready_private\",\"slideId\":\"slide-one\","
                         + "\"slideSha256\":\"" + expectedSha.get() + "\"}");
             } else if (path.equals("/api/v2/desktop/slides/slide-one/result-deliveries")) {
+                receivedResultsCreateBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 respond(exchange, 201, "{\"id\":\"results-one\",\"uploadUrl\":"
                         + "\"/api/v2/desktop/slides/slide-one/result-deliveries/results-one/content\"}");
             } else if (path.endsWith("/result-deliveries/results-one/content")
@@ -100,8 +140,11 @@ final class ViewerPairingServiceTest {
                 exchange.getResponseHeaders().set("Upload-Offset", "0");
                 exchange.sendResponseHeaders(200, -1);
                 exchange.close();
+            } else if (path.endsWith("/result-deliveries/results-one")) {
+                respond(exchange, 200, "{\"status\":\"complete\"}");
             } else if (path.endsWith("/result-deliveries/results-one/content")) {
                 receivedResults.set(exchange.getRequestBody().readAllBytes());
+                acknowledge(exchange, receivedResults.get().length);
                 respond(exchange, 202, "{\"status\":\"complete\"}");
             } else {
                 respond(exchange, 404, "{\"detail\":\"not found\"}");
@@ -115,28 +158,46 @@ final class ViewerPairingServiceTest {
             var sha = sha256(ome);
             expectedSha.set(sha);
             var revision = revision(ome, sha);
-            writeOmeStamp(revision, ome);
+            if (teaching) {
+                var derivative = Files.createDirectory(temporaryDirectory.resolve("teaching-dzi"));
+                Files.writeString(derivative.resolve("slide.dzi"), "<Image/>");
+                Files.write(derivative.resolve("thumbnail.jpg"), new byte[] {1,2,3});
+                Files.createDirectories(derivative.resolve("slide_files/7"));
+                Files.write(derivative.resolve("slide_files/7/0_0.jpg"),new byte[] {4,5,6});
+                var prepared = org.pathlab.forge.packageformat.PreparedPackageBuilder.build(derivative,100,50,
+                    new org.pathlab.forge.packageformat.PackageMetadata(revision.id(),revision.configurationRevision(),revision.sourceFingerprint(),0,0,0,150,75,1.5,0,0,"","actual-staging-ome","1.0.0-rc.1"), temporaryDirectory.resolve("teaching.plslide"));
+                revision = new ArtifactRevision(revision.id(),revision.datasetId(),revision.configurationRevision(),revision.sourceFingerprint(),revision.createdAt(),ArtifactRevisionStatus.APPROVED,ArtifactRevisionFormat.PREPARED_DZI_V2,revision.omePath(),derivative.toString(),prepared.path().toString(),sha,prepared.sha256(),100,50,"",0,revision.approvedAt(),"Teaching","");
+                var writer = org.pathlab.forge.conversion.ArtifactIntegrityStamp.class.getDeclaredMethod("write",ArtifactRevision.class);
+                writer.setAccessible(true); writer.invoke(null,revision);
+                expectedSha.set(prepared.sha256());
+            } else writeOmeStamp(revision, ome);
             var store = new MemoryCredentialStore();
             var base = "http://127.0.0.1:" + viewer.getAddress().getPort();
             store.write(base + "\ndesktop-token");
             try (var service = new ViewerPairingService(store)) {
-                var started = service.startUpload(
-                        "case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5);
-                assertEquals("OME_DYNAMIC", started.uploadMode());
+                if (teaching) {
+                    var exactRevision = revision;
+                    org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.startUpload("Teaching",exactRevision,List.of(),0,0,150,75,1.5));
+                }
+                var started = teaching ? service.startTeachingUpload("Teaching",revision,List.of(),0,0,150,75,1.5)
+                    : service.startUpload("case-1.5x", revision, List.of(), 0, 0, 150, 75, 1.5);
+                assertEquals(teaching ? "PREPARED_V2" : "OME_DYNAMIC", started.uploadMode());
                 for (var attempt = 0;
                         attempt < 100 && !"COMPLETE".equals(service.uploadStatus().state());
                         attempt++) {
                     Thread.sleep(25);
                 }
                 assertEquals("COMPLETE", service.uploadStatus().state());
-                assertEquals("OME_DYNAMIC", service.uploadStatus().uploadMode());
-                assertTrue(receivedCreateBody.get().contains("\"profile\":\"ome-dynamic-v1\""));
-                assertTrue(receivedCreateBody.get().contains("\"jpegQuality\":75"));
-                assertTrue(receivedCreateBody.get().contains("\"omeSha256\":\"" + sha + "\""));
-                assertEquals(
-                        HexFormat.of().formatHex(Files.readAllBytes(ome)),
-                        HexFormat.of().formatHex(receivedPayload.get()));
+                assertEquals(teaching ? "PREPARED_V2" : "OME_DYNAMIC", service.uploadStatus().uploadMode());
+                assertTrue(receivedCreateBody.get().contains(teaching ? "\"packageSha256\":\"" + expectedSha.get() + "\"" : "\"omeSha256\":\"" + sha + "\""));
+                assertTrue(receivedResultsCreateBody.get().contains("\"slideSha256\":\"" + expectedSha.get() + "\""));
+                assertEquals(HexFormat.of().formatHex(Files.readAllBytes(Path.of(teaching ? revision.packagePath() : revision.omePath()))), HexFormat.of().formatHex(receivedPayload.get()));
                 assertTrue(receivedResults.get().length > 0);
+                try (var gzip = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(receivedResults.get()))) {
+                    assertTrue(new String(gzip.readAllBytes(),StandardCharsets.UTF_8).contains("\"slideSha256\":\"" + expectedSha.get() + "\""));
+                }
+                assertEquals("COMPLETE", (teaching ? service.startTeachingUpload("Teaching",revision,List.of(),0,0,150,75,1.5) : service.startUpload("case-1.5x",revision,List.of(),0,0,150,75,1.5)).state());
+                assertEquals(1,createRequests.get());
             }
         } finally {
             viewer.stop(0);
@@ -154,6 +215,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
@@ -173,6 +237,7 @@ final class ViewerPairingServiceTest {
                     assertEquals("3", exchange.getRequestHeaders().getFirst("Upload-Offset"));
                     resumedPayload.set(body);
                     resumeOffset.addAndGet(body.length);
+                    acknowledge(exchange, body.length);
                     respond(exchange, 202, "{\"slideId\":null}");
                 }
             } else if (path.equals("/api/v1/desktop/ingests/resume")) {
@@ -216,6 +281,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/ome-ingests")) {
@@ -313,8 +381,7 @@ final class ViewerPairingServiceTest {
             body = "";
         } else if (path.equals("/api/v1/desktop/credential")) {
             status = 200;
-            body = "{\"deviceName\":\"PathLab Forge on Windows\",\"scopes\":["
-                    + "\"desktop:ingest\",\"slides:private:read\",\"annotations:sync\"]}";
+            body = verifiedCredential();
         } else {
             status = 404;
             body = "{\"detail\":\"not found\"}";
@@ -346,6 +413,9 @@ final class ViewerPairingServiceTest {
             var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             viewer.createContext("/", exchange -> {
                 var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
                 if (path.equals("/api/v1/desktop/capabilities")) {
                     respond(exchange, 200, dynamicCapabilities());
                 } else if (path.equals("/api/v1/desktop/ome-ingests")) {
@@ -357,7 +427,7 @@ final class ViewerPairingServiceTest {
                     exchange.sendResponseHeaders(200, -1);
                     exchange.close();
                 } else if (path.endsWith("/content")) {
-                    exchange.getRequestBody().readAllBytes();
+                    acknowledge(exchange, exchange.getRequestBody().readAllBytes().length);
                     respond(exchange, 202, "{\"slideId\":null}");
                 } else if (path.equals("/api/v1/desktop/ingests/durable-one")) {
                     respond(exchange, 200, "{\"status\":\"ready_private\","
@@ -403,6 +473,9 @@ final class ViewerPairingServiceTest {
         var createCalls = new AtomicInteger();
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
+            if (exchange.getRequestURI().getPath().equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (exchange.getRequestURI().getPath().equals("/api/v1/desktop/capabilities")) {
                 respond(
                         exchange,
@@ -443,6 +516,9 @@ final class ViewerPairingServiceTest {
         var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         viewer.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/api/v1/desktop/credential")) {
+                respond(exchange, 200, verifiedCredential()); return;
+            }
             if (path.equals("/api/v1/desktop/capabilities")) {
                 respond(exchange, 200, dynamicCapabilities());
             } else if (path.equals("/api/v1/desktop/credential")) {
@@ -456,7 +532,7 @@ final class ViewerPairingServiceTest {
                 exchange.sendResponseHeaders(200, -1);
                 exchange.close();
             } else if (path.endsWith("/content")) {
-                exchange.getRequestBody().readAllBytes();
+                acknowledge(exchange, exchange.getRequestBody().readAllBytes().length);
                 respond(exchange, 202, "{\"slideId\":null}");
             } else if (path.equals("/api/v1/desktop/ingests/sha")) {
                 respond(exchange, 200, readyBody);
@@ -480,6 +556,60 @@ final class ViewerPairingServiceTest {
             }
         } finally {
             viewer.stop(0);
+        }
+    }
+
+    private static void acknowledge(HttpExchange exchange, int bytes) {
+        long start = Long.parseLong(exchange.getRequestHeaders().getFirst("Upload-Offset"));
+        exchange.getResponseHeaders().set("Upload-Offset", Long.toString(start + bytes));
+    }
+
+    private static String verifiedCredential() {
+        return "{\"organizationId\":\"org-one\",\"userId\":\"user-one\",\"credentialId\":\"credential-one\",\"deviceName\":\"Forge\",\"scopes\":[\"desktop:ingest\",\"slides:private:read\"]}";
+    }
+
+    @Test
+    void lostCreateAcknowledgementUsesStableNegotiatedKeyAndPausesOldServers() throws Exception {
+        for (boolean negotiated : List.of(false, true)) {
+            var creates = new AtomicInteger(); var firstKey = new AtomicReference<String>();
+            var expectedSha = new AtomicReference<String>();
+            var viewer = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+            viewer.createContext("/", exchange -> {
+                var path = exchange.getRequestURI().getPath();
+                if (path.endsWith("/credential")) {
+                    respond(exchange,200,verifiedCredential().replace(",\"results:sync\"", ""));
+                } else if (path.endsWith("/capabilities")) {
+                    respond(exchange,200,dynamicCapabilities().replaceFirst("\\{", "{\"ingestCreateIdempotency\":" + negotiated + ","));
+                } else if (path.endsWith("/ome-ingests")) {
+                    int count = creates.incrementAndGet();
+                    var key = exchange.getRequestHeaders().getFirst("Idempotency-Key");
+                    if (count == 1) { firstKey.set(key); respond(exchange,503,"{\"detail\":\"acknowledgement lost\"}"); }
+                    else {
+                        assertEquals(firstKey.get(),key);
+                        respond(exchange,201,"{\"id\":\"recover\",\"uploadUrl\":\"/api/v1/desktop/ingests/recover/content\"}");
+                    }
+                } else if (path.endsWith("/content") && exchange.getRequestMethod().equals("HEAD")) {
+                    exchange.getResponseHeaders().set("Upload-Offset","0"); exchange.sendResponseHeaders(200,-1); exchange.close();
+                } else if (path.endsWith("/content")) {
+                    acknowledge(exchange,exchange.getRequestBody().readAllBytes().length); respond(exchange,202,"{\"status\":\"verifying\"}");
+                } else if (path.endsWith("/recover")) {
+                    respond(exchange,200,"{\"status\": \"ready_private\",\"slideId\":\"recovered-slide\",\"slideSha256\":\"" + expectedSha.get() + "\"}");
+                } else respond(exchange,404,"{\"detail\":\"missing\"}");
+            });
+            viewer.start();
+            try {
+                var ome = Files.write(temporaryDirectory.resolve("create-" + negotiated + ".ome.tif"),new byte[]{'I','I',42,0,1,2,3});
+                var revision = revision(ome,sha256(ome)); writeOmeStamp(revision,ome); expectedSha.set(revision.omeSha256());
+                var credentials = new MemoryCredentialStore(); credentials.write("http://127.0.0.1:" + viewer.getAddress().getPort() + "\ndesktop-token");
+                try (var service = new ViewerPairingService(credentials)) {
+                    service.startUpload("recover",revision,List.of(),0,0,100,50,1); awaitState(service,"PAUSED");
+                    assertEquals(1,creates.get());
+                    service.startUpload("recover",revision,List.of(),0,0,100,50,1);
+                    awaitState(service,negotiated ? "IMAGE_READY" : "PAUSED");
+                    assertEquals(negotiated ? 2 : 1,creates.get());
+                    if (negotiated) assertFalse(firstKey.get().isBlank());
+                }
+            } finally { viewer.stop(0); }
         }
     }
 
@@ -519,7 +649,7 @@ final class ViewerPairingServiceTest {
                 attempt++) {
             Thread.sleep(25);
         }
-        assertEquals(expected, service.uploadStatus().state());
+        assertEquals(expected, service.uploadStatus().state(), service.uploadStatus().detail());
     }
 
     private static final class MemoryCredentialStore implements CredentialStore {

@@ -1,35 +1,13 @@
-# Codex Start Here — PathLab Forge
+# Start here: PathLab Forge desktop release
 
-The private repository already exists:
+Read `docs/plans/active/current.md` and `docs/plans/active/RELEASE_PROGRESS.md` first. The approved work is the complete non-AI Windows/macOS release, not the obsolete F1.1 foundation task.
 
-```text
-Enksodsoon/PathLab-Forge
-```
+Use Java 17, React, SQLite and the existing streaming pipeline. Electron owns the desktop window and service lifecycle. Normal delivery retains verified OME; Teaching delivery explicitly produces independently identified static DZI. Viewer remains authoritative for identity, permissions, privacy, publication and learner records.
 
-The integration plan has been re-based on the current PathLab Viewer library v2 architecture.
+Build in isolated `codex/` worktrees, with one integration owner and at most three active workers. Integrate focused commits and run checks on the combined head. Preserve user data and historical evidence. Never treat unverified runtime rights, signing, actual-platform testing, deployment or production verification as complete.
 
-## First Codex prompt
+Development: `gradlew test` runs Java tests and the production interface build. Run frontend tests separately with `pnpm test` in `frontend`, desktop checks with `pnpm test` and `pnpm check` in `desktop`, and repository policy with `scripts/verify-repo.ps1`. Use JDK 17 explicitly on machines whose default Java differs.
 
-Paste only this:
+`gradlew run --args=--serve` retains the browser/headless development mode. The packaged Electron app uses `--desktop`, bundled resources, private readiness and one-time local authorization. Development runtime discovery does not qualify a clean-machine release.
 
-```text
-Open Enksodsoon/PathLab-Forge.
-
-Read AGENTS.md and docs/plans/active/current.md. Work on Task F1.1 only: Java 17 build foundation and batch domain state machine.
-
-The active task is intentionally independent from PathLab Viewer implementation. Do not add QuPath, Bio-Formats, OpenSlide, libvips, JavaFX, SQLite, package schemas, server upload, WSI conversion, installers or later tasks.
-
-Use test-driven development exactly as specified:
-1. create the failing tests;
-2. run them and confirm the expected failure;
-3. implement the smallest complete solution;
-4. run focused and full checks;
-5. review scope and naming;
-6. commit Task F1.1;
-7. return the required TASK RESULT report;
-8. stop.
-```
-
-## Why the first task remains small
-
-PathLab Viewer now has folders, collections, storage accounting, cached thumbnails, publication grants, sharing and annotations. Those are server-owned systems. The first Forge task builds only a stable local batch state model, allowing later conversion and upload adapters to integrate without coupling the core to Viewer internals.
+Record acceptance receipts and remaining blockers in the progress register. No paid service, certificate purchase or cloud spend is automatic.

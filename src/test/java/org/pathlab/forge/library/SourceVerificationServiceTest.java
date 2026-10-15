@@ -77,4 +77,37 @@ final class SourceVerificationServiceTest {
             assertEquals(64, verified.sourceFingerprint().length());
         }
     }
+
+    @Test
+    void verifiesReaderReportedCompanionsForArbitraryFormats() throws Exception {
+        var source = Files.write(temporaryDirectory.resolve("dataset.xml"), new byte[] {1, 2, 3});
+        var companion = Files.write(temporaryDirectory.resolve("pixels.h5"), new byte[] {4, 5, 6});
+        var snapshot = SourceSnapshot.forUsedFiles(source, java.util.List.of(source, companion));
+        var pending = new LocalDataset(
+                "44444444-4444-4444-4444-444444444444",
+                "dataset.xml",
+                source.toString(),
+                snapshot.totalBytes(),
+                DatasetFormat.valueOf("BDV"),
+                DatasetStatus.VERIFYING_SOURCE,
+                "verifying",
+                "",
+                "")
+                .withSourceIdentity(DatasetStatus.VERIFYING_SOURCE, "verifying", "", snapshot.serialized())
+                .withReaderMetadata("BIO_FORMATS", "BDVReader", "BDV", "d".repeat(64), "");
+        var repository = new PropertiesDatasetRepository(
+                temporaryDirectory.resolve("arbitrary-library.properties"));
+        repository.save(pending);
+
+        try (var verification = new SourceVerificationService(repository)) {
+            var verified = verification.await(pending.id());
+            assertEquals(64, verified.sourceFingerprint().length());
+            assertEquals(DatasetStatus.READY, verified.status());
+            assertEquals(true, DatasetSourceInventory.matchesSnapshot(
+                    source, verified.sourceInventory()));
+            Files.write(companion, new byte[] {9});
+            assertEquals(false, DatasetSourceInventory.matchesSnapshot(
+                    source, verified.sourceInventory()));
+        }
+    }
 }

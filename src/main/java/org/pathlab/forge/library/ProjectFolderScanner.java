@@ -21,7 +21,7 @@ public final class ProjectFolderScanner {
         try (var paths = Files.walk(root, MAX_DEPTH)) {
             var slides = paths
                     .filter(path -> Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
-                    .filter(ProjectFolderScanner::isPrimarySlide)
+                    .filter(path -> !isKnownCompanion(path))
                     .sorted(Comparator.comparing(path -> root.relativize(path).toString(),
                             String.CASE_INSENSITIVE_ORDER))
                     .limit(MAX_SLIDES + 1L)
@@ -33,11 +33,8 @@ public final class ProjectFolderScanner {
         }
     }
 
-    private static boolean isPrimarySlide(Path path) {
+    private static boolean isKnownCompanion(Path path) {
         var name = path.getFileName().toString().toLowerCase(Locale.ROOT);
-        return name.endsWith(".vsi")
-                || name.endsWith(".svs")
-                || name.endsWith(".ome.tif")
-                || name.endsWith(".ome.tiff");
+        return name.endsWith(".ets") || name.endsWith(".dv.log") || name.endsWith(".r3d.log");
     }
 }

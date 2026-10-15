@@ -41,9 +41,11 @@ Thumbs.db
 *.plslide
 *_files/
 *.dzi
+!frontend/e2e/fixtures/teaching-landmarks/landmarks_files/
+!frontend/e2e/fixtures/teaching-landmarks/landmarks_files/**
 
 # Runtime and packaging
-runtime/
+/runtime/
 dist/
 installers/
 *.dmg
@@ -55,3 +57,6 @@ installers/
 
 # Local evidence that may contain sensitive names
 docs/evidence/local/
+
+# Generated bundled Java service
+/desktop/resources/service/
