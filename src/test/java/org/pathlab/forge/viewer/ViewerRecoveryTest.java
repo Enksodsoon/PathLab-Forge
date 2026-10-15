@@ -29,6 +29,8 @@ final class ViewerRecoveryTest {
         volatile String key = A;
         byte[] content = CONTENT;
         InputStream stream;
+        long headBytes = CONTENT.length;
+        String headSha = "";
         IOException patchFailure;
         String range = "";
         int requests;
@@ -38,7 +40,7 @@ final class ViewerRecoveryTest {
             requests++;
             if (method.equals("PATCH")) throw patchFailure;
             try {
-                if (method.equals("HEAD")) return response(200,Map.of("content-length",List.of(String.valueOf(CONTENT.length)),"x-pathlab-sha256",List.of(sha(CONTENT))),new ByteArrayInputStream(new byte[0]));
+                if (method.equals("HEAD")) return response(200,Map.of("content-length",List.of(String.valueOf(headBytes)),"x-pathlab-sha256",List.of(headSha.isBlank() ? sha(CONTENT) : headSha)),new ByteArrayInputStream(new byte[0]));
             } catch (Exception error) { throw new IOException(error); }
             if (path.contains("/content")) {
                 gets++;
@@ -111,6 +113,35 @@ final class ViewerRecoveryTest {
             assertEquals(requests,client.requests);
             Files.write(file,new byte[]{1,2,3});
             assertTrue(service.offlineFile("s1").isEmpty()); assertEquals("FAILED",service.library().get(0).downloadState());
+        }
+    }
+
+    @Test void changedRemoteContentCannotReuseAReadyOfflineCopy() throws Exception {
+        var client = new Client();
+        try (var store = new SqliteViewerSyncStore(temp.resolve("changed.db")); var service = new ViewerSyncService(client,store,temp.resolve("offline"))) {
+            store.upsertRemote(slide());
+            var retained = service.keepOffline("s1");
+            var replacement = "replacement OME content".getBytes(StandardCharsets.UTF_8);
+            store.upsertRemote(new ViewerRemoteSlide("s1", "Original", "", "ready_private", 2, 0, 3, 4,
+                "/thumb", "/tiles", replacement.length, sha(replacement), Map.of(), Instant.parse("2026-08-12T00:01:00Z")));
+
+            assertTrue(Files.exists(retained));
+            assertTrue(service.offlineFile("s1").isEmpty());
+            assertEquals("FAILED", store.find("s1").orElseThrow().downloadState());
+            assertEquals("Viewer content changed; keep a current offline copy", store.find("s1").orElseThrow().downloadDetail());
+        }
+    }
+
+    @Test void overflowingOfflineSpaceReservationFailsBeforeBodyDownload() throws Exception {
+        var client = new Client();
+        client.headBytes = Long.MAX_VALUE;
+        client.headSha = sha(CONTENT);
+        try (var store = new SqliteViewerSyncStore(temp.resolve("overflow.db")); var service = new ViewerSyncService(client,store,temp.resolve("offline"))) {
+            store.upsertRemote(new ViewerRemoteSlide("s1", "Original", "", "ready_private", 1, 0, 3, 4,
+                "/thumb", "/tiles", Long.MAX_VALUE, sha(CONTENT), Map.of(), Instant.parse("2026-08-12T00:00:00Z")));
+
+            assertThrows(IOException.class, () -> service.keepOffline("s1"));
+            assertEquals(0, client.gets);
         }
     }
 

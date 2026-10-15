@@ -340,6 +340,7 @@ export function App() {
       if (!element || !visible || isPanelDocked(panel, panels.width)) return []
       const onKeyDown = (event: KeyboardEvent) => {
         if (event.key !== 'Escape') return
+        if (event.target instanceof HTMLElement && event.target.closest('.forge-history-rename')) return
         const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
           .find((candidate) => candidate !== element && !candidate.contains(element) && candidate.getClientRects().length > 0)
         if (modal) return

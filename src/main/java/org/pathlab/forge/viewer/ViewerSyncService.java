@@ -429,7 +429,9 @@ public final class ViewerSyncService implements AutoCloseable {
     }
 
     private void ensureSpace(long bytes) throws IOException {
-        var required = bytes + Math.max(1, bytes / 10);
+        long required;
+        try { required = Math.addExact(bytes, Math.max(1, bytes / 10)); }
+        catch (ArithmeticException error) { throw new IOException("Viewer slide is too large for offline storage", error); }
         if (Files.getFileStore(offlineRoot).getUsableSpace() < required) {
             throw new IOException("Not enough disk space to keep this slide offline");
         }

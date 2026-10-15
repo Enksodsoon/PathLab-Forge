@@ -1226,7 +1226,13 @@ test('uses direct OME for new conversions and keeps direct results readable', as
 
   await waitFor(() => expect(screen.getByText('Viewer connected').parentElement)
     .toHaveTextContent('Next conversion · Direct OME-TIFF'))
-  expect(screen.getByRole('button', { name: 'Convert to direct OME-TIFF' })).toBeVisible()
+  await waitFor(() => expect(screen.getByRole('button', { name: /Open and approve result/ })
+    .closest('li')).toHaveAttribute('aria-current', 'step'))
+  const convertStep = screen.getByRole('button', { name: /Create direct OME-TIFF/ })
+  fireEvent.click(convertStep)
+  await waitFor(() => expect(screen.getByRole('button', { name: /Create direct OME-TIFF/ }))
+    .toHaveAttribute('aria-expanded', 'true'))
+  expect(await screen.findByRole('button', { name: 'Convert to direct OME-TIFF' })).toBeVisible()
   const result = await screen.findByRole('region', { name: 'Converted slide result' })
   expect(within(result).getByText('Direct OME-TIFF')).toBeVisible()
   expect(within(result).getByText('104.9 MB')).toBeVisible()
@@ -1597,6 +1603,7 @@ test('keeps the original viewer visible while the upload package is still buildi
 })
 
 test('views, renames, downloads, and deletes saved conversions from History', async () => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1000 })
   const dataset: api.Dataset = {
     id: 'history-slide',
     displayName: 'History slide.vsi',
@@ -1672,6 +1679,7 @@ test('views, renames, downloads, and deletes saved conversions from History', as
   vi.mocked(api.deleteArtifact).mockResolvedValue(dataset)
 
   render(<App />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Open slide inspector' }))
 
   const mainViewer = await screen.findByTestId('forge-osd')
   expect(mainViewer).toHaveAttribute(
@@ -1704,6 +1712,11 @@ test('views, renames, downloads, and deletes saved conversions from History', as
     'data-tile-source',
     '/api/datasets/history-slide/artifacts/history-older/derivative/slide.dzi',
   )
+
+  fireEvent.click(within(olderCard).getByRole('button', { name: 'Rename' }))
+  fireEvent.keyDown(within(olderCard).getByRole('textbox', { name: 'Conversion name' }), { key: 'Escape' })
+  expect(within(olderCard).queryByRole('textbox', { name: 'Conversion name' })).not.toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: 'History' })).toBeVisible()
 
   fireEvent.click(within(olderCard).getByRole('button', { name: 'Rename' }))
   fireEvent.change(within(olderCard).getByRole('textbox', { name: 'Conversion name' }), {
