@@ -1228,6 +1228,8 @@ test('uses direct OME for new conversions and keeps direct results readable', as
     .toHaveTextContent('Next conversion · Direct OME-TIFF'))
   await waitFor(() => expect(screen.getByRole('button', { name: /Open and approve result/ })
     .closest('li')).toHaveAttribute('aria-current', 'step'))
+  await waitFor(() => expect(screen.getByRole('button', { name: /Open and approve result/ }))
+    .toHaveAttribute('aria-expanded', 'true'))
   const convertStep = screen.getByRole('button', { name: /Create direct OME-TIFF/ })
   fireEvent.click(convertStep)
   await waitFor(() => expect(screen.getByRole('button', { name: /Create direct OME-TIFF/ }))
