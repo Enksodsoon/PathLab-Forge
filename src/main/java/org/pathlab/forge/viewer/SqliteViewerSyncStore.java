@@ -117,7 +117,17 @@ public final class SqliteViewerSyncStore implements ViewerSyncStore {
                   metadata_revision=excluded.metadata_revision,folder_revision=excluded.folder_revision,
                   thumbnail_url=excluded.thumbnail_url,tile_url=excluded.tile_url,
                   remote_updated_at=excluded.remote_updated_at,content_bytes=excluded.content_bytes,
-                  content_sha256=excluded.content_sha256,metadata_json=excluded.metadata_json
+                  content_sha256=excluded.content_sha256,metadata_json=excluded.metadata_json,
+                  download_state=CASE WHEN download_state='READY' AND (
+                    content_revision != excluded.content_revision
+                    OR (excluded.content_bytes > 0 AND download_bytes != excluded.content_bytes)
+                    OR (excluded.content_sha256 != '' AND lower(download_sha256) != lower(excluded.content_sha256))
+                  ) THEN 'FAILED' ELSE download_state END,
+                  download_detail=CASE WHEN download_state='READY' AND (
+                    content_revision != excluded.content_revision
+                    OR (excluded.content_bytes > 0 AND download_bytes != excluded.content_bytes)
+                    OR (excluded.content_sha256 != '' AND lower(download_sha256) != lower(excluded.content_sha256))
+                  ) THEN 'Viewer content changed; keep a current offline copy' ELSE download_detail END
                 """)) {
             statement.setString(1, slide.id());
             statement.setString(2, slide.displayName());
